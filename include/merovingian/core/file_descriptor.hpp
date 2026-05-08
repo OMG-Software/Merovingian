@@ -3,23 +3,27 @@
 
 #include <utility>
 
-namespace merovingian::core {
+namespace merovingian::core
+{
 
-class FileDescriptor final {
+class FileDescriptor final
+{
 public:
     static constexpr int invalid = -1;
 
     FileDescriptor() noexcept = default;
 
     explicit FileDescriptor(int fd) noexcept
-        : fd_{fd} {
+        : m_fd{fd}
+    {
     }
 
     FileDescriptor(FileDescriptor const&) = delete;
     auto operator=(FileDescriptor const&) -> FileDescriptor& = delete;
 
     FileDescriptor(FileDescriptor&& other) noexcept
-        : fd_{std::exchange(other.fd_, invalid)} {
+        : m_fd{std::exchange(other.m_fd, invalid)}
+    {
     }
 
     auto operator=(FileDescriptor&& other) noexcept -> FileDescriptor&;
@@ -33,7 +37,7 @@ public:
     auto reset(int fd = invalid) noexcept -> void;
 
 private:
-    int fd_{invalid};
+    int m_fd{invalid};
 };
 
 } // namespace merovingian::core
