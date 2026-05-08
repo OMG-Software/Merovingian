@@ -3,14 +3,17 @@
 
 #include <merovingian/core/file_descriptor.hpp>
 
-namespace merovingian::core {
+namespace merovingian::core
+{
 
-class SocketHandle final {
+class SocketHandle final
+{
 public:
     SocketHandle() noexcept = default;
 
     explicit SocketHandle(int fd) noexcept
-        : fd_{fd} {
+        : m_fd{fd}
+    {
     }
 
     SocketHandle(SocketHandle const&) = delete;
@@ -21,16 +24,18 @@ public:
 
     ~SocketHandle() = default;
 
-    [[nodiscard]] auto native_handle() const noexcept -> int {
-        return fd_.get();
+    [[nodiscard]] auto native_handle() const noexcept -> int
+    {
+        return m_fd.get();
     }
 
-    [[nodiscard]] auto valid() const noexcept -> bool {
-        return fd_.valid();
+    [[nodiscard]] auto valid() const noexcept -> bool
+    {
+        return m_fd.valid();
     }
 
 private:
-    FileDescriptor fd_{};
+    FileDescriptor m_fd{};
 };
 
 } // namespace merovingian::core
