@@ -154,6 +154,67 @@ struct SizeLimitParseResult final
     return value >= '0' && value <= '9';
 }
 
+[[nodiscard]] inline auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
+{
+    return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+}
+
+[[nodiscard]] inline auto parse_port(std::string_view value) noexcept -> std::uint32_t
+{
+    if (value.empty())
+    {
+        return 0U;
+    }
+
+    auto port = std::uint32_t{0U};
+    for (auto const character : value)
+    {
+        if (!is_ascii_digit(character))
+        {
+            return 0U;
+        }
+
+        auto const digit = static_cast<std::uint32_t>(character - '0');
+        if (port > (65535U - digit) / 10U)
+        {
+            return 0U;
+        }
+        port = (port * 10U) + digit;
+    }
+
+    return port;
+}
+
+[[nodiscard]] inline auto is_valid_listener_bind(std::string_view bind) noexcept -> bool
+{
+    auto const separator = bind.rfind(':');
+    if (separator == std::string_view::npos || separator == 0U || separator + 1U >= bind.size())
+    {
+        return false;
+    }
+
+    auto const host = bind.substr(0U, separator);
+    auto const port = parse_port(bind.substr(separator + 1U));
+    return !host.empty() && port > 0U;
+}
+
+[[nodiscard]] inline auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool
+{
+    constexpr auto https_scheme = std::string_view{"https://"};
+    if (!starts_with(public_baseurl, https_scheme))
+    {
+        return false;
+    }
+
+    auto const authority = public_baseurl.substr(https_scheme.size());
+    return !authority.empty() && authority.find(' ') == std::string_view::npos;
+}
+
+[[nodiscard]] inline auto is_valid_federation_policy(std::string_view policy) noexcept -> bool
+{
+    return policy == "allow" || policy == "deny";
+}
+
 [[nodiscard]] inline auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult
 {
     if (value.empty())
@@ -225,21 +286,19 @@ struct SizeLimitParseResult final
         findings.push_back({"server.server_name", "server name must not be empty"});
     }
 
-    if (config.server().public_baseurl.empty())
+    if (!is_valid_public_baseurl(config.server().public_baseurl))
     {
-        findings.push_back({"server.public_baseurl", "public base URL must not be empty"});
+        findings.push_back({"server.public_baseurl", "public base URL must be a non-empty HTTPS URL"});
     }
 
-    if (config.listeners().client.bind.empty())
+    if (!is_valid_listener_bind(config.listeners().client.bind))
     {
-        findings.push_back({"listeners.client.bind", "client listener bind address must not be empty"});
+        findings.push_back({"listeners.client.bind", "client listener bind address must be host:port"});
     }
 
-    if (config.listeners().federation.bind.empty())
+    if (!is_valid_listener_bind(config.listeners().federation.bind))
     {
-        findings.push_back(
-            {"listeners.federation.bind", "federation listener bind address must not be empty"}
-        );
+        findings.push_back({"listeners.federation.bind", "federation listener bind address must be host:port"});
     }
 
     if (config.database().uri_file.empty())
@@ -270,6 +329,13 @@ struct SizeLimitParseResult final
     {
         findings.push_back(
             {"security.encryption.require_for_direct_messages", "direct messages must require encryption"}
+        );
+    }
+
+    if (!is_valid_federation_policy(config.security().federation.default_policy))
+    {
+        findings.push_back(
+            {"security.federation.default_policy", "federation default policy must be allow or deny"}
         );
     }
 
