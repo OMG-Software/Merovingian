@@ -6,9 +6,11 @@
 #include <span>
 #include <vector>
 
-namespace merovingian::core {
+namespace merovingian::core
+{
 
-class SecretBuffer final {
+class SecretBuffer final
+{
 public:
     SecretBuffer() = default;
 
@@ -26,7 +28,7 @@ public:
     [[nodiscard]] auto bytes() const noexcept -> std::span<std::uint8_t const>;
 
 private:
-    std::vector<std::uint8_t> buffer_{};
+    std::vector<std::uint8_t> m_buffer{};
 };
 
 } // namespace merovingian::core
