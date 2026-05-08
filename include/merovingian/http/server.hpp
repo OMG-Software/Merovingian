@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-namespace merovingian::http {
+namespace merovingian::http
+{
 
-class Server final {
+class Server final
+{
 public:
     Server() = default;
 

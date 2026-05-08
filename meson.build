@@ -3,6 +3,7 @@ project(
   'cpp',
   version: '0.1.0',
   license: 'GPL-3.0-or-later',
+  meson_version: '>=1.1.0',
   default_options: [
     'cpp_std=c++26',
     'warning_level=3',
@@ -12,6 +13,7 @@ project(
 )
 
 cpp = meson.get_compiler('cpp')
+thread_dep = dependency('threads')
 
 warning_flags = [
   '-Wall',
