@@ -3,28 +3,34 @@
 
 #include <stdexcept>
 
-namespace merovingian::core {
+namespace merovingian::core
+{
 
 template <typename T>
-class not_null final {
+class not_null final
+{
 public:
     explicit constexpr not_null(T value)
-        : value_{value} {
-        if (value_ == nullptr) {
+        : m_value{value}
+    {
+        if (m_value == nullptr)
+        {
             throw std::invalid_argument{"not_null constructed with nullptr"};
         }
     }
 
-    [[nodiscard]] constexpr auto get() const noexcept -> T {
-        return value_;
+    [[nodiscard]] constexpr auto get() const noexcept -> T
+    {
+        return m_value;
     }
 
-    [[nodiscard]] constexpr operator T() const noexcept {
-        return value_;
+    [[nodiscard]] constexpr operator T() const noexcept
+    {
+        return m_value;
     }
 
 private:
-    T value_;
+    T m_value;
 };
 
 } // namespace merovingian::core
