@@ -11,15 +11,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y meson ninja-build clang
+          sudo apt-get install -y \
+            clang \
+            catch2 \
+            pkg-config
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade meson ninja
 
       - name: Configure
         run: |
           meson setup build \
             --buildtype=debug \
+            -Dbuild_tests=true \
+            -Dbuild_fuzz=false \
             -Db_sanitize=address,undefined
 
       - name: Compile
