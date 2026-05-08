@@ -129,6 +129,35 @@ TEST_CASE("Media upload size parser rejects invalid or unbounded-looking values"
     REQUIRE_FALSE(merovingian::config::parse_size_limit(malformed).valid);
 }
 
+TEST_CASE("Config validation helpers accept secure address-shaped defaults", "[config][validation]")
+{
+    // Given
+    auto const public_baseurl = std::string{"https://matrix.example.org"};
+    auto const listener_bind = std::string{"127.0.0.1:8008"};
+
+    // When / Then
+    REQUIRE(merovingian::config::is_valid_public_baseurl(public_baseurl));
+    REQUIRE(merovingian::config::is_valid_listener_bind(listener_bind));
+    REQUIRE(merovingian::config::is_valid_federation_policy("allow"));
+    REQUIRE(merovingian::config::is_valid_federation_policy("deny"));
+}
+
+TEST_CASE("Config validation helpers reject unsafe address-shaped values", "[config][validation]")
+{
+    // Given
+    auto const insecure_public_baseurl = std::string{"http://matrix.example.org"};
+    auto const empty_host_bind = std::string{":8008"};
+    auto const missing_port_bind = std::string{"127.0.0.1"};
+    auto const out_of_range_port_bind = std::string{"127.0.0.1:70000"};
+
+    // When / Then
+    REQUIRE_FALSE(merovingian::config::is_valid_public_baseurl(insecure_public_baseurl));
+    REQUIRE_FALSE(merovingian::config::is_valid_listener_bind(empty_host_bind));
+    REQUIRE_FALSE(merovingian::config::is_valid_listener_bind(missing_port_bind));
+    REQUIRE_FALSE(merovingian::config::is_valid_listener_bind(out_of_range_port_bind));
+    REQUIRE_FALSE(merovingian::config::is_valid_federation_policy("permissive"));
+}
+
 TEST_CASE("Default config validates without findings", "[config][validation]")
 {
     // Given
@@ -200,6 +229,26 @@ TEST_CASE("Config validation rejects invalid media upload size", "[config][valid
 
     // Then
     REQUIRE_FALSE(findings.empty());
+    REQUIRE_FALSE(merovingian::config::is_valid(config));
+}
+
+TEST_CASE("Config validation rejects unsafe public URL, listener bind, and federation policy", "[config][validation][security]")
+{
+    // Given
+    auto server = merovingian::config::ServerConfig{};
+    auto listeners = merovingian::config::ListenersConfig{};
+    auto database = merovingian::config::DatabaseConfig{};
+    auto security = merovingian::config::SecurityConfig{};
+    server.public_baseurl = "http://matrix.example.org";
+    listeners.federation.bind = "127.0.0.1:not-a-port";
+    security.federation.default_policy = "permissive";
+
+    // When
+    auto const config = merovingian::config::Config{server, listeners, database, security};
+    auto const findings = merovingian::config::validate(config);
+
+    // Then
+    REQUIRE(findings.size() == 3U);
     REQUIRE_FALSE(merovingian::config::is_valid(config));
 }
 
