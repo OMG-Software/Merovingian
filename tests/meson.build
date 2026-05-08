@@ -17,4 +17,6 @@ if get_option('build_tests')
   )
 
   test('unit-tests', unit_tests)
+
+  subdir('fuzz')
 endif
