@@ -1,4 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#define CATCH_CONFIG_MAIN
-#include <catch2/catch_all.hpp>
+#include <catch2/catch_session.hpp>
+
+auto main(int argc, char* argv[]) -> int
+{
+    return Catch::Session{}.run(argc, argv);
+}
