@@ -19,6 +19,7 @@ jobs:
             ninja-build \
             clang \
             clang-tidy \
+            catch2 \
             pkg-config
 
       - name: Configure
@@ -30,14 +31,5 @@ jobs:
       - name: Test
         run: meson test -C build --print-errorlogs
 
-      - name: Reject naked allocation
-        run: |
-          if grep -R "new " include src tests; then
-            echo "naked new detected"
-            exit 1
-          fi
-
-          if grep -R "delete " include src tests; then
-            echo "naked delete detected"
-            exit 1
-          fi
+      - name: Reject unsafe allocation patterns
+        run: bash scripts/reject-unsafe.sh
