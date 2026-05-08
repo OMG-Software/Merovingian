@@ -1,0 +1,14 @@
+Checks: >
+  clang-analyzer-*,
+  bugprone-*,
+  cert-*,
+  cppcoreguidelines-*,
+  modernize-*,
+  performance-*,
+  portability-*,
+  readability-*
+WarningsAsErrors: '*'
+HeaderFilterRegex: 'include/merovingian/.*'
+CheckOptions:
+  - key: cppcoreguidelines-owning-memory
+    value: '1'
