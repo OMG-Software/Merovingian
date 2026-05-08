@@ -1,5 +1,6 @@
 smoke_test = find_program('sh')
 server_executable = meson.project_build_root() / 'src' / 'merovingian-server'
+example_config = meson.project_source_root() / 'config' / 'merovingian.conf.example'
 valid_config = meson.project_build_root() / 'valid-smoke.conf'
 invalid_config = meson.project_build_root() / 'invalid-smoke.conf'
 
@@ -18,6 +19,18 @@ test(
   args: [
     '-c',
     server_executable + ' 2>&1 | grep -q "Configuration validation passed"',
+  ],
+)
+
+test(
+  'server-example-config-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable
+      + ' --config '
+      + example_config
+      + ' 2>&1 | grep -q "Configuration validation passed"',
   ],
 )
 
