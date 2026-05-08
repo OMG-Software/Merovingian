@@ -158,6 +158,26 @@ TEST_CASE("Config validation helpers reject unsafe address-shaped values", "[con
     REQUIRE_FALSE(merovingian::config::is_valid_federation_policy("permissive"));
 }
 
+TEST_CASE("Config validation accepts cleartext listeners only on loopback", "[config][validation]")
+{
+    // Given
+    auto const loopback_listener = merovingian::config::ListenerConfig{"127.0.0.1:8008", false};
+    auto const tls_public_listener = merovingian::config::ListenerConfig{"0.0.0.0:8448", true};
+
+    // When / Then
+    REQUIRE(merovingian::config::is_safe_cleartext_listener(loopback_listener));
+    REQUIRE(merovingian::config::is_safe_cleartext_listener(tls_public_listener));
+}
+
+TEST_CASE("Config validation rejects cleartext listeners on public interfaces", "[config][validation]")
+{
+    // Given
+    auto const public_cleartext_listener = merovingian::config::ListenerConfig{"0.0.0.0:8008", false};
+
+    // When / Then
+    REQUIRE_FALSE(merovingian::config::is_safe_cleartext_listener(public_cleartext_listener));
+}
+
 TEST_CASE("Default config validates without findings", "[config][validation]")
 {
     // Given
@@ -249,6 +269,25 @@ TEST_CASE("Config validation rejects unsafe public URL, listener bind, and feder
 
     // Then
     REQUIRE(findings.size() == 3U);
+    REQUIRE_FALSE(merovingian::config::is_valid(config));
+}
+
+TEST_CASE("Config validation rejects public cleartext listeners", "[config][validation][security]")
+{
+    // Given
+    auto server = merovingian::config::ServerConfig{};
+    auto listeners = merovingian::config::ListenersConfig{};
+    auto database = merovingian::config::DatabaseConfig{};
+    auto security = merovingian::config::SecurityConfig{};
+    listeners.client.bind = "0.0.0.0:8008";
+    listeners.client.tls = false;
+
+    // When
+    auto const config = merovingian::config::Config{server, listeners, database, security};
+    auto const findings = merovingian::config::validate(config);
+
+    // Then
+    REQUIRE(findings.size() == 1U);
     REQUIRE_FALSE(merovingian::config::is_valid(config));
 }
 
