@@ -6,39 +6,48 @@
 
 #include <utility>
 
-namespace merovingian::core {
+namespace merovingian::core
+{
 
-FileDescriptor::~FileDescriptor() {
+FileDescriptor::~FileDescriptor()
+{
     reset();
 }
 
-auto FileDescriptor::operator=(FileDescriptor&& other) noexcept -> FileDescriptor& {
-    if (this != &other) {
+auto FileDescriptor::operator=(FileDescriptor&& other) noexcept -> FileDescriptor&
+{
+    if (this != &other)
+    {
         reset();
-        fd_ = std::exchange(other.fd_, invalid);
+        m_fd = std::exchange(other.m_fd, invalid);
     }
 
     return *this;
 }
 
-[[nodiscard]] auto FileDescriptor::get() const noexcept -> int {
-    return fd_;
+[[nodiscard]] auto FileDescriptor::get() const noexcept -> int
+{
+    return m_fd;
 }
 
-[[nodiscard]] auto FileDescriptor::valid() const noexcept -> bool {
-    return fd_ >= 0;
+[[nodiscard]] auto FileDescriptor::valid() const noexcept -> bool
+{
+    return m_fd >= 0;
 }
 
-[[nodiscard]] auto FileDescriptor::release() noexcept -> int {
-    return std::exchange(fd_, invalid);
+[[nodiscard]] auto FileDescriptor::release() noexcept -> int
+{
+    return std::exchange(m_fd, invalid);
 }
 
-auto FileDescriptor::reset(int fd) noexcept -> void {
-    if (valid()) {
-        static_cast<void>(::close(fd_));
+auto FileDescriptor::reset(int fd) noexcept -> void
+{
+    if (valid())
+    {
+        static_cast<void>(::close(m_fd));
     }
 
-    fd_ = fd;
+    m_fd = fd;
 }
 
 } // namespace merovingian::core
