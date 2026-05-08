@@ -1,13 +1,14 @@
 if get_option('build_tests')
   catch2_dep = dependency(
-    'catch2-with-main',
+    'catch2',
     required: false,
-    fallback: ['catch2', 'catch2_with_main_dep'],
+    fallback: ['catch2', 'catch2_dep'],
   )
 
   unit_tests = executable(
     'merovingian-unit-tests',
     sources: files(
+      'unit/test_main.cpp',
       'unit/test_file_descriptor.cpp',
       'unit/test_not_null.cpp',
       'unit/test_secret_buffer.cpp',
