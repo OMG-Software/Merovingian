@@ -3,21 +3,27 @@
 
 #include <string>
 
-namespace merovingian::config {
+namespace merovingian::config
+{
 
-struct ServerConfig final {
+struct ServerConfig final
+{
     std::string server_name{};
     std::string public_baseurl{};
 };
 
-class Config final {
+class Config final
+{
 public:
     Config() = default;
 
-    [[nodiscard]] auto server() const noexcept -> ServerConfig const&;
+    [[nodiscard]] auto server() const noexcept -> ServerConfig const&
+    {
+        return m_server;
+    }
 
 private:
-    ServerConfig server_{};
+    ServerConfig m_server{};
 };
 
 } // namespace merovingian::config
