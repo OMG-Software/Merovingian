@@ -3,6 +3,8 @@
 
 #include <cstdint>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace merovingian::config
@@ -94,6 +96,19 @@ class Config final
 public:
     Config() = default;
 
+    Config(
+        ServerConfig server,
+        ListenersConfig listeners,
+        DatabaseConfig database,
+        SecurityConfig security
+    )
+        : m_server{std::move(server)},
+          m_listeners{std::move(listeners)},
+          m_database{std::move(database)},
+          m_security{std::move(security)}
+    {
+    }
+
     [[nodiscard]] auto server() const noexcept -> ServerConfig const&
     {
         return m_server;
@@ -120,5 +135,129 @@ private:
     DatabaseConfig m_database{};
     SecurityConfig m_security{};
 };
+
+struct ConfigValidationFinding final
+{
+    std::string field{};
+    std::string message{};
+};
+
+[[nodiscard]] inline auto is_private_or_loopback_range(std::string_view range) noexcept -> bool
+{
+    return range == "127.0.0.0/8" || range == "10.0.0.0/8" || range == "172.16.0.0/12"
+        || range == "192.168.0.0/16" || range == "::1/128" || range == "fc00::/7";
+}
+
+[[nodiscard]] inline auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
+{
+    auto findings = std::vector<ConfigValidationFinding>{};
+
+    if (config.server().server_name.empty())
+    {
+        findings.push_back({"server.server_name", "server name must not be empty"});
+    }
+
+    if (config.server().public_baseurl.empty())
+    {
+        findings.push_back({"server.public_baseurl", "public base URL must not be empty"});
+    }
+
+    if (config.listeners().client.bind.empty())
+    {
+        findings.push_back({"listeners.client.bind", "client listener bind address must not be empty"});
+    }
+
+    if (config.listeners().federation.bind.empty())
+    {
+        findings.push_back(
+            {"listeners.federation.bind", "federation listener bind address must not be empty"}
+        );
+    }
+
+    if (config.database().uri_file.empty())
+    {
+        findings.push_back({"database.uri_file", "database URI file must not be empty"});
+    }
+
+    if (config.database().pool_size == 0U)
+    {
+        findings.push_back({"database.pool_size", "database pool size must be greater than zero"});
+    }
+
+    if (config.security().registration.enabled && !config.security().registration.require_token)
+    {
+        findings.push_back(
+            {"security.registration.require_token", "open registration requires token protection"}
+        );
+    }
+
+    if (!config.security().encryption.default_for_new_rooms)
+    {
+        findings.push_back(
+            {"security.encryption.default_for_new_rooms", "new rooms must default to encrypted"}
+        );
+    }
+
+    if (!config.security().encryption.require_for_direct_messages)
+    {
+        findings.push_back(
+            {"security.encryption.require_for_direct_messages", "direct messages must require encryption"}
+        );
+    }
+
+    if (!config.security().federation.require_valid_tls)
+    {
+        findings.push_back({"security.federation.require_valid_tls", "federation TLS validation is required"});
+    }
+
+    if (!config.security().federation.verify_json_signatures)
+    {
+        findings.push_back(
+            {"security.federation.verify_json_signatures", "federation JSON signatures must be verified"}
+        );
+    }
+
+    auto has_private_or_loopback_block = false;
+    for (auto const& range : config.security().federation.deny_ip_ranges)
+    {
+        has_private_or_loopback_block = has_private_or_loopback_block || is_private_or_loopback_range(range);
+    }
+
+    if (!has_private_or_loopback_block)
+    {
+        findings.push_back(
+            {"security.federation.deny_ip_ranges", "federation must block private or loopback ranges"}
+        );
+    }
+
+    if (!config.security().media.block_private_ip_fetches)
+    {
+        findings.push_back({"security.media.block_private_ip_fetches", "remote media fetches must block private IPs"});
+    }
+
+    if (!config.security().media.decode_in_sandbox)
+    {
+        findings.push_back({"security.media.decode_in_sandbox", "media decoding must happen in a sandbox"});
+    }
+
+    if (!config.security().logging.redact_tokens)
+    {
+        findings.push_back({"security.logging.redact_tokens", "tokens must be redacted from logs"});
+    }
+
+    if (!config.security().logging.redact_event_content)
+    {
+        findings.push_back(
+            {"security.logging.redact_event_content", "event content must be redacted from logs"}
+        );
+    }
+
+    return findings;
+}
+
+[[nodiscard]] inline auto is_valid(Config const& config) -> bool
+{
+    return validate(config).empty();
+}
 
 } // namespace merovingian::config
