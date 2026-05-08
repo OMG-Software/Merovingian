@@ -1,4 +1,5 @@
 core_sources = files(
+  'file_descriptor.cpp',
   'secret_buffer.cpp',
 )
 
