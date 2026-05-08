@@ -23,14 +23,17 @@ jobs:
             pkg-config
 
       - name: Configure
-        run: meson setup build -Dbuild_tests=true
+        run: meson setup build -Dbuild_tests=true -Dbuild_fuzz=false
 
       - name: Generate compile commands
         run: meson compile -C build
 
       - name: Run clang-tidy on project sources
         run: |
-          find include src tests -name '*.hpp' -o -name '*.cpp' | \
+          find include src tests \
+            \( -name '*.hpp' -o -name '*.cpp' \) \
+            -not -path './build/*' \
+            -not -path './subprojects/*' | \
             xargs clang-tidy -p build
 
       - name: Run unsafe source gates
