@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -142,6 +143,73 @@ struct ConfigValidationFinding final
     std::string message{};
 };
 
+struct SizeLimitParseResult final
+{
+    bool valid{false};
+    std::uint64_t bytes{0U};
+};
+
+[[nodiscard]] inline auto is_ascii_digit(char value) noexcept -> bool
+{
+    return value >= '0' && value <= '9';
+}
+
+[[nodiscard]] inline auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult
+{
+    if (value.empty())
+    {
+        return {};
+    }
+
+    auto index = std::size_t{0U};
+    auto magnitude = std::uint64_t{0U};
+    while (index < value.size() && is_ascii_digit(value[index]))
+    {
+        auto const digit = static_cast<std::uint64_t>(value[index] - '0');
+        if (magnitude > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U)
+        {
+            return {};
+        }
+        magnitude = (magnitude * 10U) + digit;
+        ++index;
+    }
+
+    if (index == 0U || magnitude == 0U)
+    {
+        return {};
+    }
+
+    auto multiplier = std::uint64_t{1U};
+    auto const suffix = value.substr(index);
+    if (suffix.empty() || suffix == "B")
+    {
+        multiplier = 1U;
+    }
+    else if (suffix == "KiB")
+    {
+        multiplier = 1024U;
+    }
+    else if (suffix == "MiB")
+    {
+        multiplier = 1024U * 1024U;
+    }
+    else if (suffix == "GiB")
+    {
+        multiplier = 1024U * 1024U * 1024U;
+    }
+    else
+    {
+        return {};
+    }
+
+    if (magnitude > std::numeric_limits<std::uint64_t>::max() / multiplier)
+    {
+        return {};
+    }
+
+    return {true, magnitude * multiplier};
+}
+
 [[nodiscard]] inline auto is_private_or_loopback_range(std::string_view range) noexcept -> bool
 {
     return range == "127.0.0.0/8" || range == "10.0.0.0/8" || range == "172.16.0.0/12"
@@ -227,6 +295,14 @@ struct ConfigValidationFinding final
     {
         findings.push_back(
             {"security.federation.deny_ip_ranges", "federation must block private or loopback ranges"}
+        );
+    }
+
+    auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
+    if (!media_max_upload_size.valid)
+    {
+        findings.push_back(
+            {"security.media.max_upload_size", "media upload size must be a positive bounded byte size"}
         );
     }
 
