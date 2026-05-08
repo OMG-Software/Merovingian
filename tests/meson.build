@@ -14,7 +14,7 @@ if get_option('build_tests')
       'unit/test_secret_buffer.cpp',
     ),
     include_directories: inc,
-    dependencies: [catch2_dep],
+    dependencies: [catch2_dep, thread_dep],
     link_with: [core_lib],
   )
 
