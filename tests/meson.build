@@ -18,6 +18,8 @@ if get_option('build_tests')
   )
 
   test('unit-tests', unit_tests)
+endif
 
+if get_option('build_fuzz')
   subdir('fuzz')
 endif
