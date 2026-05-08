@@ -3,5 +3,6 @@ IndentWidth: 4
 ColumnLimit: 100
 PointerAlignment: Left
 ReferenceAlignment: Left
+BreakBeforeBraces: Allman
 AllowShortFunctionsOnASingleLine: Empty
 SortIncludes: true
