@@ -10,6 +10,13 @@
 - No manual `malloc` or `free` outside reviewed low-level wrappers.
 - No unchecked narrowing conversions.
 - Member variables must use `m_` prefix.
+- Local project includes use `""`.
+- Third-party includes use `<>`.
+- Standard library includes use `<>`.
+- Include ordering must be:
+  1. local project includes
+  2. third-party includes
+  3. standard library includes
 - No logging secrets.
 - No logging access tokens, refresh tokens, signing keys, device keys, encrypted payloads, authorization headers, or plaintext message content.
 - No parser without fuzz coverage.
