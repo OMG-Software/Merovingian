@@ -19,6 +19,7 @@ Security-first Matrix homeserver written in modern C++26.
 - no naked allocation
 - no custom cryptography
 - security before performance
+- all tests use Given/When/Then structure
 
 ## Build
 
@@ -27,6 +28,13 @@ meson setup build
 meson compile -C build
 meson test -C build
 ```
+
+## Test standards
+
+See:
+
+- `docs/testing-standards.md`
+- `security/coding-rules.md`
 
 ## Status
 
