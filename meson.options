@@ -1,0 +1,3 @@
+option('hardening', type: 'boolean', value: true, description: 'Enable compiler and linker hardening flags where supported')
+option('build_tests', type: 'boolean', value: true, description: 'Build unit tests')
+option('strict_ci_gates', type: 'boolean', value: true, description: 'Enable CI-oriented static source gates')
