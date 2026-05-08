@@ -2,10 +2,13 @@
 #pragma once
 
 #include <string>
+#include <utility>
 
-namespace merovingian::core {
+namespace merovingian::core
+{
 
-enum class ErrorCode {
+enum class ErrorCode
+{
     none = 0,
     invalid_argument,
     io_failure,
@@ -13,26 +16,30 @@ enum class ErrorCode {
     internal_failure,
 };
 
-class Error final {
+class Error final
+{
 public:
     Error() = default;
 
     Error(ErrorCode code, std::string message)
-        : code_{code},
-          message_{std::move(message)} {
+        : m_code{code},
+          m_message{std::move(message)}
+    {
     }
 
-    [[nodiscard]] auto code() const noexcept -> ErrorCode {
-        return code_;
+    [[nodiscard]] auto code() const noexcept -> ErrorCode
+    {
+        return m_code;
     }
 
-    [[nodiscard]] auto message() const noexcept -> std::string const& {
-        return message_;
+    [[nodiscard]] auto message() const noexcept -> std::string const&
+    {
+        return m_message;
     }
 
 private:
-    ErrorCode code_{ErrorCode::none};
-    std::string message_{};
+    ErrorCode m_code{ErrorCode::none};
+    std::string m_message{};
 };
 
 } // namespace merovingian::core
