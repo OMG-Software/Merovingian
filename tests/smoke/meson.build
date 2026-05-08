@@ -9,3 +9,12 @@ test(
     server_executable + ' >/dev/null 2>&1',
   ],
 )
+
+test(
+  'server-config-validation-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable + ' 2>&1 | grep -q "Configuration validation passed"',
+  ],
+)
