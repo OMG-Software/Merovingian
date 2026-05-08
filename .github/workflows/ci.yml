@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            meson \
+            ninja-build \
+            clang \
+            clang-tidy \
+            catch2 \
+            pkg-config
+
+      - name: Configure
+        run: meson setup build -Dbuild_tests=true
+
+      - name: Compile
+        run: meson compile -C build
+
+      - name: Test
+        run: meson test -C build --print-errorlogs
+
+      - name: Reject unsafe allocation patterns
+        run: bash scripts/reject-unsafe.sh

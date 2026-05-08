@@ -1,0 +1,29 @@
+name: sanitizers
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  asan-ubsan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y meson ninja-build clang
+
+      - name: Configure
+        run: |
+          meson setup build \
+            --buildtype=debug \
+            -Db_sanitize=address,undefined
+
+      - name: Compile
+        run: meson compile -C build
+
+      - name: Test
+        run: meson test -C build --print-errorlogs

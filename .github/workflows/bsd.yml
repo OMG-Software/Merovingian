@@ -1,0 +1,21 @@
+name: bsd-build
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  freebsd:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build on FreeBSD
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          run: |
+            pkg install -y meson ninja llvm
+            meson setup build
+            meson compile -C build
