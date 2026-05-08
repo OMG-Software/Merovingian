@@ -185,6 +185,22 @@ struct SizeLimitParseResult final
     return port;
 }
 
+[[nodiscard]] inline auto listener_host(std::string_view bind) noexcept -> std::string_view
+{
+    auto const separator = bind.rfind(':');
+    if (separator == std::string_view::npos)
+    {
+        return {};
+    }
+
+    return bind.substr(0U, separator);
+}
+
+[[nodiscard]] inline auto is_loopback_host(std::string_view host) noexcept -> bool
+{
+    return host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "[::1]";
+}
+
 [[nodiscard]] inline auto is_valid_listener_bind(std::string_view bind) noexcept -> bool
 {
     auto const separator = bind.rfind(':');
@@ -196,6 +212,11 @@ struct SizeLimitParseResult final
     auto const host = bind.substr(0U, separator);
     auto const port = parse_port(bind.substr(separator + 1U));
     return !host.empty() && port > 0U;
+}
+
+[[nodiscard]] inline auto is_safe_cleartext_listener(ListenerConfig const& listener) noexcept -> bool
+{
+    return listener.tls || is_loopback_host(listener_host(listener.bind));
 }
 
 [[nodiscard]] inline auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool
@@ -295,10 +316,22 @@ struct SizeLimitParseResult final
     {
         findings.push_back({"listeners.client.bind", "client listener bind address must be host:port"});
     }
+    else if (!is_safe_cleartext_listener(config.listeners().client))
+    {
+        findings.push_back(
+            {"listeners.client.tls", "cleartext client listener must bind only to loopback"}
+        );
+    }
 
     if (!is_valid_listener_bind(config.listeners().federation.bind))
     {
         findings.push_back({"listeners.federation.bind", "federation listener bind address must be host:port"});
+    }
+    else if (!is_safe_cleartext_listener(config.listeners().federation))
+    {
+        findings.push_back(
+            {"listeners.federation.tls", "cleartext federation listener must bind only to loopback"}
+        );
     }
 
     if (config.database().uri_file.empty())
