@@ -4,22 +4,27 @@
 
 #include <algorithm>
 
-namespace merovingian::core {
+namespace merovingian::core
+{
 
 SecretBuffer::SecretBuffer(std::size_t size)
-    : buffer_(size, 0U) {
+    : m_buffer(size, 0U)
+{
 }
 
-SecretBuffer::~SecretBuffer() {
-    std::ranges::fill(buffer_, static_cast<std::uint8_t>(0U));
+SecretBuffer::~SecretBuffer()
+{
+    std::ranges::fill(m_buffer, static_cast<std::uint8_t>(0U));
 }
 
-auto SecretBuffer::bytes() noexcept -> std::span<std::uint8_t> {
-    return std::span<std::uint8_t>{buffer_};
+auto SecretBuffer::bytes() noexcept -> std::span<std::uint8_t>
+{
+    return std::span<std::uint8_t>{m_buffer};
 }
 
-auto SecretBuffer::bytes() const noexcept -> std::span<std::uint8_t const> {
-    return std::span<std::uint8_t const>{buffer_};
+auto SecretBuffer::bytes() const noexcept -> std::span<std::uint8_t const>
+{
+    return std::span<std::uint8_t const>{m_buffer};
 }
 
 } // namespace merovingian::core
