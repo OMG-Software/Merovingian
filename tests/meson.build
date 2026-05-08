@@ -9,6 +9,7 @@ if get_option('build_tests')
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
+      'unit/test_config_defaults.cpp',
       'unit/test_file_descriptor.cpp',
       'unit/test_not_null.cpp',
       'unit/test_secret_buffer.cpp',
