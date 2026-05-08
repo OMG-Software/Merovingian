@@ -98,3 +98,85 @@ TEST_CASE("Config enables media and logging protections by default", "[config][s
     REQUIRE(logging.redact_event_content);
     REQUIRE(logging.structured);
 }
+
+TEST_CASE("Default config validates without findings", "[config][validation]")
+{
+    // Given
+    auto const config = merovingian::config::Config{};
+
+    // When
+    auto const findings = merovingian::config::validate(config);
+
+    // Then
+    REQUIRE(findings.empty());
+    REQUIRE(merovingian::config::is_valid(config));
+}
+
+TEST_CASE("Config validation rejects missing critical fields", "[config][validation]")
+{
+    // Given
+    auto server = merovingian::config::ServerConfig{};
+    auto listeners = merovingian::config::ListenersConfig{};
+    auto database = merovingian::config::DatabaseConfig{};
+    auto security = merovingian::config::SecurityConfig{};
+    server.server_name.clear();
+    listeners.client.bind.clear();
+    database.pool_size = 0U;
+
+    // When
+    auto const config = merovingian::config::Config{server, listeners, database, security};
+    auto const findings = merovingian::config::validate(config);
+
+    // Then
+    REQUIRE_FALSE(findings.empty());
+    REQUIRE_FALSE(merovingian::config::is_valid(config));
+}
+
+TEST_CASE("Config validation rejects unsafe registration policy", "[config][validation][security]")
+{
+    // Given
+    auto security = merovingian::config::SecurityConfig{};
+    security.registration.enabled = true;
+    security.registration.require_token = false;
+
+    // When
+    auto const config = merovingian::config::Config{
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},
+        security,
+    };
+    auto const findings = merovingian::config::validate(config);
+
+    // Then
+    REQUIRE_FALSE(findings.empty());
+    REQUIRE_FALSE(merovingian::config::is_valid(config));
+}
+
+TEST_CASE("Config validation rejects weakened Matrix security defaults", "[config][validation][security]")
+{
+    // Given
+    auto security = merovingian::config::SecurityConfig{};
+    security.encryption.default_for_new_rooms = false;
+    security.encryption.require_for_direct_messages = false;
+    security.federation.require_valid_tls = false;
+    security.federation.verify_json_signatures = false;
+    security.federation.deny_ip_ranges.clear();
+    security.media.block_private_ip_fetches = false;
+    security.media.decode_in_sandbox = false;
+    security.logging.redact_tokens = false;
+    security.logging.redact_event_content = false;
+
+    // When
+    auto const config = merovingian::config::Config{
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},
+        security,
+    };
+    auto const findings = merovingian::config::validate(config);
+
+    // Then
+    REQUIRE(findings.size() == 9U);
+    REQUIRE_FALSE(merovingian::config::is_valid(config));
+}
