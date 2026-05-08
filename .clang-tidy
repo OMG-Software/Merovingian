@@ -12,3 +12,7 @@ HeaderFilterRegex: 'include/merovingian/.*'
 CheckOptions:
   - key: cppcoreguidelines-owning-memory
     value: '1'
+  - key: readability-identifier-naming.MemberVariablePrefix
+    value: 'm_'
+  - key: readability-identifier-naming.MemberVariableCase
+    value: 'lower_case'
