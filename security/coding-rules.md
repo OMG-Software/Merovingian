@@ -9,6 +9,7 @@
 - No naked `new` or `delete`.
 - No manual `malloc` or `free` outside reviewed low-level wrappers.
 - No unchecked narrowing conversions.
+- Member variables must use `m_` prefix.
 - No logging secrets.
 - No logging access tokens, refresh tokens, signing keys, device keys, encrypted payloads, authorization headers, or plaintext message content.
 - No parser without fuzz coverage.
