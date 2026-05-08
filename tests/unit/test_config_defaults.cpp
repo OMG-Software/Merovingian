@@ -99,6 +99,36 @@ TEST_CASE("Config enables media and logging protections by default", "[config][s
     REQUIRE(logging.structured);
 }
 
+TEST_CASE("Default media upload limit parses to bytes", "[config][validation]")
+{
+    // Given
+    auto const default_limit = std::string{"50MiB"};
+
+    // When
+    auto const parsed = merovingian::config::parse_size_limit(default_limit);
+
+    // Then
+    REQUIRE(parsed.valid);
+    REQUIRE(parsed.bytes == 52428800U);
+}
+
+TEST_CASE("Media upload size parser rejects invalid or unbounded-looking values", "[config][validation]")
+{
+    // Given
+    auto const empty = std::string{};
+    auto const zero = std::string{"0MiB"};
+    auto const unsupported_suffix = std::string{"50MB"};
+    auto const negative = std::string{"-1MiB"};
+    auto const malformed = std::string{"50 MiB"};
+
+    // When / Then
+    REQUIRE_FALSE(merovingian::config::parse_size_limit(empty).valid);
+    REQUIRE_FALSE(merovingian::config::parse_size_limit(zero).valid);
+    REQUIRE_FALSE(merovingian::config::parse_size_limit(unsupported_suffix).valid);
+    REQUIRE_FALSE(merovingian::config::parse_size_limit(negative).valid);
+    REQUIRE_FALSE(merovingian::config::parse_size_limit(malformed).valid);
+}
+
 TEST_CASE("Default config validates without findings", "[config][validation]")
 {
     // Given
@@ -138,6 +168,26 @@ TEST_CASE("Config validation rejects unsafe registration policy", "[config][vali
     auto security = merovingian::config::SecurityConfig{};
     security.registration.enabled = true;
     security.registration.require_token = false;
+
+    // When
+    auto const config = merovingian::config::Config{
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},
+        security,
+    };
+    auto const findings = merovingian::config::validate(config);
+
+    // Then
+    REQUIRE_FALSE(findings.empty());
+    REQUIRE_FALSE(merovingian::config::is_valid(config));
+}
+
+TEST_CASE("Config validation rejects invalid media upload size", "[config][validation][security]")
+{
+    // Given
+    auto security = merovingian::config::SecurityConfig{};
+    security.media.max_upload_size = "unbounded";
 
     // When
     auto const config = merovingian::config::Config{
