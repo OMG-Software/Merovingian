@@ -3,10 +3,10 @@
 #include <merovingian/bootstrap/exit_code.hpp>
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/config_parser.hpp>
-#include <merovingian/core/file_metadata.hpp>
 #include <merovingian/database/runtime_database.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/observability/logger.hpp>
+#include <merovingian/platform/file_metadata.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
 
 #include <fstream>
@@ -68,7 +68,7 @@ struct BootstrapConfigResult final
 
 [[nodiscard]] auto validate_config_file_metadata(std::string const& path) -> BootstrapConfigResult
 {
-    auto const metadata_result = merovingian::core::read_posix_file_metadata(path);
+    auto const metadata_result = merovingian::platform::read_posix_file_metadata(path);
     if (!metadata_result.metadata.has_value())
     {
         return reject_config(
@@ -78,7 +78,7 @@ struct BootstrapConfigResult final
         );
     }
 
-    if (metadata_result.metadata->kind == merovingian::core::FileKind::missing)
+    if (metadata_result.metadata->kind == merovingian::platform::FileKind::missing)
     {
         return reject_config(
             merovingian::bootstrap::ExitCode::config_io_error,
@@ -87,7 +87,7 @@ struct BootstrapConfigResult final
         );
     }
 
-    if (!merovingian::core::is_secure_config_file(*metadata_result.metadata))
+    if (!merovingian::platform::is_secure_config_file(*metadata_result.metadata))
     {
         return reject_config(
             merovingian::bootstrap::ExitCode::config_validation_error,
@@ -101,7 +101,7 @@ struct BootstrapConfigResult final
 
 [[nodiscard]] auto validate_existing_secret_file_metadata(std::string const& path) -> BootstrapConfigResult
 {
-    auto const metadata_result = merovingian::core::read_posix_file_metadata(path);
+    auto const metadata_result = merovingian::platform::read_posix_file_metadata(path);
     if (!metadata_result.metadata.has_value())
     {
         return reject_config(
@@ -111,12 +111,12 @@ struct BootstrapConfigResult final
         );
     }
 
-    if (metadata_result.metadata->kind == merovingian::core::FileKind::missing)
+    if (metadata_result.metadata->kind == merovingian::platform::FileKind::missing)
     {
         return {};
     }
 
-    if (!merovingian::core::is_secure_secret_file(*metadata_result.metadata))
+    if (!merovingian::platform::is_secure_secret_file(*metadata_result.metadata))
     {
         return reject_config(
             merovingian::bootstrap::ExitCode::config_validation_error,
