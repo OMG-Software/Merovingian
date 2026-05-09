@@ -41,6 +41,7 @@ jobs:
         with:
           languages: c-cpp
           queries: security-extended,security-and-quality
+          build-mode: manual
 
       - name: Configure Meson
         run: meson setup build -Dbuild_tests=true -Dbuild_fuzz=false
