@@ -52,7 +52,7 @@ TEST_CASE("HTTP request target validation rejects empty and control-space target
 TEST_CASE("HTTP request line limit includes method target and version", "[http][limits]")
 {
     auto limits = merovingian::http::RequestLimits{};
-    limits.max_start_line_bytes = 18U;
+    limits.max_start_line_bytes = 19U;
 
     REQUIRE(merovingian::http::request_line_is_within_limit("GET", "/login", limits));
     REQUIRE_FALSE(merovingian::http::request_line_is_within_limit("GET", "/too-long", limits));
