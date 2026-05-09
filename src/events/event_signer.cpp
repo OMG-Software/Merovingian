@@ -2,7 +2,6 @@
 
 #include <merovingian/events/event_signer.hpp>
 
-#include <algorithm>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -65,6 +64,62 @@ namespace
     return !signature.empty() && signature.size() <= 4096U && contains_no_control_or_space(signature);
 }
 
+[[nodiscard]] auto clone_signature_object(canonicaljson::Value const* signatures_value) -> canonicaljson::Object
+{
+    if (signatures_value == nullptr)
+    {
+        return {};
+    }
+
+    auto const* signatures = std::get_if<canonicaljson::Object>(&signatures_value->storage());
+    if (signatures == nullptr)
+    {
+        return {};
+    }
+
+    auto cloned = canonicaljson::Object{};
+    cloned.reserve(signatures->size());
+    for (auto const& member : *signatures)
+    {
+        cloned.push_back(canonicaljson::make_member(member.key, *member.value));
+    }
+    return cloned;
+}
+
+auto upsert_signature(canonicaljson::Object& signatures, SigningKeyId const& key_id, std::string_view signature) -> void
+{
+    for (auto& server_member : signatures)
+    {
+        if (server_member.key != key_id.server_name)
+        {
+            continue;
+        }
+
+        auto* server_signatures = std::get_if<canonicaljson::Object>(&server_member.value->storage());
+        if (server_signatures == nullptr)
+        {
+            server_member.value = std::make_unique<canonicaljson::Value>(canonicaljson::Object{});
+            server_signatures = std::get_if<canonicaljson::Object>(&server_member.value->storage());
+        }
+
+        for (auto& key_member : *server_signatures)
+        {
+            if (key_member.key == key_id.key_id)
+            {
+                key_member.value = std::make_unique<canonicaljson::Value>(std::string{signature});
+                return;
+            }
+        }
+
+        server_signatures->push_back(canonicaljson::make_member(key_id.key_id, canonicaljson::Value{std::string{signature}}));
+        return;
+    }
+
+    auto server_signatures = canonicaljson::Object{};
+    server_signatures.push_back(canonicaljson::make_member(key_id.key_id, canonicaljson::Value{std::string{signature}}));
+    signatures.push_back(canonicaljson::make_member(key_id.server_name, canonicaljson::Value{std::move(server_signatures)}));
+}
+
 } // namespace
 
 auto signing_key_id_is_valid(SigningKeyId const& key_id) noexcept -> bool
@@ -103,6 +158,7 @@ auto attach_event_signature(
 
     auto signed_object = canonicaljson::Object{};
     signed_object.reserve(object->size() + 1U);
+    auto const* signatures_value = object_member_value(*object, "signatures");
     for (auto const& member : *object)
     {
         if (member.key != "signatures")
@@ -111,11 +167,8 @@ auto attach_event_signature(
         }
     }
 
-    auto server_signatures = canonicaljson::Object{};
-    server_signatures.push_back(canonicaljson::make_member(key_id.key_id, canonicaljson::Value{std::string{signature}}));
-
-    auto signatures = canonicaljson::Object{};
-    signatures.push_back(canonicaljson::make_member(key_id.server_name, canonicaljson::Value{std::move(server_signatures)}));
+    auto signatures = clone_signature_object(signatures_value);
+    upsert_signature(signatures, key_id, signature);
     signed_object.push_back(canonicaljson::make_member("signatures", canonicaljson::Value{std::move(signatures)}));
 
     return canonicaljson::serialize_canonical(canonicaljson::Value{std::move(signed_object)});
@@ -162,8 +215,8 @@ auto verify_event_signature_presence(canonicaljson::Value const& event, SigningK
     {
         return {false, "missing key signature"};
     }
-    auto const* signature = std::get_if<std::string>(&signature_value->storage());
-    if (signature == nullptr || !signature_is_valid_shape(*signature))
+    auto const* found_signature = std::get_if<std::string>(&signature_value->storage());
+    if (found_signature == nullptr || !signature_is_valid_shape(*found_signature))
     {
         return {false, "invalid signature"};
     }
