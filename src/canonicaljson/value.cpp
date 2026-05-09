@@ -24,6 +24,30 @@ namespace
 
 } // namespace
 
+ObjectMember::ObjectMember(std::string key_value, std::unique_ptr<Value> owned_value)
+    : key{std::move(key_value)},
+      value{std::move(owned_value)}
+{
+}
+
+ObjectMember::ObjectMember(ObjectMember const& other)
+    : key{other.key},
+      value{other.value == nullptr ? nullptr : std::make_unique<Value>(*other.value)}
+{
+}
+
+auto ObjectMember::operator=(ObjectMember const& other) -> ObjectMember&
+{
+    if (this == &other)
+    {
+        return *this;
+    }
+
+    key = other.key;
+    value = other.value == nullptr ? nullptr : std::make_unique<Value>(*other.value);
+    return *this;
+}
+
 Value::Value(std::nullptr_t value)
     : m_storage{value}
 {
