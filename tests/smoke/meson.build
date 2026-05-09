@@ -3,6 +3,8 @@ server_executable = meson.project_build_root() / 'src' / 'merovingian-server'
 example_config = meson.project_source_root() / 'config' / 'merovingian.conf.example'
 valid_config = meson.project_build_root() / 'valid-smoke.conf'
 check_config = meson.project_build_root() / 'check-smoke.conf'
+noop_reload_current_config = meson.project_build_root() / 'noop-reload-current-smoke.conf'
+noop_reload_next_config = meson.project_build_root() / 'noop-reload-next-smoke.conf'
 reloadable_current_config = meson.project_build_root() / 'reloadable-current-smoke.conf'
 reloadable_next_config = meson.project_build_root() / 'reloadable-next-smoke.conf'
 restart_current_config = meson.project_build_root() / 'restart-current-smoke.conf'
@@ -123,6 +125,29 @@ test(
       + ' --check-config '
       + check_config
       + ' >/dev/null 2>&1; test $? -eq 79',
+  ],
+)
+
+test(
+  'server-plan-config-reload-noop-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'printf "%s\n" "security.federation.remote_timeout=30s" > '
+      + noop_reload_current_config
+      + ' && chmod 0644 '
+      + noop_reload_current_config
+      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > '
+      + noop_reload_next_config
+      + ' && chmod 0644 '
+      + noop_reload_next_config
+      + ' && '
+      + server_executable
+      + ' --plan-config-reload '
+      + noop_reload_current_config
+      + ' '
+      + noop_reload_next_config
+      + ' 2>&1 | grep -q "Reload plan: changes=0 reloadable=0 restart_required=0"',
   ],
 )
 
