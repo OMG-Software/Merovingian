@@ -3,6 +3,7 @@
 #include <merovingian/bootstrap/exit_code.hpp>
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/config_parser.hpp>
+#include <merovingian/core/file_metadata.hpp>
 #include <merovingian/observability/logger.hpp>
 
 #include <fstream>
@@ -62,8 +63,47 @@ struct BootstrapConfigResult final
     };
 }
 
+[[nodiscard]] auto validate_config_file_metadata(std::string const& path) -> BootstrapConfigResult
+{
+    auto const metadata_result = merovingian::core::read_posix_file_metadata(path);
+    if (!metadata_result.metadata.has_value())
+    {
+        return reject_config(
+            merovingian::bootstrap::ExitCode::config_io_error,
+            "config.path",
+            "unable to inspect configuration file metadata: " + metadata_result.error
+        );
+    }
+
+    if (metadata_result.metadata->kind == merovingian::core::FileKind::missing)
+    {
+        return reject_config(
+            merovingian::bootstrap::ExitCode::config_io_error,
+            "config.path",
+            "configuration file does not exist"
+        );
+    }
+
+    if (!merovingian::core::is_secure_config_file(*metadata_result.metadata))
+    {
+        return reject_config(
+            merovingian::bootstrap::ExitCode::config_validation_error,
+            "config.path",
+            "configuration file must be a regular file without group/other write or execute permissions"
+        );
+    }
+
+    return {};
+}
+
 [[nodiscard]] auto load_config_from_file(std::string const& path) -> BootstrapConfigResult
 {
+    auto const metadata_validation = validate_config_file_metadata(path);
+    if (!metadata_validation.parsed.findings.empty())
+    {
+        return metadata_validation;
+    }
+
     auto input = std::ifstream{path, std::ios::binary};
     if (!input.is_open())
     {
