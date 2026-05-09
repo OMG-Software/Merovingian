@@ -13,8 +13,8 @@ jobs:
   coverage:
     runs-on: ubuntu-latest
     env:
-      CC: gcc
-      CXX: g++
+      CC: clang
+      CXX: clang++
 
     steps:
       - name: Checkout repository
@@ -30,9 +30,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y \
             catch2 \
+            clang \
             gcovr \
-            gcc \
-            g++ \
+            llvm \
             pkg-config
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja
@@ -51,6 +51,7 @@ jobs:
           mkdir -p coverage
           gcovr \
             --root . \
+            --gcov-executable "llvm-cov gcov" \
             --filter 'src/' \
             --filter 'include/' \
             --exclude 'tests/' \
