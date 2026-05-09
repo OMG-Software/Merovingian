@@ -38,5 +38,8 @@ jobs:
       - name: Test
         run: meson test -C build --print-errorlogs
 
+      - name: Validate Phase 1 configuration gates
+        run: bash scripts/validate-phase1-config.sh build
+
       - name: Reject unsafe allocation patterns
         run: bash scripts/reject-unsafe.sh
