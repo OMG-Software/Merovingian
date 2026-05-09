@@ -9,6 +9,7 @@
 
 TEST_CASE("Runtime media config parses bounded media limits", "[media][runtime]")
 {
+    // Given
     auto security = merovingian::config::SecurityConfig{};
     security.media.max_upload_size = "25MiB";
     security.media.remote_fetch_timeout = "45s";
@@ -19,8 +20,10 @@ TEST_CASE("Runtime media config parses bounded media limits", "[media][runtime]"
         security,
     };
 
+    // When
     auto const runtime_media = merovingian::media::make_runtime_media_config(config);
 
+    // Then
     REQUIRE(runtime_media.max_upload_bytes == 26214400U);
     REQUIRE(runtime_media.remote_fetch_timeout_seconds == 45U);
     REQUIRE(runtime_media.quarantine_unknown_mime);
@@ -31,14 +34,17 @@ TEST_CASE("Runtime media config parses bounded media limits", "[media][runtime]"
 
 TEST_CASE("Runtime media summary exposes bounded operational values", "[media][runtime]")
 {
+    // Given
     auto runtime_media = merovingian::media::RuntimeMediaConfig{};
     runtime_media.max_upload_bytes = 52428800U;
     runtime_media.remote_fetch_timeout_seconds = 30U;
     runtime_media.private_address_fetches_blocked = true;
     runtime_media.decode_in_sandbox = true;
 
+    // When
     auto const summary = merovingian::media::media_summary(runtime_media);
 
+    // Then
     REQUIRE(summary.find("max_upload_bytes=52428800") != std::string::npos);
     REQUIRE(summary.find("remote_fetch_timeout_seconds=30") != std::string::npos);
     REQUIRE(summary.find("private_address_fetches_blocked=true") != std::string::npos);

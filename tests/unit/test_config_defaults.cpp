@@ -21,12 +21,10 @@ TEST_CASE("Config provides secure server and listener defaults", "[config]")
     REQUIRE(server.server_name == "example.org");
     REQUIRE(server.public_baseurl == "https://matrix.example.org");
     REQUIRE(server.trusted_proxies.empty());
-
     REQUIRE(listeners.client.bind == "127.0.0.1:8008");
     REQUIRE_FALSE(listeners.client.tls);
     REQUIRE(listeners.federation.bind == "127.0.0.1:8448");
     REQUIRE_FALSE(listeners.federation.tls);
-
     REQUIRE(database.uri_file == "/etc/merovingian/db-uri");
     REQUIRE(database.pool_size == 16U);
 }
@@ -95,7 +93,6 @@ TEST_CASE("Config enables media and logging protections by default", "[config][s
     REQUIRE(media.enable_av_scanner);
     REQUIRE(media.block_private_ip_fetches);
     REQUIRE(media.decode_in_sandbox);
-
     REQUIRE(logging.redact_tokens);
     REQUIRE(logging.redact_event_content);
     REQUIRE(logging.structured);
@@ -140,29 +137,58 @@ TEST_CASE("Media upload size parser rejects invalid or unbounded-looking values"
     auto const negative = std::string{"-1MiB"};
     auto const malformed = std::string{"50 MiB"};
 
-    // When / Then
-    REQUIRE_FALSE(merovingian::config::parse_size_limit(empty).valid);
-    REQUIRE_FALSE(merovingian::config::parse_size_limit(zero).valid);
-    REQUIRE_FALSE(merovingian::config::parse_size_limit(unsupported_suffix).valid);
-    REQUIRE_FALSE(merovingian::config::parse_size_limit(negative).valid);
-    REQUIRE_FALSE(merovingian::config::parse_size_limit(malformed).valid);
+    // When
+    auto const empty_result = merovingian::config::parse_size_limit(empty);
+    auto const zero_result = merovingian::config::parse_size_limit(zero);
+    auto const unsupported_suffix_result = merovingian::config::parse_size_limit(unsupported_suffix);
+    auto const negative_result = merovingian::config::parse_size_limit(negative);
+    auto const malformed_result = merovingian::config::parse_size_limit(malformed);
+
+    // Then
+    REQUIRE_FALSE(empty_result.valid);
+    REQUIRE_FALSE(zero_result.valid);
+    REQUIRE_FALSE(unsupported_suffix_result.valid);
+    REQUIRE_FALSE(negative_result.valid);
+    REQUIRE_FALSE(malformed_result.valid);
 }
 
 TEST_CASE("Duration parser accepts bounded seconds and minutes", "[config][validation]")
 {
-    // When / Then
-    REQUIRE(merovingian::config::parse_duration_seconds("30s").valid);
-    REQUIRE(merovingian::config::parse_duration_seconds("1m").seconds == 60U);
+    // Given
+    auto const seconds = std::string{"30s"};
+    auto const minutes = std::string{"1m"};
+
+    // When
+    auto const parsed_seconds = merovingian::config::parse_duration_seconds(seconds);
+    auto const parsed_minutes = merovingian::config::parse_duration_seconds(minutes);
+
+    // Then
+    REQUIRE(parsed_seconds.valid);
+    REQUIRE(parsed_minutes.seconds == 60U);
 }
 
 TEST_CASE("Duration parser rejects invalid or unbounded-looking values", "[config][validation]")
 {
-    // When / Then
-    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("").valid);
-    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("0s").valid);
-    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("30").valid);
-    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("30ms").valid);
-    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("forever").valid);
+    // Given
+    auto const empty = std::string{};
+    auto const zero = std::string{"0s"};
+    auto const missing_suffix = std::string{"30"};
+    auto const unsupported_suffix = std::string{"30ms"};
+    auto const unbounded = std::string{"forever"};
+
+    // When
+    auto const empty_result = merovingian::config::parse_duration_seconds(empty);
+    auto const zero_result = merovingian::config::parse_duration_seconds(zero);
+    auto const missing_suffix_result = merovingian::config::parse_duration_seconds(missing_suffix);
+    auto const unsupported_suffix_result = merovingian::config::parse_duration_seconds(unsupported_suffix);
+    auto const unbounded_result = merovingian::config::parse_duration_seconds(unbounded);
+
+    // Then
+    REQUIRE_FALSE(empty_result.valid);
+    REQUIRE_FALSE(zero_result.valid);
+    REQUIRE_FALSE(missing_suffix_result.valid);
+    REQUIRE_FALSE(unsupported_suffix_result.valid);
+    REQUIRE_FALSE(unbounded_result.valid);
 }
 
 TEST_CASE("Config validation helpers accept secure address-shaped defaults", "[config][validation]")
@@ -171,11 +197,17 @@ TEST_CASE("Config validation helpers accept secure address-shaped defaults", "[c
     auto const public_baseurl = std::string{"https://matrix.example.org"};
     auto const listener_bind = std::string{"127.0.0.1:8008"};
 
-    // When / Then
-    REQUIRE(merovingian::config::is_valid_public_baseurl(public_baseurl));
-    REQUIRE(merovingian::config::is_valid_listener_bind(listener_bind));
-    REQUIRE(merovingian::config::is_valid_federation_policy("allow"));
-    REQUIRE(merovingian::config::is_valid_federation_policy("deny"));
+    // When
+    auto const public_baseurl_valid = merovingian::config::is_valid_public_baseurl(public_baseurl);
+    auto const listener_bind_valid = merovingian::config::is_valid_listener_bind(listener_bind);
+    auto const allow_policy_valid = merovingian::config::is_valid_federation_policy("allow");
+    auto const deny_policy_valid = merovingian::config::is_valid_federation_policy("deny");
+
+    // Then
+    REQUIRE(public_baseurl_valid);
+    REQUIRE(listener_bind_valid);
+    REQUIRE(allow_policy_valid);
+    REQUIRE(deny_policy_valid);
 }
 
 TEST_CASE("Config validation helpers reject unsafe address-shaped values", "[config][validation]")
@@ -186,12 +218,19 @@ TEST_CASE("Config validation helpers reject unsafe address-shaped values", "[con
     auto const missing_port_bind = std::string{"127.0.0.1"};
     auto const out_of_range_port_bind = std::string{"127.0.0.1:70000"};
 
-    // When / Then
-    REQUIRE_FALSE(merovingian::config::is_valid_public_baseurl(insecure_public_baseurl));
-    REQUIRE_FALSE(merovingian::config::is_valid_listener_bind(empty_host_bind));
-    REQUIRE_FALSE(merovingian::config::is_valid_listener_bind(missing_port_bind));
-    REQUIRE_FALSE(merovingian::config::is_valid_listener_bind(out_of_range_port_bind));
-    REQUIRE_FALSE(merovingian::config::is_valid_federation_policy("permissive"));
+    // When
+    auto const insecure_public_baseurl_valid = merovingian::config::is_valid_public_baseurl(insecure_public_baseurl);
+    auto const empty_host_bind_valid = merovingian::config::is_valid_listener_bind(empty_host_bind);
+    auto const missing_port_bind_valid = merovingian::config::is_valid_listener_bind(missing_port_bind);
+    auto const out_of_range_port_bind_valid = merovingian::config::is_valid_listener_bind(out_of_range_port_bind);
+    auto const permissive_policy_valid = merovingian::config::is_valid_federation_policy("permissive");
+
+    // Then
+    REQUIRE_FALSE(insecure_public_baseurl_valid);
+    REQUIRE_FALSE(empty_host_bind_valid);
+    REQUIRE_FALSE(missing_port_bind_valid);
+    REQUIRE_FALSE(out_of_range_port_bind_valid);
+    REQUIRE_FALSE(permissive_policy_valid);
 }
 
 TEST_CASE("Config validation accepts cleartext listeners only on loopback", "[config][validation]")
@@ -200,9 +239,13 @@ TEST_CASE("Config validation accepts cleartext listeners only on loopback", "[co
     auto const loopback_listener = merovingian::config::ListenerConfig{"127.0.0.1:8008", false};
     auto const tls_public_listener = merovingian::config::ListenerConfig{"0.0.0.0:8448", true};
 
-    // When / Then
-    REQUIRE(merovingian::config::is_safe_cleartext_listener(loopback_listener));
-    REQUIRE(merovingian::config::is_safe_cleartext_listener(tls_public_listener));
+    // When
+    auto const loopback_listener_safe = merovingian::config::is_safe_cleartext_listener(loopback_listener);
+    auto const tls_public_listener_safe = merovingian::config::is_safe_cleartext_listener(tls_public_listener);
+
+    // Then
+    REQUIRE(loopback_listener_safe);
+    REQUIRE(tls_public_listener_safe);
 }
 
 TEST_CASE("Config validation rejects cleartext listeners on public interfaces", "[config][validation]")
@@ -210,8 +253,11 @@ TEST_CASE("Config validation rejects cleartext listeners on public interfaces", 
     // Given
     auto const public_cleartext_listener = merovingian::config::ListenerConfig{"0.0.0.0:8008", false};
 
-    // When / Then
-    REQUIRE_FALSE(merovingian::config::is_safe_cleartext_listener(public_cleartext_listener));
+    // When
+    auto const listener_safe = merovingian::config::is_safe_cleartext_listener(public_cleartext_listener);
+
+    // Then
+    REQUIRE_FALSE(listener_safe);
 }
 
 TEST_CASE("Default config validates without findings", "[config][validation]")
@@ -221,10 +267,11 @@ TEST_CASE("Default config validates without findings", "[config][validation]")
 
     // When
     auto const findings = merovingian::config::validate(config);
+    auto const valid = merovingian::config::is_valid(config);
 
     // Then
     REQUIRE(findings.empty());
-    REQUIRE(merovingian::config::is_valid(config));
+    REQUIRE(valid);
 }
 
 TEST_CASE("Config validation rejects missing critical fields", "[config][validation]")
@@ -241,10 +288,11 @@ TEST_CASE("Config validation rejects missing critical fields", "[config][validat
     // When
     auto const config = merovingian::config::Config{server, listeners, database, security};
     auto const findings = merovingian::config::validate(config);
+    auto const valid = merovingian::config::is_valid(config);
 
     // Then
     REQUIRE_FALSE(findings.empty());
-    REQUIRE_FALSE(merovingian::config::is_valid(config));
+    REQUIRE_FALSE(valid);
 }
 
 TEST_CASE("Config validation rejects unsafe registration policy", "[config][validation][security]")
@@ -262,10 +310,11 @@ TEST_CASE("Config validation rejects unsafe registration policy", "[config][vali
         security,
     };
     auto const findings = merovingian::config::validate(config);
+    auto const valid = merovingian::config::is_valid(config);
 
     // Then
     REQUIRE_FALSE(findings.empty());
-    REQUIRE_FALSE(merovingian::config::is_valid(config));
+    REQUIRE_FALSE(valid);
 }
 
 TEST_CASE("Config validation rejects invalid media upload size", "[config][validation][security]")
@@ -282,10 +331,11 @@ TEST_CASE("Config validation rejects invalid media upload size", "[config][valid
         security,
     };
     auto const findings = merovingian::config::validate(config);
+    auto const valid = merovingian::config::is_valid(config);
 
     // Then
     REQUIRE_FALSE(findings.empty());
-    REQUIRE_FALSE(merovingian::config::is_valid(config));
+    REQUIRE_FALSE(valid);
 }
 
 TEST_CASE("Config validation rejects invalid federation transaction limits", "[config][validation][security]")
@@ -303,10 +353,11 @@ TEST_CASE("Config validation rejects invalid federation transaction limits", "[c
         security,
     };
     auto const findings = merovingian::config::validate(config);
+    auto const valid = merovingian::config::is_valid(config);
 
     // Then
     REQUIRE_FALSE(findings.empty());
-    REQUIRE_FALSE(merovingian::config::is_valid(config));
+    REQUIRE_FALSE(valid);
 }
 
 TEST_CASE("Config validation rejects unsafe public URL, listener bind, and federation policy", "[config][validation][security]")
@@ -323,10 +374,11 @@ TEST_CASE("Config validation rejects unsafe public URL, listener bind, and feder
     // When
     auto const config = merovingian::config::Config{server, listeners, database, security};
     auto const findings = merovingian::config::validate(config);
+    auto const valid = merovingian::config::is_valid(config);
 
     // Then
     REQUIRE(findings.size() == 3U);
-    REQUIRE_FALSE(merovingian::config::is_valid(config));
+    REQUIRE_FALSE(valid);
 }
 
 TEST_CASE("Config validation rejects public cleartext listeners", "[config][validation][security]")
@@ -342,10 +394,11 @@ TEST_CASE("Config validation rejects public cleartext listeners", "[config][vali
     // When
     auto const config = merovingian::config::Config{server, listeners, database, security};
     auto const findings = merovingian::config::validate(config);
+    auto const valid = merovingian::config::is_valid(config);
 
     // Then
     REQUIRE(findings.size() == 1U);
-    REQUIRE_FALSE(merovingian::config::is_valid(config));
+    REQUIRE_FALSE(valid);
 }
 
 TEST_CASE("Config validation rejects weakened Matrix security defaults", "[config][validation][security]")
@@ -370,8 +423,9 @@ TEST_CASE("Config validation rejects weakened Matrix security defaults", "[confi
         security,
     };
     auto const findings = merovingian::config::validate(config);
+    auto const valid = merovingian::config::is_valid(config);
 
     // Then
     REQUIRE(findings.size() == 9U);
-    REQUIRE_FALSE(merovingian::config::is_valid(config));
+    REQUIRE_FALSE(valid);
 }

@@ -10,27 +10,26 @@
 
 TEST_CASE("Runtime-facing config keys are reloadable", "[config][reload]")
 {
-    // Given / When / Then
-    REQUIRE(
-        merovingian::config::reload_policy_for_key("listeners.client.bind")
-        == merovingian::config::ReloadPolicy::reloadable
-    );
-    REQUIRE(
-        merovingian::config::reload_policy_for_key("security.federation.max_transaction_size")
-        == merovingian::config::ReloadPolicy::reloadable
-    );
-    REQUIRE(
-        merovingian::config::reload_policy_for_key("security.federation.remote_timeout")
-        == merovingian::config::ReloadPolicy::reloadable
-    );
-    REQUIRE(
-        merovingian::config::reload_policy_for_key("security.media.remote_fetch_timeout")
-        == merovingian::config::ReloadPolicy::reloadable
-    );
-    REQUIRE(
-        merovingian::config::reload_policy_for_key("database.pool_size")
-        == merovingian::config::ReloadPolicy::reloadable
-    );
+    // Given
+    auto constexpr client_bind_key = "listeners.client.bind";
+    auto constexpr transaction_size_key = "security.federation.max_transaction_size";
+    auto constexpr federation_timeout_key = "security.federation.remote_timeout";
+    auto constexpr media_timeout_key = "security.media.remote_fetch_timeout";
+    auto constexpr database_pool_key = "database.pool_size";
+
+    // When
+    auto const client_bind_policy = merovingian::config::reload_policy_for_key(client_bind_key);
+    auto const transaction_size_policy = merovingian::config::reload_policy_for_key(transaction_size_key);
+    auto const federation_timeout_policy = merovingian::config::reload_policy_for_key(federation_timeout_key);
+    auto const media_timeout_policy = merovingian::config::reload_policy_for_key(media_timeout_key);
+    auto const database_pool_policy = merovingian::config::reload_policy_for_key(database_pool_key);
+
+    // Then
+    REQUIRE(client_bind_policy == merovingian::config::ReloadPolicy::reloadable);
+    REQUIRE(transaction_size_policy == merovingian::config::ReloadPolicy::reloadable);
+    REQUIRE(federation_timeout_policy == merovingian::config::ReloadPolicy::reloadable);
+    REQUIRE(media_timeout_policy == merovingian::config::ReloadPolicy::reloadable);
+    REQUIRE(database_pool_policy == merovingian::config::ReloadPolicy::reloadable);
 }
 
 TEST_CASE("Runtime-facing config groups are reloadable", "[config][reload]")
@@ -58,35 +57,44 @@ TEST_CASE("Runtime-facing config groups are reloadable", "[config][reload]")
         "security.logging.structured",
     };
 
-    // When / Then
+    // When
+    auto all_reloadable = true;
     for (auto const key : keys)
     {
-        REQUIRE(merovingian::config::reload_policy_for_key(key) == merovingian::config::ReloadPolicy::reloadable);
+        all_reloadable = all_reloadable
+            && merovingian::config::reload_policy_for_key(key) == merovingian::config::ReloadPolicy::reloadable;
     }
+
+    // Then
+    REQUIRE(all_reloadable);
 }
 
 TEST_CASE("Identity and secret source config keys require restart", "[config][reload]")
 {
-    // Given / When / Then
-    REQUIRE(
-        merovingian::config::reload_policy_for_key("server.name")
-        == merovingian::config::ReloadPolicy::restart_required
-    );
-    REQUIRE(
-        merovingian::config::reload_policy_for_key("database.uri_file")
-        == merovingian::config::ReloadPolicy::restart_required
-    );
+    // Given
+    auto constexpr server_name_key = "server.name";
+    auto constexpr database_uri_key = "database.uri_file";
+
+    // When
+    auto const server_name_policy = merovingian::config::reload_policy_for_key(server_name_key);
+    auto const database_uri_policy = merovingian::config::reload_policy_for_key(database_uri_key);
+
+    // Then
+    REQUIRE(server_name_policy == merovingian::config::ReloadPolicy::restart_required);
+    REQUIRE(database_uri_policy == merovingian::config::ReloadPolicy::restart_required);
 }
 
 TEST_CASE("Reload policy names are stable for logs and diagnostics", "[config][reload]")
 {
-    // Given / When / Then
-    REQUIRE(
-        std::string{merovingian::config::reload_policy_name(merovingian::config::ReloadPolicy::reloadable)}
-        == "reloadable"
-    );
-    REQUIRE(
-        std::string{merovingian::config::reload_policy_name(merovingian::config::ReloadPolicy::restart_required)}
-        == "restart_required"
-    );
+    // Given
+    auto constexpr reloadable = merovingian::config::ReloadPolicy::reloadable;
+    auto constexpr restart_required = merovingian::config::ReloadPolicy::restart_required;
+
+    // When
+    auto const reloadable_name = std::string{merovingian::config::reload_policy_name(reloadable)};
+    auto const restart_required_name = std::string{merovingian::config::reload_policy_name(restart_required)};
+
+    // Then
+    REQUIRE(reloadable_name == "reloadable");
+    REQUIRE(restart_required_name == "restart_required");
 }

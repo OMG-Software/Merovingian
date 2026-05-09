@@ -48,10 +48,15 @@ TEST_CASE("Runtime listener planning omits federation listener when federation i
 
 TEST_CASE("Runtime listener role names are stable for logs", "[net][listener]")
 {
-    // Given / When / Then
-    REQUIRE(std::string{merovingian::net::listener_role_name(merovingian::net::ListenerRole::client)} == "client");
-    REQUIRE(
-        std::string{merovingian::net::listener_role_name(merovingian::net::ListenerRole::federation)}
-        == "federation"
-    );
+    // Given
+    auto constexpr client = merovingian::net::ListenerRole::client;
+    auto constexpr federation = merovingian::net::ListenerRole::federation;
+
+    // When
+    auto const client_name = std::string{merovingian::net::listener_role_name(client)};
+    auto const federation_name = std::string{merovingian::net::listener_role_name(federation)};
+
+    // Then
+    REQUIRE(client_name == "client");
+    REQUIRE(federation_name == "federation");
 }

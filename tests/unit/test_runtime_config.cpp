@@ -63,23 +63,18 @@ TEST_CASE("Runtime config snapshot rejects restart-required changes", "[config][
 
 TEST_CASE("Runtime config apply result names are stable", "[config][runtime][reload]")
 {
-    // Given / When / Then
-    REQUIRE(
-        std::string{merovingian::config::runtime_config_apply_result_name(
-            merovingian::config::RuntimeConfigApplyResult::applied
-        )}
-        == "applied"
-    );
-    REQUIRE(
-        std::string{merovingian::config::runtime_config_apply_result_name(
-            merovingian::config::RuntimeConfigApplyResult::unchanged
-        )}
-        == "unchanged"
-    );
-    REQUIRE(
-        std::string{merovingian::config::runtime_config_apply_result_name(
-            merovingian::config::RuntimeConfigApplyResult::restart_required
-        )}
-        == "restart_required"
-    );
+    // Given
+    auto constexpr applied = merovingian::config::RuntimeConfigApplyResult::applied;
+    auto constexpr unchanged = merovingian::config::RuntimeConfigApplyResult::unchanged;
+    auto constexpr restart_required = merovingian::config::RuntimeConfigApplyResult::restart_required;
+
+    // When
+    auto const applied_name = std::string{merovingian::config::runtime_config_apply_result_name(applied)};
+    auto const unchanged_name = std::string{merovingian::config::runtime_config_apply_result_name(unchanged)};
+    auto const restart_required_name = std::string{merovingian::config::runtime_config_apply_result_name(restart_required)};
+
+    // Then
+    REQUIRE(applied_name == "applied");
+    REQUIRE(unchanged_name == "unchanged");
+    REQUIRE(restart_required_name == "restart_required");
 }
