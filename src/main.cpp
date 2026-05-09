@@ -4,6 +4,7 @@
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/config_parser.hpp>
 #include <merovingian/core/file_metadata.hpp>
+#include <merovingian/net/listener.hpp>
 #include <merovingian/observability/logger.hpp>
 
 #include <fstream>
@@ -248,12 +249,22 @@ auto print_version() -> void
 auto log_startup_summary(BootstrapConfigResult const& result) -> void
 {
     auto const& config = result.parsed.config;
+    auto const runtime_listeners = merovingian::net::make_runtime_listeners(config);
+
     LOG_INFO("Configuration validation passed");
     LOG_INFO("Configuration source: " + result.source);
     LOG_INFO("Server name: " + config.server().server_name);
     LOG_INFO("Public base URL: " + config.server().public_baseurl);
     LOG_INFO("Client listener: " + config.listeners().client.bind);
     LOG_INFO("Federation listener: " + config.listeners().federation.bind);
+    LOG_INFO("Planned runtime listeners: " + std::to_string(runtime_listeners.count()));
+    for (auto const& listener : runtime_listeners.plans())
+    {
+        LOG_INFO(
+            "Runtime listener planned: " + std::string{merovingian::net::listener_role_name(listener.role)}
+            + " " + listener.bind + " tls=" + std::string{listener.tls ? "true" : "false"}
+        );
+    }
     LOG_INFO("Registration enabled: " + std::string{config.security().registration.enabled ? "true" : "false"});
     LOG_INFO("Federation enabled: " + std::string{config.security().federation.enabled ? "true" : "false"});
     LOG_INFO("Media upload limit: " + config.security().media.max_upload_size);
