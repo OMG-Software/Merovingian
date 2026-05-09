@@ -1,6 +1,7 @@
 config_sources = files(
   'config.cpp',
   'config_parser.cpp',
+  'reload_policy.cpp',
 )
 
 config_lib = static_library(
