@@ -141,7 +141,7 @@ struct BootstrapConfigResult final
 
 [[nodiscard]] auto load_config_from_file(std::string const& path) -> BootstrapConfigResult
 {
-    auto const metadata_validation = validate_config_file_metadata(path);
+    auto metadata_validation = validate_config_file_metadata(path);
     if (!metadata_validation.parsed.findings.empty())
     {
         return metadata_validation;
@@ -195,7 +195,7 @@ struct BootstrapConfigResult final
         return result;
     }
 
-    auto const secret_validation = validate_existing_secret_files(result.parsed.config);
+    auto secret_validation = validate_existing_secret_files(result.parsed.config);
     if (!secret_validation.parsed.findings.empty())
     {
         return secret_validation;
@@ -316,7 +316,7 @@ auto plan_config_reload(std::string const& current_path, std::string const& next
         std::cout << "Reload action: reloadable" << '\n';
     }
 
-    for (auto const& change : plan.changes)
+    for (auto const& change : plan.changes())
     {
         std::cout << change.key << '=' << merovingian::config::reload_policy_name(change.policy) << '\n';
     }
