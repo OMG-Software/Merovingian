@@ -4,12 +4,17 @@
 #include <merovingian/config/config.hpp>
 
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace merovingian::config
 {
+
+inline constexpr auto max_config_bytes = std::size_t{1024U * 1024U};
+inline constexpr auto max_config_line_bytes = std::size_t{4096U};
 
 struct ConfigParseResult final
 {
@@ -102,6 +107,19 @@ struct ConfigParseResult final
     }
 
     return result;
+}
+
+[[nodiscard]] inline auto contains_key(std::vector<std::string> const& keys, std::string_view key) noexcept -> bool
+{
+    for (auto const& existing : keys)
+    {
+        if (existing == key)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 inline auto add_parse_finding(
@@ -312,6 +330,13 @@ inline auto apply_config_value(
     auto database = DatabaseConfig{};
     auto security = SecurityConfig{};
     auto findings = std::vector<ConfigValidationFinding>{};
+    auto seen_keys = std::vector<std::string>{};
+
+    if (input.size() > max_config_bytes)
+    {
+        add_parse_finding(findings, "config", "configuration file is too large");
+        return {Config{}, findings};
+    }
 
     auto line_number = std::uint32_t{1U};
     while (!input.empty())
@@ -320,7 +345,11 @@ inline auto apply_config_value(
         auto const raw_line = input.substr(0U, newline);
         auto const line = trim_ascii(raw_line);
 
-        if (!line.empty() && line[0] != '#')
+        if (raw_line.size() > max_config_line_bytes)
+        {
+            add_parse_finding(findings, "line " + std::to_string(line_number), "line is too long");
+        }
+        else if (!line.empty() && line[0] != '#')
         {
             auto const separator = line.find('=');
             if (separator == std::string_view::npos || separator == 0U)
@@ -335,8 +364,13 @@ inline auto apply_config_value(
                 {
                     add_parse_finding(findings, "line " + std::to_string(line_number), "expected key=value");
                 }
+                else if (contains_key(seen_keys, key))
+                {
+                    add_parse_finding(findings, std::string{key}, "duplicate configuration key");
+                }
                 else
                 {
+                    seen_keys.emplace_back(key);
                     apply_config_value(server, listeners, database, security, key, value, findings);
                 }
             }
