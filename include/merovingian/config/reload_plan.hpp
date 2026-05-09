@@ -22,8 +22,11 @@ struct ReloadPlan final
 
     [[nodiscard]] auto has_changes() const noexcept -> bool;
     [[nodiscard]] auto has_restart_required_changes() const noexcept -> bool;
+    [[nodiscard]] auto reloadable_change_count() const noexcept -> std::size_t;
+    [[nodiscard]] auto restart_required_change_count() const noexcept -> std::size_t;
 };
 
 [[nodiscard]] auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan;
+[[nodiscard]] auto reload_plan_summary(ReloadPlan const& plan) -> std::string;
 
 } // namespace merovingian::config
