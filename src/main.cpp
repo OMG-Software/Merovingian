@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <merovingian/bootstrap/exit_code.hpp>
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/config_parser.hpp>
 #include <merovingian/observability/logger.hpp>
@@ -15,20 +16,58 @@ namespace
 
 constexpr auto version = std::string_view{"0.1.0"};
 
-[[nodiscard]] auto reject_config_file(std::string field, std::string message)
-    -> merovingian::config::ConfigParseResult
+struct BootstrapConfigResult final
 {
-    auto result = merovingian::config::ConfigParseResult{};
-    result.findings.push_back({std::move(field), std::move(message)});
+    merovingian::config::ConfigParseResult parsed{};
+    merovingian::bootstrap::ExitCode failure_code{merovingian::bootstrap::ExitCode::success};
+};
+
+[[nodiscard]] auto reject_config(
+    merovingian::bootstrap::ExitCode code,
+    std::string field,
+    std::string message
+) -> BootstrapConfigResult
+{
+    auto result = BootstrapConfigResult{};
+    result.failure_code = code;
+    result.parsed.findings.push_back({std::move(field), std::move(message)});
     return result;
 }
 
-[[nodiscard]] auto load_config_from_file(std::string const& path) -> merovingian::config::ConfigParseResult
+[[nodiscard]] auto classify_config_findings(merovingian::config::ConfigParseResult parsed)
+    -> BootstrapConfigResult
+{
+    if (parsed.findings.empty())
+    {
+        return {std::move(parsed), merovingian::bootstrap::ExitCode::success};
+    }
+
+    auto has_parse_finding = false;
+    for (auto const& finding : parsed.findings)
+    {
+        has_parse_finding = has_parse_finding || finding.field == "config" || finding.field == "arguments"
+            || finding.field.rfind("line ", 0U) == 0U || finding.message == "unknown configuration key"
+            || finding.message == "duplicate configuration key" || finding.message == "expected boolean value"
+            || finding.message == "expected unsigned integer value";
+    }
+
+    return {
+        std::move(parsed),
+        has_parse_finding ? merovingian::bootstrap::ExitCode::config_parse_error
+                          : merovingian::bootstrap::ExitCode::config_validation_error,
+    };
+}
+
+[[nodiscard]] auto load_config_from_file(std::string const& path) -> BootstrapConfigResult
 {
     auto input = std::ifstream{path, std::ios::binary};
     if (!input.is_open())
     {
-        return reject_config_file("config.path", "unable to open configuration file");
+        return reject_config(
+            merovingian::bootstrap::ExitCode::config_io_error,
+            "config.path",
+            "unable to open configuration file"
+        );
     }
 
     auto contents = std::string{};
@@ -43,7 +82,11 @@ constexpr auto version = std::string_view{"0.1.0"};
         {
             if (contents.size() + static_cast<std::size_t>(bytes_read) > merovingian::config::max_config_bytes)
             {
-                return reject_config_file("config", "configuration file is too large");
+                return reject_config(
+                    merovingian::bootstrap::ExitCode::config_parse_error,
+                    "config",
+                    "configuration file is too large"
+                );
             }
 
             contents.append(chunk.data(), static_cast<std::size_t>(bytes_read));
@@ -52,18 +95,22 @@ constexpr auto version = std::string_view{"0.1.0"};
 
     if (input.bad())
     {
-        return reject_config_file("config.path", "error while reading configuration file");
+        return reject_config(
+            merovingian::bootstrap::ExitCode::config_io_error,
+            "config.path",
+            "error while reading configuration file"
+        );
     }
 
-    return merovingian::config::parse_key_value_config(contents);
+    return classify_config_findings(merovingian::config::parse_key_value_config(contents));
 }
 
-[[nodiscard]] auto build_config(int argc, char const* const* argv) -> merovingian::config::ConfigParseResult
+[[nodiscard]] auto build_config(int argc, char const* const* argv) -> BootstrapConfigResult
 {
     if (argc == 1)
     {
         auto const config = merovingian::config::Config{};
-        return {config, merovingian::config::validate(config)};
+        return classify_config_findings({config, merovingian::config::validate(config)});
     }
 
     if (argc == 3 && std::string_view{argv[1]} == "--config")
@@ -71,7 +118,11 @@ constexpr auto version = std::string_view{"0.1.0"};
         return load_config_from_file(argv[2]);
     }
 
-    return reject_config_file("arguments", "usage: merovingian-server [--config <path>] [--help] [--version]");
+    return reject_config(
+        merovingian::bootstrap::ExitCode::usage_error,
+        "arguments",
+        "usage: merovingian-server [--config <path>] [--help] [--version]"
+    );
 }
 
 [[nodiscard]] auto is_help_request(int argc, char const* const* argv) noexcept -> bool
@@ -109,29 +160,29 @@ auto main(int argc, char const* const* argv) -> int
     if (is_help_request(argc, argv))
     {
         print_help();
-        return 0;
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
     }
 
     if (is_version_request(argc, argv))
     {
         print_version();
-        return 0;
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
     }
 
     LOG_INFO("Starting The Merovingian bootstrap server");
 
-    auto const parsed = build_config(argc, argv);
-    if (!parsed.findings.empty())
+    auto const result = build_config(argc, argv);
+    if (!result.parsed.findings.empty())
     {
-        for (auto const& finding : parsed.findings)
+        for (auto const& finding : result.parsed.findings)
         {
             LOG_CRITICAL("Configuration rejected: " + finding.field + ": " + finding.message);
         }
 
-        return 1;
+        return merovingian::bootstrap::to_int(result.failure_code);
     }
 
     LOG_INFO("Configuration validation passed");
 
-    return 0;
+    return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
 }
