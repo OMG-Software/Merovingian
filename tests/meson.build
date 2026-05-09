@@ -5,6 +5,13 @@ if get_option('build_tests')
     fallback: ['catch2', 'catch2_dep'],
   )
 
+  unit_test_registration_check = find_program('../scripts/check-unit-test-registration.sh')
+  test(
+    'unit-test-registration',
+    unit_test_registration_check,
+    args: [meson.project_source_root()],
+  )
+
   unit_tests = executable(
     'merovingian-unit-tests',
     sources: files(
