@@ -181,6 +181,20 @@ Reload action: no changes
 
 Restart-required keys affect stable process identity or secret source selection. Reloadable keys are runtime policy or limit values that should be applied through the future reload path without a full homeserver restart.
 
+## Runtime config snapshot
+
+The runtime config snapshot owns the currently validated in-memory config and can apply a candidate config only when the reload plan has no restart-required changes.
+
+Application outcomes are:
+
+| Outcome | Meaning |
+| --- | --- |
+| `unchanged` | Candidate config matches the current runtime config. |
+| `applied` | Candidate config changed only reloadable keys and replaced the in-memory snapshot. |
+| `restart_required` | Candidate config changed at least one restart-required key and was not applied. |
+
+The snapshot is an internal foundation for future live reload. It is not yet connected to SIGHUP, an admin socket, or any external control API.
+
 ## Current keys
 
 See `config/merovingian.conf.example` for the complete accepted key list.
