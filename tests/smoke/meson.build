@@ -28,7 +28,7 @@ test(
   smoke_test,
   args: [
     '-c',
-    '! ' + server_executable + ' --unknown >/dev/null 2>&1',
+    server_executable + ' --unknown >/dev/null 2>&1; test $? -eq 64',
   ],
 )
 
@@ -84,11 +84,11 @@ test(
     '-c',
     'printf "%s\n" "server.public_baseurl=http://matrix.example.org" > '
       + invalid_config
-      + ' && ! '
+      + ' && '
       + server_executable
       + ' --config '
       + invalid_config
-      + ' >/dev/null 2>&1',
+      + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
 
@@ -99,10 +99,10 @@ test(
     '-c',
     'python3 -c "from pathlib import Path; Path(\''
       + oversized_config
-      + '\').write_text(\'#\' * (1024 * 1024 + 1))" && ! '
+      + '\').write_text(\'#\' * (1024 * 1024 + 1))" && '
       + server_executable
       + ' --config '
       + oversized_config
-      + ' >/dev/null 2>&1',
+      + ' >/dev/null 2>&1; test $? -eq 78',
   ],
 )
