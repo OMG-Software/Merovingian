@@ -24,6 +24,12 @@ Validate a configuration file without starting runtime scaffolding:
 ./build/src/merovingian-server --check-config config/merovingian.conf.example
 ```
 
+Plan a configuration reload without applying it:
+
+```bash
+./build/src/merovingian-server --plan-config-reload current.conf next.conf
+```
+
 ## Format rules
 
 - One `key=value` pair per line.
@@ -81,7 +87,7 @@ Bootstrap exits with explicit status codes:
 
 | Code | Meaning |
 | ---: | --- |
-| 0 | Success, help, version output, or successful config check |
+| 0 | Success, help, version output, successful config check, or successful reload plan |
 | 64 | Usage error |
 | 66 | Config file open/read failure |
 | 78 | Config parse failure |
@@ -137,6 +143,13 @@ Values such as `0s`, `30`, `30ms`, and `forever` are rejected.
 Configuration parsing and validation are restart-safe today. Runtime hot reload is a Phase 2 boundary, not a completed control plane. The server now classifies keys by reload policy so later SIGHUP or admin-socket reload work can apply reloadable settings without treating every config change as a whole homeserver restart.
 
 Reload planning compares validated current and next configs and reports how many changes are reloadable versus restart-required. Planning is analysis-only until the live reload control path exists.
+
+Example output:
+
+```text
+Reload plan: changes=1 reloadable=1 restart_required=0
+security.federation.remote_timeout=reloadable
+```
 
 | Key or key group | Policy |
 | --- | --- |
