@@ -51,6 +51,15 @@ test(
 )
 
 test(
+  'server-default-summary-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable + ' 2>&1 | grep -q "Configuration source: defaults"',
+  ],
+)
+
+test(
   'server-example-config-smoke-test',
   smoke_test,
   args: [
@@ -59,6 +68,18 @@ test(
       + ' --config '
       + example_config
       + ' 2>&1 | grep -q "Configuration validation passed"',
+  ],
+)
+
+test(
+  'server-example-config-summary-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable
+      + ' --config '
+      + example_config
+      + ' 2>&1 | grep -q "Configuration source: file"',
   ],
 )
 
@@ -73,7 +94,7 @@ test(
       + server_executable
       + ' --config '
       + valid_config
-      + ' 2>&1 | grep -q "Configuration validation passed"',
+      + ' 2>&1 | grep -q "Server name: matrix.example.org"',
   ],
 )
 
