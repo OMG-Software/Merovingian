@@ -79,6 +79,8 @@ auto append_escaped_string(std::string& output, std::string_view value) -> void
 
 [[nodiscard]] auto serialize_value(Value const& value) -> SerializeResult;
 
+// JSON arrays recurse through nested values; value tree depth is parser-bounded.
+// NOLINTNEXTLINE(misc-no-recursion)
 [[nodiscard]] auto serialize_array(Array const& array) -> SerializeResult
 {
     auto output = std::string{"["};
@@ -102,6 +104,8 @@ auto append_escaped_string(std::string& output, std::string_view value) -> void
     return {std::move(output), CanonicalJsonError::none};
 }
 
+// JSON objects recurse through nested values; value tree depth is parser-bounded.
+// NOLINTNEXTLINE(misc-no-recursion)
 [[nodiscard]] auto serialize_object(Object const& object) -> SerializeResult
 {
     if (object_has_duplicate_keys(object))
@@ -148,6 +152,8 @@ auto append_escaped_string(std::string& output, std::string_view value) -> void
     return {std::move(output), CanonicalJsonError::none};
 }
 
+// Canonical JSON values can be trees; recursion is bounded for parsed inputs.
+// NOLINTNEXTLINE(misc-no-recursion)
 [[nodiscard]] auto serialize_value(Value const& value) -> SerializeResult
 {
     auto const& storage = value.storage();
