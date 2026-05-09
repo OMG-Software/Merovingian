@@ -1,4 +1,5 @@
 platform_sources = files(
+  'file_metadata.cpp',
   'hardening_self_check.cpp',
 )
 
