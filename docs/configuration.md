@@ -18,6 +18,12 @@ Running without `--config` uses the same secure typed defaults compiled into the
 ./build/src/merovingian-server
 ```
 
+Validate a configuration file without starting runtime scaffolding:
+
+```bash
+./build/src/merovingian-server --check-config config/merovingian.conf.example
+```
+
 ## Format rules
 
 - One `key=value` pair per line.
@@ -36,7 +42,7 @@ Running without `--config` uses the same secure typed defaults compiled into the
 
 ## Fail-closed startup
 
-Startup rejects configuration before doing runtime work when parser or validation findings are present.
+Startup rejects configuration before doing runtime work when parser or validation findings are present. `--check-config <path>` runs the same file metadata, parser, validation, and existing secret-file permission checks, but exits before startup runtime summary or listener/database/federation scaffolding.
 
 Rejected cases include:
 
@@ -75,7 +81,7 @@ Bootstrap exits with explicit status codes:
 
 | Code | Meaning |
 | ---: | --- |
-| 0 | Success, help, or version output |
+| 0 | Success, help, version output, or successful config check |
 | 64 | Usage error |
 | 66 | Config file open/read failure |
 | 78 | Config parse failure |
@@ -129,6 +135,8 @@ Values such as `0s`, `30`, `30ms`, and `forever` are rejected.
 ## Reloadability policy
 
 Configuration parsing and validation are restart-safe today. Runtime hot reload is a Phase 2 boundary, not a completed control plane. The server now classifies keys by reload policy so later SIGHUP or admin-socket reload work can apply reloadable settings without treating every config change as a whole homeserver restart.
+
+Reload planning compares validated current and next configs and reports how many changes are reloadable versus restart-required. Planning is analysis-only until the live reload control path exists.
 
 | Key or key group | Policy |
 | --- | --- |
