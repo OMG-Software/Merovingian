@@ -217,7 +217,7 @@ struct BootstrapConfigResult final
     return reject_config(
         merovingian::bootstrap::ExitCode::usage_error,
         "arguments",
-        "usage: merovingian-server [--config <path>] [--help] [--version]"
+        "usage: merovingian-server [--config <path>] [--check-config <path>] [--help] [--version]"
     );
 }
 
@@ -231,6 +231,11 @@ struct BootstrapConfigResult final
     return argc == 2 && std::string_view{argv[1]} == "--version";
 }
 
+[[nodiscard]] auto is_check_config_request(int argc, char const* const* argv) noexcept -> bool
+{
+    return argc == 3 && std::string_view{argv[1]} == "--check-config";
+}
+
 auto print_help() -> void
 {
     std::cout << "The Merovingian bootstrap server\n"
@@ -238,6 +243,7 @@ auto print_help() -> void
               << "Usage:\n"
               << "  merovingian-server\n"
               << "  merovingian-server --config <path>\n"
+              << "  merovingian-server --check-config <path>\n"
               << "  merovingian-server --help\n"
               << "  merovingian-server --version\n"
               << "\n"
@@ -247,6 +253,27 @@ auto print_help() -> void
 auto print_version() -> void
 {
     std::cout << "merovingian-server " << version << '\n';
+}
+
+auto log_config_findings(BootstrapConfigResult const& result) -> void
+{
+    for (auto const& finding : result.parsed.findings)
+    {
+        LOG_CRITICAL("Configuration rejected: " + finding.field + ": " + finding.message);
+    }
+}
+
+auto check_config_file(std::string const& path) -> int
+{
+    auto const result = load_config_from_file(path);
+    if (!result.parsed.findings.empty())
+    {
+        log_config_findings(result);
+        return merovingian::bootstrap::to_int(result.failure_code);
+    }
+
+    std::cout << "Configuration check passed: " << path << '\n';
+    return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
 }
 
 auto log_startup_summary(BootstrapConfigResult const& result) -> void
@@ -302,16 +329,17 @@ auto main(int argc, char const* const* argv) -> int
         return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
     }
 
+    if (is_check_config_request(argc, argv))
+    {
+        return check_config_file(argv[2]);
+    }
+
     LOG_INFO("Starting The Merovingian bootstrap server");
 
     auto const result = build_config(argc, argv);
     if (!result.parsed.findings.empty())
     {
-        for (auto const& finding : result.parsed.findings)
-        {
-            LOG_CRITICAL("Configuration rejected: " + finding.field + ": " + finding.message);
-        }
-
+        log_config_findings(result);
         return merovingian::bootstrap::to_int(result.failure_code);
     }
 
