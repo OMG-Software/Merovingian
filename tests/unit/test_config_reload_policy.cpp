@@ -4,7 +4,9 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <string>
+#include <string_view>
 
 TEST_CASE("Runtime-facing config keys are reloadable", "[config][reload]")
 {
@@ -25,6 +27,37 @@ TEST_CASE("Runtime-facing config keys are reloadable", "[config][reload]")
         merovingian::config::reload_policy_for_key("database.pool_size")
         == merovingian::config::ReloadPolicy::reloadable
     );
+}
+
+TEST_CASE("Runtime-facing config groups are reloadable", "[config][reload]")
+{
+    // Given
+    constexpr auto keys = std::array<std::string_view, 18U>{
+        "server.public_baseurl",
+        "server.trusted_proxies",
+        "listeners.client.bind",
+        "listeners.client.tls",
+        "listeners.federation.bind",
+        "listeners.federation.tls",
+        "database.pool_size",
+        "security.registration.enabled",
+        "security.registration.require_token",
+        "security.encryption.default_for_new_rooms",
+        "security.encryption.require_for_direct_messages",
+        "security.federation.enabled",
+        "security.federation.default_policy",
+        "security.federation.max_transaction_size",
+        "security.federation.remote_timeout",
+        "security.media.max_upload_size",
+        "security.logging.redact_tokens",
+        "security.logging.structured",
+    };
+
+    // When / Then
+    for (auto const key : keys)
+    {
+        REQUIRE(merovingian::config::reload_policy_for_key(key) == merovingian::config::ReloadPolicy::reloadable);
+    }
 }
 
 TEST_CASE("Identity and secret source config keys require restart", "[config][reload]")
