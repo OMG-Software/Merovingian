@@ -1,4 +1,7 @@
 http_sources = files(
+  'connection_guard.cpp',
+  'rate_limit.cpp',
+  'request.cpp',
   'request_limits.cpp',
 )
 
