@@ -78,6 +78,7 @@ Rejected cases include:
 - invalid federation remote timeout
 - invalid media upload size
 - disabled private-IP blocking for remote media fetches
+- invalid media remote fetch timeout
 - disabled sandboxed media decoding
 - disabled token or event-content log redaction
 
@@ -134,6 +135,7 @@ Examples:
 ```text
 security.federation.remote_timeout=30s
 security.federation.remote_timeout=1m
+security.media.remote_fetch_timeout=30s
 ```
 
 Values such as `0s`, `30`, `30ms`, and `forever` are rejected.
