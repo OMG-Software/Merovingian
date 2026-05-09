@@ -3,14 +3,16 @@
 
 #include <merovingian/config/config.hpp>
 
+#include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 #include <vector>
 
 namespace merovingian::config
 {
 
-inline constexpr auto max_config_bytes = std::size_t{1024U * 1024U};
+inline constexpr auto max_config_bytes = std::size_t{1024U} * std::size_t{1024U};
 inline constexpr auto max_config_line_bytes = std::size_t{4096U};
 
 struct ConfigParseResult final
