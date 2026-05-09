@@ -38,5 +38,24 @@ jobs:
       - name: Test
         run: meson test -C build --print-errorlogs
 
+      - name: Validate Phase 1 configuration gates
+        run: bash scripts/validate-phase1-config.sh build
+
       - name: Reject unsafe allocation patterns
         run: bash scripts/reject-unsafe.sh
+
+      - name: Stage CI artifacts
+        run: |
+          mkdir -p artifacts/bin artifacts/config artifacts/docs
+          cp build/src/merovingian-server artifacts/bin/
+          cp config/merovingian.conf.example artifacts/config/
+          cp README.md docs/configuration.md docs/phase-1.md artifacts/docs/
+          tar -C artifacts -czf merovingian-ci-artifacts.tar.gz .
+
+      - name: Upload CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: merovingian-linux-${{ github.sha }}
+          path: merovingian-ci-artifacts.tar.gz
+          if-no-files-found: error
+          retention-days: 14

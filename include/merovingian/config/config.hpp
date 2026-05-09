@@ -1,15 +1,93 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <cstdint>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace merovingian::config
 {
 
 struct ServerConfig final
 {
-    std::string server_name{};
-    std::string public_baseurl{};
+    std::string server_name{"example.org"};
+    std::string public_baseurl{"https://matrix.example.org"};
+    std::vector<std::string> trusted_proxies{};
+};
+
+struct ListenerConfig final
+{
+    std::string bind{};
+    bool tls{false};
+};
+
+struct ListenersConfig final
+{
+    ListenerConfig client{"127.0.0.1:8008", false};
+    ListenerConfig federation{"127.0.0.1:8448", false};
+};
+
+struct DatabaseConfig final
+{
+    std::string uri_file{"/etc/merovingian/db-uri"};
+    std::uint32_t pool_size{16U};
+};
+
+struct RegistrationSecurityConfig final
+{
+    bool enabled{false};
+    bool require_token{true};
+};
+
+struct EncryptionSecurityConfig final
+{
+    bool default_for_new_rooms{true};
+    bool require_for_direct_messages{true};
+    bool require_for_private_rooms{true};
+    bool allow_unencrypted_public_rooms{true};
+    bool block_unencrypted_federated_private_rooms{true};
+};
+
+struct FederationSecurityConfig final
+{
+    bool enabled{true};
+    std::string default_policy{"allow"};
+    bool require_valid_tls{true};
+    bool verify_json_signatures{true};
+    std::vector<std::string> deny_ip_ranges{
+        "127.0.0.0/8",
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "::1/128",
+        "fc00::/7",
+    };
+};
+
+struct MediaSecurityConfig final
+{
+    std::string max_upload_size{"50MiB"};
+    bool quarantine_unknown_mime{true};
+    bool enable_av_scanner{true};
+    bool block_private_ip_fetches{true};
+    bool decode_in_sandbox{true};
+};
+
+struct LoggingSecurityConfig final
+{
+    bool redact_tokens{true};
+    bool redact_event_content{true};
+    bool structured{true};
+};
+
+struct SecurityConfig final
+{
+    RegistrationSecurityConfig registration{};
+    EncryptionSecurityConfig encryption{};
+    FederationSecurityConfig federation{};
+    MediaSecurityConfig media{};
+    LoggingSecurityConfig logging{};
 };
 
 class Config final
@@ -17,13 +95,49 @@ class Config final
 public:
     Config() = default;
 
-    [[nodiscard]] auto server() const noexcept -> ServerConfig const&
-    {
-        return m_server;
-    }
+    Config(
+        ServerConfig server,
+        ListenersConfig listeners,
+        DatabaseConfig database,
+        SecurityConfig security
+    );
+
+    [[nodiscard]] auto server() const noexcept -> ServerConfig const&;
+    [[nodiscard]] auto listeners() const noexcept -> ListenersConfig const&;
+    [[nodiscard]] auto database() const noexcept -> DatabaseConfig const&;
+    [[nodiscard]] auto security() const noexcept -> SecurityConfig const&;
 
 private:
     ServerConfig m_server{};
+    ListenersConfig m_listeners{};
+    DatabaseConfig m_database{};
+    SecurityConfig m_security{};
 };
+
+struct ConfigValidationFinding final
+{
+    std::string field{};
+    std::string message{};
+};
+
+struct SizeLimitParseResult final
+{
+    bool valid{false};
+    std::uint64_t bytes{0U};
+};
+
+[[nodiscard]] auto is_ascii_digit(char value) noexcept -> bool;
+[[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool;
+[[nodiscard]] auto parse_port(std::string_view value) noexcept -> std::uint32_t;
+[[nodiscard]] auto listener_host(std::string_view bind) noexcept -> std::string_view;
+[[nodiscard]] auto is_loopback_host(std::string_view host) noexcept -> bool;
+[[nodiscard]] auto is_valid_listener_bind(std::string_view bind) noexcept -> bool;
+[[nodiscard]] auto is_safe_cleartext_listener(ListenerConfig const& listener) noexcept -> bool;
+[[nodiscard]] auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool;
+[[nodiscard]] auto is_valid_federation_policy(std::string_view policy) noexcept -> bool;
+[[nodiscard]] auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult;
+[[nodiscard]] auto is_private_or_loopback_range(std::string_view range) noexcept -> bool;
+[[nodiscard]] auto validate(Config const& config) -> std::vector<ConfigValidationFinding>;
+[[nodiscard]] auto is_valid(Config const& config) -> bool;
 
 } // namespace merovingian::config

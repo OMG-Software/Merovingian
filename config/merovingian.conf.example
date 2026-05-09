@@ -1,0 +1,40 @@
+# The Merovingian Phase 1 bootstrap configuration
+# Format: key=value
+# Blank lines and lines beginning with # are ignored.
+
+server.name=example.org
+server.public_baseurl=https://matrix.example.org
+server.trusted_proxies=
+
+listeners.client.bind=127.0.0.1:8008
+listeners.client.tls=false
+listeners.federation.bind=127.0.0.1:8448
+listeners.federation.tls=false
+
+database.uri_file=/etc/merovingian/db-uri
+database.pool_size=16
+
+security.registration.enabled=false
+security.registration.require_token=true
+
+security.encryption.default_for_new_rooms=true
+security.encryption.require_for_direct_messages=true
+security.encryption.require_for_private_rooms=true
+security.encryption.allow_unencrypted_public_rooms=true
+security.encryption.block_unencrypted_federated_private_rooms=true
+
+security.federation.enabled=true
+security.federation.default_policy=allow
+security.federation.require_valid_tls=true
+security.federation.verify_json_signatures=true
+security.federation.deny_ip_ranges=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7
+
+security.media.max_upload_size=50MiB
+security.media.quarantine_unknown_mime=true
+security.media.enable_av_scanner=true
+security.media.block_private_ip_fetches=true
+security.media.decode_in_sandbox=true
+
+security.logging.redact_tokens=true
+security.logging.redact_event_content=true
+security.logging.structured=true
