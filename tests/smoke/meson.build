@@ -83,7 +83,7 @@ test(
   args: [
     '-c',
     server_executable + ' 2>&1 | grep -q "Startup hardening checks:" && '
-      + server_executable + ' 2>&1 | grep -q "Hardening self-check: runtime sandbox=unknown"',
+      + server_executable + ' 2>&1 | grep -q "Hardening self-check: seccomp=unknown"',
   ],
 )
 
