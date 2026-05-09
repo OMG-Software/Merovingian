@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <variant>
 #include <vector>
@@ -14,7 +15,7 @@ class Value;
 struct ObjectMember final
 {
     std::string key{};
-    Value* value{nullptr};
+    std::unique_ptr<Value> value{};
 };
 
 using Array = std::vector<Value>;
@@ -32,6 +33,12 @@ public:
     explicit Value(std::string value);
     explicit Value(Array value);
     explicit Value(Object value);
+
+    Value(Value&& other) noexcept = default;
+    auto operator=(Value&& other) noexcept -> Value& = default;
+
+    Value(Value const& other);
+    auto operator=(Value const& other) -> Value&;
 
     [[nodiscard]] auto storage() const noexcept -> Storage const&;
 
