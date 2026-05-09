@@ -5,7 +5,8 @@ valid_config = meson.project_build_root() / 'valid-smoke.conf'
 invalid_config = meson.project_build_root() / 'invalid-smoke.conf'
 oversized_config = meson.project_build_root() / 'oversized-smoke.conf'
 unsafe_config = meson.project_build_root() / 'unsafe-smoke.conf'
-secret_config = meson.project_build_root() / 'secret-smoke.conf'
+secure_secret_config = meson.project_build_root() / 'secret-secure-smoke.conf'
+unsafe_secret_config = meson.project_build_root() / 'secret-unsafe-smoke.conf'
 secure_secret = meson.project_build_root() / 'db-uri-secure-smoke.secret'
 unsafe_secret = meson.project_build_root() / 'db-uri-unsafe-smoke.secret'
 
@@ -167,13 +168,13 @@ test(
       + ' && printf "%s\n" "database.uri_file='
       + secure_secret
       + '" > '
-      + secret_config
+      + secure_secret_config
       + ' && chmod 0644 '
-      + secret_config
+      + secure_secret_config
       + ' && '
       + server_executable
       + ' --config '
-      + secret_config
+      + secure_secret_config
       + ' 2>&1 | grep -q "Configuration validation passed"',
   ],
 )
@@ -190,13 +191,13 @@ test(
       + ' && printf "%s\n" "database.uri_file='
       + unsafe_secret
       + '" > '
-      + secret_config
+      + unsafe_secret_config
       + ' && chmod 0644 '
-      + secret_config
+      + unsafe_secret_config
       + ' && '
       + server_executable
       + ' --config '
-      + secret_config
+      + unsafe_secret_config
       + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
