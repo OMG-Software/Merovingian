@@ -14,7 +14,9 @@ class Value;
 
 struct ObjectMember final
 {
+    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
     std::string key{};
+    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
     std::unique_ptr<Value> value{};
 
     ObjectMember() = default;
