@@ -63,6 +63,8 @@ struct FederationSecurityConfig final
         "::1/128",
         "fc00::/7",
     };
+    std::string max_transaction_size{"10MiB"};
+    std::string remote_timeout{"30s"};
 };
 
 struct MediaSecurityConfig final
@@ -126,6 +128,12 @@ struct SizeLimitParseResult final
     std::uint64_t bytes{0U};
 };
 
+struct DurationParseResult final
+{
+    bool valid{false};
+    std::uint32_t seconds{0U};
+};
+
 [[nodiscard]] auto is_ascii_digit(char value) noexcept -> bool;
 [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool;
 [[nodiscard]] auto parse_port(std::string_view value) noexcept -> std::uint32_t;
@@ -136,6 +144,7 @@ struct SizeLimitParseResult final
 [[nodiscard]] auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_policy(std::string_view policy) noexcept -> bool;
 [[nodiscard]] auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult;
+[[nodiscard]] auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseResult;
 [[nodiscard]] auto is_private_or_loopback_range(std::string_view range) noexcept -> bool;
 [[nodiscard]] auto validate(Config const& config) -> std::vector<ConfigValidationFinding>;
 [[nodiscard]] auto is_valid(Config const& config) -> bool;
