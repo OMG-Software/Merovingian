@@ -3,7 +3,7 @@ fuzz_targets = [
     'fuzz-canonicaljson',
     sources: files('fuzz_canonicaljson.cpp'),
     include_directories: inc,
-    link_with: [core_lib],
+    link_with: [canonicaljson_lib],
   ),
   executable(
     'fuzz-http-request',

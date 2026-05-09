@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+#pragma once
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <variant>
+#include <vector>
+
+namespace merovingian::canonicaljson
+{
+
+class Value;
+
+struct ObjectMember final
+{
+    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
+    std::string key{};
+    // NOLINTNEXTLINE(misc-non-private-member-variables-in-classes)
+    std::unique_ptr<Value> value{};
+
+    ObjectMember() = default;
+    ObjectMember(std::string key_value, std::unique_ptr<Value> owned_value);
+    ObjectMember(ObjectMember&& other) noexcept = default;
+    auto operator=(ObjectMember&& other) noexcept -> ObjectMember& = default;
+    ObjectMember(ObjectMember const& other);
+    auto operator=(ObjectMember const& other) -> ObjectMember&;
+};
+
+using Array = std::vector<Value>;
+using Object = std::vector<ObjectMember>;
+
+class Value final
+{
+public:
+    using Storage = std::variant<std::nullptr_t, bool, std::int64_t, std::string, Array, Object>;
+
+    Value() = default;
+    explicit Value(std::nullptr_t value);
+    explicit Value(bool value);
+    explicit Value(std::int64_t value);
+    explicit Value(std::string value);
+    explicit Value(Array value);
+    explicit Value(Object value);
+
+    Value(Value&& other) noexcept = default;
+    auto operator=(Value&& other) noexcept -> Value& = default;
+
+    Value(Value const& other);
+    auto operator=(Value const& other) -> Value&;
+
+    [[nodiscard]] auto storage() const noexcept -> Storage const&;
+
+private:
+    Storage m_storage{nullptr};
+};
+
+[[nodiscard]] auto make_member(std::string key, Value value) -> ObjectMember;
+
+} // namespace merovingian::canonicaljson

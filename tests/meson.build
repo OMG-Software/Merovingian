@@ -9,6 +9,8 @@ if get_option('build_tests')
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
+      'unit/test_canonicaljson_parser.cpp',
+      'unit/test_canonicaljson_serializer.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_media_timeout.cpp',
       'unit/test_config_parser.cpp',
@@ -31,7 +33,7 @@ if get_option('build_tests')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep],
-    link_with: [core_lib, config_lib, database_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib],
+    link_with: [canonicaljson_lib, core_lib, config_lib, database_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib],
   )
 
   test('unit-tests', unit_tests)
