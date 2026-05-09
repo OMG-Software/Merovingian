@@ -176,6 +176,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.block_private_ip_fetches");
     }
+    if (current.security().media.remote_fetch_timeout != next.security().media.remote_fetch_timeout)
+    {
+        add_change(plan, "security.media.remote_fetch_timeout");
+    }
     if (current.security().media.decode_in_sandbox != next.security().media.decode_in_sandbox)
     {
         add_change(plan, "security.media.decode_in_sandbox");
