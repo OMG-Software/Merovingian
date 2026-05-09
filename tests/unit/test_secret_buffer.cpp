@@ -4,7 +4,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-TEST_CASE("SecretBuffer allocates requested size", "[core][secret]") {
+TEST_CASE("SecretBuffer allocates requested size", "[core][secret]")
+{
     // Given
     constexpr auto expected_size = 64U;
 
@@ -15,13 +16,15 @@ TEST_CASE("SecretBuffer allocates requested size", "[core][secret]") {
     REQUIRE(buffer.bytes().size() == expected_size);
 }
 
-TEST_CASE("SecretBuffer exposes mutable byte span", "[core][secret]") {
+TEST_CASE("SecretBuffer exposes mutable byte span", "[core][secret]")
+{
     // Given
     auto buffer = merovingian::core::SecretBuffer{8U};
+    auto constexpr expected_value = 0xAAU;
 
     // When
-    buffer.bytes()[0] = 0xAAU;
+    buffer.bytes()[0] = expected_value;
 
     // Then
-    REQUIRE(buffer.bytes()[0] == 0xAAU);
+    REQUIRE(buffer.bytes()[0] == expected_value);
 }
