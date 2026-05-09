@@ -6,6 +6,7 @@ check_config = meson.project_build_root() / 'check-smoke.conf'
 reload_current_config = meson.project_build_root() / 'reload-current-smoke.conf'
 reload_next_config = meson.project_build_root() / 'reload-next-smoke.conf'
 reload_restart_config = meson.project_build_root() / 'reload-restart-smoke.conf'
+reload_invalid_config = meson.project_build_root() / 'reload-invalid-smoke.conf'
 invalid_config = meson.project_build_root() / 'invalid-smoke.conf'
 oversized_config = meson.project_build_root() / 'oversized-smoke.conf'
 unsafe_config = meson.project_build_root() / 'unsafe-smoke.conf'
@@ -164,6 +165,29 @@ test(
       + ' '
       + reload_restart_config
       + ' 2>&1 | grep -q "server.name=restart_required"',
+  ],
+)
+
+test(
+  'server-plan-config-reload-invalid-next-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'printf "%s\n" "security.federation.remote_timeout=30s" > '
+      + reload_current_config
+      + ' && chmod 0644 '
+      + reload_current_config
+      + ' && printf "%s\n" "security.federation.remote_timeout=forever" > '
+      + reload_invalid_config
+      + ' && chmod 0644 '
+      + reload_invalid_config
+      + ' && '
+      + server_executable
+      + ' --plan-config-reload '
+      + reload_current_config
+      + ' '
+      + reload_invalid_config
+      + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
 
