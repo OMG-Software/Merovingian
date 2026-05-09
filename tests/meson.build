@@ -23,6 +23,7 @@ if get_option('build_tests')
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
+      'unit/test_auth.cpp',
       'unit/test_canonicaljson_parser.cpp',
       'unit/test_canonicaljson_serializer.cpp',
       'unit/test_config_defaults.cpp',
@@ -48,7 +49,7 @@ if get_option('build_tests')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep],
-    link_with: [canonicaljson_lib, core_lib, config_lib, database_lib, events_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib, rooms_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, database_lib, events_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib, rooms_lib],
   )
 
   test('unit-tests', unit_tests)
