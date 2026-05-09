@@ -1,5 +1,6 @@
 subdir('core')
 subdir('config')
+subdir('database')
 subdir('net')
 
 executable(
@@ -7,6 +8,6 @@ executable(
   sources: files('main.cpp'),
   include_directories: inc,
   dependencies: [thread_dep],
-  link_with: [core_lib, config_lib, net_lib],
+  link_with: [core_lib, config_lib, database_lib, net_lib],
   install: true,
 )
