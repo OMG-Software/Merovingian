@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <merovingian/canonicaljson/parser.hpp>
 #include <merovingian/canonicaljson/serializer.hpp>
 
 #include <algorithm>
+#include <array>
 #include <string>
 #include <utility>
 #include <variant>
@@ -18,11 +20,25 @@ struct SerializedMember final
     std::string value{};
 };
 
+[[nodiscard]] auto hex_digit(unsigned char value) noexcept -> char
+{
+    constexpr auto digits = std::array<char, 16U>{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+    return digits[value & 0x0FU];
+}
+
+auto append_control_escape(std::string& output, unsigned char value) -> void
+{
+    output += "\\u00";
+    output.push_back(hex_digit(static_cast<unsigned char>(value >> 4U)));
+    output.push_back(hex_digit(value));
+}
+
 auto append_escaped_string(std::string& output, std::string_view value) -> void
 {
     output.push_back('"');
     for (auto const character : value)
     {
+        auto const byte = static_cast<unsigned char>(character);
         switch (character)
         {
         case '"':
@@ -47,7 +63,14 @@ auto append_escaped_string(std::string& output, std::string_view value) -> void
             output += "\\t";
             break;
         default:
-            output.push_back(character);
+            if (byte < 0x20U)
+            {
+                append_control_escape(output, byte);
+            }
+            else
+            {
+                output.push_back(character);
+            }
             break;
         }
     }
@@ -90,7 +113,7 @@ auto append_escaped_string(std::string& output, std::string_view value) -> void
     members.reserve(object.size());
     for (auto const& member : object)
     {
-        if (!string_is_valid_for_json(member.key))
+        if (member.value == nullptr || !string_is_valid_for_json(member.key))
         {
             return {{}, CanonicalJsonError::invalid_string};
         }
@@ -181,17 +204,7 @@ auto canonical_json_error_name(CanonicalJsonError error) noexcept -> char const*
 
 auto string_is_valid_for_json(std::string_view value) noexcept -> bool
 {
-    for (auto const character : value)
-    {
-        auto const byte = static_cast<unsigned char>(character);
-        if (byte < 0x20U && character != '\b' && character != '\f' && character != '\n' && character != '\r'
-            && character != '\t')
-        {
-            return false;
-        }
-    }
-
-    return true;
+    return utf8_is_valid(value);
 }
 
 auto object_has_duplicate_keys(Object const& object) noexcept -> bool
