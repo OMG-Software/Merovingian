@@ -29,6 +29,8 @@ TEST_CASE("Key-value config parser applies known scalar values", "[config][parse
         "listeners.client.bind=127.0.0.1:9008\n"
         "database.pool_size=32\n"
         "security.federation.default_policy=deny\n"
+        "security.federation.max_transaction_size=8MiB\n"
+        "security.federation.remote_timeout=45s\n"
         "security.media.max_upload_size=25MiB\n"
     };
 
@@ -41,6 +43,8 @@ TEST_CASE("Key-value config parser applies known scalar values", "[config][parse
     REQUIRE(result.config.listeners().client.bind == "127.0.0.1:9008");
     REQUIRE(result.config.database().pool_size == 32U);
     REQUIRE(result.config.security().federation.default_policy == "deny");
+    REQUIRE(result.config.security().federation.max_transaction_size == "8MiB");
+    REQUIRE(result.config.security().federation.remote_timeout == "45s");
     REQUIRE(result.config.security().media.max_upload_size == "25MiB");
 }
 
@@ -160,6 +164,8 @@ TEST_CASE("Key-value config parser validates parsed insecure settings", "[config
         "listeners.client.bind=0.0.0.0:8008\n"
         "security.registration.enabled=true\n"
         "security.registration.require_token=false\n"
+        "security.federation.max_transaction_size=unbounded\n"
+        "security.federation.remote_timeout=forever\n"
     };
 
     // When
