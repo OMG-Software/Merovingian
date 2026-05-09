@@ -73,6 +73,7 @@ struct MediaSecurityConfig final
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};
     bool block_private_ip_fetches{true};
+    std::string remote_fetch_timeout{"30s"};
     bool decode_in_sandbox{true};
 };
 
