@@ -5,12 +5,15 @@
 #include <merovingian/observability/logger.hpp>
 
 #include <fstream>
+#include <iostream>
 #include <string>
 #include <string_view>
 #include <utility>
 
 namespace
 {
+
+constexpr auto version = std::string_view{"0.1.0"};
 
 [[nodiscard]] auto reject_config_file(std::string field, std::string message)
     -> merovingian::config::ConfigParseResult
@@ -68,13 +71,53 @@ namespace
         return load_config_from_file(argv[2]);
     }
 
-    return reject_config_file("arguments", "usage: merovingian-server [--config <path>]");
+    return reject_config_file("arguments", "usage: merovingian-server [--config <path>] [--help] [--version]");
+}
+
+[[nodiscard]] auto is_help_request(int argc, char const* const* argv) noexcept -> bool
+{
+    return argc == 2 && (std::string_view{argv[1]} == "--help" || std::string_view{argv[1]} == "-h");
+}
+
+[[nodiscard]] auto is_version_request(int argc, char const* const* argv) noexcept -> bool
+{
+    return argc == 2 && std::string_view{argv[1]} == "--version";
+}
+
+auto print_help() -> void
+{
+    std::cout << "The Merovingian bootstrap server\n"
+              << "\n"
+              << "Usage:\n"
+              << "  merovingian-server\n"
+              << "  merovingian-server --config <path>\n"
+              << "  merovingian-server --help\n"
+              << "  merovingian-server --version\n"
+              << "\n"
+              << "Configuration is validated before startup continues.\n";
+}
+
+auto print_version() -> void
+{
+    std::cout << "merovingian-server " << version << '\n';
 }
 
 } // namespace
 
 auto main(int argc, char const* const* argv) -> int
 {
+    if (is_help_request(argc, argv))
+    {
+        print_help();
+        return 0;
+    }
+
+    if (is_version_request(argc, argv))
+    {
+        print_version();
+        return 0;
+    }
+
     LOG_INFO("Starting The Merovingian bootstrap server");
 
     auto const parsed = build_config(argc, argv);
