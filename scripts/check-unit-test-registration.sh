@@ -6,19 +6,15 @@ set -eu
 repo_root=${1:-.}
 cd "$repo_root"
 
-actual=$(find tests/unit -maxdepth 1 -type f -name 'test_*.cpp' -printf 'unit/%f\n' | sort)
-registered=$(sed -n "s/^[[:space:]]*'\(unit\/test_[^']*\.cpp\)'.*/\1/p" tests/meson.build | sort)
+actual_file=$(mktemp)
+registered_file=$(mktemp)
+trap 'rm -f "$actual_file" "$registered_file"' EXIT HUP INT TERM
 
-missing=$(comm -23 /tmp/actual-unit-tests.$$ /tmp/registered-unit-tests.$$ 2>/dev/null || true)
-extra=$(comm -13 /tmp/actual-unit-tests.$$ /tmp/registered-unit-tests.$$ 2>/dev/null || true)
+find tests/unit -maxdepth 1 -type f -name 'test_*.cpp' -printf 'unit/%f\n' | sort > "$actual_file"
+sed -n "s/^[[:space:]]*'\(unit\/test_[^']*\.cpp\)'.*/\1/p" tests/meson.build | sort > "$registered_file"
 
-printf '%s\n' "$actual" > /tmp/actual-unit-tests.$$
-printf '%s\n' "$registered" > /tmp/registered-unit-tests.$$
-
-missing=$(comm -23 /tmp/actual-unit-tests.$$ /tmp/registered-unit-tests.$$)
-extra=$(comm -13 /tmp/actual-unit-tests.$$ /tmp/registered-unit-tests.$$)
-
-rm -f /tmp/actual-unit-tests.$$ /tmp/registered-unit-tests.$$
+missing=$(comm -23 "$actual_file" "$registered_file")
+extra=$(comm -13 "$actual_file" "$registered_file")
 
 if [ -n "$missing" ]; then
     printf '%s\n' 'Unit tests present on disk but missing from tests/meson.build:' >&2
