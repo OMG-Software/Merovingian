@@ -3,6 +3,8 @@
 #include <merovingian/bootstrap/exit_code.hpp>
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/config_parser.hpp>
+#include <merovingian/config/reload_plan.hpp>
+#include <merovingian/config/reload_policy.hpp>
 #include <merovingian/database/runtime_database.hpp>
 #include <merovingian/federation/runtime_federation.hpp>
 #include <merovingian/net/listener.hpp>
@@ -217,7 +219,7 @@ struct BootstrapConfigResult final
     return reject_config(
         merovingian::bootstrap::ExitCode::usage_error,
         "arguments",
-        "usage: merovingian-server [--config <path>] [--check-config <path>] [--help] [--version]"
+        "usage: merovingian-server [--config <path>] [--check-config <path>] [--plan-config-reload <current> <next>] [--help] [--version]"
     );
 }
 
@@ -236,6 +238,11 @@ struct BootstrapConfigResult final
     return argc == 3 && std::string_view{argv[1]} == "--check-config";
 }
 
+[[nodiscard]] auto is_plan_config_reload_request(int argc, char const* const* argv) noexcept -> bool
+{
+    return argc == 4 && std::string_view{argv[1]} == "--plan-config-reload";
+}
+
 auto print_help() -> void
 {
     std::cout << "The Merovingian bootstrap server\n"
@@ -244,6 +251,7 @@ auto print_help() -> void
               << "  merovingian-server\n"
               << "  merovingian-server --config <path>\n"
               << "  merovingian-server --check-config <path>\n"
+              << "  merovingian-server --plan-config-reload <current> <next>\n"
               << "  merovingian-server --help\n"
               << "  merovingian-server --version\n"
               << "\n"
@@ -273,6 +281,32 @@ auto check_config_file(std::string const& path) -> int
     }
 
     std::cout << "Configuration check passed: " << path << '\n';
+    return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
+}
+
+auto plan_config_reload(std::string const& current_path, std::string const& next_path) -> int
+{
+    auto const current = load_config_from_file(current_path);
+    if (!current.parsed.findings.empty())
+    {
+        log_config_findings(current);
+        return merovingian::bootstrap::to_int(current.failure_code);
+    }
+
+    auto const next = load_config_from_file(next_path);
+    if (!next.parsed.findings.empty())
+    {
+        log_config_findings(next);
+        return merovingian::bootstrap::to_int(next.failure_code);
+    }
+
+    auto const plan = merovingian::config::build_reload_plan(current.parsed.config, next.parsed.config);
+    std::cout << merovingian::config::reload_plan_summary(plan) << '\n';
+    for (auto const& change : plan.changes)
+    {
+        std::cout << change.key << '=' << merovingian::config::reload_policy_name(change.policy) << '\n';
+    }
+
     return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
 }
 
@@ -332,6 +366,11 @@ auto main(int argc, char const* const* argv) -> int
     if (is_check_config_request(argc, argv))
     {
         return check_config_file(argv[2]);
+    }
+
+    if (is_plan_config_reload_request(argc, argv))
+    {
+        return plan_config_reload(argv[2], argv[3]);
     }
 
     LOG_INFO("Starting The Merovingian bootstrap server");
