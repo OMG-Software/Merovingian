@@ -302,6 +302,19 @@ auto plan_config_reload(std::string const& current_path, std::string const& next
 
     auto const plan = merovingian::config::build_reload_plan(current.parsed.config, next.parsed.config);
     std::cout << merovingian::config::reload_plan_summary(plan) << '\n';
+    if (!plan.has_changes())
+    {
+        std::cout << "Reload action: no changes" << '\n';
+    }
+    else if (plan.has_restart_required_changes())
+    {
+        std::cout << "Reload action: restart required" << '\n';
+    }
+    else
+    {
+        std::cout << "Reload action: reloadable" << '\n';
+    }
+
     for (auto const& change : plan.changes)
     {
         std::cout << change.key << '=' << merovingian::config::reload_policy_name(change.policy) << '\n';
