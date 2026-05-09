@@ -167,6 +167,14 @@ inline auto apply_config_value(
     {
         security.federation.deny_ip_ranges = parse_string_list(value);
     }
+    else if (key == "security.federation.max_transaction_size")
+    {
+        security.federation.max_transaction_size = std::string{value};
+    }
+    else if (key == "security.federation.remote_timeout")
+    {
+        security.federation.remote_timeout = std::string{value};
+    }
     else if (key == "security.media.max_upload_size")
     {
         security.media.max_upload_size = std::string{value};
