@@ -17,7 +17,7 @@ if get_option('build_tests')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep],
-    link_with: [core_lib],
+    link_with: [core_lib, config_lib],
   )
 
   test('unit-tests', unit_tests)
