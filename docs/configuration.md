@@ -1,6 +1,6 @@
 # Configuration
 
-The Phase 1 bootstrap configuration uses a conservative dependency-free `key=value` format.
+The bootstrap configuration uses a conservative dependency-free `key=value` format.
 
 This format is intentionally narrow while the runtime is still being built. It provides a checked operator-facing configuration path without adding a YAML, TOML, or JSON dependency before dependency review is complete.
 
@@ -41,6 +41,9 @@ Startup rejects configuration before doing runtime work when parser or validatio
 Rejected cases include:
 
 - unreadable config path
+- missing config path
+- unsafe config file permissions
+- unsafe existing secret file permissions
 - oversized config file
 - oversized config line
 - duplicate config key
@@ -59,6 +62,8 @@ Rejected cases include:
 - disabled federation TLS validation
 - disabled federation JSON signature verification
 - missing private or loopback federation deny ranges
+- invalid federation transaction size
+- invalid federation remote timeout
 - invalid media upload size
 - disabled private-IP blocking for remote media fetches
 - disabled sandboxed media decoding
@@ -78,7 +83,7 @@ Bootstrap exits with explicit status codes:
 
 ## Listener exposure policy
 
-The Phase 1 defaults bind both client and federation listeners to loopback with TLS disabled. This supports a reverse-proxy deployment model while avoiding accidental public cleartext exposure.
+The defaults bind both client and federation listeners to loopback with TLS disabled. This supports a reverse-proxy deployment model while avoiding accidental public cleartext exposure.
 
 A listener with `tls=false` must bind to one of:
 
@@ -89,9 +94,9 @@ A listener with `tls=false` must bind to one of:
 
 A non-loopback listener must set `tls=true`.
 
-## Media size format
+## Size and duration formats
 
-`security.media.max_upload_size` accepts positive bounded byte sizes with one of these suffixes:
+Size values accept positive bounded byte sizes with one of these suffixes:
 
 - `B`
 - `KiB`
@@ -102,11 +107,43 @@ Examples:
 
 ```text
 security.media.max_upload_size=50MiB
-security.media.max_upload_size=1048576B
+security.federation.max_transaction_size=10MiB
 ```
 
 Values such as `0MiB`, `50MB`, `-1MiB`, `50 MiB`, and `unbounded` are rejected.
 
+Duration values accept positive bounded durations with one of these suffixes:
+
+- `s`
+- `m`
+
+Examples:
+
+```text
+security.federation.remote_timeout=30s
+security.federation.remote_timeout=1m
+```
+
+Values such as `0s`, `30`, `30ms`, and `forever` are rejected.
+
+## Reloadability policy
+
+Configuration parsing and validation are restart-safe today. Runtime hot reload is a Phase 2 boundary, not a completed control plane. The server now classifies keys by reload policy so later SIGHUP or admin-socket reload work can apply reloadable settings without treating every config change as a whole homeserver restart.
+
+| Key or key group | Policy |
+| --- | --- |
+| `server.name` | Restart required |
+| `database.uri_file` | Restart required |
+| `database.pool_size` | Reloadable |
+| `listeners.*` | Reloadable |
+| `security.registration.*` | Reloadable |
+| `security.encryption.*` | Reloadable |
+| `security.federation.*` | Reloadable |
+| `security.media.*` | Reloadable |
+| `security.logging.*` | Reloadable |
+
+Restart-required keys affect stable process identity or secret source selection. Reloadable keys are runtime policy or limit values that should be applied through the future reload path without a full homeserver restart.
+
 ## Current keys
 
-See `config/merovingian.conf.example` for the complete accepted Phase 1 key list.
+See `config/merovingian.conf.example` for the complete accepted key list.
