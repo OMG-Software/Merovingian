@@ -3,6 +3,7 @@ server_executable = meson.project_build_root() / 'src' / 'merovingian-server'
 example_config = meson.project_source_root() / 'config' / 'merovingian.conf.example'
 valid_config = meson.project_build_root() / 'valid-smoke.conf'
 invalid_config = meson.project_build_root() / 'invalid-smoke.conf'
+oversized_config = meson.project_build_root() / 'oversized-smoke.conf'
 
 test(
   'server-bootstrap-smoke-test',
@@ -60,6 +61,21 @@ test(
       + server_executable
       + ' --config '
       + invalid_config
+      + ' >/dev/null 2>&1',
+  ],
+)
+
+test(
+  'server-oversized-config-file-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'python3 -c "from pathlib import Path; Path(\''
+      + oversized_config
+      + '\').write_text(\'#\' * (1024 * 1024 + 1))" && ! '
+      + server_executable
+      + ' --config '
+      + oversized_config
       + ' >/dev/null 2>&1',
   ],
 )
