@@ -10,6 +10,8 @@ namespace merovingian::canonicaljson
 namespace
 {
 
+// Canonical JSON values are trees; object cloning recursively deep-copies children.
+// NOLINTNEXTLINE(misc-no-recursion)
 [[nodiscard]] auto clone_object(Object const& object) -> Object
 {
     auto cloned = Object{};
@@ -30,12 +32,16 @@ ObjectMember::ObjectMember(std::string key_value, std::unique_ptr<Value> owned_v
 {
 }
 
+// Object members own child values, so copying intentionally deep-copies the child tree.
+// NOLINTNEXTLINE(misc-no-recursion)
 ObjectMember::ObjectMember(ObjectMember const& other)
     : key{other.key},
       value{other.value == nullptr ? nullptr : std::make_unique<Value>(*other.value)}
 {
 }
 
+// Object members own child values, so copying intentionally deep-copies the child tree.
+// NOLINTNEXTLINE(misc-no-recursion)
 auto ObjectMember::operator=(ObjectMember const& other) -> ObjectMember&
 {
     if (this == &other)
@@ -78,11 +84,15 @@ Value::Value(Object value)
 {
 }
 
+// Canonical JSON values are recursive trees, so copying deep-copies nested values.
+// NOLINTNEXTLINE(misc-no-recursion)
 Value::Value(Value const& other)
 {
     *this = other;
 }
 
+// Canonical JSON values are recursive trees, so copying deep-copies nested values.
+// NOLINTNEXTLINE(misc-no-recursion)
 auto Value::operator=(Value const& other) -> Value&
 {
     if (this == &other)
