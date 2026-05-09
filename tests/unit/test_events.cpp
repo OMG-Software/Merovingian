@@ -81,6 +81,27 @@ TEST_CASE("Event signature scaffold attaches and detects signatures", "[events][
     REQUIRE(verified.error.empty());
 }
 
+TEST_CASE("Event signature scaffold preserves existing signatures", "[events][signing]")
+{
+    // Given
+    auto const parsed = merovingian::canonicaljson::parse_lossless(
+        "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_server_ts\":1,\"content\":{},\"signatures\":{\"old.example.org\":{\"ed25519:old\":\"old-signature\"}}}"
+    );
+    auto const old_key_id = merovingian::events::SigningKeyId{"old.example.org", "ed25519:old"};
+    auto const new_key_id = merovingian::events::SigningKeyId{"example.org", "ed25519:new"};
+
+    // When
+    auto const signed_json = merovingian::events::attach_event_signature(parsed.value, new_key_id, "new-signature");
+    auto const reparsed = merovingian::canonicaljson::parse_lossless(signed_json.output);
+    auto const old_signature = merovingian::events::verify_event_signature_presence(reparsed.value, old_key_id);
+    auto const new_signature = merovingian::events::verify_event_signature_presence(reparsed.value, new_key_id);
+
+    // Then
+    REQUIRE(signed_json.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    REQUIRE(old_signature.valid);
+    REQUIRE(new_signature.valid);
+}
+
 TEST_CASE("Event redaction keeps only allowed keys", "[events][redaction]")
 {
     // Given
@@ -98,6 +119,34 @@ TEST_CASE("Event redaction keeps only allowed keys", "[events][redaction]")
     REQUIRE(redacted.error.empty());
     REQUIRE(output.output.find("extra") == std::string::npos);
     REQUIRE(output.output.find("room_id") != std::string::npos);
+}
+
+TEST_CASE("Event redaction uses room-version-specific top-level keys", "[events][redaction]")
+{
+    // Given
+    auto const parsed = merovingian::canonicaljson::parse_lossless(
+        "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_server_ts\":1,\"content\":{},\"origin\":\"example.org\",\"prev_state\":[],\"membership\":\"join\",\"unsigned\":{}}"
+    );
+    auto const* room_v10 = merovingian::rooms::find_room_version_policy("10");
+    auto const* room_v12 = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(room_v10 != nullptr);
+    REQUIRE(room_v12 != nullptr);
+
+    // When
+    auto const redacted_v10 = merovingian::events::redact_event(parsed.value, *room_v10);
+    auto const redacted_v12 = merovingian::events::redact_event(parsed.value, *room_v12);
+    auto const output_v10 = merovingian::canonicaljson::serialize_canonical(redacted_v10.event);
+    auto const output_v12 = merovingian::canonicaljson::serialize_canonical(redacted_v12.event);
+
+    // Then
+    REQUIRE(output_v10.output.find("origin") != std::string::npos);
+    REQUIRE(output_v10.output.find("prev_state") != std::string::npos);
+    REQUIRE(output_v10.output.find("membership") != std::string::npos);
+    REQUIRE(output_v10.output.find("unsigned") == std::string::npos);
+    REQUIRE(output_v12.output.find("origin") == std::string::npos);
+    REQUIRE(output_v12.output.find("prev_state") == std::string::npos);
+    REQUIRE(output_v12.output.find("membership") == std::string::npos);
+    REQUIRE(output_v12.output.find("unsigned") != std::string::npos);
 }
 
 TEST_CASE("Room version registry exposes stable modern room versions", "[rooms]")
