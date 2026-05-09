@@ -1,5 +1,10 @@
 # The Merovingian
 
+[![Build](https://github.com/James-Chapman/The-Merovingian/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/ci.yml?query=branch%3Amain)
+[![Coverage](https://codecov.io/gh/James-Chapman/The-Merovingian/branch/main/graph/badge.svg)](https://codecov.io/gh/James-Chapman/The-Merovingian)
+[![CodeQL](https://github.com/James-Chapman/The-Merovingian/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/codeql.yml?query=branch%3Amain)
+[![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/James-Chapman/The-Merovingian/security/code-scanning)
+
 Security-first Matrix homeserver written in modern C++26.
 
 ## Goals
