@@ -4,6 +4,7 @@
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/config_parser.hpp>
 #include <merovingian/core/file_metadata.hpp>
+#include <merovingian/database/runtime_database.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/observability/logger.hpp>
 
@@ -249,12 +250,14 @@ auto print_version() -> void
 auto log_startup_summary(BootstrapConfigResult const& result) -> void
 {
     auto const& config = result.parsed.config;
+    auto const runtime_database = merovingian::database::make_runtime_database_config(config);
     auto const runtime_listeners = merovingian::net::make_runtime_listeners(config);
 
     LOG_INFO("Configuration validation passed");
     LOG_INFO("Configuration source: " + result.source);
     LOG_INFO("Server name: " + config.server().server_name);
     LOG_INFO("Public base URL: " + config.server().public_baseurl);
+    LOG_INFO(merovingian::database::database_summary(runtime_database));
     LOG_INFO("Client listener: " + config.listeners().client.bind);
     LOG_INFO("Federation listener: " + config.listeners().federation.bind);
     LOG_INFO("Planned runtime listeners: " + std::to_string(runtime_listeners.count()));
