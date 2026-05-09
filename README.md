@@ -31,6 +31,18 @@ meson test -C build
 
 ## Run
 
+Show usage:
+
+```bash
+./build/src/merovingian-server --help
+```
+
+Show version:
+
+```bash
+./build/src/merovingian-server --version
+```
+
 Use compiled secure defaults:
 
 ```bash
