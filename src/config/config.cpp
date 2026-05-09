@@ -370,6 +370,14 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.media.block_private_ip_fetches", "remote media fetches must block private IPs"});
     }
 
+    auto const media_remote_fetch_timeout = parse_duration_seconds(config.security().media.remote_fetch_timeout);
+    if (!media_remote_fetch_timeout.valid)
+    {
+        findings.push_back(
+            {"security.media.remote_fetch_timeout", "media remote fetch timeout must be a positive bounded duration"}
+        );
+    }
+
     if (!config.security().media.decode_in_sandbox)
     {
         findings.push_back({"security.media.decode_in_sandbox", "media decoding must happen in a sandbox"});

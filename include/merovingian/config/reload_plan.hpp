@@ -4,6 +4,7 @@
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/reload_policy.hpp>
 
+#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -16,14 +17,19 @@ struct ReloadChange final
     ReloadPolicy policy{ReloadPolicy::reloadable};
 };
 
-struct ReloadPlan final
+class ReloadPlan final
 {
-    std::vector<ReloadChange> changes{};
-
+public:
+    [[nodiscard]] auto changes() const noexcept -> std::vector<ReloadChange> const&;
     [[nodiscard]] auto has_changes() const noexcept -> bool;
     [[nodiscard]] auto has_restart_required_changes() const noexcept -> bool;
     [[nodiscard]] auto reloadable_change_count() const noexcept -> std::size_t;
     [[nodiscard]] auto restart_required_change_count() const noexcept -> std::size_t;
+
+    auto add_change(ReloadChange change) -> void;
+
+private:
+    std::vector<ReloadChange> m_changes{};
 };
 
 [[nodiscard]] auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan;

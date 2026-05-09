@@ -20,7 +20,7 @@ TEST_CASE("Reload plan is empty for identical configs", "[config][reload]")
     REQUIRE_FALSE(plan.has_restart_required_changes());
     REQUIRE(plan.reloadable_change_count() == 0U);
     REQUIRE(plan.restart_required_change_count() == 0U);
-    REQUIRE(plan.changes.empty());
+    REQUIRE(plan.changes().empty());
     REQUIRE(merovingian::config::reload_plan_summary(plan) == "Reload plan: changes=0 reloadable=0 restart_required=0");
 }
 
@@ -51,11 +51,11 @@ TEST_CASE("Reload plan marks runtime policy changes as reloadable", "[config][re
     // Then
     REQUIRE(plan.has_changes());
     REQUIRE_FALSE(plan.has_restart_required_changes());
-    REQUIRE(plan.changes.size() == 2U);
+    REQUIRE(plan.changes().size() == 2U);
     REQUIRE(plan.reloadable_change_count() == 2U);
     REQUIRE(plan.restart_required_change_count() == 0U);
-    REQUIRE(plan.changes[0].policy == merovingian::config::ReloadPolicy::reloadable);
-    REQUIRE(plan.changes[1].policy == merovingian::config::ReloadPolicy::reloadable);
+    REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
+    REQUIRE(plan.changes()[1].policy == merovingian::config::ReloadPolicy::reloadable);
     REQUIRE(merovingian::config::reload_plan_summary(plan) == "Reload plan: changes=2 reloadable=2 restart_required=0");
 }
 
@@ -88,10 +88,10 @@ TEST_CASE("Reload plan flags restart-required identity and secret source changes
     // Then
     REQUIRE(plan.has_changes());
     REQUIRE(plan.has_restart_required_changes());
-    REQUIRE(plan.changes.size() == 2U);
+    REQUIRE(plan.changes().size() == 2U);
     REQUIRE(plan.reloadable_change_count() == 0U);
     REQUIRE(plan.restart_required_change_count() == 2U);
-    REQUIRE(plan.changes[0].policy == merovingian::config::ReloadPolicy::restart_required);
-    REQUIRE(plan.changes[1].policy == merovingian::config::ReloadPolicy::restart_required);
+    REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::restart_required);
+    REQUIRE(plan.changes()[1].policy == merovingian::config::ReloadPolicy::restart_required);
     REQUIRE(merovingian::config::reload_plan_summary(plan) == "Reload plan: changes=2 reloadable=0 restart_required=2");
 }

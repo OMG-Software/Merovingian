@@ -1,0 +1,46 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include <merovingian/config/config.hpp>
+#include <merovingian/media/runtime_media.hpp>
+
+#include <catch2/catch_test_macros.hpp>
+
+#include <string>
+
+TEST_CASE("Runtime media config parses bounded media limits", "[media][runtime]")
+{
+    auto security = merovingian::config::SecurityConfig{};
+    security.media.max_upload_size = "25MiB";
+    security.media.remote_fetch_timeout = "45s";
+    auto const config = merovingian::config::Config{
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},
+        security,
+    };
+
+    auto const runtime_media = merovingian::media::make_runtime_media_config(config);
+
+    REQUIRE(runtime_media.max_upload_bytes == 26214400U);
+    REQUIRE(runtime_media.remote_fetch_timeout_seconds == 45U);
+    REQUIRE(runtime_media.quarantine_unknown_mime);
+    REQUIRE(runtime_media.enable_av_scanner);
+    REQUIRE(runtime_media.private_address_fetches_blocked);
+    REQUIRE(runtime_media.decode_in_sandbox);
+}
+
+TEST_CASE("Runtime media summary exposes bounded operational values", "[media][runtime]")
+{
+    auto runtime_media = merovingian::media::RuntimeMediaConfig{};
+    runtime_media.max_upload_bytes = 52428800U;
+    runtime_media.remote_fetch_timeout_seconds = 30U;
+    runtime_media.private_address_fetches_blocked = true;
+    runtime_media.decode_in_sandbox = true;
+
+    auto const summary = merovingian::media::media_summary(runtime_media);
+
+    REQUIRE(summary.find("max_upload_bytes=52428800") != std::string::npos);
+    REQUIRE(summary.find("remote_fetch_timeout_seconds=30") != std::string::npos);
+    REQUIRE(summary.find("private_address_fetches_blocked=true") != std::string::npos);
+    REQUIRE(summary.find("decode_in_sandbox=true") != std::string::npos);
+}

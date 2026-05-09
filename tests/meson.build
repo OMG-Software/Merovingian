@@ -10,6 +10,7 @@ if get_option('build_tests')
     sources: files(
       'unit/test_main.cpp',
       'unit/test_config_defaults.cpp',
+      'unit/test_config_media_timeout.cpp',
       'unit/test_config_parser.cpp',
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
@@ -21,11 +22,12 @@ if get_option('build_tests')
       'unit/test_runtime_database.cpp',
       'unit/test_runtime_federation.cpp',
       'unit/test_runtime_listeners.cpp',
+      'unit/test_runtime_media.cpp',
       'unit/test_secret_buffer.cpp',
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep],
-    link_with: [core_lib, config_lib, database_lib, federation_lib, net_lib, platform_lib],
+    link_with: [core_lib, config_lib, database_lib, federation_lib, media_lib, net_lib, platform_lib],
   )
 
   test('unit-tests', unit_tests)

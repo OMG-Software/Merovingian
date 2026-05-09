@@ -78,6 +78,7 @@ Rejected cases include:
 - invalid federation remote timeout
 - invalid media upload size
 - disabled private-IP blocking for remote media fetches
+- invalid media remote fetch timeout
 - disabled sandboxed media decoding
 - disabled token or event-content log redaction
 
@@ -134,6 +135,7 @@ Examples:
 ```text
 security.federation.remote_timeout=30s
 security.federation.remote_timeout=1m
+security.media.remote_fetch_timeout=30s
 ```
 
 Values such as `0s`, `30`, `30ms`, and `forever` are rejected.
@@ -180,6 +182,42 @@ Reload action: no changes
 | `security.logging.*` | Reloadable |
 
 Restart-required keys affect stable process identity or secret source selection. Reloadable keys are runtime policy or limit values that should be applied through the future reload path without a full homeserver restart.
+
+## Runtime config snapshot
+
+The runtime config snapshot owns the currently validated in-memory config and can apply a candidate config only when the reload plan has no restart-required changes.
+
+Application outcomes are:
+
+| Outcome | Meaning |
+| --- | --- |
+| `unchanged` | Candidate config matches the current runtime config. |
+| `applied` | Candidate config changed only reloadable keys and replaced the in-memory snapshot. |
+| `restart_required` | Candidate config changed at least one restart-required key and was not applied. |
+
+The snapshot is an internal foundation for future live reload. It is not yet connected to SIGHUP, an admin socket, or any external control API.
+
+## Startup hardening self-check
+
+Startup logs a fixed checklist of hardening signals. Phase 2 exposes the checklist shape and intentionally reports `unknown` where the runtime probe has not been implemented yet.
+
+| Check | Current signal source |
+| --- | --- |
+| `compiler hardening` | Placeholder, currently `unknown` |
+| `linker hardening` | Placeholder, currently `unknown` |
+| `PIE` | Compile-time macro when available, otherwise `unknown` |
+| `RELRO` | Placeholder, currently `unknown` |
+| `stack protector` | Compile-time macro when available, otherwise `unknown` |
+| `FORTIFY_SOURCE` | Compile-time macro when available, otherwise `unknown` |
+| `seccomp` | Placeholder, currently `unknown` |
+| `pledge/unveil` | Placeholder, currently `unknown` |
+| `capsicum` | Placeholder, currently `unknown` |
+| `privilege drop` | Placeholder, currently `unknown` |
+| `filesystem restrictions` | Placeholder, currently `unknown` |
+| `core dump policy` | Placeholder, currently `unknown` |
+| `secret redaction policy` | Enabled by validated logging defaults |
+
+Unknown values are not success claims. They mark work that still requires platform-specific runtime probes or sandbox setup.
 
 ## Current keys
 

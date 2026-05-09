@@ -7,6 +7,7 @@
 #include <merovingian/config/reload_policy.hpp>
 #include <merovingian/database/runtime_database.hpp>
 #include <merovingian/federation/runtime_federation.hpp>
+#include <merovingian/media/runtime_media.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/observability/logger.hpp>
 #include <merovingian/platform/file_metadata.hpp>
@@ -140,7 +141,7 @@ struct BootstrapConfigResult final
 
 [[nodiscard]] auto load_config_from_file(std::string const& path) -> BootstrapConfigResult
 {
-    auto const metadata_validation = validate_config_file_metadata(path);
+    auto metadata_validation = validate_config_file_metadata(path);
     if (!metadata_validation.parsed.findings.empty())
     {
         return metadata_validation;
@@ -194,7 +195,7 @@ struct BootstrapConfigResult final
         return result;
     }
 
-    auto const secret_validation = validate_existing_secret_files(result.parsed.config);
+    auto secret_validation = validate_existing_secret_files(result.parsed.config);
     if (!secret_validation.parsed.findings.empty())
     {
         return secret_validation;
@@ -315,7 +316,7 @@ auto plan_config_reload(std::string const& current_path, std::string const& next
         std::cout << "Reload action: reloadable" << '\n';
     }
 
-    for (auto const& change : plan.changes)
+    for (auto const& change : plan.changes())
     {
         std::cout << change.key << '=' << merovingian::config::reload_policy_name(change.policy) << '\n';
     }
@@ -330,6 +331,7 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     auto const runtime_database = merovingian::database::make_runtime_database_config(config);
     auto const runtime_federation = merovingian::federation::make_runtime_federation_config(config);
     auto const runtime_listeners = merovingian::net::make_runtime_listeners(config);
+    auto const runtime_media = merovingian::media::make_runtime_media_config(config);
 
     LOG_INFO("Configuration validation passed");
     LOG_INFO("Configuration source: " + result.source);
@@ -345,6 +347,7 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     }
     LOG_INFO(merovingian::database::database_summary(runtime_database));
     LOG_INFO(merovingian::federation::federation_summary(runtime_federation));
+    LOG_INFO(merovingian::media::media_summary(runtime_media));
     LOG_INFO("Client listener: " + config.listeners().client.bind);
     LOG_INFO("Federation listener: " + config.listeners().federation.bind);
     LOG_INFO("Planned runtime listeners: " + std::to_string(runtime_listeners.count()));

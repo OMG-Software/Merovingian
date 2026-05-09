@@ -1,4 +1,4 @@
-# The Merovingian Phase 1 bootstrap configuration
+# The Merovingian Phase 2 bootstrap configuration
 # Format: key=value
 # Blank lines and lines beginning with # are ignored.
 
@@ -35,6 +35,7 @@ security.media.max_upload_size=50MiB
 security.media.quarantine_unknown_mime=true
 security.media.enable_av_scanner=true
 security.media.block_private_ip_fetches=true
+security.media.remote_fetch_timeout=30s
 security.media.decode_in_sandbox=true
 
 security.logging.redact_tokens=true
