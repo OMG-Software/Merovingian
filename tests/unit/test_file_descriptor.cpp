@@ -6,16 +6,21 @@
 
 #include <unistd.h>
 
-TEST_CASE("FileDescriptor defaults to invalid", "[core][file_descriptor]") {
-    // Given / When
+TEST_CASE("FileDescriptor defaults to invalid", "[core][file_descriptor]")
+{
+    // Given
+    auto constexpr invalid_fd = merovingian::core::FileDescriptor::invalid;
+
+    // When
     auto fd = merovingian::core::FileDescriptor{};
 
     // Then
     REQUIRE_FALSE(fd.valid());
-    REQUIRE(fd.get() == merovingian::core::FileDescriptor::invalid);
+    REQUIRE(fd.get() == invalid_fd);
 }
 
-TEST_CASE("FileDescriptor can release ownership", "[core][file_descriptor]") {
+TEST_CASE("FileDescriptor can release ownership", "[core][file_descriptor]")
+{
     // Given
     int raw_fds[2]{};
     REQUIRE(::pipe(raw_fds) == 0);
