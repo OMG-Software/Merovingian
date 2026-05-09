@@ -76,6 +76,8 @@ TEST_CASE("Config blocks private federation and loopback targets by default", "[
     REQUIRE(federation.deny_ip_ranges.size() == 6U);
     REQUIRE(federation.deny_ip_ranges[0] == "127.0.0.0/8");
     REQUIRE(federation.deny_ip_ranges[5] == "fc00::/7");
+    REQUIRE(federation.max_transaction_size == "10MiB");
+    REQUIRE(federation.remote_timeout == "30s");
 }
 
 TEST_CASE("Config enables media and logging protections by default", "[config][security]")
@@ -112,6 +114,23 @@ TEST_CASE("Default media upload limit parses to bytes", "[config][validation]")
     REQUIRE(parsed.bytes == 52428800U);
 }
 
+TEST_CASE("Default federation transaction limit and timeout parse", "[config][validation]")
+{
+    // Given
+    auto const transaction_limit = std::string{"10MiB"};
+    auto const remote_timeout = std::string{"30s"};
+
+    // When
+    auto const parsed_limit = merovingian::config::parse_size_limit(transaction_limit);
+    auto const parsed_timeout = merovingian::config::parse_duration_seconds(remote_timeout);
+
+    // Then
+    REQUIRE(parsed_limit.valid);
+    REQUIRE(parsed_limit.bytes == 10485760U);
+    REQUIRE(parsed_timeout.valid);
+    REQUIRE(parsed_timeout.seconds == 30U);
+}
+
 TEST_CASE("Media upload size parser rejects invalid or unbounded-looking values", "[config][validation]")
 {
     // Given
@@ -127,6 +146,23 @@ TEST_CASE("Media upload size parser rejects invalid or unbounded-looking values"
     REQUIRE_FALSE(merovingian::config::parse_size_limit(unsupported_suffix).valid);
     REQUIRE_FALSE(merovingian::config::parse_size_limit(negative).valid);
     REQUIRE_FALSE(merovingian::config::parse_size_limit(malformed).valid);
+}
+
+TEST_CASE("Duration parser accepts bounded seconds and minutes", "[config][validation]")
+{
+    // When / Then
+    REQUIRE(merovingian::config::parse_duration_seconds("30s").valid);
+    REQUIRE(merovingian::config::parse_duration_seconds("1m").seconds == 60U);
+}
+
+TEST_CASE("Duration parser rejects invalid or unbounded-looking values", "[config][validation]")
+{
+    // When / Then
+    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("").valid);
+    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("0s").valid);
+    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("30").valid);
+    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("30ms").valid);
+    REQUIRE_FALSE(merovingian::config::parse_duration_seconds("forever").valid);
 }
 
 TEST_CASE("Config validation helpers accept secure address-shaped defaults", "[config][validation]")
@@ -237,6 +273,27 @@ TEST_CASE("Config validation rejects invalid media upload size", "[config][valid
     // Given
     auto security = merovingian::config::SecurityConfig{};
     security.media.max_upload_size = "unbounded";
+
+    // When
+    auto const config = merovingian::config::Config{
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},
+        security,
+    };
+    auto const findings = merovingian::config::validate(config);
+
+    // Then
+    REQUIRE_FALSE(findings.empty());
+    REQUIRE_FALSE(merovingian::config::is_valid(config));
+}
+
+TEST_CASE("Config validation rejects invalid federation transaction limits", "[config][validation][security]")
+{
+    // Given
+    auto security = merovingian::config::SecurityConfig{};
+    security.federation.max_transaction_size = "unbounded";
+    security.federation.remote_timeout = "forever";
 
     // When
     auto const config = merovingian::config::Config{
