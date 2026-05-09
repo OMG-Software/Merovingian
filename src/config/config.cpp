@@ -153,6 +153,10 @@ auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult
         return {};
     }
 
+    constexpr auto kibibyte = std::uint64_t{1024U};
+    constexpr auto mebibyte = kibibyte * kibibyte;
+    constexpr auto gibibyte = mebibyte * kibibyte;
+
     auto multiplier = std::uint64_t{1U};
     auto const suffix = value.substr(index);
     if (suffix.empty() || suffix == "B")
@@ -161,15 +165,15 @@ auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult
     }
     else if (suffix == "KiB")
     {
-        multiplier = 1024U;
+        multiplier = kibibyte;
     }
     else if (suffix == "MiB")
     {
-        multiplier = 1024U * 1024U;
+        multiplier = mebibyte;
     }
     else if (suffix == "GiB")
     {
-        multiplier = 1024U * 1024U * 1024U;
+        multiplier = gibibyte;
     }
     else
     {
