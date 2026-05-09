@@ -118,9 +118,9 @@ test(
   smoke_test,
   args: [
     '-c',
-    'python3 -c "from pathlib import Path; Path(\''
+    'dd if=/dev/zero bs=1048577 count=1 2>/dev/null | tr "\\000" "#" > '
       + oversized_config
-      + '\').write_text(\'#\' * (1024 * 1024 + 1))" && '
+      + ' && '
       + server_executable
       + ' --config '
       + oversized_config
