@@ -10,21 +10,21 @@ namespace merovingian::events
 namespace
 {
 
+[[nodiscard]] auto base_key_is_allowed(std::string_view key) noexcept -> bool
+{
+    return key == "event_id" || key == "type" || key == "room_id" || key == "sender" || key == "state_key"
+        || key == "content" || key == "hashes" || key == "signatures" || key == "depth" || key == "prev_events"
+        || key == "auth_events" || key == "origin_server_ts";
+}
+
 [[nodiscard]] auto key_is_allowed(std::string_view key, rooms::RoomVersionPolicy const& policy) noexcept -> bool
 {
-    if (key == "event_id" || key == "type" || key == "room_id" || key == "sender" || key == "state_key"
-        || key == "content" || key == "hashes" || key == "signatures" || key == "depth" || key == "prev_events"
-        || key == "auth_events" || key == "origin" || key == "origin_server_ts" || key == "membership")
+    if (policy.redaction_rules == rooms::RedactionRules::room_v1_v10)
     {
-        return true;
+        return base_key_is_allowed(key) || key == "origin" || key == "prev_state" || key == "membership";
     }
 
-    if (policy.redaction_rules == rooms::RedactionRules::room_v11_plus && key == "unsigned")
-    {
-        return true;
-    }
-
-    return false;
+    return base_key_is_allowed(key) || key == "unsigned";
 }
 
 } // namespace
