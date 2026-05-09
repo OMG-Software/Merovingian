@@ -195,6 +195,28 @@ Application outcomes are:
 
 The snapshot is an internal foundation for future live reload. It is not yet connected to SIGHUP, an admin socket, or any external control API.
 
+## Startup hardening self-check
+
+Startup logs a fixed checklist of hardening signals. Phase 2 exposes the checklist shape and intentionally reports `unknown` where the runtime probe has not been implemented yet.
+
+| Check | Current signal source |
+| --- | --- |
+| `compiler hardening` | Placeholder, currently `unknown` |
+| `linker hardening` | Placeholder, currently `unknown` |
+| `PIE` | Compile-time macro when available, otherwise `unknown` |
+| `RELRO` | Placeholder, currently `unknown` |
+| `stack protector` | Compile-time macro when available, otherwise `unknown` |
+| `FORTIFY_SOURCE` | Compile-time macro when available, otherwise `unknown` |
+| `seccomp` | Placeholder, currently `unknown` |
+| `pledge/unveil` | Placeholder, currently `unknown` |
+| `capsicum` | Placeholder, currently `unknown` |
+| `privilege drop` | Placeholder, currently `unknown` |
+| `filesystem restrictions` | Placeholder, currently `unknown` |
+| `core dump policy` | Placeholder, currently `unknown` |
+| `secret redaction policy` | Enabled by validated logging defaults |
+
+Unknown values are not success claims. They mark work that still requires platform-specific runtime probes or sandbox setup.
+
 ## Current keys
 
 See `config/merovingian.conf.example` for the complete accepted key list.
