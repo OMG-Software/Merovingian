@@ -16,6 +16,13 @@ struct ObjectMember final
 {
     std::string key{};
     std::unique_ptr<Value> value{};
+
+    ObjectMember() = default;
+    ObjectMember(std::string key_value, std::unique_ptr<Value> owned_value);
+    ObjectMember(ObjectMember&& other) noexcept = default;
+    auto operator=(ObjectMember&& other) noexcept -> ObjectMember& = default;
+    ObjectMember(ObjectMember const& other);
+    auto operator=(ObjectMember const& other) -> ObjectMember&;
 };
 
 using Array = std::vector<Value>;
