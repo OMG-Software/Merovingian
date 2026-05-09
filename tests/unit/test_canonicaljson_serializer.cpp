@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <merovingian/canonicaljson/parser.hpp>
 #include <merovingian/canonicaljson/serializer.hpp>
 #include <merovingian/canonicaljson/value.hpp>
 
@@ -23,6 +24,26 @@ TEST_CASE("Canonical JSON escapes strings deterministically", "[canonicaljson]")
 
     REQUIRE(result.error == merovingian::canonicaljson::CanonicalJsonError::none);
     REQUIRE(result.output == "\"quote=\\\" slash=\\\\ newline=\\n\"");
+}
+
+TEST_CASE("Canonical JSON preserves escaped control code points when reserializing", "[canonicaljson]")
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless("\"\\u0000\\u001f\"");
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+    auto const result = merovingian::canonicaljson::serialize_canonical(parsed.value);
+
+    REQUIRE(result.error == merovingian::canonicaljson::CanonicalJsonError::none);
+    REQUIRE(result.output == "\"\\u0000\\u001f\"");
+}
+
+TEST_CASE("Canonical JSON rejects programmatic invalid UTF-8 strings", "[canonicaljson]")
+{
+    auto const result = merovingian::canonicaljson::serialize_canonical(
+        merovingian::canonicaljson::Value{std::string{"\xC0\x80", 2U}}
+    );
+
+    REQUIRE(result.error == merovingian::canonicaljson::CanonicalJsonError::invalid_string);
 }
 
 TEST_CASE("Canonical JSON serializes arrays without whitespace", "[canonicaljson]")
