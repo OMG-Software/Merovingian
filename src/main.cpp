@@ -96,6 +96,42 @@ struct BootstrapConfigResult final
     return {};
 }
 
+[[nodiscard]] auto validate_existing_secret_file_metadata(std::string const& path) -> BootstrapConfigResult
+{
+    auto const metadata_result = merovingian::core::read_posix_file_metadata(path);
+    if (!metadata_result.metadata.has_value())
+    {
+        return reject_config(
+            merovingian::bootstrap::ExitCode::config_io_error,
+            "database.uri_file",
+            "unable to inspect database URI file metadata: " + metadata_result.error
+        );
+    }
+
+    if (metadata_result.metadata->kind == merovingian::core::FileKind::missing)
+    {
+        return {};
+    }
+
+    if (!merovingian::core::is_secure_secret_file(*metadata_result.metadata))
+    {
+        return reject_config(
+            merovingian::bootstrap::ExitCode::config_validation_error,
+            "database.uri_file",
+            "database URI file must be a regular owner-only non-executable secret file"
+        );
+    }
+
+    return {};
+}
+
+[[nodiscard]] auto validate_existing_secret_files(
+    merovingian::config::Config const& config
+) -> BootstrapConfigResult
+{
+    return validate_existing_secret_file_metadata(config.database().uri_file);
+}
+
 [[nodiscard]] auto load_config_from_file(std::string const& path) -> BootstrapConfigResult
 {
     auto const metadata_validation = validate_config_file_metadata(path);
@@ -146,7 +182,19 @@ struct BootstrapConfigResult final
         );
     }
 
-    return classify_config_findings(merovingian::config::parse_key_value_config(contents), "file");
+    auto result = classify_config_findings(merovingian::config::parse_key_value_config(contents), "file");
+    if (!result.parsed.findings.empty())
+    {
+        return result;
+    }
+
+    auto const secret_validation = validate_existing_secret_files(result.parsed.config);
+    if (!secret_validation.parsed.findings.empty())
+    {
+        return secret_validation;
+    }
+
+    return result;
 }
 
 [[nodiscard]] auto build_config(int argc, char const* const* argv) -> BootstrapConfigResult
