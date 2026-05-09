@@ -6,26 +6,38 @@
 
 #include <stdexcept>
 
-TEST_CASE("not_null rejects nullptr", "[core][not_null]")
+SCENARIO("not_null rejects nullptr", "[core][not_null]")
 {
-    // Given
-    auto* value = static_cast<int*>(nullptr);
+    GIVEN("a null pointer")
+    {
+        auto* value = static_cast<int*>(nullptr);
 
-    // When
-    auto make_not_null = [&value]() { return merovingian::core::not_null<int*>{value}; };
+        WHEN("a not_null wrapper is constructed")
+        {
+            auto make_not_null = [&value]() { return merovingian::core::not_null<int*>{value}; };
 
-    // Then
-    REQUIRE_THROWS_AS(make_not_null(), std::invalid_argument);
+            THEN("construction throws invalid_argument")
+            {
+                REQUIRE_THROWS_AS(make_not_null(), std::invalid_argument);
+            }
+        }
+    }
 }
 
-TEST_CASE("not_null preserves valid pointer", "[core][not_null]")
+SCENARIO("not_null preserves valid pointer", "[core][not_null]")
 {
-    // Given
-    auto value = 42;
+    GIVEN("a valid pointer")
+    {
+        auto value = 42;
 
-    // When
-    auto ptr = merovingian::core::not_null<int*>{&value};
+        WHEN("a not_null wrapper is constructed")
+        {
+            auto ptr = merovingian::core::not_null<int*>{&value};
 
-    // Then
-    REQUIRE(*ptr.get() == 42);
+            THEN("the wrapped pointer dereferences to the original value")
+            {
+                REQUIRE(*ptr.get() == 42);
+            }
+        }
+    }
 }
