@@ -9,6 +9,7 @@ if get_option('build_tests')
     'merovingian-unit-tests',
     sources: files(
       'unit/test_main.cpp',
+      'unit/test_canonicaljson_parser.cpp',
       'unit/test_canonicaljson_serializer.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_media_timeout.cpp',
