@@ -86,33 +86,49 @@ namespace
     return cloned;
 }
 
+[[nodiscard]] auto clone_server_signatures(canonicaljson::Value const& server_value) -> canonicaljson::Object
+{
+    auto const* existing = std::get_if<canonicaljson::Object>(&server_value.storage());
+    if (existing == nullptr)
+    {
+        return {};
+    }
+
+    auto cloned = canonicaljson::Object{};
+    cloned.reserve(existing->size());
+    for (auto const& member : *existing)
+    {
+        cloned.push_back(canonicaljson::make_member(member.key, *member.value));
+    }
+    return cloned;
+}
+
+auto upsert_server_signature(canonicaljson::Object& server_signatures, SigningKeyId const& key_id, std::string_view signature)
+    -> void
+{
+    for (auto& key_member : server_signatures)
+    {
+        if (key_member.key == key_id.key_id)
+        {
+            key_member.value = std::make_unique<canonicaljson::Value>(std::string{signature});
+            return;
+        }
+    }
+
+    server_signatures.push_back(canonicaljson::make_member(key_id.key_id, canonicaljson::Value{std::string{signature}}));
+}
+
 auto upsert_signature(canonicaljson::Object& signatures, SigningKeyId const& key_id, std::string_view signature) -> void
 {
     for (auto& server_member : signatures)
     {
-        if (server_member.key != key_id.server_name)
+        if (server_member.key == key_id.server_name)
         {
-            continue;
+            auto server_signatures = clone_server_signatures(*server_member.value);
+            upsert_server_signature(server_signatures, key_id, signature);
+            server_member.value = std::make_unique<canonicaljson::Value>(std::move(server_signatures));
+            return;
         }
-
-        auto* server_signatures = std::get_if<canonicaljson::Object>(&server_member.value->storage());
-        if (server_signatures == nullptr)
-        {
-            server_member.value = std::make_unique<canonicaljson::Value>(canonicaljson::Object{});
-            server_signatures = std::get_if<canonicaljson::Object>(&server_member.value->storage());
-        }
-
-        for (auto& key_member : *server_signatures)
-        {
-            if (key_member.key == key_id.key_id)
-            {
-                key_member.value = std::make_unique<canonicaljson::Value>(std::string{signature});
-                return;
-            }
-        }
-
-        server_signatures->push_back(canonicaljson::make_member(key_id.key_id, canonicaljson::Value{std::string{signature}}));
-        return;
     }
 
     auto server_signatures = canonicaljson::Object{};
