@@ -28,6 +28,8 @@ security.federation.default_policy=allow
 security.federation.require_valid_tls=true
 security.federation.verify_json_signatures=true
 security.federation.deny_ip_ranges=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7
+security.federation.max_transaction_size=10MiB
+security.federation.remote_timeout=30s
 
 security.media.max_upload_size=50MiB
 security.media.quarantine_unknown_mime=true
