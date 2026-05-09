@@ -118,7 +118,7 @@ TEST_CASE("Event redaction keeps only allowed keys", "[events][redaction]")
     // Then
     REQUIRE(redacted.error.empty());
     REQUIRE(output.output.find("extra") == std::string::npos);
-    REQUIRE(output.output.find("room_id") != std::string::npos);
+    REQUIRE(output.output.find("\"room_id\"") != std::string::npos);
 }
 
 TEST_CASE("Event redaction uses room-version-specific top-level keys", "[events][redaction]")
@@ -139,14 +139,14 @@ TEST_CASE("Event redaction uses room-version-specific top-level keys", "[events]
     auto const output_v12 = merovingian::canonicaljson::serialize_canonical(redacted_v12.event);
 
     // Then
-    REQUIRE(output_v10.output.find("origin") != std::string::npos);
-    REQUIRE(output_v10.output.find("prev_state") != std::string::npos);
-    REQUIRE(output_v10.output.find("membership") != std::string::npos);
-    REQUIRE(output_v10.output.find("unsigned") == std::string::npos);
-    REQUIRE(output_v12.output.find("origin") == std::string::npos);
-    REQUIRE(output_v12.output.find("prev_state") == std::string::npos);
-    REQUIRE(output_v12.output.find("membership") == std::string::npos);
-    REQUIRE(output_v12.output.find("unsigned") != std::string::npos);
+    REQUIRE(output_v10.output.find("\"origin\"") != std::string::npos);
+    REQUIRE(output_v10.output.find("\"prev_state\"") != std::string::npos);
+    REQUIRE(output_v10.output.find("\"membership\"") != std::string::npos);
+    REQUIRE(output_v10.output.find("\"unsigned\"") == std::string::npos);
+    REQUIRE(output_v12.output.find("\"origin\"") == std::string::npos);
+    REQUIRE(output_v12.output.find("\"prev_state\"") == std::string::npos);
+    REQUIRE(output_v12.output.find("\"membership\"") == std::string::npos);
+    REQUIRE(output_v12.output.find("\"unsigned\"") != std::string::npos);
 }
 
 TEST_CASE("Room version registry exposes stable modern room versions", "[rooms]")
