@@ -56,7 +56,7 @@ namespace
 
 auto read_posix_file_metadata(std::string const& path) -> FileMetadataResult
 {
-    auto stat_buffer = struct stat{};
+    struct stat stat_buffer{};
     if (::lstat(path.c_str(), &stat_buffer) != 0)
     {
         if (errno == ENOENT)
