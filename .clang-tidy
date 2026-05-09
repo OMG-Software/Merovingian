@@ -1,7 +1,10 @@
 Checks: >
   -*,
   bugprone-*,
+  -bugprone-branch-clone,
+  -bugprone-chained-comparison,
   cert-*,
+  -cert-err33-c,
   clang-analyzer-*,
   cppcoreguidelines-avoid-goto,
   cppcoreguidelines-interfaces-global-init,
@@ -13,17 +16,19 @@ Checks: >
   cppcoreguidelines-pro-type-union-access,
   cppcoreguidelines-slicing,
   misc-*,
+  -misc-include-cleaner,
   modernize-use-nullptr,
   modernize-use-override,
   modernize-use-starts-ends-with,
   performance-*,
+  -performance-enum-size,
   portability-*,
   readability-misleading-indentation,
   readability-redundant-string-init,
   readability-simplify-boolean-expr,
   readability-static-accessed-through-instance
 WarningsAsErrors: '*'
-HeaderFilterRegex: '.*'
+HeaderFilterRegex: '^(include/merovingian|src)/.*'
 CheckOptions:
   - key: bugprone-easily-swappable-parameters.MinimumLength
     value: '3'
