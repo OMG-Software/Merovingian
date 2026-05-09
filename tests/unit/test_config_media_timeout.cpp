@@ -8,80 +8,104 @@
 
 #include <string>
 
-TEST_CASE("Media remote fetch timeout has a bounded secure default", "[config][media]")
+SCENARIO("Media remote fetch timeout has a bounded secure default", "[config][media]")
 {
-    // Given
-    auto const config = merovingian::config::Config{};
+    GIVEN("the default configuration")
+    {
+        auto const config = merovingian::config::Config{};
 
-    // When
-    auto const parsed = merovingian::config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
+        WHEN("the media remote fetch timeout is parsed")
+        {
+            auto const parsed = merovingian::config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
 
-    // Then
-    REQUIRE(config.security().media.remote_fetch_timeout == "30s");
-    REQUIRE(parsed.valid);
-    REQUIRE(parsed.seconds == 30U);
+            THEN("the timeout is bounded and valid")
+            {
+                REQUIRE(config.security().media.remote_fetch_timeout == "30s");
+                REQUIRE(parsed.valid);
+                REQUIRE(parsed.seconds == 30U);
+            }
+        }
+    }
 }
 
-TEST_CASE("Media remote fetch timeout is parsed from key-value config", "[config][media][parser]")
+SCENARIO("Media remote fetch timeout is parsed from key-value config", "[config][media][parser]")
 {
-    // Given
-    auto const input = std::string{"security.media.remote_fetch_timeout=45s\n"};
+    GIVEN("key-value configuration containing a media timeout")
+    {
+        auto const input = std::string{"security.media.remote_fetch_timeout=45s\n"};
 
-    // When
-    auto const result = merovingian::config::parse_key_value_config(input);
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
 
-    // Then
-    REQUIRE(result.findings.empty());
-    REQUIRE(result.config.security().media.remote_fetch_timeout == "45s");
+            THEN("the media timeout is applied")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE(result.config.security().media.remote_fetch_timeout == "45s");
+            }
+        }
+    }
 }
 
-TEST_CASE("Media remote fetch timeout rejects invalid values", "[config][media][validation]")
+SCENARIO("Media remote fetch timeout rejects invalid values", "[config][media][validation]")
 {
-    // Given
-    auto security = merovingian::config::SecurityConfig{};
-    security.media.remote_fetch_timeout = "bad-duration";
-    auto const config = merovingian::config::Config{
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-    };
+    GIVEN("configuration with an invalid media timeout")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        security.media.remote_fetch_timeout = "bad-duration";
+        auto const config = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            security,
+        };
 
-    // When
-    auto const findings = merovingian::config::validate(config);
-    auto const valid = merovingian::config::is_valid(config);
+        WHEN("the config is validated")
+        {
+            auto const findings = merovingian::config::validate(config);
+            auto const valid = merovingian::config::is_valid(config);
 
-    // Then
-    REQUIRE_FALSE(findings.empty());
-    REQUIRE_FALSE(valid);
+            THEN("validation fails")
+            {
+                REQUIRE_FALSE(findings.empty());
+                REQUIRE_FALSE(valid);
+            }
+        }
+    }
 }
 
-TEST_CASE("Media remote fetch timeout changes are reloadable", "[config][media][reload]")
+SCENARIO("Media remote fetch timeout changes are reloadable", "[config][media][reload]")
 {
-    // Given
-    auto current_security = merovingian::config::SecurityConfig{};
-    auto next_security = merovingian::config::SecurityConfig{};
-    current_security.media.remote_fetch_timeout = "30s";
-    next_security.media.remote_fetch_timeout = "45s";
+    GIVEN("current and next configs with different media timeouts")
+    {
+        auto current_security = merovingian::config::SecurityConfig{};
+        auto next_security = merovingian::config::SecurityConfig{};
+        current_security.media.remote_fetch_timeout = "30s";
+        next_security.media.remote_fetch_timeout = "45s";
 
-    auto const current = merovingian::config::Config{
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        current_security,
-    };
-    auto const next = merovingian::config::Config{
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        next_security,
-    };
+        auto const current = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            current_security,
+        };
+        auto const next = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            next_security,
+        };
 
-    // When
-    auto const plan = merovingian::config::build_reload_plan(current, next);
+        WHEN("a reload plan is built")
+        {
+            auto const plan = merovingian::config::build_reload_plan(current, next);
 
-    // Then
-    REQUIRE(plan.changes().size() == 1U);
-    REQUIRE(plan.changes()[0].key == "security.media.remote_fetch_timeout");
-    REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
+            THEN("the timeout change is marked reloadable")
+            {
+                REQUIRE(plan.changes().size() == 1U);
+                REQUIRE(plan.changes()[0].key == "security.media.remote_fetch_timeout");
+                REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
+            }
+        }
+    }
 }
