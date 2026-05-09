@@ -9,6 +9,8 @@ restart_current_config = meson.project_build_root() / 'restart-current-smoke.con
 restart_next_config = meson.project_build_root() / 'restart-next-smoke.conf'
 invalid_reload_current_config = meson.project_build_root() / 'invalid-reload-current-smoke.conf'
 invalid_reload_next_config = meson.project_build_root() / 'invalid-reload-next-smoke.conf'
+invalid_current_reload_config = meson.project_build_root() / 'invalid-current-reload-smoke.conf'
+valid_next_reload_config = meson.project_build_root() / 'valid-next-reload-smoke.conf'
 invalid_config = meson.project_build_root() / 'invalid-smoke.conf'
 oversized_config = meson.project_build_root() / 'oversized-smoke.conf'
 unsafe_config = meson.project_build_root() / 'unsafe-smoke.conf'
@@ -189,6 +191,29 @@ test(
       + invalid_reload_current_config
       + ' '
       + invalid_reload_next_config
+      + ' >/dev/null 2>&1; test $? -eq 79',
+  ],
+)
+
+test(
+  'server-plan-config-reload-invalid-current-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'printf "%s\n" "security.federation.remote_timeout=forever" > '
+      + invalid_current_reload_config
+      + ' && chmod 0644 '
+      + invalid_current_reload_config
+      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > '
+      + valid_next_reload_config
+      + ' && chmod 0644 '
+      + valid_next_reload_config
+      + ' && '
+      + server_executable
+      + ' --plan-config-reload '
+      + invalid_current_reload_config
+      + ' '
+      + valid_next_reload_config
       + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
