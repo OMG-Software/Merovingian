@@ -13,8 +13,11 @@ TEST_CASE("Config file permission policy accepts regular non-executable files", 
     metadata.mode.owner_write = true;
     metadata.mode.group_read = true;
 
-    // When / Then
-    REQUIRE(merovingian::platform::is_secure_config_file(metadata));
+    // When
+    auto const secure = merovingian::platform::is_secure_config_file(metadata);
+
+    // Then
+    REQUIRE(secure);
 }
 
 TEST_CASE("Config file permission policy rejects unsafe file kinds and modes", "[platform][file-metadata]")
@@ -35,11 +38,17 @@ TEST_CASE("Config file permission policy rejects unsafe file kinds and modes", "
     auto symlink = merovingian::platform::FileMetadata{};
     symlink.kind = merovingian::platform::FileKind::symlink;
 
-    // When / Then
-    REQUIRE_FALSE(merovingian::platform::is_secure_config_file(group_writable));
-    REQUIRE_FALSE(merovingian::platform::is_secure_config_file(other_writable));
-    REQUIRE_FALSE(merovingian::platform::is_secure_config_file(executable));
-    REQUIRE_FALSE(merovingian::platform::is_secure_config_file(symlink));
+    // When
+    auto const group_writable_secure = merovingian::platform::is_secure_config_file(group_writable);
+    auto const other_writable_secure = merovingian::platform::is_secure_config_file(other_writable);
+    auto const executable_secure = merovingian::platform::is_secure_config_file(executable);
+    auto const symlink_secure = merovingian::platform::is_secure_config_file(symlink);
+
+    // Then
+    REQUIRE_FALSE(group_writable_secure);
+    REQUIRE_FALSE(other_writable_secure);
+    REQUIRE_FALSE(executable_secure);
+    REQUIRE_FALSE(symlink_secure);
 }
 
 TEST_CASE("Secret file permission policy requires owner-only non-executable access", "[platform][file-metadata]")
@@ -59,9 +68,15 @@ TEST_CASE("Secret file permission policy requires owner-only non-executable acce
     auto executable = secure_secret;
     executable.mode.owner_execute = true;
 
-    // When / Then
-    REQUIRE(merovingian::platform::is_secure_secret_file(secure_secret));
-    REQUIRE_FALSE(merovingian::platform::is_secure_secret_file(group_readable));
-    REQUIRE_FALSE(merovingian::platform::is_secure_secret_file(other_readable));
-    REQUIRE_FALSE(merovingian::platform::is_secure_secret_file(executable));
+    // When
+    auto const secure_secret_valid = merovingian::platform::is_secure_secret_file(secure_secret);
+    auto const group_readable_valid = merovingian::platform::is_secure_secret_file(group_readable);
+    auto const other_readable_valid = merovingian::platform::is_secure_secret_file(other_readable);
+    auto const executable_valid = merovingian::platform::is_secure_secret_file(executable);
+
+    // Then
+    REQUIRE(secure_secret_valid);
+    REQUIRE_FALSE(group_readable_valid);
+    REQUIRE_FALSE(other_readable_valid);
+    REQUIRE_FALSE(executable_valid);
 }
