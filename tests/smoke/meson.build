@@ -141,13 +141,13 @@ test(
       + noop_reload_next_config
       + ' && chmod 0644 '
       + noop_reload_next_config
-      + ' && '
+      + ' && output=$( '
       + server_executable
       + ' --plan-config-reload '
       + noop_reload_current_config
       + ' '
       + noop_reload_next_config
-      + ' 2>&1 | grep -q "Reload plan: changes=0 reloadable=0 restart_required=0"',
+      + ' 2>&1 ) && echo "$output" | grep -q "Reload plan: changes=0 reloadable=0 restart_required=0" && echo "$output" | grep -q "Reload action: no changes"',
   ],
 )
 
@@ -164,13 +164,13 @@ test(
       + reloadable_next_config
       + ' && chmod 0644 '
       + reloadable_next_config
-      + ' && '
+      + ' && output=$( '
       + server_executable
       + ' --plan-config-reload '
       + reloadable_current_config
       + ' '
       + reloadable_next_config
-      + ' 2>&1 | grep -q "Reload plan: changes=1 reloadable=1 restart_required=0"',
+      + ' 2>&1 ) && echo "$output" | grep -q "Reload plan: changes=1 reloadable=1 restart_required=0" && echo "$output" | grep -q "Reload action: reloadable"',
   ],
 )
 
@@ -187,13 +187,13 @@ test(
       + restart_next_config
       + ' && chmod 0644 '
       + restart_next_config
-      + ' && '
+      + ' && output=$( '
       + server_executable
       + ' --plan-config-reload '
       + restart_current_config
       + ' '
       + restart_next_config
-      + ' 2>&1 | grep -q "server.name=restart_required"',
+      + ' 2>&1 ) && echo "$output" | grep -q "server.name=restart_required" && echo "$output" | grep -q "Reload action: restart required"',
   ],
 )
 
