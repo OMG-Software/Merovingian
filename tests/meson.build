@@ -12,6 +12,13 @@ if get_option('build_tests')
     args: [meson.project_source_root()],
   )
 
+  catch2_bdd_check = find_program('../scripts/check-catch2-bdd-tests.sh')
+  test(
+    'catch2-bdd-tests',
+    catch2_bdd_check,
+    args: [meson.project_source_root()],
+  )
+
   unit_tests = executable(
     'merovingian-unit-tests',
     sources: files(
