@@ -20,6 +20,7 @@ struct BootstrapConfigResult final
 {
     merovingian::config::ConfigParseResult parsed{};
     merovingian::bootstrap::ExitCode failure_code{merovingian::bootstrap::ExitCode::success};
+    std::string source{"defaults"};
 };
 
 [[nodiscard]] auto reject_config(
@@ -34,12 +35,14 @@ struct BootstrapConfigResult final
     return result;
 }
 
-[[nodiscard]] auto classify_config_findings(merovingian::config::ConfigParseResult parsed)
-    -> BootstrapConfigResult
+[[nodiscard]] auto classify_config_findings(
+    merovingian::config::ConfigParseResult parsed,
+    std::string source
+) -> BootstrapConfigResult
 {
     if (parsed.findings.empty())
     {
-        return {std::move(parsed), merovingian::bootstrap::ExitCode::success};
+        return {std::move(parsed), merovingian::bootstrap::ExitCode::success, std::move(source)};
     }
 
     auto has_parse_finding = false;
@@ -55,6 +58,7 @@ struct BootstrapConfigResult final
         std::move(parsed),
         has_parse_finding ? merovingian::bootstrap::ExitCode::config_parse_error
                           : merovingian::bootstrap::ExitCode::config_validation_error,
+        std::move(source),
     };
 }
 
@@ -102,7 +106,7 @@ struct BootstrapConfigResult final
         );
     }
 
-    return classify_config_findings(merovingian::config::parse_key_value_config(contents));
+    return classify_config_findings(merovingian::config::parse_key_value_config(contents), "file");
 }
 
 [[nodiscard]] auto build_config(int argc, char const* const* argv) -> BootstrapConfigResult
@@ -110,7 +114,7 @@ struct BootstrapConfigResult final
     if (argc == 1)
     {
         auto const config = merovingian::config::Config{};
-        return classify_config_findings({config, merovingian::config::validate(config)});
+        return classify_config_findings({config, merovingian::config::validate(config)}, "defaults");
     }
 
     if (argc == 3 && std::string_view{argv[1]} == "--config")
@@ -153,6 +157,20 @@ auto print_version() -> void
     std::cout << "merovingian-server " << version << '\n';
 }
 
+auto log_startup_summary(BootstrapConfigResult const& result) -> void
+{
+    auto const& config = result.parsed.config;
+    LOG_INFO("Configuration validation passed");
+    LOG_INFO("Configuration source: " + result.source);
+    LOG_INFO("Server name: " + config.server().server_name);
+    LOG_INFO("Public base URL: " + config.server().public_baseurl);
+    LOG_INFO("Client listener: " + config.listeners().client.bind);
+    LOG_INFO("Federation listener: " + config.listeners().federation.bind);
+    LOG_INFO("Registration enabled: " + std::string{config.security().registration.enabled ? "true" : "false"});
+    LOG_INFO("Federation enabled: " + std::string{config.security().federation.enabled ? "true" : "false"});
+    LOG_INFO("Media upload limit: " + config.security().media.max_upload_size);
+}
+
 } // namespace
 
 auto main(int argc, char const* const* argv) -> int
@@ -182,7 +200,7 @@ auto main(int argc, char const* const* argv) -> int
         return merovingian::bootstrap::to_int(result.failure_code);
     }
 
-    LOG_INFO("Configuration validation passed");
+    log_startup_summary(result);
 
     return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
 }
