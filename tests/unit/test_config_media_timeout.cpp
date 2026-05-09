@@ -66,7 +66,7 @@ TEST_CASE("Media remote fetch timeout changes are reloadable", "[config][media][
 
     auto const plan = merovingian::config::build_reload_plan(current, next);
 
-    REQUIRE(plan.changes.size() == 1U);
-    REQUIRE(plan.changes[0].key == "security.media.remote_fetch_timeout");
-    REQUIRE(plan.changes[0].policy == merovingian::config::ReloadPolicy::reloadable);
+    REQUIRE(plan.changes().size() == 1U);
+    REQUIRE(plan.changes()[0].key == "security.media.remote_fetch_timeout");
+    REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
 }
