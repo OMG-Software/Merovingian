@@ -6,6 +6,33 @@ invalid_config = meson.project_build_root() / 'invalid-smoke.conf'
 oversized_config = meson.project_build_root() / 'oversized-smoke.conf'
 
 test(
+  'server-help-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable + ' --help 2>&1 | grep -q "Usage:"',
+  ],
+)
+
+test(
+  'server-version-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable + ' --version 2>&1 | grep -q "merovingian-server 0.1.0"',
+  ],
+)
+
+test(
+  'server-invalid-arguments-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    '! ' + server_executable + ' --unknown >/dev/null 2>&1',
+  ],
+)
+
+test(
   'server-bootstrap-smoke-test',
   smoke_test,
   args: [
