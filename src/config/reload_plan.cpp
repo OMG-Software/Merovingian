@@ -2,6 +2,7 @@
 
 #include <merovingian/config/reload_plan.hpp>
 
+#include <string>
 #include <utility>
 
 namespace merovingian::config
@@ -23,15 +24,35 @@ auto ReloadPlan::has_changes() const noexcept -> bool
 
 auto ReloadPlan::has_restart_required_changes() const noexcept -> bool
 {
+    return restart_required_change_count() > 0U;
+}
+
+auto ReloadPlan::reloadable_change_count() const noexcept -> std::size_t
+{
+    auto count = std::size_t{0U};
+    for (auto const& change : changes)
+    {
+        if (change.policy == ReloadPolicy::reloadable)
+        {
+            ++count;
+        }
+    }
+
+    return count;
+}
+
+auto ReloadPlan::restart_required_change_count() const noexcept -> std::size_t
+{
+    auto count = std::size_t{0U};
     for (auto const& change : changes)
     {
         if (change.policy == ReloadPolicy::restart_required)
         {
-            return true;
+            ++count;
         }
     }
 
-    return false;
+    return count;
 }
 
 auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
@@ -174,6 +195,13 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     }
 
     return plan;
+}
+
+auto reload_plan_summary(ReloadPlan const& plan) -> std::string
+{
+    return "Reload plan: changes=" + std::to_string(plan.changes.size())
+        + " reloadable=" + std::to_string(plan.reloadable_change_count())
+        + " restart_required=" + std::to_string(plan.restart_required_change_count());
 }
 
 } // namespace merovingian::config
