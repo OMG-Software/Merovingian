@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <string>
 
 namespace merovingian::auth
 {
@@ -39,14 +40,14 @@ auto token_is_active(AccessTokenRecord const& token, std::chrono::system_clock::
 
 auto constant_time_equal(std::string_view left, std::string_view right) noexcept -> bool
 {
-    auto difference = static_cast<unsigned char>(left.size() ^ right.size());
+    auto difference = left.size() ^ right.size();
     auto const compared_size = std::max(left.size(), right.size());
 
     for (std::size_t index = 0; index < compared_size; ++index)
     {
         auto const left_byte = index < left.size() ? static_cast<unsigned char>(left[index]) : 0U;
         auto const right_byte = index < right.size() ? static_cast<unsigned char>(right[index]) : 0U;
-        difference = static_cast<unsigned char>(difference | (left_byte ^ right_byte));
+        difference |= left_byte ^ right_byte;
     }
 
     return difference == 0U;
