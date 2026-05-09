@@ -27,8 +27,11 @@ Running without `--config` uses the same secure typed defaults compiled into the
 - Boolean values must be exactly `true` or `false`.
 - Unsigned integers must contain digits only.
 - Lists are comma-separated.
+- Duplicate keys are rejected.
 - Unknown keys are rejected.
 - Malformed lines are rejected.
+- Files larger than 1 MiB are rejected.
+- Lines longer than 4 KiB are rejected.
 - Parsed configuration is always validated before startup continues.
 
 ## Fail-closed startup
@@ -38,6 +41,9 @@ Startup rejects configuration before doing runtime work when parser or validatio
 Rejected cases include:
 
 - unreadable config path
+- oversized config file
+- oversized config line
+- duplicate config key
 - unknown config key
 - malformed line
 - invalid boolean value
@@ -57,6 +63,18 @@ Rejected cases include:
 - disabled private-IP blocking for remote media fetches
 - disabled sandboxed media decoding
 - disabled token or event-content log redaction
+
+## Exit codes
+
+Bootstrap exits with explicit status codes:
+
+| Code | Meaning |
+| ---: | --- |
+| 0 | Success, help, or version output |
+| 64 | Usage error |
+| 66 | Config file open/read failure |
+| 78 | Config parse failure |
+| 79 | Config validation failure |
 
 ## Listener exposure policy
 
