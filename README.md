@@ -64,6 +64,12 @@ See:
 - `config/merovingian.conf.example`
 - `docs/configuration.md`
 
+## Phase status
+
+See:
+
+- `docs/phase-1.md`
+
 ## Test standards
 
 See:
