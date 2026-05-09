@@ -24,6 +24,10 @@ TEST_CASE("Runtime-facing config keys are reloadable", "[config][reload]")
         == merovingian::config::ReloadPolicy::reloadable
     );
     REQUIRE(
+        merovingian::config::reload_policy_for_key("security.media.remote_fetch_timeout")
+        == merovingian::config::ReloadPolicy::reloadable
+    );
+    REQUIRE(
         merovingian::config::reload_policy_for_key("database.pool_size")
         == merovingian::config::ReloadPolicy::reloadable
     );
@@ -32,7 +36,7 @@ TEST_CASE("Runtime-facing config keys are reloadable", "[config][reload]")
 TEST_CASE("Runtime-facing config groups are reloadable", "[config][reload]")
 {
     // Given
-    constexpr auto keys = std::array<std::string_view, 18U>{
+    constexpr auto keys = std::array<std::string_view, 19U>{
         "server.public_baseurl",
         "server.trusted_proxies",
         "listeners.client.bind",
@@ -49,6 +53,7 @@ TEST_CASE("Runtime-facing config groups are reloadable", "[config][reload]")
         "security.federation.max_transaction_size",
         "security.federation.remote_timeout",
         "security.media.max_upload_size",
+        "security.media.remote_fetch_timeout",
         "security.logging.redact_tokens",
         "security.logging.structured",
     };
