@@ -3,6 +3,7 @@ config_sources = files(
   'config_parser.cpp',
   'reload_plan.cpp',
   'reload_policy.cpp',
+  'runtime_config.cpp',
 )
 
 config_lib = static_library(
