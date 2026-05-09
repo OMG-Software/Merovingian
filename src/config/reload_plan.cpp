@@ -10,16 +10,26 @@ namespace merovingian::config
 namespace
 {
 
-auto add_change(ReloadPlan& plan, std::string key) -> void
+auto add_change(ReloadPlan& plan, std::string const& key) -> void
 {
-    plan.changes.push_back({key, reload_policy_for_key(key)});
+    plan.add_change({key, reload_policy_for_key(key)});
 }
 
 } // namespace
 
+auto ReloadPlan::changes() const noexcept -> std::vector<ReloadChange> const&
+{
+    return m_changes;
+}
+
+auto ReloadPlan::add_change(ReloadChange change) -> void
+{
+    m_changes.push_back(std::move(change));
+}
+
 auto ReloadPlan::has_changes() const noexcept -> bool
 {
-    return !changes.empty();
+    return !m_changes.empty();
 }
 
 auto ReloadPlan::has_restart_required_changes() const noexcept -> bool
@@ -30,7 +40,7 @@ auto ReloadPlan::has_restart_required_changes() const noexcept -> bool
 auto ReloadPlan::reloadable_change_count() const noexcept -> std::size_t
 {
     auto count = std::size_t{0U};
-    for (auto const& change : changes)
+    for (auto const& change : m_changes)
     {
         if (change.policy == ReloadPolicy::reloadable)
         {
@@ -44,7 +54,7 @@ auto ReloadPlan::reloadable_change_count() const noexcept -> std::size_t
 auto ReloadPlan::restart_required_change_count() const noexcept -> std::size_t
 {
     auto count = std::size_t{0U};
-    for (auto const& change : changes)
+    for (auto const& change : m_changes)
     {
         if (change.policy == ReloadPolicy::restart_required)
         {
@@ -203,7 +213,7 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
 
 auto reload_plan_summary(ReloadPlan const& plan) -> std::string
 {
-    return "Reload plan: changes=" + std::to_string(plan.changes.size())
+    return "Reload plan: changes=" + std::to_string(plan.changes().size())
         + " reloadable=" + std::to_string(plan.reloadable_change_count())
         + " restart_required=" + std::to_string(plan.restart_required_change_count());
 }
