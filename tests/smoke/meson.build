@@ -3,10 +3,12 @@ server_executable = meson.project_build_root() / 'src' / 'merovingian-server'
 example_config = meson.project_source_root() / 'config' / 'merovingian.conf.example'
 valid_config = meson.project_build_root() / 'valid-smoke.conf'
 check_config = meson.project_build_root() / 'check-smoke.conf'
-reload_current_config = meson.project_build_root() / 'reload-current-smoke.conf'
-reload_next_config = meson.project_build_root() / 'reload-next-smoke.conf'
-reload_restart_config = meson.project_build_root() / 'reload-restart-smoke.conf'
-reload_invalid_config = meson.project_build_root() / 'reload-invalid-smoke.conf'
+reloadable_current_config = meson.project_build_root() / 'reloadable-current-smoke.conf'
+reloadable_next_config = meson.project_build_root() / 'reloadable-next-smoke.conf'
+restart_current_config = meson.project_build_root() / 'restart-current-smoke.conf'
+restart_next_config = meson.project_build_root() / 'restart-next-smoke.conf'
+invalid_reload_current_config = meson.project_build_root() / 'invalid-reload-current-smoke.conf'
+invalid_reload_next_config = meson.project_build_root() / 'invalid-reload-next-smoke.conf'
 invalid_config = meson.project_build_root() / 'invalid-smoke.conf'
 oversized_config = meson.project_build_root() / 'oversized-smoke.conf'
 unsafe_config = meson.project_build_root() / 'unsafe-smoke.conf'
@@ -128,19 +130,19 @@ test(
   args: [
     '-c',
     'printf "%s\n" "security.federation.remote_timeout=30s" > '
-      + reload_current_config
+      + reloadable_current_config
       + ' && chmod 0644 '
-      + reload_current_config
+      + reloadable_current_config
       + ' && printf "%s\n" "security.federation.remote_timeout=45s" > '
-      + reload_next_config
+      + reloadable_next_config
       + ' && chmod 0644 '
-      + reload_next_config
+      + reloadable_next_config
       + ' && '
       + server_executable
       + ' --plan-config-reload '
-      + reload_current_config
+      + reloadable_current_config
       + ' '
-      + reload_next_config
+      + reloadable_next_config
       + ' 2>&1 | grep -q "Reload plan: changes=1 reloadable=1 restart_required=0"',
   ],
 )
@@ -151,19 +153,19 @@ test(
   args: [
     '-c',
     'printf "%s\n" "server.name=example.org" > '
-      + reload_current_config
+      + restart_current_config
       + ' && chmod 0644 '
-      + reload_current_config
+      + restart_current_config
       + ' && printf "%s\n" "server.name=new.example.org" > '
-      + reload_restart_config
+      + restart_next_config
       + ' && chmod 0644 '
-      + reload_restart_config
+      + restart_next_config
       + ' && '
       + server_executable
       + ' --plan-config-reload '
-      + reload_current_config
+      + restart_current_config
       + ' '
-      + reload_restart_config
+      + restart_next_config
       + ' 2>&1 | grep -q "server.name=restart_required"',
   ],
 )
@@ -174,19 +176,19 @@ test(
   args: [
     '-c',
     'printf "%s\n" "security.federation.remote_timeout=30s" > '
-      + reload_current_config
+      + invalid_reload_current_config
       + ' && chmod 0644 '
-      + reload_current_config
+      + invalid_reload_current_config
       + ' && printf "%s\n" "security.federation.remote_timeout=forever" > '
-      + reload_invalid_config
+      + invalid_reload_next_config
       + ' && chmod 0644 '
-      + reload_invalid_config
+      + invalid_reload_next_config
       + ' && '
       + server_executable
       + ' --plan-config-reload '
-      + reload_current_config
+      + invalid_reload_current_config
       + ' '
-      + reload_invalid_config
+      + invalid_reload_next_config
       + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
