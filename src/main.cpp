@@ -4,6 +4,7 @@
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/config_parser.hpp>
 #include <merovingian/database/runtime_database.hpp>
+#include <merovingian/federation/runtime_federation.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/observability/logger.hpp>
 #include <merovingian/platform/file_metadata.hpp>
@@ -253,6 +254,7 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     auto const& config = result.parsed.config;
     auto const hardening_self_check = merovingian::platform::run_startup_hardening_self_check();
     auto const runtime_database = merovingian::database::make_runtime_database_config(config);
+    auto const runtime_federation = merovingian::federation::make_runtime_federation_config(config);
     auto const runtime_listeners = merovingian::net::make_runtime_listeners(config);
 
     LOG_INFO("Configuration validation passed");
@@ -268,6 +270,7 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
         );
     }
     LOG_INFO(merovingian::database::database_summary(runtime_database));
+    LOG_INFO(merovingian::federation::federation_summary(runtime_federation));
     LOG_INFO("Client listener: " + config.listeners().client.bind);
     LOG_INFO("Federation listener: " + config.listeners().federation.bind);
     LOG_INFO("Planned runtime listeners: " + std::to_string(runtime_listeners.count()));
