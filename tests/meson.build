@@ -12,6 +12,7 @@ if get_option('build_tests')
       'unit/test_config_defaults.cpp',
       'unit/test_config_parser.cpp',
       'unit/test_file_descriptor.cpp',
+      'unit/test_file_metadata.cpp',
       'unit/test_not_null.cpp',
       'unit/test_secret_buffer.cpp',
     ),
