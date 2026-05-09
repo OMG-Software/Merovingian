@@ -11,6 +11,7 @@ if get_option('build_tests')
       'unit/test_main.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_parser.cpp',
+      'unit/test_config_reload_policy.cpp',
       'unit/test_file_descriptor.cpp',
       'unit/test_file_metadata.cpp',
       'unit/test_hardening_self_check.cpp',
