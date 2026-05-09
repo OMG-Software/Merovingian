@@ -17,6 +17,7 @@ if get_option('build_tests')
       'unit/test_file_metadata.cpp',
       'unit/test_hardening_self_check.cpp',
       'unit/test_not_null.cpp',
+      'unit/test_runtime_config.cpp',
       'unit/test_runtime_database.cpp',
       'unit/test_runtime_federation.cpp',
       'unit/test_runtime_listeners.cpp',
