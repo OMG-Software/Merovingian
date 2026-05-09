@@ -8,125 +8,173 @@
 
 #include <string>
 
-TEST_CASE("Canonical JSON parser accepts and canonicalizes Matrix-style objects", "[canonicaljson][parser]")
+SCENARIO("Canonical JSON parser accepts and canonicalizes Matrix-style objects", "[canonicaljson][parser]")
 {
-    // Given
-    auto constexpr input = "{\"unsigned\":{},\"origin\":\"example.org\",\"depth\":12,\"content\":{\"body\":\"hi\"}}";
-
-    // When
-    auto const parsed = merovingian::canonicaljson::parse_lossless(input);
-    auto const serialized = merovingian::canonicaljson::serialize_canonical(parsed.value);
-
-    // Then
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-    REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
-    REQUIRE(serialized.output == "{\"content\":{\"body\":\"hi\"},\"depth\":12,\"origin\":\"example.org\",\"unsigned\":{}}");
-}
-
-TEST_CASE("Canonical JSON parser rejects duplicate object keys", "[canonicaljson][parser]")
-{
-    // Given
-    auto constexpr input = "{\"a\":1,\"a\":2}";
-
-    // When
-    auto const parsed = merovingian::canonicaljson::parse_lossless(input);
-
-    // Then
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::duplicate_object_key);
-}
-
-TEST_CASE("Canonical JSON parser rejects invalid UTF-8 strings", "[canonicaljson][parser]")
-{
-    // Given
-    auto const input = std::string{"\"\xC0\x80\"", 4U};
-
-    // When
-    auto const parsed = merovingian::canonicaljson::parse_lossless(input);
-
-    // Then
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::invalid_string);
-}
-
-TEST_CASE("Canonical JSON parser rejects non-integer and out-of-range numbers", "[canonicaljson][parser]")
-{
-    // Given
-    auto constexpr fractional_input = "1.25";
-    auto constexpr exponent_input = "1e2";
-    auto constexpr too_large_input = "9223372036854775808";
-
-    // When
-    auto const fractional = merovingian::canonicaljson::parse_lossless(fractional_input);
-    auto const exponent = merovingian::canonicaljson::parse_lossless(exponent_input);
-    auto const too_large = merovingian::canonicaljson::parse_lossless(too_large_input);
-
-    // Then
-    REQUIRE(fractional.error == merovingian::canonicaljson::ParseError::invalid_number);
-    REQUIRE(exponent.error == merovingian::canonicaljson::ParseError::invalid_number);
-    REQUIRE(too_large.error == merovingian::canonicaljson::ParseError::integer_out_of_range);
-}
-
-TEST_CASE("Canonical JSON parser decodes unicode escapes", "[canonicaljson][parser]")
-{
-    // Given
-    auto constexpr input = "\"snowman=\\u2603 smile=\\uD83D\\uDE00\"";
-
-    // When
-    auto const parsed = merovingian::canonicaljson::parse_lossless(input);
-    auto const serialized = merovingian::canonicaljson::serialize_canonical(parsed.value);
-
-    // Then
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-    REQUIRE(serialized.output == "\"snowman=☃ smile=😀\"");
-}
-
-TEST_CASE("Canonical JSON parser rejects excessive nesting", "[canonicaljson][parser]")
-{
-    // Given
-    auto input = std::string{};
-    for (auto index = 0U; index < 70U; ++index)
+    GIVEN("a Matrix-style JSON object")
     {
-        input.push_back('[');
+        auto constexpr input = "{\"unsigned\":{},\"origin\":\"example.org\",\"depth\":12,\"content\":{\"body\":\"hi\"}}";
+
+        WHEN("it is parsed and serialized canonically")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_lossless(input);
+            auto const serialized = merovingian::canonicaljson::serialize_canonical(parsed.value);
+
+            THEN("the canonical output is deterministic")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(serialized.output == "{\"content\":{\"body\":\"hi\"},\"depth\":12,\"origin\":\"example.org\",\"unsigned\":{}}");
+            }
+        }
     }
-    for (auto index = 0U; index < 70U; ++index)
+}
+
+SCENARIO("Canonical JSON parser rejects duplicate object keys", "[canonicaljson][parser]")
+{
+    GIVEN("an object with duplicate keys")
     {
-        input.push_back(']');
+        auto constexpr input = "{\"a\":1,\"a\":2}";
+
+        WHEN("it is parsed")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_lossless(input);
+
+            THEN("duplicate key parsing fails")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::duplicate_object_key);
+            }
+        }
     }
-
-    // When
-    auto const parsed = merovingian::canonicaljson::parse_lossless(input);
-
-    // Then
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::nesting_too_deep);
 }
 
-TEST_CASE("Canonical JSON signable object view serializes deterministically", "[canonicaljson][signable]")
+SCENARIO("Canonical JSON parser rejects invalid UTF-8 strings", "[canonicaljson][parser]")
 {
-    // Given
-    auto const parsed = merovingian::canonicaljson::parse_lossless("{\"z\":3,\"a\":1}");
+    GIVEN("a JSON string containing invalid UTF-8")
+    {
+        auto const input = std::string{"\"\xC0\x80\"", 4U};
 
-    // When
-    auto const signable = merovingian::canonicaljson::make_signable_object_view(parsed.value);
+        WHEN("it is parsed")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_lossless(input);
 
-    // Then
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-    REQUIRE(signable.error == merovingian::canonicaljson::CanonicalJsonError::none);
-    REQUIRE(signable.output == "{\"a\":1,\"z\":3}");
+            THEN("invalid string parsing fails")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::invalid_string);
+            }
+        }
+    }
 }
 
-TEST_CASE("Canonical JSON parse error names are stable", "[canonicaljson][parser]")
+SCENARIO("Canonical JSON parser rejects non-integer and out-of-range numbers", "[canonicaljson][parser]")
 {
-    // Given
-    auto constexpr no_error = merovingian::canonicaljson::ParseError::none;
-    auto constexpr duplicate_key = merovingian::canonicaljson::ParseError::duplicate_object_key;
-    auto constexpr integer_range = merovingian::canonicaljson::ParseError::integer_out_of_range;
+    GIVEN("fractional, exponent, and out-of-range number tokens")
+    {
+        auto constexpr fractional_input = "1.25";
+        auto constexpr exponent_input = "1e2";
+        auto constexpr too_large_input = "9223372036854775808";
 
-    // When
-    auto const no_error_name = std::string{merovingian::canonicaljson::parse_error_name(no_error)};
-    auto const duplicate_key_name = std::string{merovingian::canonicaljson::parse_error_name(duplicate_key)};
-    auto const integer_range_name = std::string{merovingian::canonicaljson::parse_error_name(integer_range)};
+        WHEN("the number tokens are parsed")
+        {
+            auto const fractional = merovingian::canonicaljson::parse_lossless(fractional_input);
+            auto const exponent = merovingian::canonicaljson::parse_lossless(exponent_input);
+            auto const too_large = merovingian::canonicaljson::parse_lossless(too_large_input);
 
-    // Then
-    REQUIRE(no_error_name == "none");
-    REQUIRE(duplicate_key_name == "duplicate_object_key");
-    REQUIRE(integer_range_name == "integer_out_of_range");
+            THEN("lossy or out-of-range numbers are rejected")
+            {
+                REQUIRE(fractional.error == merovingian::canonicaljson::ParseError::invalid_number);
+                REQUIRE(exponent.error == merovingian::canonicaljson::ParseError::invalid_number);
+                REQUIRE(too_large.error == merovingian::canonicaljson::ParseError::integer_out_of_range);
+            }
+        }
+    }
+}
+
+SCENARIO("Canonical JSON parser decodes unicode escapes", "[canonicaljson][parser]")
+{
+    GIVEN("a string with unicode escapes")
+    {
+        auto constexpr input = "\"snowman=\\u2603 smile=\\uD83D\\uDE00\"";
+
+        WHEN("it is parsed and serialized")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_lossless(input);
+            auto const serialized = merovingian::canonicaljson::serialize_canonical(parsed.value);
+
+            THEN("the escaped code points are decoded")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                REQUIRE(serialized.output == "\"snowman=☃ smile=😀\"");
+            }
+        }
+    }
+}
+
+SCENARIO("Canonical JSON parser rejects excessive nesting", "[canonicaljson][parser]")
+{
+    GIVEN("a deeply nested JSON array")
+    {
+        auto input = std::string{};
+        for (auto index = 0U; index < 70U; ++index)
+        {
+            input.push_back('[');
+        }
+        for (auto index = 0U; index < 70U; ++index)
+        {
+            input.push_back(']');
+        }
+
+        WHEN("it is parsed")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_lossless(input);
+
+            THEN("the parser rejects the nesting depth")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::nesting_too_deep);
+            }
+        }
+    }
+}
+
+SCENARIO("Canonical JSON signable object view serializes deterministically", "[canonicaljson][signable]")
+{
+    GIVEN("an object with unsorted keys")
+    {
+        auto const parsed = merovingian::canonicaljson::parse_lossless("{\"z\":3,\"a\":1}");
+
+        WHEN("the signable view is serialized")
+        {
+            auto const signable = merovingian::canonicaljson::make_signable_object_view(parsed.value);
+
+            THEN("keys are sorted deterministically")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                REQUIRE(signable.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(signable.output == "{\"a\":1,\"z\":3}");
+            }
+        }
+    }
+}
+
+SCENARIO("Canonical JSON parse error names are stable", "[canonicaljson][parser]")
+{
+    GIVEN("canonical JSON parse error values")
+    {
+        auto constexpr no_error = merovingian::canonicaljson::ParseError::none;
+        auto constexpr duplicate_key = merovingian::canonicaljson::ParseError::duplicate_object_key;
+        auto constexpr integer_range = merovingian::canonicaljson::ParseError::integer_out_of_range;
+
+        WHEN("their names are requested")
+        {
+            auto const no_error_name = std::string{merovingian::canonicaljson::parse_error_name(no_error)};
+            auto const duplicate_key_name = std::string{merovingian::canonicaljson::parse_error_name(duplicate_key)};
+            auto const integer_range_name = std::string{merovingian::canonicaljson::parse_error_name(integer_range)};
+
+            THEN("the diagnostic names are stable")
+            {
+                REQUIRE(no_error_name == "none");
+                REQUIRE(duplicate_key_name == "duplicate_object_key");
+                REQUIRE(integer_range_name == "integer_out_of_range");
+            }
+        }
+    }
 }
