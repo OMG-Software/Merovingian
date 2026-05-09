@@ -2,6 +2,7 @@ smoke_test = find_program('sh')
 server_executable = meson.project_build_root() / 'src' / 'merovingian-server'
 example_config = meson.project_source_root() / 'config' / 'merovingian.conf.example'
 valid_config = meson.project_build_root() / 'valid-smoke.conf'
+check_config = meson.project_build_root() / 'check-smoke.conf'
 invalid_config = meson.project_build_root() / 'invalid-smoke.conf'
 oversized_config = meson.project_build_root() / 'oversized-smoke.conf'
 unsafe_config = meson.project_build_root() / 'unsafe-smoke.conf'
@@ -73,6 +74,47 @@ test(
     '-c',
     server_executable + ' 2>&1 | grep -q "Startup hardening checks:" && '
       + server_executable + ' 2>&1 | grep -q "Hardening self-check: runtime sandbox=unknown"',
+  ],
+)
+
+test(
+  'server-check-config-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable
+      + ' --check-config '
+      + example_config
+      + ' 2>&1 | grep -q "Configuration check passed:"',
+  ],
+)
+
+test(
+  'server-check-config-does-not-start-runtime-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable
+      + ' --check-config '
+      + example_config
+      + ' 2>&1 | grep -vq "Starting The Merovingian bootstrap server"',
+  ],
+)
+
+test(
+  'server-check-invalid-config-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'printf "%s\n" "server.public_baseurl=http://matrix.example.org" > '
+      + check_config
+      + ' && chmod 0644 '
+      + check_config
+      + ' && '
+      + server_executable
+      + ' --check-config '
+      + check_config
+      + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
 
