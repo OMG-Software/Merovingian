@@ -6,6 +6,8 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <string>
+
 TEST_CASE("Media remote fetch timeout has a bounded secure default", "[config][media]")
 {
     auto const config = merovingian::config::Config{};
