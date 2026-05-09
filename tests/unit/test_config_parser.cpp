@@ -97,6 +97,46 @@ TEST_CASE("Key-value config parser rejects unknown keys and malformed lines", "[
     REQUIRE(result.findings.size() == 2U);
 }
 
+TEST_CASE("Key-value config parser rejects duplicate keys", "[config][parser]")
+{
+    // Given
+    auto const input = std::string{
+        "server.name=one.example.org\n"
+        "server.name=two.example.org\n"
+    };
+
+    // When
+    auto const result = merovingian::config::parse_key_value_config(input);
+
+    // Then
+    REQUIRE(result.findings.size() == 1U);
+    REQUIRE(result.config.server().server_name == "one.example.org");
+}
+
+TEST_CASE("Key-value config parser rejects oversized input", "[config][parser]")
+{
+    // Given
+    auto input = std::string(merovingian::config::max_config_bytes + 1U, '#');
+
+    // When
+    auto const result = merovingian::config::parse_key_value_config(input);
+
+    // Then
+    REQUIRE(result.findings.size() == 1U);
+}
+
+TEST_CASE("Key-value config parser rejects oversized lines", "[config][parser]")
+{
+    // Given
+    auto const input = std::string{"server.name="} + std::string(merovingian::config::max_config_line_bytes, 'a');
+
+    // When
+    auto const result = merovingian::config::parse_key_value_config(input);
+
+    // Then
+    REQUIRE_FALSE(result.findings.empty());
+}
+
 TEST_CASE("Key-value config parser rejects invalid typed values", "[config][parser]")
 {
     // Given
