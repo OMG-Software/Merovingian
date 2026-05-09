@@ -81,6 +81,8 @@ private:
         return true;
     }
 
+    // JSON is recursively structured; recursion is bounded by max_depth above.
+    // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] auto parse_value(std::size_t depth) -> ParseResult
     {
         if (depth > max_depth)
@@ -378,6 +380,8 @@ private:
         return {Value{parsed}, ParseError::none};
     }
 
+    // JSON arrays recurse through nested values; recursion is bounded by max_depth.
+    // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] auto parse_array(std::size_t depth) -> ParseResult
     {
         if (!consume('['))
@@ -411,6 +415,8 @@ private:
         }
     }
 
+    // JSON objects recurse through nested values; recursion is bounded by max_depth.
+    // NOLINTNEXTLINE(misc-no-recursion)
     [[nodiscard]] auto parse_object(std::size_t depth) -> ParseResult
     {
         if (!consume('{'))
