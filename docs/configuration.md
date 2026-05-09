@@ -142,13 +142,29 @@ Values such as `0s`, `30`, `30ms`, and `forever` are rejected.
 
 Configuration parsing and validation are restart-safe today. Runtime hot reload is a Phase 2 boundary, not a completed control plane. The server now classifies keys by reload policy so later SIGHUP or admin-socket reload work can apply reloadable settings without treating every config change as a whole homeserver restart.
 
-Reload planning compares validated current and next configs and reports how many changes are reloadable versus restart-required. Planning is analysis-only until the live reload control path exists.
+Reload planning compares validated current and next configs and reports how many changes are reloadable versus restart-required. Planning is analysis-only until the live reload control path exists. A successful plan exits with status `0`, even when the action says a restart is required, because the planning operation itself succeeded.
 
-Example output:
+Example reloadable output:
 
 ```text
 Reload plan: changes=1 reloadable=1 restart_required=0
+Reload action: reloadable
 security.federation.remote_timeout=reloadable
+```
+
+Example restart-required output:
+
+```text
+Reload plan: changes=1 reloadable=0 restart_required=1
+Reload action: restart required
+server.name=restart_required
+```
+
+Example no-op output:
+
+```text
+Reload plan: changes=0 reloadable=0 restart_required=0
+Reload action: no changes
 ```
 
 | Key or key group | Policy |
