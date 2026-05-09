@@ -49,7 +49,7 @@ struct BootstrapConfigResult final
     for (auto const& finding : parsed.findings)
     {
         has_parse_finding = has_parse_finding || finding.field == "config" || finding.field == "arguments"
-            || finding.field.rfind("line ", 0U) == 0U || finding.message == "unknown configuration key"
+            || finding.field.starts_with("line ") || finding.message == "unknown configuration key"
             || finding.message == "duplicate configuration key" || finding.message == "expected boolean value"
             || finding.message == "expected unsigned integer value";
     }
