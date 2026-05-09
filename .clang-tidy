@@ -1,18 +1,29 @@
 Checks: >
-  clang-analyzer-*,
+  -*,
   bugprone-*,
   cert-*,
-  cppcoreguidelines-*,
-  modernize-*,
+  clang-analyzer-*,
+  cppcoreguidelines-avoid-goto,
+  cppcoreguidelines-interfaces-global-init,
+  cppcoreguidelines-no-malloc,
+  cppcoreguidelines-owning-memory,
+  cppcoreguidelines-pro-type-const-cast,
+  cppcoreguidelines-pro-type-reinterpret-cast,
+  cppcoreguidelines-pro-type-static-cast-downcast,
+  cppcoreguidelines-pro-type-union-access,
+  cppcoreguidelines-slicing,
+  misc-*,
+  modernize-use-nullptr,
+  modernize-use-override,
+  modernize-use-starts-ends-with,
   performance-*,
   portability-*,
-  readability-*
+  readability-misleading-indentation,
+  readability-redundant-string-init,
+  readability-simplify-boolean-expr,
+  readability-static-accessed-through-instance
 WarningsAsErrors: '*'
-HeaderFilterRegex: 'include/merovingian/.*'
+HeaderFilterRegex: '.*'
 CheckOptions:
-  - key: cppcoreguidelines-owning-memory
-    value: '1'
-  - key: readability-identifier-naming.MemberVariablePrefix
-    value: 'm_'
-  - key: readability-identifier-naming.MemberVariableCase
-    value: 'lower_case'
+  - key: bugprone-easily-swappable-parameters.MinimumLength
+    value: '3'
