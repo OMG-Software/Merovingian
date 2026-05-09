@@ -16,6 +16,7 @@ if get_option('build_tests')
       'unit/test_config_parser.cpp',
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
+      'unit/test_events.cpp',
       'unit/test_file_descriptor.cpp',
       'unit/test_file_metadata.cpp',
       'unit/test_hardening_self_check.cpp',
@@ -33,7 +34,7 @@ if get_option('build_tests')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep],
-    link_with: [canonicaljson_lib, core_lib, config_lib, database_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib],
+    link_with: [canonicaljson_lib, core_lib, config_lib, database_lib, events_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib, rooms_lib],
   )
 
   test('unit-tests', unit_tests)
