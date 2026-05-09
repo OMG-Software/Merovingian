@@ -188,6 +188,54 @@ auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult
     return {true, magnitude * multiplier};
 }
 
+auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseResult
+{
+    if (value.empty())
+    {
+        return {};
+    }
+
+    auto index = std::size_t{0U};
+    auto magnitude = std::uint32_t{0U};
+    while (index < value.size() && is_ascii_digit(value[index]))
+    {
+        auto const digit = static_cast<std::uint32_t>(value[index] - '0');
+        if (magnitude > (std::numeric_limits<std::uint32_t>::max() - digit) / 10U)
+        {
+            return {};
+        }
+        magnitude = (magnitude * 10U) + digit;
+        ++index;
+    }
+
+    if (index == 0U || magnitude == 0U)
+    {
+        return {};
+    }
+
+    auto multiplier = std::uint32_t{1U};
+    auto const suffix = value.substr(index);
+    if (suffix == "s")
+    {
+        multiplier = 1U;
+    }
+    else if (suffix == "m")
+    {
+        multiplier = 60U;
+    }
+    else
+    {
+        return {};
+    }
+
+    if (magnitude > std::numeric_limits<std::uint32_t>::max() / multiplier)
+    {
+        return {};
+    }
+
+    return {true, magnitude * multiplier};
+}
+
 auto is_private_or_loopback_range(std::string_view range) noexcept -> bool
 {
     return range == "127.0.0.0/8" || range == "10.0.0.0/8" || range == "172.16.0.0/12"
@@ -290,6 +338,22 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back(
             {"security.federation.deny_ip_ranges", "federation must block private or loopback ranges"}
+        );
+    }
+
+    auto const federation_max_transaction_size = parse_size_limit(config.security().federation.max_transaction_size);
+    if (!federation_max_transaction_size.valid)
+    {
+        findings.push_back(
+            {"security.federation.max_transaction_size", "federation transaction size must be a positive bounded byte size"}
+        );
+    }
+
+    auto const federation_remote_timeout = parse_duration_seconds(config.security().federation.remote_timeout);
+    if (!federation_remote_timeout.valid)
+    {
+        findings.push_back(
+            {"security.federation.remote_timeout", "federation remote timeout must be a positive bounded duration"}
         );
     }
 
