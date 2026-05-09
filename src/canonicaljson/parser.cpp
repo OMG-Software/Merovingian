@@ -380,7 +380,10 @@ private:
 
     [[nodiscard]] auto parse_array(std::size_t depth) -> ParseResult
     {
-        consume('[');
+        if (!consume('['))
+        {
+            return {{}, ParseError::unexpected_token};
+        }
         skip_whitespace();
         auto array = Array{};
         if (consume(']'))
@@ -410,7 +413,10 @@ private:
 
     [[nodiscard]] auto parse_object(std::size_t depth) -> ParseResult
     {
-        consume('{');
+        if (!consume('{'))
+        {
+            return {{}, ParseError::unexpected_token};
+        }
         skip_whitespace();
         auto object = Object{};
         if (consume('}'))
