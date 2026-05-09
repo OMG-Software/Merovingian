@@ -7,6 +7,7 @@
 #include <merovingian/database/runtime_database.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/observability/logger.hpp>
+#include <merovingian/platform/hardening_self_check.hpp>
 
 #include <fstream>
 #include <iostream>
@@ -250,6 +251,7 @@ auto print_version() -> void
 auto log_startup_summary(BootstrapConfigResult const& result) -> void
 {
     auto const& config = result.parsed.config;
+    auto const hardening_self_check = merovingian::platform::run_startup_hardening_self_check();
     auto const runtime_database = merovingian::database::make_runtime_database_config(config);
     auto const runtime_listeners = merovingian::net::make_runtime_listeners(config);
 
@@ -257,6 +259,14 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     LOG_INFO("Configuration source: " + result.source);
     LOG_INFO("Server name: " + config.server().server_name);
     LOG_INFO("Public base URL: " + config.server().public_baseurl);
+    LOG_INFO("Startup hardening checks: " + std::to_string(hardening_self_check.count()));
+    for (auto const& check : hardening_self_check.checks())
+    {
+        LOG_INFO(
+            "Hardening self-check: " + check.name + "="
+            + merovingian::platform::hardening_status_name(check.status)
+        );
+    }
     LOG_INFO(merovingian::database::database_summary(runtime_database));
     LOG_INFO("Client listener: " + config.listeners().client.bind);
     LOG_INFO("Federation listener: " + config.listeners().federation.bind);
