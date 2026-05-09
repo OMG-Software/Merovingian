@@ -4,27 +4,39 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-TEST_CASE("SecretBuffer allocates requested size", "[core][secret]")
+SCENARIO("SecretBuffer allocates requested size", "[core][secret]")
 {
-    // Given
-    constexpr auto expected_size = 64U;
+    GIVEN("a requested secret buffer size")
+    {
+        constexpr auto expected_size = 64U;
 
-    // When
-    auto buffer = merovingian::core::SecretBuffer{expected_size};
+        WHEN("the buffer is constructed")
+        {
+            auto buffer = merovingian::core::SecretBuffer{expected_size};
 
-    // Then
-    REQUIRE(buffer.bytes().size() == expected_size);
+            THEN("the byte span has the requested size")
+            {
+                REQUIRE(buffer.bytes().size() == expected_size);
+            }
+        }
+    }
 }
 
-TEST_CASE("SecretBuffer exposes mutable byte span", "[core][secret]")
+SCENARIO("SecretBuffer exposes mutable byte span", "[core][secret]")
 {
-    // Given
-    auto buffer = merovingian::core::SecretBuffer{8U};
-    auto constexpr expected_value = 0xAAU;
+    GIVEN("a secret buffer and a byte value")
+    {
+        auto buffer = merovingian::core::SecretBuffer{8U};
+        auto constexpr expected_value = 0xAAU;
 
-    // When
-    buffer.bytes()[0] = expected_value;
+        WHEN("the first byte is written")
+        {
+            buffer.bytes()[0] = expected_value;
 
-    // Then
-    REQUIRE(buffer.bytes()[0] == expected_value);
+            THEN("the byte span reports the written value")
+            {
+                REQUIRE(buffer.bytes()[0] == expected_value);
+            }
+        }
+    }
 }

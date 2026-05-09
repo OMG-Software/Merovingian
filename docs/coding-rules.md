@@ -4,25 +4,34 @@ This document records project coding rules that apply across production code, te
 
 ## Tests
 
-All tests must be structured in Given/When/Then form.
-
-Use explicit section comments inside each test case:
+All Catch2 unit tests must use Catch2's BDD section macros:
 
 ```cpp
-// Given
-// setup inputs, fixtures, and preconditions
+SCENARIO("behavior under test", "[area]")
+{
+    GIVEN("preconditions")
+    {
+        // setup inputs, fixtures, and preconditions
 
-// When
-// execute the behavior under test
+        WHEN("the behavior runs")
+        {
+            // execute the behavior under test
 
-// Then
-// assert expected results
+            THEN("the expected result is observed")
+            {
+                // assertions
+            }
+        }
+    }
+}
 ```
 
 Rules:
 
-- Keep setup in `// Given`.
-- Keep the single behavior under test in `// When` where practical.
-- Keep assertions in `// Then`.
-- Prefer one behavior per test case.
+- Use `SCENARIO` for Catch2 unit tests.
+- Use `GIVEN`, `WHEN`, and `THEN` macros from Catch2, not comment-only sections.
+- Keep setup inside `GIVEN`.
+- Keep the single behavior under test inside `WHEN` where practical.
+- Keep assertions inside `THEN`.
+- Prefer one behavior per scenario.
 - Avoid hidden setup inside assertion expressions when it obscures the Given/When/Then structure.
