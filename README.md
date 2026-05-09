@@ -29,6 +29,29 @@ meson compile -C build
 meson test -C build
 ```
 
+## Run
+
+Use compiled secure defaults:
+
+```bash
+./build/src/merovingian-server
+```
+
+Use the checked-in Phase 1 starter config:
+
+```bash
+./build/src/merovingian-server --config config/merovingian.conf.example
+```
+
+Configuration is validated before startup continues. Parser or validation findings cause startup to fail closed.
+
+## Configuration
+
+See:
+
+- `config/merovingian.conf.example`
+- `docs/configuration.md`
+
 ## Test standards
 
 See:
@@ -38,4 +61,4 @@ See:
 
 ## Status
 
-Early Phase 0 bootstrap implementation.
+Early Phase 1 bootstrap implementation.
