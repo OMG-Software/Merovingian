@@ -10,6 +10,7 @@ if get_option('build_tests')
     sources: files(
       'unit/test_main.cpp',
       'unit/test_config_defaults.cpp',
+      'unit/test_config_media_timeout.cpp',
       'unit/test_config_parser.cpp',
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
