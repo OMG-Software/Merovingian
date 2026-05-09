@@ -7,6 +7,8 @@ oversized_config = meson.project_build_root() / 'oversized-smoke.conf'
 unsafe_config = meson.project_build_root() / 'unsafe-smoke.conf'
 secure_secret_config = meson.project_build_root() / 'secret-secure-smoke.conf'
 unsafe_secret_config = meson.project_build_root() / 'secret-unsafe-smoke.conf'
+redaction_config = meson.project_build_root() / 'redaction-smoke.conf'
+redaction_secret = meson.project_build_root() / 'db-uri-redaction-smoke.secret'
 secure_secret = meson.project_build_root() / 'db-uri-secure-smoke.secret'
 unsafe_secret = meson.project_build_root() / 'db-uri-unsafe-smoke.secret'
 
@@ -61,6 +63,16 @@ test(
   args: [
     '-c',
     server_executable + ' 2>&1 | grep -q "Configuration source: defaults"',
+  ],
+)
+
+test(
+  'server-hardening-self-check-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable + ' 2>&1 | grep -q "Startup hardening checks:" && '
+      + server_executable + ' 2>&1 | grep -q "Hardening self-check: runtime sandbox=unknown"',
   ],
 )
 
@@ -199,5 +211,30 @@ test(
       + ' --config '
       + unsafe_secret_config
       + ' >/dev/null 2>&1; test $? -eq 79',
+  ],
+)
+
+test(
+  'server-database-summary-redaction-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'printf "%s\n" "postgresql://merovingian:topsecret@example.invalid/merovingian" > '
+      + redaction_secret
+      + ' && chmod 0600 '
+      + redaction_secret
+      + ' && printf "%s\n" "database.uri_file='
+      + redaction_secret
+      + '" > '
+      + redaction_config
+      + ' && chmod 0644 '
+      + redaction_config
+      + ' && output=$( '
+      + server_executable
+      + ' --config '
+      + redaction_config
+      + ' 2>&1 ) && echo "$output" | grep -q "Database URI source file configured; pool_size=16" && ! echo "$output" | grep -q "topsecret" && ! echo "$output" | grep -q "postgresql://" && ! echo "$output" | grep -q "'
+      + redaction_secret
+      + '"',
   ],
 )
