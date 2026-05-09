@@ -34,6 +34,66 @@ SCENARIO("Auth identity validators enforce Matrix-shaped identifiers", "[auth]")
     }
 }
 
+SCENARIO("Auth server-name validator rejects malformed host and port shapes", "[auth]")
+{
+    GIVEN("valid and malformed server names")
+    {
+        auto constexpr valid_hostname = "example.org";
+        auto constexpr valid_hostname_with_port = "example.org:8448";
+        auto constexpr valid_ipv6_with_port = "[2001:db8::1]:8448";
+        auto constexpr missing_hostname = ":8448";
+        auto constexpr missing_port = "example.org:";
+        auto constexpr non_numeric_port = "example.org:abc";
+        auto constexpr repeated_colon = "example.org:8448:443";
+
+        WHEN("server names are validated")
+        {
+            auto const valid_hostname_result = merovingian::auth::server_name_is_valid(valid_hostname);
+            auto const valid_hostname_with_port_result = merovingian::auth::server_name_is_valid(valid_hostname_with_port);
+            auto const valid_ipv6_with_port_result = merovingian::auth::server_name_is_valid(valid_ipv6_with_port);
+            auto const missing_hostname_result = merovingian::auth::server_name_is_valid(missing_hostname);
+            auto const missing_port_result = merovingian::auth::server_name_is_valid(missing_port);
+            auto const non_numeric_port_result = merovingian::auth::server_name_is_valid(non_numeric_port);
+            auto const repeated_colon_result = merovingian::auth::server_name_is_valid(repeated_colon);
+
+            THEN("only structured host and optional numeric port values are accepted")
+            {
+                REQUIRE(valid_hostname_result);
+                REQUIRE(valid_hostname_with_port_result);
+                REQUIRE(valid_ipv6_with_port_result);
+                REQUIRE_FALSE(missing_hostname_result);
+                REQUIRE_FALSE(missing_port_result);
+                REQUIRE_FALSE(non_numeric_port_result);
+                REQUIRE_FALSE(repeated_colon_result);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth user ID validator restricts localpart to Matrix-compliant lowercase characters", "[auth]")
+{
+    GIVEN("valid lowercase and invalid uppercase localparts")
+    {
+        auto constexpr valid_user = "@alice_1.-=/+:example.org";
+        auto constexpr uppercase_user = "@Alice:example.org";
+        auto constexpr malformed_server_user = "@alice:example.org:abc";
+
+        WHEN("user IDs are validated")
+        {
+            auto const valid_user_result = merovingian::auth::user_id_is_valid(valid_user);
+            auto const uppercase_user_result = merovingian::auth::user_id_is_valid(uppercase_user);
+            auto const malformed_server_user_result = merovingian::auth::user_id_is_valid(malformed_server_user);
+
+            THEN("uppercase localparts and malformed server names are rejected")
+            {
+                REQUIRE(valid_user_result);
+                REQUIRE_FALSE(uppercase_user_result);
+                REQUIRE_FALSE(malformed_server_user_result);
+            }
+        }
+    }
+}
+
 SCENARIO("Auth login policy blocks locked and suspended accounts", "[auth]")
 {
     GIVEN("active, locked, and suspended users")
