@@ -1,6 +1,7 @@
 database_sources = files(
   'connection.cpp',
   'migration.cpp',
+  'persistent_store.cpp',
   'runtime_database.cpp',
   'schema.cpp',
   'statement.cpp',
