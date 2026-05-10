@@ -21,7 +21,6 @@ namespace merovingian::homeserver
 namespace
 {
 
-auto constexpr schema_version = std::uint32_t{1U};
 auto constexpr fnv_offset = std::uint64_t{1469598103934665603ULL};
 auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
 
@@ -98,9 +97,20 @@ auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
     return "mvs_" + std::to_string(session_id) + '_' + std::to_string(stable_hash(material));
 }
 
-[[nodiscard]] auto audit(observability::AuditCategory category, std::string_view event_type, std::string_view actor, std::string_view target, std::string_view reason) -> observability::AuditLogEvent
+[[nodiscard]] auto make_audit(observability::AuditCategory category, std::string_view event_type, std::string_view actor, std::string_view target, std::string_view reason) -> observability::AuditLogEvent
 {
     return observability::make_audit_event(category, event_type, actor, target, reason, "local-vertical-slice");
+}
+
+[[nodiscard]] auto audit_category_name(observability::AuditCategory category) -> std::string
+{
+    return category == observability::AuditCategory::auth ? "auth" : "admin";
+}
+
+auto append_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type, std::string_view actor, std::string_view target, std::string_view reason) -> void
+{
+    database.audit_events.push_back(make_audit(category, event_type, actor, target, reason));
+    (void)database::append_audit_event(database.persistent_store, {audit_category_name(category), std::string{event_type}, std::string{actor}, std::string{target}, std::string{reason}});
 }
 
 [[nodiscard]] auto find_user(LocalDatabase& database, std::string_view user_id) -> LocalUser*
@@ -157,16 +167,24 @@ auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
 
 } // namespace
 
-auto bootstrap_local_database(config::Config const&) -> LocalDatabase
+auto bootstrap_local_database(config::Config const& config) -> LocalDatabase
+{
+    return bootstrap_local_database(config, {});
+}
+
+auto bootstrap_local_database(config::Config const&, database::SchemaState existing_state) -> LocalDatabase
 {
     auto database = LocalDatabase{};
-    database.opened = true;
-    database.schema_validated = true;
-    database.schema_version = schema_version;
-    for (auto const table : database::initial_schema_tables())
+    auto opened = database::open_persistent_store(std::move(existing_state));
+    if (!opened.ok)
     {
-        database.tables.emplace_back(table);
+        return database;
     }
+    database.opened = true;
+    database.persistent_store = std::move(opened.store);
+    database.schema_validated = database::validate_persistent_store(database.persistent_store).valid;
+    database.schema_version = database.persistent_store.schema.version;
+    database.tables = database.persistent_store.schema.tables;
     return database;
 }
 
@@ -176,6 +194,11 @@ auto database_has_table(LocalDatabase const& database, std::string_view table_na
 }
 
 auto start_runtime(config::Config const& config) -> RuntimeStartResult
+{
+    return start_runtime(config, {});
+}
+
+auto start_runtime(config::Config const& config, database::SchemaState existing_state) -> RuntimeStartResult
 {
     if (!config::is_valid(config))
     {
@@ -188,13 +211,13 @@ auto start_runtime(config::Config const& config) -> RuntimeStartResult
     {
         return {false, "no runtime listeners configured", {}};
     }
-    runtime.database = bootstrap_local_database(config);
-    if (!runtime.database.opened || !runtime.database.schema_validated || !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "rooms") || !database_has_table(runtime.database, "events") || !database_has_table(runtime.database, "audit_log"))
+    runtime.database = bootstrap_local_database(config, std::move(existing_state));
+    if (!runtime.database.opened || !runtime.database.schema_validated || !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "devices") || !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") || !database_has_table(runtime.database, "membership") || !database_has_table(runtime.database, "events") || !database_has_table(runtime.database, "current_state") || !database_has_table(runtime.database, "audit_log") || !database_has_table(runtime.database, "admin_actions"))
     {
         return {false, "database schema validation failed", {}};
     }
     runtime.hardening = platform::run_startup_hardening_self_check();
-    runtime.database.audit_events.push_back(audit(observability::AuditCategory::admin, "runtime.started", "server", "homeserver", "startup"));
+    append_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver", "startup");
     runtime.started = true;
     return {true, {}, std::move(runtime)};
 }
@@ -307,8 +330,10 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
         return make_result(false, {}, decision.reason.code);
     }
     auto const first_user_is_admin = runtime.database.users.empty();
-    runtime.database.users.push_back({user_id, hash_password(password), false, false, first_user_is_admin});
-    runtime.database.audit_events.push_back(audit(observability::AuditCategory::auth, "auth.user_registered", user_id, user_id, first_user_is_admin ? "created_admin" : "created"));
+    auto const password_hash = hash_password(password);
+    runtime.database.users.push_back({user_id, password_hash, false, false, first_user_is_admin});
+    (void)database::store_user(runtime.database.persistent_store, {user_id, password_hash, false, false, first_user_is_admin});
+    append_audit(runtime.database, observability::AuditCategory::auth, "auth.user_registered", user_id, user_id, first_user_is_admin ? "created_admin" : "created");
     return make_result(true, user_id);
 }
 
@@ -344,8 +369,11 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     }
     auto const session_id = runtime.database.next_session_id++;
     auto const token = issue_token(user->user_id, device_id, session_id);
-    runtime.database.sessions.push_back({user->user_id, std::string{device_id}, hash_token(token), false});
-    runtime.database.audit_events.push_back(audit(observability::AuditCategory::auth, "auth.login", user->user_id, std::string{device_id}, "accepted"));
+    auto const token_hash = hash_token(token);
+    runtime.database.sessions.push_back({user->user_id, std::string{device_id}, token_hash, false});
+    (void)database::store_device(runtime.database.persistent_store, {user->user_id, std::string{device_id}, std::string{device_id}});
+    (void)database::store_access_token(runtime.database.persistent_store, {user->user_id, std::string{device_id}, token_hash, false});
+    append_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user->user_id, std::string{device_id}, "accepted");
     return make_result(true, token);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
@@ -378,7 +406,8 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     {
         return make_result(false, {}, "unauthenticated");
     }
-    runtime.database.audit_events.push_back(audit(observability::AuditCategory::auth, "auth.logout", user_id, device_id, "revoked"));
+    (void)database::revoke_access_token(runtime.database.persistent_store, token_hash);
+    append_audit(runtime.database, observability::AuditCategory::auth, "auth.logout", user_id, device_id, "revoked");
     return make_result(true, user_id);
 }
 
@@ -396,7 +425,9 @@ auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> O
         return make_result(false, {}, room_decision.reason.code);
     }
     runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}});
-    runtime.database.audit_events.push_back(audit(observability::AuditCategory::admin, "room.created", *user_id, room_id, "created"));
+    (void)database::store_room(runtime.database.persistent_store, {room_id, *user_id});
+    (void)database::store_membership(runtime.database.persistent_store, {room_id, *user_id});
+    append_audit(runtime.database, observability::AuditCategory::admin, "room.created", *user_id, room_id, "created");
     return make_result(true, room_id);
 }
 
@@ -415,8 +446,9 @@ auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::s
     if (!room_has_member(*room, *user_id))
     {
         room->members.push_back(*user_id);
+        (void)database::store_membership(runtime.database.persistent_store, {std::string{room_id}, *user_id});
     }
-    runtime.database.audit_events.push_back(audit(observability::AuditCategory::admin, "room.joined", *user_id, room_id, "joined"));
+    append_audit(runtime.database, observability::AuditCategory::admin, "room.joined", *user_id, room_id, "joined");
     return make_result(true, std::string{room_id});
 }
 
@@ -443,7 +475,9 @@ auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::
     }
     auto const event_id = "$event" + std::to_string(room->events.size() + 1U) + ":" + runtime.config.server().server_name;
     room->events.push_back(std::string{event_json});
-    runtime.database.audit_events.push_back(audit(observability::AuditCategory::admin, "room.event_sent", *user_id, room_id, "stored"));
+    (void)database::store_event(runtime.database.persistent_store, {event_id, std::string{room_id}, *user_id, std::string{event_json}});
+    (void)database::store_state(runtime.database.persistent_store, {std::string{room_id}, "m.room.member", *user_id, event_id});
+    append_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", *user_id, room_id, "stored");
     return make_result(true, event_id);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
