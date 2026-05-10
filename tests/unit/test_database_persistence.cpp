@@ -75,6 +75,47 @@ SCENARIO("Database statement validation enforces prepared statement shape", "[da
     }
 }
 
+SCENARIO("Database statement validation enforces placeholder arity", "[database]")
+{
+    GIVEN("statements with matching and mismatched placeholder arity")
+    {
+        auto const valid_statement = merovingian::database::PreparedStatement{
+            "select_user_device",
+            "SELECT id FROM devices WHERE user_id = $1 AND device_id = $2",
+            {
+                merovingian::database::BoundValue{"@alice:example.org", false},
+                merovingian::database::BoundValue{"DEVICE", false},
+            },
+        };
+        auto const missing_first_placeholder = merovingian::database::PreparedStatement{
+            "select_device",
+            "SELECT id FROM devices WHERE device_id = $2",
+            {merovingian::database::BoundValue{"DEVICE", false}},
+        };
+        auto const extra_parameter = merovingian::database::PreparedStatement{
+            "select_users",
+            "SELECT id FROM users",
+            {merovingian::database::BoundValue{"unused", false}},
+        };
+
+        WHEN("the statements are validated")
+        {
+            auto const valid_result = merovingian::database::prepared_statement_is_valid(valid_statement);
+            auto const missing_first_result = merovingian::database::prepared_statement_is_valid(missing_first_placeholder);
+            auto const extra_parameter_result = merovingian::database::prepared_statement_is_valid(extra_parameter);
+
+            THEN("placeholder indexes must match the bound parameter count exactly")
+            {
+                REQUIRE(valid_result.valid);
+                REQUIRE_FALSE(missing_first_result.valid);
+                REQUIRE(missing_first_result.reason == "SQL placeholder arity does not match bound parameters");
+                REQUIRE_FALSE(extra_parameter_result.valid);
+                REQUIRE(extra_parameter_result.reason == "SQL placeholder arity does not match bound parameters");
+            }
+        }
+    }
+}
+
 SCENARIO("Database executor validates statements before execution", "[database]")
 {
     GIVEN("a recording executor and valid or invalid statements")
