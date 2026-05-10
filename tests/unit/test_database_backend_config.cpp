@@ -43,10 +43,8 @@ SCENARIO("Database backend helpers parse SQLite and expose performance warnings"
 
             THEN("SQLite is opt-in and carries a small-installation warning")
             {
-                REQUIRE(postgresql.has_value());
-                REQUIRE(*postgresql == merovingian::config::DatabaseBackend::postgresql);
-                REQUIRE(sqlite.has_value());
-                REQUIRE(*sqlite == merovingian::config::DatabaseBackend::sqlite);
+                REQUIRE(postgresql == merovingian::config::DatabaseBackend::postgresql);
+                REQUIRE(sqlite == merovingian::config::DatabaseBackend::sqlite);
                 REQUIRE_FALSE(unknown.has_value());
                 REQUIRE(merovingian::config::database_backend_name(merovingian::config::DatabaseBackend::postgresql) == "postgresql");
                 REQUIRE(merovingian::config::database_backend_name(merovingian::config::DatabaseBackend::sqlite) == "sqlite");
