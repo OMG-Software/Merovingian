@@ -23,12 +23,14 @@ struct MvpRateLimitCounter final
 {
     std::string bucket{};
     std::uint32_t count{0U};
+    std::uint64_t window_start_request{0U};
 };
 
 struct MvpApiLimits final
 {
     std::size_t max_body_bytes{4096U};
     std::uint32_t max_requests_per_bucket{64U};
+    std::uint64_t rate_limit_window_requests{64U};
     std::size_t max_sync_rooms{16U};
     std::size_t max_sync_events_per_room{8U};
 };
@@ -39,6 +41,7 @@ struct ClientServerMvpRuntime final
     MvpApiLimits limits{};
     std::vector<MvpDevice> devices{};
     std::vector<MvpRateLimitCounter> rate_limits{};
+    std::uint64_t request_clock{0U};
 };
 
 struct ClientServerMvpStartResult final
