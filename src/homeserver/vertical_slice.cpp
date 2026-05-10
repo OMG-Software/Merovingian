@@ -476,7 +476,6 @@ auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::
     auto const event_id = "$event" + std::to_string(room->events.size() + 1U) + ":" + runtime.config.server().server_name;
     room->events.push_back(std::string{event_json});
     (void)database::store_event(runtime.database.persistent_store, {event_id, std::string{room_id}, *user_id, std::string{event_json}});
-    (void)database::store_state(runtime.database.persistent_store, {std::string{room_id}, "m.room.member", *user_id, event_id});
     append_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", *user_id, room_id, "stored");
     return make_result(true, event_id);
 }
