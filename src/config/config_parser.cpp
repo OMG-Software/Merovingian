@@ -78,9 +78,25 @@ inline auto apply_config_value(
             add_parse_finding(findings, std::string{key}, "expected boolean value");
         }
     }
+    else if (key == "database.backend")
+    {
+        auto const backend = parse_database_backend(value);
+        if (backend.has_value())
+        {
+            database.backend = *backend;
+        }
+        else
+        {
+            add_parse_finding(findings, std::string{key}, "expected database backend postgresql or sqlite");
+        }
+    }
     else if (key == "database.uri_file")
     {
         database.uri_file = std::string{value};
+    }
+    else if (key == "database.sqlite_path")
+    {
+        database.sqlite_path = std::string{value};
     }
     else if (key == "database.pool_size")
     {
