@@ -3,6 +3,7 @@
 #include <merovingian/database/persistent_store.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 namespace merovingian::database
@@ -20,18 +21,122 @@ namespace
     return token_hash.starts_with("token-hash:") || token_hash.starts_with("token-hash:v1:");
 }
 
-[[nodiscard]] auto json_has_string_field(std::string_view json, std::string_view field_name, std::string_view value) -> bool
+[[nodiscard]] auto is_json_space(char value) noexcept -> bool
 {
-    auto const needle = "\"" + std::string{field_name} + "\":\"" + std::string{value} + "\"";
-    return json.find(needle) != std::string_view::npos;
+    return value == ' ' || value == '\n' || value == '\r' || value == '\t';
+}
+
+[[nodiscard]] auto parse_json_string(std::string_view input, std::size_t& cursor) -> std::optional<std::string>
+{
+    if (cursor >= input.size() || input[cursor] != '"')
+    {
+        return std::nullopt;
+    }
+    ++cursor;
+    auto output = std::string{};
+    while (cursor < input.size())
+    {
+        auto const character = input[cursor++];
+        if (character == '"')
+        {
+            return output;
+        }
+        if (character == '\\')
+        {
+            if (cursor >= input.size())
+            {
+                return std::nullopt;
+            }
+            auto const escaped = input[cursor++];
+            if (escaped == '"' || escaped == '\\' || escaped == '/')
+            {
+                output.push_back(escaped);
+            }
+            else if (escaped == 'n')
+            {
+                output.push_back('\n');
+            }
+            else if (escaped == 'r')
+            {
+                output.push_back('\r');
+            }
+            else if (escaped == 't')
+            {
+                output.push_back('\t');
+            }
+            else
+            {
+                return std::nullopt;
+            }
+        }
+        else
+        {
+            output.push_back(character);
+        }
+    }
+    return std::nullopt;
+}
+
+auto skip_json_space(std::string_view input, std::size_t& cursor) noexcept -> void
+{
+    while (cursor < input.size() && is_json_space(input[cursor]))
+    {
+        ++cursor;
+    }
+}
+
+[[nodiscard]] auto top_level_json_string_field(std::string_view json, std::string_view field_name) -> std::optional<std::string>
+{
+    auto cursor = std::size_t{0U};
+    skip_json_space(json, cursor);
+    if (cursor >= json.size() || json[cursor] != '{')
+    {
+        return std::nullopt;
+    }
+    ++cursor;
+    while (cursor < json.size())
+    {
+        skip_json_space(json, cursor);
+        if (cursor < json.size() && json[cursor] == '}')
+        {
+            return std::nullopt;
+        }
+        auto const key = parse_json_string(json, cursor);
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        skip_json_space(json, cursor);
+        if (cursor >= json.size() || json[cursor] != ':')
+        {
+            return std::nullopt;
+        }
+        ++cursor;
+        skip_json_space(json, cursor);
+        if (*key == field_name)
+        {
+            return parse_json_string(json, cursor);
+        }
+        if (!parse_json_string(json, cursor).has_value())
+        {
+            return std::nullopt;
+        }
+        skip_json_space(json, cursor);
+        if (cursor < json.size() && json[cursor] == ',')
+        {
+            ++cursor;
+        }
+    }
+    return std::nullopt;
 }
 
 [[nodiscard]] auto state_matches_persisted_event(PersistentStore const& store, PersistentStateEvent const& state) -> bool
 {
     auto const iterator = std::ranges::find_if(store.events, [&state](PersistentEvent const& event) {
-        return event.event_id == state.event_id && event.room_id == state.room_id
-            && json_has_string_field(event.json, "type", state.event_type)
-            && json_has_string_field(event.json, "state_key", state.state_key);
+        auto const event_type = top_level_json_string_field(event.json, "type");
+        auto const state_key = top_level_json_string_field(event.json, "state_key");
+        return event.event_id == state.event_id && event.room_id == state.room_id && event_type == state.event_type
+            && state_key == state.state_key;
     });
     return iterator != store.events.end();
 }
@@ -108,6 +213,11 @@ namespace
     {
         return false;
     }
+    auto const duplicate = std::ranges::any_of(store.access_tokens, [&token](PersistentAccessToken const& existing) { return existing.token_hash == token.token_hash; });
+    if (duplicate)
+    {
+        return false;
+    }
     store.prepared_statements.push_back(record_statement("insert_access_token", "INSERT INTO access_tokens VALUES ($1, $2, $3, $4)", {{token.user_id, false}, {token.device_id, false}, {token.token_hash, true}, {token.revoked ? "true" : "false", false}}));
     store.access_tokens.push_back(std::move(token));
     return true;
@@ -154,6 +264,13 @@ namespace
     if (!state_matches_persisted_event(store, state))
     {
         return false;
+    }
+    auto const existing = std::ranges::find_if(store.state, [&state](PersistentStateEvent const& current) { return current.room_id == state.room_id && current.event_type == state.event_type && current.state_key == state.state_key; });
+    if (existing != store.state.end())
+    {
+        existing->event_id = state.event_id;
+        store.prepared_statements.push_back(record_statement("upsert_state", "UPDATE current_state SET event_id = $4 WHERE room_id = $1 AND event_type = $2 AND state_key = $3", {{state.room_id, false}, {state.event_type, false}, {state.state_key, false}, {state.event_id, false}}));
+        return true;
     }
     store.prepared_statements.push_back(record_statement("insert_state", "INSERT INTO current_state VALUES ($1, $2, $3, $4)", {{state.room_id, false}, {state.event_type, false}, {state.state_key, false}, {state.event_id, false}}));
     store.state.push_back(std::move(state));
