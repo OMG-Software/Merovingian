@@ -48,6 +48,8 @@ SCENARIO("Default Linux BSD and portable hardening profiles are accepted", "[pla
                 REQUIRE(linux.platform == merovingian::platform::HardeningPlatform::linux);
                 REQUIRE(bsd.platform == merovingian::platform::HardeningPlatform::bsd);
                 REQUIRE(portable.mode == merovingian::platform::HardeningMode::optional);
+                REQUIRE(bsd.filesystem.writable_paths.size() == 2U);
+                REQUIRE(bsd.filesystem.writable_paths[1] == "/var/run/merovingian");
             }
         }
     }
@@ -94,6 +96,114 @@ SCENARIO("Runtime hardening primitives fail closed when unsafe", "[platform][har
                 REQUIRE(random_decision.reason == "random source plan is unsafe");
                 REQUIRE_FALSE(signal_decision.accepted);
                 REQUIRE(signal_decision.reason == "signal handling plan is unsafe");
+            }
+        }
+    }
+}
+
+SCENARIO("Filesystem hardening rejects protected non-normalized and relative writable paths", "[platform][hardening]")
+{
+    GIVEN("filesystem plans with unsafe writable paths")
+    {
+        auto protected_etc = merovingian::platform::default_linux_hardening_profile();
+        protected_etc.filesystem.writable_paths.push_back("/etc/cron.d");
+        auto protected_usr = merovingian::platform::default_linux_hardening_profile();
+        protected_usr.filesystem.writable_paths.push_back("/usr/local/bin");
+        auto relative = merovingian::platform::default_linux_hardening_profile();
+        relative.filesystem.writable_paths.push_back("../etc");
+        auto non_normalized = merovingian::platform::default_linux_hardening_profile();
+        non_normalized.filesystem.writable_paths.push_back("/var/lib/../etc");
+        auto trailing_slash = merovingian::platform::default_linux_hardening_profile();
+        trailing_slash.filesystem.writable_paths.push_back("/var/lib/merovingian/");
+
+        WHEN("profiles are evaluated")
+        {
+            auto const protected_etc_decision = merovingian::platform::evaluate_runtime_hardening_profile(protected_etc);
+            auto const protected_usr_decision = merovingian::platform::evaluate_runtime_hardening_profile(protected_usr);
+            auto const relative_decision = merovingian::platform::evaluate_runtime_hardening_profile(relative);
+            auto const non_normalized_decision = merovingian::platform::evaluate_runtime_hardening_profile(non_normalized);
+            auto const trailing_slash_decision = merovingian::platform::evaluate_runtime_hardening_profile(trailing_slash);
+
+            THEN("all unsafe writable paths are rejected")
+            {
+                REQUIRE_FALSE(protected_etc_decision.accepted);
+                REQUIRE(protected_etc_decision.reason == "filesystem restriction plan is unsafe");
+                REQUIRE_FALSE(protected_usr_decision.accepted);
+                REQUIRE(protected_usr_decision.reason == "filesystem restriction plan is unsafe");
+                REQUIRE_FALSE(relative_decision.accepted);
+                REQUIRE(relative_decision.reason == "filesystem restriction plan is unsafe");
+                REQUIRE_FALSE(non_normalized_decision.accepted);
+                REQUIRE(non_normalized_decision.reason == "filesystem restriction plan is unsafe");
+                REQUIRE_FALSE(trailing_slash_decision.accepted);
+                REQUIRE(trailing_slash_decision.reason == "filesystem restriction plan is unsafe");
+            }
+        }
+    }
+}
+
+SCENARIO("Resource hardening requires address-space caps", "[platform][hardening]")
+{
+    GIVEN("a profile with an unbounded address space")
+    {
+        auto profile = merovingian::platform::default_linux_hardening_profile();
+        profile.resources.max_address_space_bytes = 0U;
+
+        WHEN("the profile is evaluated")
+        {
+            auto const decision = merovingian::platform::evaluate_runtime_hardening_profile(profile);
+
+            THEN("the resource plan fails closed")
+            {
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.fail_closed);
+                REQUIRE(decision.reason == "resource limit plan is unsafe");
+            }
+        }
+    }
+}
+
+SCENARIO("Optional runtime hardening mode accepts unavailable best-effort primitives", "[platform][hardening]")
+{
+    GIVEN("an optional portable profile with incomplete non-filesystem primitives")
+    {
+        auto profile = merovingian::platform::default_portable_hardening_profile();
+        profile.privilege_drop.user.clear();
+        profile.resources.max_address_space_bytes = 0U;
+        profile.memory.disable_core_dumps = false;
+        profile.random.fail_if_unavailable = false;
+        profile.signals.block_unexpected_signals = false;
+        profile.linux.no_new_privs_required = false;
+
+        WHEN("the optional profile is evaluated")
+        {
+            auto const decision = merovingian::platform::evaluate_runtime_hardening_profile(profile);
+
+            THEN("the profile is accepted as best-effort and records the unavailable hardening reason")
+            {
+                REQUIRE(decision.accepted);
+                REQUIRE_FALSE(decision.fail_closed);
+                REQUIRE(decision.reason.find("optional hardening unavailable") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Optional runtime hardening mode still rejects unsafe filesystem scopes", "[platform][hardening]")
+{
+    GIVEN("an optional profile with protected writable filesystem paths")
+    {
+        auto profile = merovingian::platform::default_portable_hardening_profile();
+        profile.filesystem.writable_paths.push_back("/etc/merovingian");
+
+        WHEN("the optional profile is evaluated")
+        {
+            auto const decision = merovingian::platform::evaluate_runtime_hardening_profile(profile);
+
+            THEN("filesystem escapes fail closed even in optional mode")
+            {
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.fail_closed);
+                REQUIRE(decision.reason == "filesystem restriction plan is unsafe");
             }
         }
     }
