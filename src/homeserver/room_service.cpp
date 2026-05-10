@@ -32,6 +32,12 @@ namespace
     return std::ranges::any_of(room.members, [user_id](std::string const& member) { return member == user_id; });
 }
 
+[[nodiscard]] auto make_event_id(HomeserverRuntime& runtime) -> std::string
+{
+    auto const sequence = runtime.database.next_event_id++;
+    return "$event" + std::to_string(sequence) + ":" + runtime.config.server().server_name;
+}
+
 } // namespace
 
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
@@ -107,7 +113,7 @@ namespace
         return make_operation_result(false, {}, "empty event");
     }
 
-    auto const event_id = "$event" + std::to_string(room->events.size() + 1U) + ":" + runtime.config.server().server_name;
+    auto const event_id = make_event_id(runtime);
     room->events.push_back(std::string{event_json});
     (void)database::store_event(runtime.database.persistent_store, {event_id, std::string{room_id}, *user_id, std::string{event_json}});
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", *user_id, room_id, "stored");
