@@ -1,6 +1,7 @@
 platform_sources = files(
   'file_metadata.cpp',
   'hardening_self_check.cpp',
+  'runtime_hardening.cpp',
 )
 
 platform_lib = static_library(
