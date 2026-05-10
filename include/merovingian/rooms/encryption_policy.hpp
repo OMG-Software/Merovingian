@@ -14,12 +14,19 @@ enum class RoomPreset
     trusted_private_chat,
 };
 
+enum class RoomEncryptionRequest
+{
+    unspecified,
+    encrypted,
+    unencrypted,
+};
+
 struct RoomCreationEncryptionRequest final
 {
     RoomPreset preset{RoomPreset::private_chat};
     bool direct_message{false};
     bool federated{false};
-    bool encryption_requested{false};
+    RoomEncryptionRequest encryption{RoomEncryptionRequest::unspecified};
 };
 
 struct RoomCreationEncryptionDecision final
@@ -27,6 +34,7 @@ struct RoomCreationEncryptionDecision final
     bool allowed{false};
     bool encryption_required{false};
     bool encryption_enabled_by_default{false};
+    bool encryption_enabled{false};
     std::string reason{};
 };
 
