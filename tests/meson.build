@@ -57,10 +57,11 @@ if get_option('build_tests')
       'unit/test_runtime_media.cpp',
       'unit/test_secret_buffer.cpp',
       'unit/test_state_resolution.cpp',
+      'unit/test_trust_safety_policy.cpp',
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib, rooms_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib, rooms_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests)
@@ -70,10 +71,11 @@ if get_option('build_tests')
     sources: files(
       'integration/test_main.cpp',
       'integration/test_media_repository_security.cpp',
+      'integration/test_trust_safety_policy_flow.cpp',
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib, rooms_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib, rooms_lib, trust_safety_lib],
   )
 
   test('integration-tests', integration_tests)
