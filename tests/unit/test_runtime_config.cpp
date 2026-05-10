@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <vector>
 
 SCENARIO("Runtime config snapshot reports unchanged reloads", "[config][runtime][reload]")
 {
@@ -47,6 +48,35 @@ SCENARIO("Runtime config snapshot applies reloadable changes", "[config][runtime
             {
                 REQUIRE(result == merovingian::config::RuntimeConfigApplyResult::applied);
                 REQUIRE(snapshot.current().security().federation.remote_timeout == "45s");
+            }
+        }
+    }
+}
+
+SCENARIO("Runtime config snapshot applies federation server list changes", "[config][runtime][reload]")
+{
+    GIVEN("a runtime config snapshot and updated federation policy lists")
+    {
+        auto snapshot = merovingian::config::RuntimeConfigSnapshot{merovingian::config::Config{}};
+        auto security = merovingian::config::SecurityConfig{};
+        security.federation.allowed_servers = std::vector<std::string>{"matrix.org", "example.net"};
+        security.federation.denied_servers = std::vector<std::string>{"bad.example"};
+        auto const next = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            security,
+        };
+
+        WHEN("the next config is applied")
+        {
+            auto const result = snapshot.apply_reload(next);
+
+            THEN("the snapshot updates the active federation server lists")
+            {
+                REQUIRE(result == merovingian::config::RuntimeConfigApplyResult::applied);
+                REQUIRE(snapshot.current().security().federation.allowed_servers == std::vector<std::string>{"matrix.org", "example.net"});
+                REQUIRE(snapshot.current().security().federation.denied_servers == std::vector<std::string>{"bad.example"});
             }
         }
     }
