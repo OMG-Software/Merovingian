@@ -1,5 +1,6 @@
 auth_sources = files(
   'identity.cpp',
+  'session.cpp',
   'token.cpp',
 )
 
