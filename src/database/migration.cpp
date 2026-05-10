@@ -255,10 +255,6 @@ auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> Migra
     }
     for (auto const& step : plan.steps)
     {
-        if (has_migration_record(state, step.version, step.direction))
-        {
-            continue;
-        }
         for (auto const& statement : step.statements)
         {
             if (!apply_statement_to_schema_state(state, statement))
