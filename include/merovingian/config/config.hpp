@@ -54,6 +54,7 @@ struct FederationSecurityConfig final
     bool enabled{true};
     std::string default_policy{"allow"};
     std::vector<std::string> allowed_servers{};
+    std::vector<std::string> denied_servers{};
     bool require_valid_tls{true};
     bool verify_json_signatures{true};
     std::vector<std::string> deny_ip_ranges{
