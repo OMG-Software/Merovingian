@@ -53,6 +53,7 @@ if get_option('build_tests')
       'unit/test_media_security.cpp',
       'unit/test_not_null.cpp',
       'unit/test_observability.cpp',
+      'unit/test_review_regressions.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',
       'unit/test_runtime_database.cpp',
