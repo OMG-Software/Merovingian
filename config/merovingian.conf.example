@@ -25,6 +25,8 @@ security.encryption.block_unencrypted_federated_private_rooms=true
 
 security.federation.enabled=true
 security.federation.default_policy=allow
+security.federation.allowed_servers=
+security.federation.denied_servers=
 security.federation.require_valid_tls=true
 security.federation.verify_json_signatures=true
 security.federation.deny_ip_ranges=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,::1/128,fc00::/7

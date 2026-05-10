@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <vector>
 
 SCENARIO("Reload plan is empty for identical configs", "[config][reload]")
 {
@@ -38,6 +39,8 @@ SCENARIO("Reload plan marks runtime policy changes as reloadable", "[config][rel
         auto next_security = merovingian::config::SecurityConfig{};
         next_security.federation.remote_timeout = "45s";
         next_security.federation.max_transaction_size = "8MiB";
+        next_security.federation.allowed_servers = std::vector<std::string>{"matrix.org", "example.net"};
+        next_security.federation.denied_servers = std::vector<std::string>{"bad.example"};
 
         auto const current = merovingian::config::Config{
             merovingian::config::ServerConfig{},
@@ -60,12 +63,18 @@ SCENARIO("Reload plan marks runtime policy changes as reloadable", "[config][rel
             {
                 REQUIRE(plan.has_changes());
                 REQUIRE_FALSE(plan.has_restart_required_changes());
-                REQUIRE(plan.changes().size() == 2U);
-                REQUIRE(plan.reloadable_change_count() == 2U);
+                REQUIRE(plan.changes().size() == 4U);
+                REQUIRE(plan.reloadable_change_count() == 4U);
                 REQUIRE(plan.restart_required_change_count() == 0U);
+                REQUIRE(plan.changes()[0].key == "security.federation.allowed_servers");
+                REQUIRE(plan.changes()[1].key == "security.federation.denied_servers");
+                REQUIRE(plan.changes()[2].key == "security.federation.max_transaction_size");
+                REQUIRE(plan.changes()[3].key == "security.federation.remote_timeout");
                 REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::reloadable);
                 REQUIRE(plan.changes()[1].policy == merovingian::config::ReloadPolicy::reloadable);
-                REQUIRE(merovingian::config::reload_plan_summary(plan) == "Reload plan: changes=2 reloadable=2 restart_required=0");
+                REQUIRE(plan.changes()[2].policy == merovingian::config::ReloadPolicy::reloadable);
+                REQUIRE(plan.changes()[3].policy == merovingian::config::ReloadPolicy::reloadable);
+                REQUIRE(merovingian::config::reload_plan_summary(plan) == "Reload plan: changes=4 reloadable=4 restart_required=0");
             }
         }
     }

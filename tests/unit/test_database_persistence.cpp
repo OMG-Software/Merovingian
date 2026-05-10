@@ -19,11 +19,17 @@ public:
     [[nodiscard]] auto execute(merovingian::database::PreparedStatement const& statement)
         -> merovingian::database::QueryResult override
     {
-        executed_statement_names.push_back(statement.name);
+        executed_statement_names_.push_back(statement.name);
         return {true, {}, {{"ok"}}};
     }
 
-    std::vector<std::string> executed_statement_names{};
+    [[nodiscard]] auto executed_statement_names() const noexcept -> std::vector<std::string> const&
+    {
+        return executed_statement_names_;
+    }
+
+private:
+    std::vector<std::string> executed_statement_names_{};
 };
 
 [[nodiscard]] auto create_users_statement() -> merovingian::database::PreparedStatement
@@ -134,8 +140,8 @@ SCENARIO("Database executor validates statements before execution", "[database]"
                 REQUIRE(valid_result.ok);
                 REQUIRE_FALSE(invalid_result.ok);
                 REQUIRE(invalid_result.error == "invalid statement name");
-                REQUIRE(executor.executed_statement_names.size() == 1U);
-                REQUIRE(executor.executed_statement_names.front() == "select_user");
+                REQUIRE(executor.executed_statement_names().size() == 1U);
+                REQUIRE(executor.executed_statement_names().front() == "select_user");
             }
         }
     }

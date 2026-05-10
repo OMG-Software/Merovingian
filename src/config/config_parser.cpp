@@ -149,6 +149,14 @@ inline auto apply_config_value(
     {
         security.federation.default_policy = std::string{value};
     }
+    else if (key == "security.federation.allowed_servers")
+    {
+        security.federation.allowed_servers = parse_string_list(value);
+    }
+    else if (key == "security.federation.denied_servers")
+    {
+        security.federation.denied_servers = parse_string_list(value);
+    }
     else if (key == "security.federation.require_valid_tls")
     {
         if (!parse_bool_value(value, security.federation.require_valid_tls))
