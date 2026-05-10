@@ -3,6 +3,7 @@
 #include <merovingian/auth/client_server_api.hpp>
 
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace merovingian::auth
@@ -21,13 +22,14 @@ namespace
     ClientAuthEndpoint endpoint
 ) -> ClientAuthRoute
 {
+    auto const rate_limit = http::endpoint_default_rate_limit(method, path_template);
     return {
         std::move(method),
         std::move(path_template),
         endpoint,
         client_auth_endpoint_requires_access_token(endpoint),
         true,
-        http::endpoint_default_rate_limit(method, path_template),
+        rate_limit,
     };
 }
 
