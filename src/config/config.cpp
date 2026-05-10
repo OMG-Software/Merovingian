@@ -51,6 +51,31 @@ auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bo
     return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
 }
 
+auto database_backend_name(DatabaseBackend backend) noexcept -> std::string_view
+{
+    return backend == DatabaseBackend::sqlite ? "sqlite" : "postgresql";
+}
+
+auto parse_database_backend(std::string_view value) noexcept -> std::optional<DatabaseBackend>
+{
+    if (value == "postgresql")
+    {
+        return DatabaseBackend::postgresql;
+    }
+    if (value == "sqlite")
+    {
+        return DatabaseBackend::sqlite;
+    }
+    return std::nullopt;
+}
+
+auto database_backend_performance_warning(DatabaseBackend backend) noexcept -> std::string_view
+{
+    return backend == DatabaseBackend::sqlite
+        ? "SQLite is intended only for small installations and development; PostgreSQL is recommended for production or high-throughput deployments."
+        : std::string_view{};
+}
+
 auto parse_port(std::string_view value) noexcept -> std::uint32_t
 {
     if (value.empty())
@@ -295,9 +320,14 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"listeners.federation.tls", "cleartext federation listener must bind only to loopback"});
     }
 
-    if (config.database().uri_file.empty())
+    if (config.database().backend == DatabaseBackend::postgresql && config.database().uri_file.empty())
     {
-        findings.push_back({"database.uri_file", "database URI file must not be empty"});
+        findings.push_back({"database.uri_file", "database URI file must not be empty for PostgreSQL"});
+    }
+
+    if (config.database().backend == DatabaseBackend::sqlite && config.database().sqlite_path.empty())
+    {
+        findings.push_back({"database.sqlite_path", "SQLite database path must not be empty"});
     }
 
     if (config.database().pool_size == 0U)
