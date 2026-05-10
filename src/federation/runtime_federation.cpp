@@ -7,6 +7,23 @@
 
 namespace merovingian::federation
 {
+namespace
+{
+
+[[nodiscard]] auto contains_server(std::vector<std::string> const& servers, std::string_view server_name) noexcept -> bool
+{
+    for (auto const& server : servers)
+    {
+        if (server == server_name)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
 
 auto make_runtime_federation_config(config::Config const& config) -> RuntimeFederationConfig
 {
@@ -16,6 +33,8 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
     return {
         config.security().federation.enabled,
         config.security().federation.default_policy,
+        config.security().federation.allowed_servers,
+        config.security().federation.denied_servers,
         config.security().federation.require_valid_tls,
         config.security().federation.verify_json_signatures,
         config.security().federation.deny_ip_ranges,
@@ -28,8 +47,33 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
 {
     return "Federation runtime config: enabled=" + std::string{config.enabled ? "true" : "false"}
         + " default_policy=" + config.default_policy
+        + " allowed_servers=" + std::to_string(config.allowed_servers.size())
+        + " denied_servers=" + std::to_string(config.denied_servers.size())
         + " max_transaction_bytes=" + std::to_string(config.max_transaction_bytes)
         + " remote_timeout_seconds=" + std::to_string(config.remote_timeout_seconds);
+}
+
+auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)
+    -> FederationServerPolicyDecision
+{
+    if (!config.enabled)
+    {
+        return {false, "federation disabled"};
+    }
+    if (server_name.empty())
+    {
+        return {false, "remote server name is empty"};
+    }
+    if (contains_server(config.denied_servers, server_name))
+    {
+        return {false, "remote server is denied"};
+    }
+    if (config.default_policy == "deny" && !contains_server(config.allowed_servers, server_name))
+    {
+        return {false, "remote server is not in federation allow list"};
+    }
+
+    return {true, {}};
 }
 
 } // namespace merovingian::federation
