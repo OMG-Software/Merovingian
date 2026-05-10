@@ -115,6 +115,8 @@ struct LocalHttpResponse final
 ) -> OperationResult;
 [[nodiscard]] auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>;
+[[nodiscard]] auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token)
+    -> std::optional<std::string>;
 [[nodiscard]] auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto join_room(
