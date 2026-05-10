@@ -19,6 +19,47 @@ namespace
     return v.size() >= p.size() && v.substr(0U, p.size()) == p;
 }
 
+[[nodiscard]] auto ends_with(std::string_view v, std::string_view suffix) noexcept -> bool
+{
+    return v.size() >= suffix.size() && v.substr(v.size() - suffix.size()) == suffix;
+}
+
+[[nodiscard]] auto json_escape(std::string_view value) -> std::string
+{
+    auto out = std::string{};
+    for (auto const ch : value)
+    {
+        switch (ch)
+        {
+        case '"':
+            out += R"(\")";
+            break;
+        case '\\':
+            out += R"(\\)";
+            break;
+        case '\b':
+            out += R"(\b)";
+            break;
+        case '\f':
+            out += R"(\f)";
+            break;
+        case '\n':
+            out += R"(\n)";
+            break;
+        case '\r':
+            out += R"(\r)";
+            break;
+        case '\t':
+            out += R"(\t)";
+            break;
+        default:
+            out += ch;
+            break;
+        }
+    }
+    return out;
+}
+
 [[nodiscard]] auto resp(std::uint16_t status, std::string body) -> LocalHttpResponse
 {
     return {status, std::move(body)};
@@ -65,16 +106,46 @@ namespace
     return authenticated_user(rt.homeserver, token);
 }
 
+[[nodiscard]] auto normalized_bucket(LocalHttpRequest const& req) -> std::string
+{
+    auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+    auto constexpr device_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+    auto target = std::string_view{req.target};
+    if (starts_with(target, room_prefix) && ends_with(target, "/join"))
+    {
+        return req.method + " /_matrix/client/v3/rooms/{roomId}/join";
+    }
+    if (starts_with(target, room_prefix) && ends_with(target, "/send"))
+    {
+        return req.method + " /_matrix/client/v3/rooms/{roomId}/send";
+    }
+    if (starts_with(target, room_prefix) && ends_with(target, "/state"))
+    {
+        return req.method + " /_matrix/client/v3/rooms/{roomId}/state";
+    }
+    if (starts_with(target, device_prefix))
+    {
+        return req.method + " /_matrix/client/v3/devices/{deviceId}";
+    }
+    return req.method + ' ' + req.target;
+}
+
 [[nodiscard]] auto allow(ClientServerMvpRuntime& rt, LocalHttpRequest const& req) -> bool
 {
-    auto const bucket = req.method + ' ' + req.target;
+    ++rt.request_clock;
+    auto const bucket = normalized_bucket(req);
     auto const it = std::ranges::find_if(rt.rate_limits, [&bucket](MvpRateLimitCounter const& c) {
         return c.bucket == bucket;
     });
     if (it == rt.rate_limits.end())
     {
-        rt.rate_limits.push_back({bucket, 1U});
+        rt.rate_limits.push_back({bucket, 1U, rt.request_clock});
         return true;
+    }
+    if (rt.request_clock - it->window_start_request >= rt.limits.rate_limit_window_requests)
+    {
+        it->count = 0U;
+        it->window_start_request = rt.request_clock;
     }
     if (it->count >= rt.limits.max_requests_per_bucket)
     {
@@ -104,7 +175,7 @@ namespace
         }
         out += first ? "" : ",";
         first = false;
-        out += "{\"device_id\":\"" + d.device_id + "\",\"display_name\":\"" + d.display_name + "\"}";
+        out += "{\"device_id\":\"" + json_escape(d.device_id) + "\",\"display_name\":\"" + json_escape(d.display_name) + "\"}";
     }
     return out + "]}";
 }
@@ -128,7 +199,7 @@ namespace
         out += first ? "" : ",";
         first = false;
         ++count;
-        out += "\"" + room.room_id + "\"";
+        out += "\"" + json_escape(room.room_id) + "\"";
     }
     return out + "]}";
 }
@@ -148,7 +219,7 @@ namespace
         first = false;
         ++count;
         auto const event_count = std::min(room.events.size(), rt.limits.max_sync_events_per_room);
-        out += "\"" + room.room_id + "\":{\"timeline\":{\"limited\":";
+        out += "\"" + json_escape(room.room_id) + "\":{\"timeline\":{\"limited\":";
         out += room.events.size() > event_count ? "true" : "false";
         out += ",\"event_count\":" + std::to_string(event_count) + "},\"state\":{\"member_count\":" + std::to_string(room.members.size()) + "}}";
     }
@@ -161,7 +232,7 @@ namespace
     {
         return err(r.status, "M_FORBIDDEN", r.body);
     }
-    return resp(200U, "{\"" + std::string{key} + "\":\"" + r.body + "\"}");
+    return resp(200U, "{\"" + std::string{key} + "\":\"" + json_escape(r.body) + "\"}");
 }
 
 } // namespace
@@ -180,7 +251,7 @@ auto start_client_server_mvp(config::Config const& config) -> ClientServerMvpSta
 
 auto matrix_error(std::string_view errcode, std::string_view message) -> std::string
 {
-    return "{\"errcode\":\"" + std::string{errcode} + "\",\"error\":\"" + std::string{message} + "\"}";
+    return "{\"errcode\":\"" + json_escape(errcode) + "\",\"error\":\"" + json_escape(message) + "\"}";
 }
 
 auto is_matrix_error_response(LocalHttpResponse const& r) noexcept -> bool
@@ -206,7 +277,7 @@ auto handle_client_server_request(ClientServerMvpRuntime& rt, LocalHttpRequest c
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register")
     {
         auto const r = handle_local_http_request(rt.homeserver, req);
-        return r.status == 200U ? resp(200U, "{\"user_id\":\"" + r.body + "\"}") : err(r.status, "M_FORBIDDEN", r.body);
+        return r.status == 200U ? resp(200U, "{\"user_id\":\"" + json_escape(r.body) + "\"}") : err(r.status, "M_FORBIDDEN", r.body);
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
     {
@@ -215,7 +286,7 @@ auto handle_client_server_request(ClientServerMvpRuntime& rt, LocalHttpRequest c
         {
             return err(400U, "M_BAD_JSON", "login body must be user_id|password|device_id");
         }
-        auto const [user, password, device] = *fields;
+        auto const [user, ignored_password, device] = *fields;
         auto const r = handle_local_http_request(rt.homeserver, req);
         if (r.status != 200U)
         {
@@ -225,7 +296,7 @@ auto handle_client_server_request(ClientServerMvpRuntime& rt, LocalHttpRequest c
         {
             rt.devices.push_back({std::string{user}, std::string{device}, std::string{device}});
         }
-        return resp(200U, "{\"access_token\":\"" + r.body + "\",\"user_id\":\"" + std::string{user} + "\",\"device_id\":\"" + std::string{device} + "\"}");
+        return resp(200U, "{\"access_token\":\"" + json_escape(r.body) + "\",\"user_id\":\"" + json_escape(user) + "\",\"device_id\":\"" + json_escape(device) + "\"}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout")
     {
@@ -240,7 +311,7 @@ auto handle_client_server_request(ClientServerMvpRuntime& rt, LocalHttpRequest c
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/whoami")
     {
-        return resp(200U, "{\"user_id\":\"" + *user + "\"}");
+        return resp(200U, "{\"user_id\":\"" + json_escape(*user) + "\"}");
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/devices")
     {
