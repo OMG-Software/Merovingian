@@ -7,11 +7,28 @@
 
 #include <string>
 
+namespace
+{
+
+[[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    security.registration.enabled = true;
+    return {
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},
+        security,
+    };
+}
+
+} // namespace
+
 SCENARIO("Integrated homeserver vertical slice boots and exercises local auth room audit and logout", "[homeserver][vertical][integration]")
 {
-    GIVEN("the default local homeserver config")
+    GIVEN("local homeserver config with registration enabled")
     {
-        auto const config = merovingian::config::Config{};
+        auto const config = registration_enabled_config();
 
         WHEN("the local vertical slice is run")
         {
