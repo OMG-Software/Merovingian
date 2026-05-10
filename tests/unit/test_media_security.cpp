@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -148,7 +149,7 @@ SCENARIO("Decoder safety policy rejects unsafe decoders and excessive expansion"
         auto too_large_output = safe;
         too_large_output.estimated_output_bytes = 131072U;
         auto excessive_ratio = safe;
-        excessive_ratio.estimated_output_bytes = 512U * 51U;
+        excessive_ratio.estimated_output_bytes = std::uint64_t{512U} * 51U;
         auto too_many_frames = safe;
         too_many_frames.animation_frames = 11U;
 
