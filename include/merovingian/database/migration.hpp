@@ -21,16 +21,16 @@ struct MigrationStep final
 {
     std::uint32_t version{0U};
     std::string name{};
-    MigrationDirection direction{MigrationDirection::upgrade};
     std::vector<PreparedStatement> statements{};
+    MigrationDirection direction{MigrationDirection::upgrade};
 };
 
 struct MigrationPlan final
 {
     std::uint32_t current_version{0U};
     std::uint32_t target_version{0U};
-    MigrationDirection direction{MigrationDirection::upgrade};
     std::vector<MigrationStep> steps{};
+    MigrationDirection direction{MigrationDirection::upgrade};
 };
 
 struct MigrationValidationResult final
