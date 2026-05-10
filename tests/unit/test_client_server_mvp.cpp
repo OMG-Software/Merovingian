@@ -116,6 +116,35 @@ SCENARIO("Client-server MVP account and device endpoints use real sessions", "[h
     }
 }
 
+SCENARIO("Client-server MVP escapes login and device JSON strings", "[homeserver][client-server]")
+{
+    GIVEN("a logged-in MVP user with a device value requiring JSON escapes")
+    {
+        auto started = merovingian::homeserver::start_client_server_mvp(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"}).status == 200U);
+
+        WHEN("the device id and display name include quotes and backslashes")
+        {
+            auto const login = merovingian::homeserver::handle_client_server_request(runtime, {"POST", "/_matrix/client/v3/login", {}, R"(@alice:example.org|CorrectHorse7!|DEV"\ICE)"});
+            auto const token = login_token(login.body);
+            auto const update = merovingian::homeserver::handle_client_server_request(runtime, {"PUT", R"(/_matrix/client/v3/devices/DEV"\ICE)", token, R"(Alice "Laptop" \ 1)"});
+            auto const devices = merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/devices", token, {}});
+
+            THEN("login and device responses remain valid escaped JSON strings")
+            {
+                REQUIRE(login.status == 200U);
+                REQUIRE(login.body.find(R"("device_id":"DEV\"\\ICE")") != std::string::npos);
+                REQUIRE(update.status == 200U);
+                REQUIRE(devices.status == 200U);
+                REQUIRE(devices.body.find(R"("device_id":"DEV\"\\ICE")") != std::string::npos);
+                REQUIRE(devices.body.find(R"("display_name":"Alice \"Laptop\" \\ 1")") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server MVP room state joined rooms and sync endpoints compose the homeserver path", "[homeserver][client-server]")
 {
     GIVEN("a logged-in MVP user")
@@ -164,6 +193,7 @@ SCENARIO("Client-server MVP enforces request limits and Matrix-style errors", "[
         auto& runtime = started.runtime;
         runtime.limits.max_body_bytes = 4U;
         runtime.limits.max_requests_per_bucket = 1U;
+        runtime.limits.rate_limit_window_requests = 64U;
 
         WHEN("oversized and repeated requests are sent")
         {
@@ -183,6 +213,57 @@ SCENARIO("Client-server MVP enforces request limits and Matrix-style errors", "[
                 REQUIRE(merovingian::homeserver::is_matrix_error_response(first));
                 REQUIRE(second.status == 429U);
                 REQUIRE(merovingian::homeserver::is_matrix_error_response(second));
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server MVP normalizes route-template rate-limit buckets", "[homeserver][client-server]")
+{
+    GIVEN("a started MVP runtime with a one-request route bucket")
+    {
+        auto started = merovingian::homeserver::start_client_server_mvp(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.limits.max_requests_per_bucket = 1U;
+        runtime.limits.rate_limit_window_requests = 64U;
+
+        WHEN("different room IDs hit the same route template")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(runtime, {"POST", "/_matrix/client/v3/rooms/!one:example.org/send", "bad", "{}"});
+            auto const second = merovingian::homeserver::handle_client_server_request(runtime, {"POST", "/_matrix/client/v3/rooms/!two:example.org/send", "bad", "{}"});
+
+            THEN("the second request is limited by the normalized route bucket")
+            {
+                REQUIRE(first.status == 401U);
+                REQUIRE(second.status == 429U);
+                REQUIRE(runtime.rate_limits.size() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server MVP rate-limit buckets reset after the logical window", "[homeserver][client-server]")
+{
+    GIVEN("a started MVP runtime with a short rate-limit window")
+    {
+        auto started = merovingian::homeserver::start_client_server_mvp(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.limits.max_requests_per_bucket = 1U;
+        runtime.limits.rate_limit_window_requests = 2U;
+
+        WHEN("a bucket is exhausted and the logical request window advances")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
+            auto const limited = merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
+            auto const reset = merovingian::homeserver::handle_client_server_request(runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
+
+            THEN("the bucket becomes available again after the reset window")
+            {
+                REQUIRE(first.status == 401U);
+                REQUIRE(limited.status == 429U);
+                REQUIRE(reset.status == 401U);
             }
         }
     }
