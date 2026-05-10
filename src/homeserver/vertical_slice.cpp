@@ -394,6 +394,7 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
     return make_result(true, user_id);
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 auto login_local_user(
     HomeserverRuntime& runtime,
     std::string_view user_id,
@@ -537,6 +538,7 @@ auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::s
     return make_result(true, std::string{room_id});
 }
 
+// NOLINTNEXTLINE(bugprone-easily-swappable-parameters)
 auto send_event(
     HomeserverRuntime& runtime,
     std::string_view access_token,
