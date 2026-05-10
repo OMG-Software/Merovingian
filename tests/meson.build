@@ -24,6 +24,7 @@ if get_option('build_tests')
     sources: files(
       'unit/test_main.cpp',
       'unit/test_auth.cpp',
+      'unit/test_auth_client_server_api.cpp',
       'unit/test_auth_session.cpp',
       'unit/test_canonicaljson_parser.cpp',
       'unit/test_canonicaljson_serializer.cpp',
