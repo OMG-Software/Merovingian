@@ -16,10 +16,14 @@ namespace
     return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
 }
 
+[[nodiscard]] auto key_api_rate_limit() noexcept -> http::RateLimitPolicy
+{
+    return {30U, 60U};
+}
+
 [[nodiscard]] auto route(std::string method, std::string path_template, KeyApiEndpoint endpoint) -> KeyApiRoute
 {
-    auto const rate_limit = http::endpoint_default_rate_limit(method, path_template);
-    return {std::move(method), std::move(path_template), endpoint, true, true, rate_limit};
+    return {std::move(method), std::move(path_template), endpoint, true, true, key_api_rate_limit()};
 }
 
 [[nodiscard]] auto public_value(std::string_view value) -> database::BoundValue
