@@ -71,6 +71,7 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "current_state"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "admin_actions"));
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 1U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().direction == merovingian::database::MigrationDirection::upgrade);
             }
         }
     }
@@ -127,7 +128,7 @@ SCENARIO("Persistent homeserver store records the client-server MVP flow", "[dat
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        WHEN("a user registers logs in creates a room sends state and logs out")
+        WHEN("a user registers logs in creates a room sends a message and logs out")
         {
             auto const registered = merovingian::homeserver::handle_client_server_request(runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
             auto const login = merovingian::homeserver::handle_client_server_request(runtime, {"POST", "/_matrix/client/v3/login", {}, "@alice:example.org|CorrectHorse7!|DEVICE1"});
@@ -139,7 +140,7 @@ SCENARIO("Persistent homeserver store records the client-server MVP flow", "[dat
             auto const logout = merovingian::homeserver::handle_client_server_request(runtime, {"POST", "/_matrix/client/v3/logout", token, {}});
             auto const valid_store = merovingian::database::validate_persistent_store(runtime.homeserver.database.persistent_store);
 
-            THEN("the persistent store contains durable MVP data and hashed revoked tokens")
+            THEN("message events are durable without synthetic current-state rows")
             {
                 REQUIRE(registered.status == 200U);
                 REQUIRE(login.status == 200U);
@@ -156,7 +157,7 @@ SCENARIO("Persistent homeserver store records the client-server MVP flow", "[dat
                 REQUIRE(runtime.homeserver.database.persistent_store.rooms.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.memberships.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.events.size() == 1U);
-                REQUIRE(runtime.homeserver.database.persistent_store.state.size() == 1U);
+                REQUIRE(runtime.homeserver.database.persistent_store.state.empty());
                 REQUIRE(runtime.homeserver.database.persistent_store.audit_log.size() >= 6U);
                 REQUIRE(merovingian::database::sensitive_values_are_redacted(runtime.homeserver.database.persistent_store));
             }
