@@ -74,11 +74,27 @@ struct OperationResult final
     std::string reason{};
 };
 
+struct LocalHttpRequest final
+{
+    std::string method{};
+    std::string target{};
+    std::string access_token{};
+    std::string body{};
+};
+
+struct LocalHttpResponse final
+{
+    std::uint16_t status{500U};
+    std::string body{};
+};
+
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config) -> LocalDatabase;
 [[nodiscard]] auto database_has_table(LocalDatabase const& database, std::string_view table_name) noexcept -> bool;
 [[nodiscard]] auto start_runtime(config::Config const& config) -> RuntimeStartResult;
 [[nodiscard]] auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthCheckSnapshot;
 [[nodiscard]] auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string;
+[[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
+    -> LocalHttpResponse;
 [[nodiscard]] auto register_local_user(
     HomeserverRuntime& runtime,
     std::string_view localpart,
