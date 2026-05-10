@@ -8,6 +8,23 @@
 
 #include <string>
 
+namespace
+{
+
+[[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    security.registration.enabled = true;
+    return {
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},
+        security,
+    };
+}
+
+} // namespace
+
 SCENARIO("Homeserver runtime starts from validated config with listeners database and hardening", "[homeserver][vertical]")
 {
     GIVEN("the default config")
@@ -36,46 +53,86 @@ SCENARIO("Homeserver runtime starts from validated config with listeners databas
     }
 }
 
-SCENARIO("Homeserver admin health exposes safe runtime status", "[homeserver][vertical][observability]")
+SCENARIO("Homeserver admin health requires an admin session", "[homeserver][vertical][observability]")
 {
-    GIVEN("a started runtime")
+    GIVEN("a started runtime with an admin user")
     {
-        auto started = merovingian::homeserver::start_runtime(merovingian::config::Config{});
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"}
+        );
+        REQUIRE(user.status == 200U);
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"}
+        );
+        REQUIRE(login.status == 200U);
 
-        WHEN("admin health is requested")
+        WHEN("admin health is requested with and without the admin token")
         {
-            auto const health = merovingian::homeserver::admin_health(started.runtime);
-            auto const summary = merovingian::homeserver::admin_health_summary(started.runtime);
-            auto const route = merovingian::homeserver::handle_local_http_request(
-                started.runtime,
+            auto const health = merovingian::homeserver::admin_health(runtime);
+            auto const summary = merovingian::homeserver::admin_health_summary(runtime);
+            auto const unauthorized = merovingian::homeserver::handle_local_http_request(
+                runtime,
                 {"GET", "/_merovingian/admin/health", {}, {}}
             );
+            auto const authorized = merovingian::homeserver::handle_local_http_request(
+                runtime,
+                {"GET", "/_merovingian/admin/health", login.body, {}}
+            );
 
-            THEN("health is safe and does not expose credentials or event contents")
+            THEN("health is safe and route access is admin-gated")
             {
                 REQUIRE(health.status == merovingian::observability::HealthStatus::ok);
                 REQUIRE(summary.find("runtime:ok") != std::string::npos);
                 REQUIRE(summary.find("database:ok") != std::string::npos);
-                REQUIRE(route.status == 200U);
-                REQUIRE(route.body.find("runtime:ok") != std::string::npos);
-                REQUIRE(route.body.find("password") == std::string::npos);
-                REQUIRE(route.body.find("access_token") == std::string::npos);
-                REQUIRE(route.body.find("m.room.message") == std::string::npos);
+                REQUIRE(unauthorized.status == 401U);
+                REQUIRE(unauthorized.body == "admin authentication required");
+                REQUIRE(authorized.status == 200U);
+                REQUIRE(authorized.body.find("runtime:ok") != std::string::npos);
+                REQUIRE(authorized.body.find("password") == std::string::npos);
+                REQUIRE(authorized.body.find("access_token") == std::string::npos);
+                REQUIRE(authorized.body.find("m.room.message") == std::string::npos);
             }
         }
     }
 }
 
-SCENARIO("Homeserver local auth route creates logs in sessions and revokes tokens", "[homeserver][vertical][auth]")
+SCENARIO("Homeserver registration follows runtime registration config", "[homeserver][vertical][auth]")
 {
-    GIVEN("a started runtime")
+    GIVEN("a runtime with registration disabled")
     {
         auto started = merovingian::homeserver::start_runtime(merovingian::config::Config{});
         REQUIRE(started.started);
+
+        WHEN("a client attempts registration")
+        {
+            auto const user = merovingian::homeserver::handle_local_http_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"}
+            );
+
+            THEN("registration is rejected by policy")
+            {
+                REQUIRE(user.status == 400U);
+                REQUIRE(user.body == "registration_disabled");
+            }
+        }
+    }
+}
+
+SCENARIO("Homeserver local auth route creates unique sessions and revokes tokens", "[homeserver][vertical][auth]")
+{
+    GIVEN("a started runtime")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        WHEN("a user registers, logs in, authenticates, and logs out through local routes")
+        WHEN("a user registers, logs in twice, authenticates, and logs out")
         {
             auto const user = merovingian::homeserver::handle_local_http_request(
                 runtime,
@@ -85,23 +142,69 @@ SCENARIO("Homeserver local auth route creates logs in sessions and revokes token
                 runtime,
                 {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"}
             );
+            auto const second_login = merovingian::homeserver::handle_local_http_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"}
+            );
             auto const authenticated = merovingian::homeserver::authenticated_user(runtime, login.body);
             auto const logout = merovingian::homeserver::handle_local_http_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/logout", login.body, {}}
             );
             auto const after_logout = merovingian::homeserver::authenticated_user(runtime, login.body);
+            auto const second_still_authenticated = merovingian::homeserver::authenticated_user(runtime, second_login.body);
 
-            THEN("the token works only before logout and audit events are appended")
+            THEN("tokens are unique, only the logged-out token is revoked, and audit events are appended")
             {
                 REQUIRE(user.status == 200U);
                 REQUIRE(user.body == "@alice:example.org");
                 REQUIRE(login.status == 200U);
+                REQUIRE(second_login.status == 200U);
+                REQUIRE(login.body != second_login.body);
                 REQUIRE(authenticated.has_value());
                 REQUIRE(*authenticated == user.body);
                 REQUIRE(logout.status == 200U);
                 REQUIRE_FALSE(after_logout.has_value());
-                REQUIRE(merovingian::homeserver::audit_event_count(runtime) >= 4U);
+                REQUIRE(second_still_authenticated.has_value());
+                REQUIRE(merovingian::homeserver::audit_event_count(runtime) >= 5U);
+            }
+        }
+    }
+}
+
+SCENARIO("Homeserver rejects same-length incorrect passwords and crafted token collisions", "[homeserver][vertical][auth]")
+{
+    GIVEN("a registered user and active token")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"}
+        );
+        REQUIRE(user.status == 200U);
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"}
+        );
+        REQUIRE(login.status == 200U);
+
+        WHEN("a same-length wrong password and same-shape fake token are used")
+        {
+            auto const bad_login = merovingian::homeserver::handle_local_http_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/login", {}, user.body + "|WrongHorse7!!|DEVICE1"}
+            );
+            auto fake_token = std::string{login.body};
+            fake_token.back() = fake_token.back() == '0' ? '1' : '0';
+            auto const fake_auth = merovingian::homeserver::authenticated_user(runtime, fake_token);
+
+            THEN("credential and token comparisons use the full secret value")
+            {
+                REQUIRE(bad_login.status == 400U);
+                REQUIRE(bad_login.body == "bad credentials");
+                REQUIRE_FALSE(fake_auth.has_value());
             }
         }
     }
@@ -111,7 +214,7 @@ SCENARIO("Homeserver local room route flow creates joins sends and fetches state
 {
     GIVEN("a logged-in local user")
     {
-        auto started = merovingian::homeserver::start_runtime(merovingian::config::Config{});
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const user = merovingian::homeserver::handle_local_http_request(
@@ -163,7 +266,7 @@ SCENARIO("Homeserver rejects unauthenticated room route operations", "[homeserve
 {
     GIVEN("a started runtime")
     {
-        auto started = merovingian::homeserver::start_runtime(merovingian::config::Config{});
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
 
         WHEN("room routes use an unknown token")
@@ -204,7 +307,7 @@ SCENARIO("Homeserver local route dispatcher rejects unknown routes", "[homeserve
 {
     GIVEN("a started runtime")
     {
-        auto started = merovingian::homeserver::start_runtime(merovingian::config::Config{});
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
 
         WHEN("an unknown route is requested")
