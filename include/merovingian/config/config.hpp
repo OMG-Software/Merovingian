@@ -53,6 +53,7 @@ struct FederationSecurityConfig final
 {
     bool enabled{true};
     std::string default_policy{"allow"};
+    std::vector<std::string> allowed_servers{};
     bool require_valid_tls{true};
     bool verify_json_signatures{true};
     std::vector<std::string> deny_ip_ranges{
@@ -144,6 +145,7 @@ struct DurationParseResult final
 [[nodiscard]] auto is_safe_cleartext_listener(ListenerConfig const& listener) noexcept -> bool;
 [[nodiscard]] auto is_valid_public_baseurl(std::string_view public_baseurl) noexcept -> bool;
 [[nodiscard]] auto is_valid_federation_policy(std::string_view policy) noexcept -> bool;
+[[nodiscard]] auto is_valid_federation_server_name(std::string_view server_name) noexcept -> bool;
 [[nodiscard]] auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult;
 [[nodiscard]] auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseResult;
 [[nodiscard]] auto is_private_or_loopback_range(std::string_view range) noexcept -> bool;
