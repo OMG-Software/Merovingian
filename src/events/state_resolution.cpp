@@ -9,17 +9,18 @@ namespace merovingian::events
 namespace
 {
 
-[[nodiscard]] auto has_resolved_event(std::vector<StateEventReference> const& state, StateKey const& key) noexcept -> bool
+[[nodiscard]] auto resolved_event(std::vector<StateEventReference> const& state, StateKey const& key) noexcept
+    -> StateEventReference const*
 {
     for (auto const& event : state)
     {
         if (state_key_matches(event.key, key))
         {
-            return true;
+            return &event;
         }
     }
 
-    return false;
+    return nullptr;
 }
 
 } // namespace
@@ -67,14 +68,14 @@ auto resolve_state(StateResolutionRequest const& request) -> StateResolutionResu
             {
                 return {false, {}, "state event id is required"};
             }
-            if (!has_resolved_event(result.resolved_state, event.key))
+
+            auto const* existing = resolved_event(result.resolved_state, event.key);
+            if (existing == nullptr)
             {
                 result.resolved_state.push_back(event);
                 continue;
             }
-
-            auto const* existing = state_group_event(StateGroup{"resolved", result.resolved_state}, event.key);
-            if (existing != nullptr && existing->event_id != event.event_id)
+            if (existing->event_id != event.event_id)
             {
                 return {false, result.resolved_state, "conflicting state requires full resolution"};
             }
