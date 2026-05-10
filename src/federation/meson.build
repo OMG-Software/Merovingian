@@ -1,5 +1,7 @@
 federation_sources = files(
   'runtime_federation.cpp',
+  'security.cpp',
+  'transactions.cpp',
 )
 
 federation_lib = static_library(
