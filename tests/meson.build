@@ -47,6 +47,7 @@ if get_option('build_tests')
       'unit/test_http_request.cpp',
       'unit/test_http_request_limits.cpp',
       'unit/test_key_api.cpp',
+      'unit/test_media_security.cpp',
       'unit/test_not_null.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',
@@ -63,6 +64,19 @@ if get_option('build_tests')
   )
 
   test('unit-tests', unit_tests)
+
+  integration_tests = executable(
+    'merovingian-integration-tests',
+    sources: files(
+      'integration/test_main.cpp',
+      'integration/test_media_repository_security.cpp',
+    ),
+    include_directories: inc,
+    dependencies: [catch2_dep, thread_dep],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, http_lib, media_lib, net_lib, platform_lib, rooms_lib],
+  )
+
+  test('integration-tests', integration_tests)
 
   subdir('smoke')
 endif
