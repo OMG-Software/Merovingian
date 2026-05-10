@@ -7,6 +7,7 @@
 #include <merovingian/trust_safety/policy_engine.hpp>
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <string_view>
 
@@ -14,6 +15,12 @@ namespace merovingian::homeserver
 {
 namespace
 {
+
+struct LocalStateFields final
+{
+    std::string event_type{};
+    std::string state_key{};
+};
 
 [[nodiscard]] auto find_room(LocalDatabase& database, std::string_view room_id) -> LocalRoom*
 {
@@ -36,6 +43,126 @@ namespace
 {
     auto const sequence = runtime.database.next_event_id++;
     return "$event" + std::to_string(sequence) + ":" + runtime.config.server().server_name;
+}
+
+[[nodiscard]] auto is_json_space(char value) noexcept -> bool
+{
+    return value == ' ' || value == '\n' || value == '\r' || value == '\t';
+}
+
+auto skip_json_space(std::string_view input, std::size_t& cursor) noexcept -> void
+{
+    while (cursor < input.size() && is_json_space(input[cursor]))
+    {
+        ++cursor;
+    }
+}
+
+[[nodiscard]] auto parse_json_string(std::string_view input, std::size_t& cursor) -> std::optional<std::string>
+{
+    if (cursor >= input.size() || input[cursor] != '"')
+    {
+        return std::nullopt;
+    }
+    ++cursor;
+    auto output = std::string{};
+    while (cursor < input.size())
+    {
+        auto const character = input[cursor++];
+        if (character == '"')
+        {
+            return output;
+        }
+        if (character == '\\')
+        {
+            if (cursor >= input.size())
+            {
+                return std::nullopt;
+            }
+            auto const escaped = input[cursor++];
+            if (escaped == '"' || escaped == '\\' || escaped == '/')
+            {
+                output.push_back(escaped);
+            }
+            else if (escaped == 'n')
+            {
+                output.push_back('\n');
+            }
+            else if (escaped == 'r')
+            {
+                output.push_back('\r');
+            }
+            else if (escaped == 't')
+            {
+                output.push_back('\t');
+            }
+            else
+            {
+                return std::nullopt;
+            }
+        }
+        else
+        {
+            output.push_back(character);
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] auto top_level_json_string_field(std::string_view json, std::string_view field_name) -> std::optional<std::string>
+{
+    auto cursor = std::size_t{0U};
+    skip_json_space(json, cursor);
+    if (cursor >= json.size() || json[cursor] != '{')
+    {
+        return std::nullopt;
+    }
+    ++cursor;
+    while (cursor < json.size())
+    {
+        skip_json_space(json, cursor);
+        if (cursor < json.size() && json[cursor] == '}')
+        {
+            return std::nullopt;
+        }
+        auto const key = parse_json_string(json, cursor);
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        skip_json_space(json, cursor);
+        if (cursor >= json.size() || json[cursor] != ':')
+        {
+            return std::nullopt;
+        }
+        ++cursor;
+        skip_json_space(json, cursor);
+        if (*key == field_name)
+        {
+            return parse_json_string(json, cursor);
+        }
+        if (!parse_json_string(json, cursor).has_value())
+        {
+            return std::nullopt;
+        }
+        skip_json_space(json, cursor);
+        if (cursor < json.size() && json[cursor] == ',')
+        {
+            ++cursor;
+        }
+    }
+    return std::nullopt;
+}
+
+[[nodiscard]] auto state_fields_from_event(std::string_view event_json) -> std::optional<LocalStateFields>
+{
+    auto const event_type = top_level_json_string_field(event_json, "type");
+    auto const state_key = top_level_json_string_field(event_json, "state_key");
+    if (!event_type.has_value() || !state_key.has_value())
+    {
+        return std::nullopt;
+    }
+    return LocalStateFields{*event_type, *state_key};
 }
 
 } // namespace
@@ -116,6 +243,10 @@ namespace
     auto const event_id = make_event_id(runtime);
     room->events.push_back(std::string{event_json});
     (void)database::store_event(runtime.database.persistent_store, {event_id, std::string{room_id}, *user_id, std::string{event_json}});
+    if (auto const state_fields = state_fields_from_event(event_json); state_fields.has_value())
+    {
+        (void)database::store_state(runtime.database.persistent_store, {std::string{room_id}, state_fields->event_type, state_fields->state_key, event_id});
+    }
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", *user_id, room_id, "stored");
     return make_operation_result(true, event_id);
 }
