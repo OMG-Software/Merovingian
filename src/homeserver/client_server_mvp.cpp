@@ -109,7 +109,7 @@ namespace
     return out + "]}";
 }
 
-[[nodiscard]] auto joined(ClientServerMvpRuntime const& rt, LocalRoom const& room, std::string_view user) -> bool
+[[nodiscard]] auto joined(LocalRoom const& room, std::string_view user) -> bool
 {
     return std::ranges::any_of(room.members, [user](std::string const& member) { return member == user; });
 }
@@ -121,7 +121,7 @@ namespace
     auto count = std::size_t{0U};
     for (auto const& room : rt.homeserver.database.rooms)
     {
-        if (count >= rt.limits.max_sync_rooms || !joined(rt, room, user))
+        if (count >= rt.limits.max_sync_rooms || !joined(room, user))
         {
             continue;
         }
@@ -140,7 +140,7 @@ namespace
     auto count = std::size_t{0U};
     for (auto const& room : rt.homeserver.database.rooms)
     {
-        if (count >= rt.limits.max_sync_rooms || !joined(rt, room, user))
+        if (count >= rt.limits.max_sync_rooms || !joined(room, user))
         {
             continue;
         }
@@ -302,7 +302,7 @@ auto device_count(ClientServerMvpRuntime const& rt, std::string_view user) noexc
 
 auto joined_room_count(ClientServerMvpRuntime const& rt, std::string_view user) noexcept -> std::size_t
 {
-    return static_cast<std::size_t>(std::ranges::count_if(rt.homeserver.database.rooms, [&rt, user](LocalRoom const& room) { return joined(rt, room, user); }));
+    return static_cast<std::size_t>(std::ranges::count_if(rt.homeserver.database.rooms, [user](LocalRoom const& room) { return joined(room, user); }));
 }
 
 auto run_client_server_mvp_flow(config::Config const& config) -> OperationResult
