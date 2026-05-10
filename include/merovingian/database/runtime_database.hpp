@@ -11,8 +11,11 @@ namespace merovingian::database
 
 struct RuntimeDatabaseConfig final
 {
+    config::DatabaseBackend backend{config::DatabaseBackend::postgresql};
     std::string uri_file{};
+    std::string sqlite_path{};
     std::uint32_t pool_size{0U};
+    std::string warning{};
 };
 
 [[nodiscard]] auto make_runtime_database_config(config::Config const& config) -> RuntimeDatabaseConfig;
