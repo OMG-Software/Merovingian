@@ -63,6 +63,46 @@ namespace
     return !id.empty() && id.find("..") == std::string_view::npos;
 }
 
+[[nodiscard]] auto has_exactly_two_path_segments(std::string_view suffix) noexcept -> bool
+{
+    auto const separator = suffix.find('/');
+    return separator != std::string_view::npos && separator > 0U && separator + 1U < suffix.size()
+        && suffix.find('/', separator + 1U) == std::string_view::npos;
+}
+
+[[nodiscard]] auto matches_report_route(std::string_view target) noexcept -> bool
+{
+    auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+    auto constexpr report_separator = std::string_view{"/report/"};
+
+    if (!starts_with(target, prefix))
+    {
+        return false;
+    }
+
+    auto const suffix = target.substr(prefix.size());
+    auto const report_position = suffix.find(report_separator);
+    if (report_position == std::string_view::npos || report_position == 0U)
+    {
+        return false;
+    }
+
+    auto const event_id = suffix.substr(report_position + report_separator.size());
+    return !event_id.empty() && event_id.find('/') == std::string_view::npos;
+}
+
+[[nodiscard]] auto matches_admin_review_route(std::string_view target) noexcept -> bool
+{
+    auto constexpr prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
+
+    if (!starts_with(target, prefix))
+    {
+        return false;
+    }
+
+    return has_exactly_two_path_segments(target.substr(prefix.size()));
+}
+
 } // namespace
 
 auto policy_surface_name(PolicySurface surface) noexcept -> char const*
@@ -374,12 +414,12 @@ auto match_reporting_api_route(std::string_view method, std::string_view target)
             return {true, candidate, {}};
         }
         if (candidate.path_template == "/_matrix/client/v3/rooms/{roomId}/report/{eventId}"
-            && starts_with(target, "/_matrix/client/v3/rooms/"))
+            && matches_report_route(target))
         {
             return {true, candidate, {}};
         }
         if (candidate.path_template == "/_matrix/client/v3/admin/safety/review/{targetType}/{targetId}"
-            && starts_with(target, "/_matrix/client/v3/admin/safety/review/"))
+            && matches_admin_review_route(target))
         {
             return {true, candidate, {}};
         }
