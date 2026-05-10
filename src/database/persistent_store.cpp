@@ -20,6 +20,22 @@ namespace
     return token_hash.starts_with("token-hash:") || token_hash.starts_with("token-hash:v1:");
 }
 
+[[nodiscard]] auto json_has_string_field(std::string_view json, std::string_view field_name, std::string_view value) -> bool
+{
+    auto const needle = "\"" + std::string{field_name} + "\":\"" + std::string{value} + "\"";
+    return json.find(needle) != std::string_view::npos;
+}
+
+[[nodiscard]] auto state_matches_persisted_event(PersistentStore const& store, PersistentStateEvent const& state) -> bool
+{
+    auto const iterator = std::ranges::find_if(store.events, [&state](PersistentEvent const& event) {
+        return event.event_id == state.event_id && event.room_id == state.room_id
+            && json_has_string_field(event.json, "type", state.event_type)
+            && json_has_string_field(event.json, "state_key", state.state_key);
+    });
+    return iterator != store.events.end();
+}
+
 } // namespace
 
 [[nodiscard]] auto open_persistent_store(SchemaState existing_state) -> PersistentStoreOpenResult
@@ -33,7 +49,7 @@ namespace
     auto store = PersistentStore{};
     store.open = true;
     store.schema = std::move(applied.state);
-    auto const compatibility = validate_persistent_store(store);
+    auto compatibility = validate_persistent_store(store);
     if (!compatibility.valid)
     {
         return {false, compatibility.reason, {}};
@@ -64,11 +80,7 @@ namespace
 
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool
 {
-    store.prepared_statements.push_back(record_statement(
-        "insert_user",
-        "INSERT INTO users VALUES ($1, $2, $3, $4, $5)",
-        {{user.user_id, false}, {user.password_hash, true}, {user.locked ? "true" : "false", false}, {user.suspended ? "true" : "false", false}, {user.admin ? "true" : "false", false}}
-    ));
+    store.prepared_statements.push_back(record_statement("insert_user", "INSERT INTO users VALUES ($1, $2, $3, $4, $5)", {{user.user_id, false}, {user.password_hash, true}, {user.locked ? "true" : "false", false}, {user.suspended ? "true" : "false", false}, {user.admin ? "true" : "false", false}}));
     auto const duplicate = std::ranges::any_of(store.users, [&user](PersistentUser const& existing) { return existing.user_id == user.user_id; });
     if (duplicate)
     {
@@ -139,6 +151,10 @@ namespace
 
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool
 {
+    if (!state_matches_persisted_event(store, state))
+    {
+        return false;
+    }
     store.prepared_statements.push_back(record_statement("insert_state", "INSERT INTO current_state VALUES ($1, $2, $3, $4)", {{state.room_id, false}, {state.event_type, false}, {state.state_key, false}, {state.event_id, false}}));
     store.state.push_back(std::move(state));
     return true;
