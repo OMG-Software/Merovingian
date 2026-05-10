@@ -1,0 +1,14 @@
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-branch-clone,
+  -bugprone-chained-comparison,
+  -bugprone-easily-swappable-parameters,
+  cert-*,
+  -cert-err33-c,
+  clang-analyzer-*,
+  misc-*,
+  -misc-include-cleaner,
+  portability-*
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^tests/.*'
