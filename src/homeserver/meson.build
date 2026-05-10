@@ -1,4 +1,5 @@
 homeserver_sources = files(
+  'client_server_mvp.cpp',
   'vertical_slice.cpp',
 )
 

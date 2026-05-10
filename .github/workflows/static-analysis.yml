@@ -35,9 +35,17 @@ jobs:
       - name: Generate compile commands
         run: meson compile -C build
 
-      - name: Run clang-tidy on project sources
+      - name: Run clang-tidy on production sources
         run: |
-          find include src tests \
+          find include src \
+            \( -name '*.hpp' -o -name '*.cpp' \) \
+            -not -path './build/*' \
+            -not -path './subprojects/*' | \
+            xargs clang-tidy -p build
+
+      - name: Run clang-tidy on tests
+        run: |
+          find tests \
             \( -name '*.hpp' -o -name '*.cpp' \) \
             -not -path './build/*' \
             -not -path './subprojects/*' | \

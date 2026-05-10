@@ -6,6 +6,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <optional>
 #include <string>
 
 namespace
@@ -161,8 +162,7 @@ SCENARIO("Homeserver local auth route creates unique sessions and revokes tokens
                 REQUIRE(login.status == 200U);
                 REQUIRE(second_login.status == 200U);
                 REQUIRE(login.body != second_login.body);
-                REQUIRE(authenticated.has_value());
-                REQUIRE(*authenticated == user.body);
+                REQUIRE(authenticated == std::optional<std::string>{user.body});
                 REQUIRE(logout.status == 200U);
                 REQUIRE_FALSE(after_logout.has_value());
                 REQUIRE(second_still_authenticated.has_value());
