@@ -3,7 +3,6 @@
 #include <merovingian/homeserver/vertical_slice.hpp>
 
 #include <merovingian/auth/identity.hpp>
-#include <merovingian/auth/token.hpp>
 #include <merovingian/database/schema.hpp>
 #include <merovingian/observability/observability.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
@@ -11,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -23,10 +23,23 @@ namespace
 {
 
 auto constexpr schema_version = std::uint32_t{1U};
+auto constexpr fnv_offset = std::uint64_t{1469598103934665603ULL};
+auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
 
 [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
 {
     return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+}
+
+[[nodiscard]] auto stable_hash(std::string_view value) noexcept -> std::uint64_t
+{
+    auto hash = fnv_offset;
+    for (auto const character : value)
+    {
+        hash ^= static_cast<unsigned char>(character);
+        hash *= fnv_prime;
+    }
+    return hash;
 }
 
 [[nodiscard]] auto make_result(bool ok, std::string value, std::string reason = {}) -> OperationResult
@@ -81,17 +94,19 @@ auto constexpr schema_version = std::uint32_t{1U};
 
 [[nodiscard]] auto hash_password(std::string_view password) -> std::string
 {
-    return "password-hash:length=" + std::to_string(password.size());
+    return "password-hash:v1:" + std::to_string(stable_hash(password));
 }
 
 [[nodiscard]] auto hash_token(std::string_view token) -> std::string
 {
-    return "token-hash:length=" + std::to_string(token.size()) + ":" + std::string{token.substr(0U, token.empty() ? 0U : 1U)};
+    return "token-hash:v1:" + std::to_string(stable_hash(token));
 }
 
-[[nodiscard]] auto issue_token(std::string_view user_id, std::string_view device_id) -> std::string
+[[nodiscard]] auto issue_token(std::string_view user_id, std::string_view device_id, std::uint64_t session_id)
+    -> std::string
 {
-    return "mvs_" + std::to_string(user_id.size()) + "_" + std::to_string(device_id.size()) + "_local_token";
+    auto const material = std::string{user_id} + '|' + std::string{device_id} + '|' + std::to_string(session_id);
+    return "mvs_" + std::to_string(session_id) + '_' + std::to_string(stable_hash(material));
 }
 
 [[nodiscard]] auto audit(
@@ -119,14 +134,6 @@ auto constexpr schema_version = std::uint32_t{1U};
         return user.user_id == user_id;
     });
     return iterator == database.users.end() ? nullptr : &(*iterator);
-}
-
-[[nodiscard]] auto find_session(LocalDatabase& database, std::string_view token_hash) -> LocalSession*
-{
-    auto const iterator = std::ranges::find_if(database.sessions, [token_hash](LocalSession const& session) {
-        return session.access_token_hash == token_hash && !session.revoked;
-    });
-    return iterator == database.sessions.end() ? nullptr : &(*iterator);
 }
 
 [[nodiscard]] auto find_session(LocalDatabase const& database, std::string_view token_hash) -> LocalSession const*
@@ -165,15 +172,22 @@ auto constexpr schema_version = std::uint32_t{1U};
 {
     auto const token_hash = hash_token(access_token);
     auto const* session = find_session(runtime.database, token_hash);
-    if (session == nullptr)
-    {
-        return std::nullopt;
-    }
-    if (find_user(runtime.database, session->user_id) == nullptr)
+    if (session == nullptr || find_user(runtime.database, session->user_id) == nullptr)
     {
         return std::nullopt;
     }
     return session->user_id;
+}
+
+[[nodiscard]] auto admin_token_is_valid(HomeserverRuntime const& runtime, std::string_view access_token) -> bool
+{
+    auto const user_id = authenticate(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        return false;
+    }
+    auto const* user = find_user(runtime.database, *user_id);
+    return user != nullptr && user->admin;
 }
 
 } // namespace
@@ -272,6 +286,10 @@ auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest cons
     }
     if (request.method == "GET" && request.target == "/_merovingian/admin/health")
     {
+        if (!admin_token_is_valid(runtime, request.access_token))
+        {
+            return response(401U, "admin authentication required");
+        }
         return response(200U, admin_health_summary(runtime));
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/register")
@@ -356,19 +374,22 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
         return make_result(false, {}, "user already exists");
     }
 
-    auto const decision = trust_safety::evaluate_registration_policy({user_id, "127.0.0.1", true, false, {}});
+    auto const decision = trust_safety::evaluate_registration_policy(
+        {user_id, "127.0.0.1", runtime.config.security().registration.enabled, false, {}}
+    );
     if (!decision.allowed)
     {
         return make_result(false, {}, decision.reason.code);
     }
 
-    runtime.database.users.push_back({user_id, hash_password(password), false, false});
+    auto const first_user_is_admin = runtime.database.users.empty();
+    runtime.database.users.push_back({user_id, hash_password(password), false, false, first_user_is_admin});
     runtime.database.audit_events.push_back(audit(
         observability::AuditCategory::auth,
         "auth.user_registered",
         user_id,
         user_id,
-        "created"
+        first_user_is_admin ? "created_admin" : "created"
     ));
     return make_result(true, user_id);
 }
@@ -409,7 +430,8 @@ auto login_local_user(
         return make_result(false, {}, login.reason);
     }
 
-    auto const token = issue_token(user->user_id, device_id);
+    auto const session_id = runtime.database.next_session_id++;
+    auto const token = issue_token(user->user_id, device_id, session_id);
     runtime.database.sessions.push_back({user->user_id, std::string{device_id}, hash_token(token), false});
     runtime.database.audit_events.push_back(audit(
         observability::AuditCategory::auth,
@@ -430,19 +452,32 @@ auto authenticated_user(HomeserverRuntime const& runtime, std::string_view acces
 auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
 {
     auto const token_hash = hash_token(access_token);
-    auto* session = find_session(runtime.database, token_hash);
-    if (session == nullptr)
+    auto user_id = std::string{};
+    auto device_id = std::string{};
+    auto revoked_any = false;
+    for (auto& session : runtime.database.sessions)
+    {
+        if (session.access_token_hash == token_hash && !session.revoked)
+        {
+            if (user_id.empty())
+            {
+                user_id = session.user_id;
+                device_id = session.device_id;
+            }
+            session.revoked = true;
+            revoked_any = true;
+        }
+    }
+    if (!revoked_any)
     {
         return make_result(false, {}, "unauthenticated");
     }
 
-    auto const user_id = session->user_id;
-    session->revoked = true;
     runtime.database.audit_events.push_back(audit(
         observability::AuditCategory::auth,
         "auth.logout",
         user_id,
-        session->device_id,
+        device_id,
         "revoked"
     ));
     return make_result(true, user_id);
@@ -591,9 +626,10 @@ auto run_local_vertical_slice(config::Config const& config) -> OperationResult
     {
         return make_result(false, {}, login.body);
     }
-    if (!authenticated_user(runtime, login.body).has_value())
+    auto health = handle_local_http_request(runtime, {"GET", "/_merovingian/admin/health", login.body, {}});
+    if (health.status != 200U)
     {
-        return make_result(false, {}, "authenticated request failed");
+        return make_result(false, {}, health.body);
     }
     auto room = handle_local_http_request(runtime, {"POST", "/_matrix/client/v3/createRoom", login.body, {}});
     if (room.status != 200U)
