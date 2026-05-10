@@ -59,8 +59,10 @@ SCENARIO("Runtime config snapshot applies federation server list changes", "[con
     {
         auto snapshot = merovingian::config::RuntimeConfigSnapshot{merovingian::config::Config{}};
         auto security = merovingian::config::SecurityConfig{};
-        security.federation.allowed_servers = std::vector<std::string>{"matrix.org", "example.net"};
-        security.federation.denied_servers = std::vector<std::string>{"bad.example"};
+        auto const expected_allowed_servers = std::vector<std::string>{"matrix.org", "example.net"};
+        auto const expected_denied_servers = std::vector<std::string>{"bad.example"};
+        security.federation.allowed_servers = expected_allowed_servers;
+        security.federation.denied_servers = expected_denied_servers;
         auto const next = merovingian::config::Config{
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
@@ -75,8 +77,8 @@ SCENARIO("Runtime config snapshot applies federation server list changes", "[con
             THEN("the snapshot updates the active federation server lists")
             {
                 REQUIRE(result == merovingian::config::RuntimeConfigApplyResult::applied);
-                REQUIRE(snapshot.current().security().federation.allowed_servers == std::vector<std::string>{"matrix.org", "example.net"});
-                REQUIRE(snapshot.current().security().federation.denied_servers == std::vector<std::string>{"bad.example"});
+                REQUIRE(snapshot.current().security().federation.allowed_servers == expected_allowed_servers);
+                REQUIRE(snapshot.current().security().federation.denied_servers == expected_denied_servers);
             }
         }
     }
