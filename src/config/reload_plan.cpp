@@ -149,6 +149,14 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.federation.default_policy");
     }
+    if (current.security().federation.allowed_servers != next.security().federation.allowed_servers)
+    {
+        add_change(plan, "security.federation.allowed_servers");
+    }
+    if (current.security().federation.denied_servers != next.security().federation.denied_servers)
+    {
+        add_change(plan, "security.federation.denied_servers");
+    }
     if (current.security().federation.require_valid_tls != next.security().federation.require_valid_tls)
     {
         add_change(plan, "security.federation.require_valid_tls");
