@@ -35,6 +35,7 @@ if get_option('build_tests')
       'unit/test_config_reload_plan.cpp',
       'unit/test_config_reload_policy.cpp',
       'unit/test_crypto.cpp',
+      'unit/test_database_backend_config.cpp',
       'unit/test_database_persistence.cpp',
       'unit/test_event_authorization.cpp',
       'unit/test_events.cpp',
