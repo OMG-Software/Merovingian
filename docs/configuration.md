@@ -71,6 +71,9 @@ Rejected cases include:
 - disabled default encryption for new rooms
 - disabled direct-message encryption requirement
 - invalid federation default policy
+- deny-by-default federation without allowed servers
+- malformed federation allowed server entry
+- malformed federation denied server entry
 - disabled federation TLS validation
 - disabled federation JSON signature verification
 - missing private or loopback federation deny ranges
@@ -106,6 +109,38 @@ A listener with `tls=false` must bind to one of:
 - `[::1]`
 
 A non-loopback listener must set `tls=true`.
+
+## Federation exposure policy
+
+Federation can be disabled globally:
+
+```text
+security.federation.enabled=false
+```
+
+When federation is enabled, `security.federation.default_policy` controls the default decision for remote servers:
+
+```text
+security.federation.default_policy=allow
+security.federation.default_policy=deny
+```
+
+`security.federation.denied_servers` blocks listed remote servers regardless of the default policy or allow list:
+
+```text
+security.federation.denied_servers=bad.example,abuse.example
+```
+
+`security.federation.allowed_servers` is used when the default policy is `deny`; only listed servers can federate, unless they are also denied:
+
+```text
+security.federation.default_policy=deny
+security.federation.allowed_servers=matrix.org,example.net
+```
+
+Deny-by-default federation requires a non-empty `allowed_servers` list while federation is enabled. Server list entries must be bounded server-name strings and may contain ASCII letters, digits, dots, hyphens, and port separators.
+
+`security.federation.deny_ip_ranges` remains separate from server-name policy and is used for private or loopback network-range blocking.
 
 ## Size and duration formats
 
