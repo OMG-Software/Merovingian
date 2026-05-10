@@ -47,6 +47,7 @@ struct LocalDatabase final
     bool schema_validated{false};
     std::uint32_t schema_version{0U};
     std::uint64_t next_session_id{1U};
+    std::uint64_t next_event_id{1U};
     std::vector<std::string> tables{};
     std::vector<LocalUser> users{};
     std::vector<LocalSession> sessions{};
