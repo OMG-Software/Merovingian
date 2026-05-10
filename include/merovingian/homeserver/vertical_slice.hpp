@@ -21,6 +21,7 @@ struct LocalUser final
     std::string password_hash{};
     bool locked{false};
     bool suspended{false};
+    bool admin{false};
 };
 
 struct LocalSession final
@@ -44,6 +45,7 @@ struct LocalDatabase final
     bool opened{false};
     bool schema_validated{false};
     std::uint32_t schema_version{0U};
+    std::uint64_t next_session_id{1U};
     std::vector<std::string> tables{};
     std::vector<LocalUser> users{};
     std::vector<LocalSession> sessions{};
