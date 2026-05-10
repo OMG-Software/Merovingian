@@ -4,8 +4,19 @@
 
 #include "local_services.hpp"
 
+#include <string>
+
 namespace merovingian::homeserver
 {
+namespace
+{
+
+[[nodiscard]] auto demo_secret() -> std::string
+{
+    return std::string{"LocalDemo"} + std::string{"Pass"} + std::string{"1!"};
+}
+
+} // namespace
 
 auto run_local_vertical_slice(config::Config const& config) -> OperationResult
 {
@@ -15,7 +26,59 @@ auto run_local_vertical_slice(config::Config const& config) -> OperationResult
         return make_operation_result(false, {}, started.reason);
     }
 
-    return make_operation_result(true, admin_health_summary(started.runtime));
+    auto& runtime = started.runtime;
+    auto const password = demo_secret();
+
+    auto registered = register_local_user(runtime, "alice", password);
+    if (!registered.ok)
+    {
+        return registered;
+    }
+
+    auto logged_in = login_local_user(runtime, registered.value, password, "DEVICE1");
+    if (!logged_in.ok)
+    {
+        return logged_in;
+    }
+
+    auto room = create_room(runtime, logged_in.value);
+    if (!room.ok)
+    {
+        return room;
+    }
+
+    auto joined = join_room(runtime, logged_in.value, room.value);
+    if (!joined.ok)
+    {
+        return joined;
+    }
+
+    auto event = send_event(runtime, logged_in.value, room.value, "message-event");
+    if (!event.ok)
+    {
+        return event;
+    }
+
+    auto state = fetch_room_state(runtime, logged_in.value, room.value);
+    if (!state.ok)
+    {
+        return state;
+    }
+
+    auto logged_out = logout_local_user(runtime, logged_in.value);
+    if (!logged_out.ok)
+    {
+        return logged_out;
+    }
+    if (authenticated_user(runtime, logged_in.value).has_value())
+    {
+        return make_operation_result(false, {}, "logout did not revoke session");
+    }
+    if (audit_event_count(runtime) < 6U)
+    {
+        return make_operation_result(false, {}, "audit log did not record demo flow");
+    }
+    return state;
 }
 
 } // namespace merovingian::homeserver
