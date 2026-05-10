@@ -78,6 +78,7 @@ if get_option('build_tests')
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_media_repository_security.cpp',
       'integration/test_observability_flow.cpp',
+      'integration/test_persistent_homeserver_flow.cpp',
       'integration/test_runtime_hardening_flow.cpp',
       'integration/test_trust_safety_policy_flow.cpp',
     ),
