@@ -36,6 +36,7 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
             "listeners.client.bind=127.0.0.1:9008\n"
             "database.pool_size=32\n"
             "security.federation.default_policy=deny\n"
+            "security.federation.allowed_servers=matrix.org\n"
             "security.federation.max_transaction_size=8MiB\n"
             "security.federation.remote_timeout=45s\n"
             "security.media.max_upload_size=25MiB\n"
@@ -52,6 +53,8 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
                 REQUIRE(result.config.listeners().client.bind == "127.0.0.1:9008");
                 REQUIRE(result.config.database().pool_size == 32U);
                 REQUIRE(result.config.security().federation.default_policy == "deny");
+                REQUIRE(result.config.security().federation.allowed_servers.size() == 1U);
+                REQUIRE(result.config.security().federation.allowed_servers.front() == "matrix.org");
                 REQUIRE(result.config.security().federation.max_transaction_size == "8MiB");
                 REQUIRE(result.config.security().federation.remote_timeout == "45s");
                 REQUIRE(result.config.security().media.max_upload_size == "25MiB");
@@ -68,6 +71,8 @@ SCENARIO("Key-value config parser applies booleans and lists", "[config][parser]
             "server.trusted_proxies=127.0.0.1, 10.0.0.1\n"
             "listeners.client.tls=true\n"
             "security.media.enable_av_scanner=false\n"
+            "security.federation.allowed_servers=matrix.org, example.net\n"
+            "security.federation.denied_servers=bad.example, abuse.example\n"
             "security.federation.deny_ip_ranges=127.0.0.0/8, ::1/128\n"
         };
 
@@ -81,7 +86,51 @@ SCENARIO("Key-value config parser applies booleans and lists", "[config][parser]
                 REQUIRE(result.config.server().trusted_proxies.size() == 2U);
                 REQUIRE(result.config.listeners().client.tls);
                 REQUIRE_FALSE(result.config.security().media.enable_av_scanner);
+                REQUIRE(result.config.security().federation.allowed_servers.size() == 2U);
+                REQUIRE(result.config.security().federation.denied_servers.size() == 2U);
                 REQUIRE(result.config.security().federation.deny_ip_ranges.size() == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser rejects deny-by-default federation without allowed servers", "[config][parser]")
+{
+    GIVEN("config input with deny-by-default federation and no allowed servers")
+    {
+        auto const input = std::string{"security.federation.default_policy=deny\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the missing allowed server list is reported")
+            {
+                REQUIRE_FALSE(result.findings.empty());
+                REQUIRE(result.findings.front().field == "security.federation.allowed_servers");
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser rejects invalid federation server list entries", "[config][parser]")
+{
+    GIVEN("config input with malformed allowed and denied server entries")
+    {
+        auto const allowed_input = std::string{"security.federation.allowed_servers=bad server\n"};
+        auto const denied_input = std::string{"security.federation.denied_servers=bad/server\n"};
+
+        WHEN("the configs are parsed")
+        {
+            auto const allowed_result = merovingian::config::parse_key_value_config(allowed_input);
+            auto const denied_result = merovingian::config::parse_key_value_config(denied_input);
+
+            THEN("the malformed server names are reported")
+            {
+                REQUIRE_FALSE(allowed_result.findings.empty());
+                REQUIRE(allowed_result.findings.front().field == "security.federation.allowed_servers");
+                REQUIRE_FALSE(denied_result.findings.empty());
+                REQUIRE(denied_result.findings.front().field == "security.federation.denied_servers");
             }
         }
     }
