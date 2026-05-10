@@ -47,7 +47,7 @@ namespace
     {
         return {false, "persistent store is not open"};
     }
-    auto const compatibility = schema_state_is_compatible(store.schema);
+    auto compatibility = schema_state_is_compatible(store.schema);
     if (!compatibility.valid)
     {
         return compatibility;
