@@ -31,9 +31,11 @@ struct MembershipPolicy final
     MembershipState requested_membership{MembershipState::join};
     bool target_is_sender{true};
     bool target_is_restricted{false};
+    bool third_party_invite{false};
     std::int64_t sender_power{0};
     std::int64_t restrict_power{50};
     std::int64_t invite_power{0};
+    std::int64_t remove_power{50};
 };
 
 struct EventAuthorizationRequest final
