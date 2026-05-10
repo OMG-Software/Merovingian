@@ -32,25 +32,25 @@ namespace
         switch (ch)
         {
         case '"':
-            out += R"(\")";
+            out += "\\\"";
             break;
         case '\\':
-            out += R"(\\)";
+            out += "\\\\";
             break;
         case '\b':
-            out += R"(\b)";
+            out += "\\b";
             break;
         case '\f':
-            out += R"(\f)";
+            out += "\\f";
             break;
         case '\n':
-            out += R"(\n)";
+            out += "\\n";
             break;
         case '\r':
-            out += R"(\r)";
+            out += "\\r";
             break;
         case '\t':
-            out += R"(\t)";
+            out += "\\t";
             break;
         default:
             out += ch;
@@ -286,7 +286,8 @@ auto handle_client_server_request(ClientServerMvpRuntime& rt, LocalHttpRequest c
         {
             return err(400U, "M_BAD_JSON", "login body must be user_id|password|device_id");
         }
-        auto const [user, ignored_password, device] = *fields;
+        auto const user = std::get<0U>(*fields);
+        auto const device = std::get<2U>(*fields);
         auto const r = handle_local_http_request(rt.homeserver, req);
         if (r.status != 200U)
         {
