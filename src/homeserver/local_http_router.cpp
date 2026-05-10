@@ -59,7 +59,7 @@ namespace
     }
     if (request.method == "GET" && request.target == "/_merovingian/admin/health")
     {
-        return authenticated_user(runtime, request.access_token).has_value() ? response(200U, admin_health_summary(runtime))
+        return authenticated_admin_user(runtime, request.access_token).has_value() ? response(200U, admin_health_summary(runtime))
                                                                  : response(401U, "admin authentication required");
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/register")
