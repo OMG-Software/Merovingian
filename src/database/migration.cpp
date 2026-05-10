@@ -200,6 +200,11 @@ auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_
     {
         return {current_version, target_version, {}, MigrationDirection::upgrade};
     }
+    if (current_version > current_schema_version() || target_version > current_schema_version())
+    {
+        auto const direction = target_version > current_version ? MigrationDirection::upgrade : MigrationDirection::downgrade;
+        return {current_version, target_version, {}, direction};
+    }
     auto const direction = target_version > current_version ? MigrationDirection::upgrade : MigrationDirection::downgrade;
     auto const catalog = direction == MigrationDirection::upgrade ? upgrade_migration_catalog() : downgrade_migration_catalog();
     auto steps = std::vector<MigrationStep>{};
