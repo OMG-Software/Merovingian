@@ -18,20 +18,23 @@ auto room_creation_encryption_policy(RoomCreationEncryptionRequest request) -> R
     auto const encryption_required = private_room || request.direct_message;
     auto const encryption_enabled_by_default = encryption_required;
 
-    if (request.direct_message && !request.encryption_requested)
+    if (request.direct_message && request.encryption == RoomEncryptionRequest::unencrypted)
     {
-        return {false, true, true, "direct messages must be encrypted"};
+        return {false, true, true, false, "direct messages must be encrypted"};
     }
-    if (private_room && !request.encryption_requested)
+    if (request.federated && private_room && request.encryption == RoomEncryptionRequest::unencrypted)
     {
-        return {false, true, true, "private rooms must be encrypted"};
+        return {false, true, true, false, "federated private rooms must be encrypted"};
     }
-    if (request.federated && private_room && !request.encryption_requested)
+    if (private_room && request.encryption == RoomEncryptionRequest::unencrypted)
     {
-        return {false, true, true, "federated private rooms must be encrypted"};
+        return {false, true, true, false, "private rooms must be encrypted"};
     }
 
-    return {true, encryption_required, encryption_enabled_by_default, {}};
+    auto const encryption_enabled = request.encryption == RoomEncryptionRequest::encrypted
+        || (request.encryption == RoomEncryptionRequest::unspecified && encryption_enabled_by_default);
+
+    return {true, encryption_required, encryption_enabled_by_default, encryption_enabled, {}};
 }
 
 auto encrypted_event_payload_is_loggable(std::string_view payload) noexcept -> bool
