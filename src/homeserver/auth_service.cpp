@@ -158,6 +158,17 @@ auto authenticated_user(HomeserverRuntime const& runtime, std::string_view acces
     return session->user_id;
 }
 
+auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token) -> std::optional<std::string>
+{
+    auto const user_id = authenticated_user(runtime, access_token);
+    auto const* user = user_id.has_value() ? find_user(runtime.database, *user_id) : nullptr;
+    if (user == nullptr || !user->admin)
+    {
+        return std::nullopt;
+    }
+    return user->user_id;
+}
+
 auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
 {
     auto const token_hash = hash_token(access_token);
