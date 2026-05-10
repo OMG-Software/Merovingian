@@ -17,6 +17,11 @@ namespace
     return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
 }
 
+[[nodiscard]] auto matches_dynamic_prefix(std::string_view target, std::string_view prefix) noexcept -> bool
+{
+    return target.size() > prefix.size() && starts_with(target, prefix);
+}
+
 [[nodiscard]] auto route(std::string method, std::string path_template, FederationEndpoint endpoint) -> FederationRoute
 {
     auto const requires_event_signatures = endpoint != FederationEndpoint::edu;
@@ -70,27 +75,27 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::transaction && starts_with(target, "/_matrix/federation/v1/send/"))
+        if (candidate.endpoint == FederationEndpoint::transaction && matches_dynamic_prefix(target, "/_matrix/federation/v1/send/"))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::send_join && starts_with(target, "/_matrix/federation/v2/send_join/"))
+        if (candidate.endpoint == FederationEndpoint::send_join && matches_dynamic_prefix(target, "/_matrix/federation/v2/send_join/"))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::send_leave && starts_with(target, "/_matrix/federation/v2/send_leave/"))
+        if (candidate.endpoint == FederationEndpoint::send_leave && matches_dynamic_prefix(target, "/_matrix/federation/v2/send_leave/"))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::invite && starts_with(target, "/_matrix/federation/v2/invite/"))
+        if (candidate.endpoint == FederationEndpoint::invite && matches_dynamic_prefix(target, "/_matrix/federation/v2/invite/"))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::backfill && starts_with(target, "/_matrix/federation/v1/backfill/"))
+        if (candidate.endpoint == FederationEndpoint::backfill && matches_dynamic_prefix(target, "/_matrix/federation/v1/backfill/"))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::edu && starts_with(target, "/_matrix/federation/v1/send_edu/"))
+        if (candidate.endpoint == FederationEndpoint::edu && matches_dynamic_prefix(target, "/_matrix/federation/v1/send_edu/"))
         {
             return {true, candidate, {}};
         }
