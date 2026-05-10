@@ -10,7 +10,10 @@ namespace merovingian::database
 namespace
 {
 
+constexpr auto schema_version = std::uint32_t{1U};
+
 constexpr auto core_tables = std::array{
+    std::string_view{"schema_migrations"},
     std::string_view{"users"},
     std::string_view{"devices"},
     std::string_view{"access_tokens"},
@@ -46,6 +49,11 @@ constexpr auto core_tables = std::array{
 };
 
 } // namespace
+
+auto current_schema_version() noexcept -> std::uint32_t
+{
+    return schema_version;
+}
 
 auto initial_schema_tables() -> std::vector<std::string_view>
 {
