@@ -128,6 +128,27 @@ auto is_valid_federation_policy(std::string_view policy) noexcept -> bool
     return policy == "allow" || policy == "deny";
 }
 
+auto is_valid_federation_server_name(std::string_view server_name) noexcept -> bool
+{
+    if (server_name.empty() || server_name.size() > 255U || server_name.front() == '.' || server_name.back() == '.')
+    {
+        return false;
+    }
+
+    for (auto const character : server_name)
+    {
+        auto const is_lower = character >= 'a' && character <= 'z';
+        auto const is_upper = character >= 'A' && character <= 'Z';
+        auto const is_digit = is_ascii_digit(character);
+        if (!is_lower && !is_upper && !is_digit && character != '.' && character != '-' && character != ':')
+        {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult
 {
     if (value.empty())
@@ -262,9 +283,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     }
     else if (!is_safe_cleartext_listener(config.listeners().client))
     {
-        findings.push_back(
-            {"listeners.client.tls", "cleartext client listener must bind only to loopback"}
-        );
+        findings.push_back({"listeners.client.tls", "cleartext client listener must bind only to loopback"});
     }
 
     if (!is_valid_listener_bind(config.listeners().federation.bind))
@@ -273,9 +292,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     }
     else if (!is_safe_cleartext_listener(config.listeners().federation))
     {
-        findings.push_back(
-            {"listeners.federation.tls", "cleartext federation listener must bind only to loopback"}
-        );
+        findings.push_back({"listeners.federation.tls", "cleartext federation listener must bind only to loopback"});
     }
 
     if (config.database().uri_file.empty())
@@ -290,30 +307,46 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 
     if (config.security().registration.enabled && !config.security().registration.require_token)
     {
-        findings.push_back(
-            {"security.registration.require_token", "open registration requires token protection"}
-        );
+        findings.push_back({"security.registration.require_token", "open registration requires token protection"});
     }
 
     if (!config.security().encryption.default_for_new_rooms)
     {
-        findings.push_back(
-            {"security.encryption.default_for_new_rooms", "new rooms must default to encrypted"}
-        );
+        findings.push_back({"security.encryption.default_for_new_rooms", "new rooms must default to encrypted"});
     }
 
     if (!config.security().encryption.require_for_direct_messages)
     {
-        findings.push_back(
-            {"security.encryption.require_for_direct_messages", "direct messages must require encryption"}
-        );
+        findings.push_back({"security.encryption.require_for_direct_messages", "direct messages must require encryption"});
     }
 
     if (!is_valid_federation_policy(config.security().federation.default_policy))
     {
-        findings.push_back(
-            {"security.federation.default_policy", "federation default policy must be allow or deny"}
-        );
+        findings.push_back({"security.federation.default_policy", "federation default policy must be allow or deny"});
+    }
+
+    if (config.security().federation.enabled && config.security().federation.default_policy == "deny"
+        && config.security().federation.allowed_servers.empty())
+    {
+        findings.push_back({"security.federation.allowed_servers", "deny-by-default federation requires an allowed server list"});
+    }
+
+    for (auto const& allowed_server : config.security().federation.allowed_servers)
+    {
+        if (!is_valid_federation_server_name(allowed_server))
+        {
+            findings.push_back({"security.federation.allowed_servers", "allowed federation server name is invalid"});
+            break;
+        }
+    }
+
+    for (auto const& denied_server : config.security().federation.denied_servers)
+    {
+        if (!is_valid_federation_server_name(denied_server))
+        {
+            findings.push_back({"security.federation.denied_servers", "denied federation server name is invalid"});
+            break;
+        }
     }
 
     if (!config.security().federation.require_valid_tls)
@@ -323,9 +356,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 
     if (!config.security().federation.verify_json_signatures)
     {
-        findings.push_back(
-            {"security.federation.verify_json_signatures", "federation JSON signatures must be verified"}
-        );
+        findings.push_back({"security.federation.verify_json_signatures", "federation JSON signatures must be verified"});
     }
 
     auto has_private_or_loopback_block = false;
@@ -336,33 +367,25 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 
     if (!has_private_or_loopback_block)
     {
-        findings.push_back(
-            {"security.federation.deny_ip_ranges", "federation must block private or loopback ranges"}
-        );
+        findings.push_back({"security.federation.deny_ip_ranges", "federation must block private or loopback ranges"});
     }
 
     auto const federation_max_transaction_size = parse_size_limit(config.security().federation.max_transaction_size);
     if (!federation_max_transaction_size.valid)
     {
-        findings.push_back(
-            {"security.federation.max_transaction_size", "federation transaction size must be a positive bounded byte size"}
-        );
+        findings.push_back({"security.federation.max_transaction_size", "federation transaction size must be a positive bounded byte size"});
     }
 
     auto const federation_remote_timeout = parse_duration_seconds(config.security().federation.remote_timeout);
     if (!federation_remote_timeout.valid)
     {
-        findings.push_back(
-            {"security.federation.remote_timeout", "federation remote timeout must be a positive bounded duration"}
-        );
+        findings.push_back({"security.federation.remote_timeout", "federation remote timeout must be a positive bounded duration"});
     }
 
     auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
     if (!media_max_upload_size.valid)
     {
-        findings.push_back(
-            {"security.media.max_upload_size", "media upload size must be a positive bounded byte size"}
-        );
+        findings.push_back({"security.media.max_upload_size", "media upload size must be a positive bounded byte size"});
     }
 
     if (!config.security().media.block_private_ip_fetches)
@@ -373,9 +396,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     auto const media_remote_fetch_timeout = parse_duration_seconds(config.security().media.remote_fetch_timeout);
     if (!media_remote_fetch_timeout.valid)
     {
-        findings.push_back(
-            {"security.media.remote_fetch_timeout", "media remote fetch timeout must be a positive bounded duration"}
-        );
+        findings.push_back({"security.media.remote_fetch_timeout", "media remote fetch timeout must be a positive bounded duration"});
     }
 
     if (!config.security().media.decode_in_sandbox)
@@ -390,9 +411,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 
     if (!config.security().logging.redact_event_content)
     {
-        findings.push_back(
-            {"security.logging.redact_event_content", "event content must be redacted from logs"}
-        );
+        findings.push_back({"security.logging.redact_event_content", "event content must be redacted from logs"});
     }
 
     return findings;
