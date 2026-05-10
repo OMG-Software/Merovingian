@@ -11,13 +11,16 @@ namespace merovingian::database
 namespace
 {
 
-[[nodiscard]] auto make_create_table_statement(std::string_view table_name) -> PreparedStatement
+constexpr auto initial_schema_version = std::uint32_t{1U};
+
+[[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table) -> PreparedStatement
 {
-    return {
-        "create_" + std::string{table_name},
-        "CREATE TABLE " + std::string{table_name} + " (id TEXT PRIMARY KEY)",
-        {},
-    };
+    return {"create_" + std::string{table.name}, create_table_sql(table), {}};
+}
+
+[[nodiscard]] auto make_drop_table_statement(std::string_view table_name) -> PreparedStatement
+{
+    return {"drop_" + std::string{table_name}, "DROP TABLE " + std::string{table_name}, {}};
 }
 
 [[nodiscard]] auto has_table(SchemaState const& state, std::string_view table_name) noexcept -> bool
@@ -27,20 +30,80 @@ namespace
     });
 }
 
-[[nodiscard]] auto has_migration_record(SchemaState const& state, std::uint32_t version) noexcept -> bool
+[[nodiscard]] auto has_migration_record(SchemaState const& state, std::uint32_t version, MigrationDirection direction) noexcept -> bool
 {
-    return std::ranges::any_of(state.applied_migrations, [version](MigrationRecord const& record) {
-        return record.version == version;
+    return std::ranges::any_of(state.applied_migrations, [version, direction](MigrationRecord const& record) {
+        return record.version == version && record.direction == direction;
     });
+}
+
+[[nodiscard]] auto table_from_create_table(std::string_view sql) -> std::string
+{
+    auto constexpr prefix = std::string_view{"CREATE TABLE "};
+    if (!sql.starts_with(prefix))
+    {
+        return {};
+    }
+    auto const begin = prefix.size();
+    auto const end = sql.find(' ', begin);
+    if (end == std::string_view::npos)
+    {
+        return {};
+    }
+    return std::string{sql.substr(begin, end - begin)};
+}
+
+[[nodiscard]] auto table_from_drop_table(std::string_view sql) -> std::string
+{
+    auto constexpr prefix = std::string_view{"DROP TABLE "};
+    if (!sql.starts_with(prefix))
+    {
+        return {};
+    }
+    return std::string{sql.substr(prefix.size())};
+}
+
+auto add_table(SchemaState& state, std::string table_name) -> void
+{
+    if (!table_name.empty() && !has_table(state, table_name))
+    {
+        state.tables.push_back(std::move(table_name));
+    }
+}
+
+auto remove_table(SchemaState& state, std::string_view table_name) -> void
+{
+    auto const [begin, end] = std::ranges::remove(state.tables, table_name);
+    state.tables.erase(begin, end);
+}
+
+auto apply_statement_to_schema_state(SchemaState& state, PreparedStatement const& statement) -> bool
+{
+    if (auto table = table_from_create_table(statement.sql); !table.empty())
+    {
+        add_table(state, std::move(table));
+        return true;
+    }
+    if (auto table = table_from_drop_table(statement.sql); !table.empty())
+    {
+        remove_table(state, table);
+        return true;
+    }
+    return statement.sql.starts_with("ALTER TABLE ");
 }
 
 } // namespace
 
+auto migration_direction_name(MigrationDirection direction) noexcept -> std::string_view
+{
+    return direction == MigrationDirection::upgrade ? "upgrade" : "downgrade";
+}
+
 auto migration_step_is_valid(MigrationStep const& step) -> MigrationValidationResult
 {
-    if (step.version == 0U)
+    if (step.version == 0U && step.direction == MigrationDirection::upgrade)
     {
-        return {false, "migration version must be non-zero"};
+        return {false, "upgrade migration version must be non-zero"};
     }
     if (!statement_name_is_valid(step.name))
     {
@@ -65,10 +128,6 @@ auto migration_step_is_valid(MigrationStep const& step) -> MigrationValidationRe
 
 auto migration_plan_is_valid(MigrationPlan const& plan) -> MigrationValidationResult
 {
-    if (plan.target_version < plan.current_version)
-    {
-        return {false, "downgrade migrations are not allowed"};
-    }
     if (plan.current_version == plan.target_version)
     {
         return plan.steps.empty() ? MigrationValidationResult{true, {}}
@@ -76,22 +135,37 @@ auto migration_plan_is_valid(MigrationPlan const& plan) -> MigrationValidationRe
     }
     if (plan.steps.empty())
     {
-        return {false, "upgrade migration plan has no steps"};
+        return {false, "migration plan has no steps"};
+    }
+    if (plan.target_version > plan.current_version && plan.direction != MigrationDirection::upgrade)
+    {
+        return {false, "upgrade migration plan has wrong direction"};
+    }
+    if (plan.target_version < plan.current_version && plan.direction != MigrationDirection::downgrade)
+    {
+        return {false, "downgrade migration plan has wrong direction"};
     }
 
-    auto expected_version = plan.current_version + 1U;
+    auto expected_version = plan.direction == MigrationDirection::upgrade ? plan.current_version + 1U : plan.current_version - 1U;
     for (auto const& step : plan.steps)
     {
-        if (step.version != expected_version)
+        if (step.version != expected_version || step.direction != plan.direction)
         {
             return {false, "migration versions must be contiguous"};
         }
-        auto const validation = migration_step_is_valid(step);
+        auto validation = migration_step_is_valid(step);
         if (!validation.valid)
         {
             return validation;
         }
-        ++expected_version;
+        if (plan.direction == MigrationDirection::upgrade)
+        {
+            ++expected_version;
+        }
+        else if (expected_version > 0U)
+        {
+            --expected_version;
+        }
     }
 
     if (plan.steps.back().version != plan.target_version)
@@ -104,36 +178,95 @@ auto migration_plan_is_valid(MigrationPlan const& plan) -> MigrationValidationRe
 
 auto migration_plan_summary(MigrationPlan const& plan) -> std::string
 {
-    return "database migration plan current_version=" + std::to_string(plan.current_version)
-        + " target_version=" + std::to_string(plan.target_version) + " steps=" + std::to_string(plan.steps.size());
+    return "database migration plan direction=" + std::string{migration_direction_name(plan.direction)}
+        + " current_version=" + std::to_string(plan.current_version) + " target_version="
+        + std::to_string(plan.target_version) + " steps=" + std::to_string(plan.steps.size());
 }
 
 auto initial_schema_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
-    for (auto const table : initial_schema_tables())
+    for (auto const& table : initial_schema_definitions())
     {
         statements.push_back(make_create_table_statement(table));
     }
-    return {current_schema_version(), "initial_schema", std::move(statements)};
+    return {initial_schema_version, "initial_schema", MigrationDirection::upgrade, std::move(statements)};
+}
+
+auto downgrade_initial_schema_migration() -> MigrationStep
+{
+    auto statements = std::vector<PreparedStatement>{};
+    auto definitions = initial_schema_definitions();
+    for (auto iterator = definitions.rbegin(); iterator != definitions.rend(); ++iterator)
+    {
+        statements.push_back(make_drop_table_statement(iterator->name));
+    }
+    return {0U, "drop_initial_schema", MigrationDirection::downgrade, std::move(statements)};
+}
+
+auto upgrade_migration_catalog() -> std::vector<MigrationStep>
+{
+    return {initial_schema_migration()};
+}
+
+auto downgrade_migration_catalog() -> std::vector<MigrationStep>
+{
+    return {downgrade_initial_schema_migration()};
+}
+
+auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan
+{
+    if (current_version == target_version)
+    {
+        return {current_version, target_version, MigrationDirection::upgrade, {}};
+    }
+
+    auto const direction = target_version > current_version ? MigrationDirection::upgrade : MigrationDirection::downgrade;
+    auto const catalog = direction == MigrationDirection::upgrade ? upgrade_migration_catalog() : downgrade_migration_catalog();
+    auto steps = std::vector<MigrationStep>{};
+
+    if (direction == MigrationDirection::upgrade)
+    {
+        for (auto version = current_version + 1U; version <= target_version; ++version)
+        {
+            auto const iterator = std::ranges::find_if(catalog, [version](MigrationStep const& step) {
+                return step.version == version && step.direction == MigrationDirection::upgrade;
+            });
+            if (iterator != catalog.end())
+            {
+                steps.push_back(*iterator);
+            }
+        }
+    }
+    else
+    {
+        for (auto version = current_version - 1U;; --version)
+        {
+            auto const iterator = std::ranges::find_if(catalog, [version](MigrationStep const& step) {
+                return step.version == version && step.direction == MigrationDirection::downgrade;
+            });
+            if (iterator != catalog.end())
+            {
+                steps.push_back(*iterator);
+            }
+            if (version == target_version)
+            {
+                break;
+            }
+        }
+    }
+
+    return {current_version, target_version, direction, std::move(steps)};
 }
 
 auto migration_plan_for(SchemaState const& state) -> MigrationPlan
 {
-    if (state.version == current_schema_version())
-    {
-        return {state.version, current_schema_version(), {}};
-    }
-    if (state.version == 0U)
-    {
-        return {0U, current_schema_version(), {initial_schema_migration()}};
-    }
-    return {state.version, current_schema_version(), {}};
+    return migration_plan_between(state.version, current_schema_version());
 }
 
 auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> MigrationApplyResult
 {
-    auto const validation = migration_plan_is_valid(plan);
+    auto validation = migration_plan_is_valid(plan);
     if (!validation.valid)
     {
         return {false, validation.reason, std::move(state)};
@@ -145,18 +278,18 @@ auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> Migra
 
     for (auto const& step : plan.steps)
     {
-        if (has_migration_record(state, step.version))
+        if (has_migration_record(state, step.version, step.direction))
         {
             continue;
         }
-        for (auto const& table : initial_schema_tables())
+        for (auto const& statement : step.statements)
         {
-            if (!has_table(state, table))
+            if (!apply_statement_to_schema_state(state, statement))
             {
-                state.tables.emplace_back(table);
+                return {false, "migration statement cannot update schema state: " + statement.name, std::move(state)};
             }
         }
-        state.applied_migrations.push_back({step.version, step.name});
+        state.applied_migrations.push_back({step.version, step.name, step.direction});
         state.version = step.version;
     }
 
@@ -169,7 +302,7 @@ auto schema_state_is_compatible(SchemaState const& state) -> MigrationValidation
     {
         return {false, "schema version is not compatible"};
     }
-    if (!has_migration_record(state, current_schema_version()))
+    if (!has_migration_record(state, current_schema_version(), MigrationDirection::upgrade))
     {
         return {false, "current schema migration is not recorded"};
     }
@@ -185,7 +318,7 @@ auto schema_state_is_compatible(SchemaState const& state) -> MigrationValidation
 
 auto migration_rollback_policy() noexcept -> std::string_view
 {
-    return "downgrade and rollback migrations are not applied automatically; restore from backup or run an operator-reviewed forward repair migration";
+    return "schema library exposes explicit downgrade plans; production rollback remains operator-controlled and must be paired with backup/restore validation";
 }
 
 } // namespace merovingian::database
