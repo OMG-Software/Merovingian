@@ -88,10 +88,17 @@ auto membership_policy_allows(MembershipPolicy policy) -> EventAuthorizationDeci
         }
         return {false, "membership", "insufficient power to restrict membership"};
     }
-
-    if (policy.current_membership == MembershipState::join || policy.target_is_sender)
+    if (policy.requested_membership == MembershipState::leave)
     {
-        return {true, "membership", {}};
+        if (policy.target_is_sender)
+        {
+            return {true, "membership", {}};
+        }
+        if (policy.sender_power >= policy.remove_power)
+        {
+            return {true, "membership", {}};
+        }
+        return {false, "membership", "insufficient power to remove another member"};
     }
 
     return {false, "membership", "membership transition is not allowed"};
@@ -137,7 +144,7 @@ auto select_auth_events(EventAuthorizationRequest const& request) -> AuthEventSe
         selection.required.push_back({AuthEventKind::join_rules, "m.room.join_rules", ""});
         selection.required.push_back({AuthEventKind::member, "m.room.member", request.state_key});
     }
-    if (request.membership.requested_membership == MembershipState::invite)
+    if (request.membership.third_party_invite)
     {
         selection.required.push_back({AuthEventKind::third_party_invite, "m.room.third_party_invite", request.state_key});
     }
