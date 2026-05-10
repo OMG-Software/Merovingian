@@ -102,7 +102,7 @@ auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
     return observability::make_audit_event(category, event_type, actor, target, reason, "local-vertical-slice");
 }
 
-[[nodiscard]] auto audit_category_name(observability::AuditCategory category) -> std::string
+[[nodiscard]] auto persistent_audit_category_name(observability::AuditCategory category) -> std::string
 {
     return category == observability::AuditCategory::auth ? "auth" : "admin";
 }
@@ -110,7 +110,7 @@ auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
 auto append_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type, std::string_view actor, std::string_view target, std::string_view reason) -> void
 {
     database.audit_events.push_back(make_audit(category, event_type, actor, target, reason));
-    (void)database::append_audit_event(database.persistent_store, {audit_category_name(category), std::string{event_type}, std::string{actor}, std::string{target}, std::string{reason}});
+    (void)database::append_audit_event(database.persistent_store, {persistent_audit_category_name(category), std::string{event_type}, std::string{actor}, std::string{target}, std::string{reason}});
 }
 
 [[nodiscard]] auto find_user(LocalDatabase& database, std::string_view user_id) -> LocalUser*
