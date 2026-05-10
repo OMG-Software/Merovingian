@@ -177,6 +177,9 @@ SCENARIO("Reporting API scaffold validates reports and exposes admin routes", "[
         WHEN("routes are matched and reports validated")
         {
             auto const report_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event");
+            auto const unrelated_room_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/rooms/!room:example.org/leave");
+            auto const malformed_report_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/rooms/!room:example.org/report/");
+            auto const nested_report_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event/extra");
             auto const admin_route = merovingian::trust_safety::match_reporting_api_route("GET", "/_matrix/client/v3/admin/safety/reports");
             auto const valid_decision = merovingian::trust_safety::validate_safety_report(valid_report);
             auto const invalid_decision = merovingian::trust_safety::validate_safety_report(invalid_report);
@@ -185,12 +188,38 @@ SCENARIO("Reporting API scaffold validates reports and exposes admin routes", "[
             {
                 REQUIRE(report_route.matched);
                 REQUIRE_FALSE(report_route.route.requires_admin);
+                REQUIRE_FALSE(unrelated_room_route.matched);
+                REQUIRE_FALSE(malformed_report_route.matched);
+                REQUIRE_FALSE(nested_report_route.matched);
                 REQUIRE(admin_route.matched);
                 REQUIRE(admin_route.route.requires_admin);
                 REQUIRE(valid_decision.allowed);
                 REQUIRE(valid_decision.action == merovingian::trust_safety::PolicyAction::accept_report);
                 REQUIRE_FALSE(invalid_decision.allowed);
                 REQUIRE(invalid_decision.reason.code == "report_reason_required");
+            }
+        }
+    }
+}
+
+SCENARIO("Admin review route scaffold requires target type and target id path segments", "[trust-safety][reports]")
+{
+    GIVEN("admin review route targets")
+    {
+        WHEN("routes are matched")
+        {
+            auto const valid_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/admin/safety/review/media/media123");
+            auto const missing_both = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/admin/safety/review/");
+            auto const missing_id = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/admin/safety/review/media");
+            auto const extra_segment = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/admin/safety/review/media/media123/extra");
+
+            THEN("only complete admin review routes are matched")
+            {
+                REQUIRE(valid_route.matched);
+                REQUIRE(valid_route.route.requires_admin);
+                REQUIRE_FALSE(missing_both.matched);
+                REQUIRE_FALSE(missing_id.matched);
+                REQUIRE_FALSE(extra_segment.matched);
             }
         }
     }
