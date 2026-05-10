@@ -2,6 +2,7 @@
 
 #include <merovingian/database/connection.hpp>
 #include <merovingian/database/migration.hpp>
+#include <merovingian/database/persistent_store.hpp>
 #include <merovingian/database/schema.hpp>
 #include <merovingian/database/statement.hpp>
 
@@ -34,11 +35,7 @@ private:
 
 [[nodiscard]] auto create_users_statement() -> merovingian::database::PreparedStatement
 {
-    return {
-        "create_users",
-        "CREATE TABLE users (id TEXT PRIMARY KEY)",
-        {},
-    };
+    return {"create_users", "CREATE TABLE users (user_id TEXT PRIMARY KEY)", {}};
 }
 
 } // namespace
@@ -52,16 +49,8 @@ SCENARIO("Database statement validation enforces prepared statement shape", "[da
             "SELECT id FROM users WHERE id = $1",
             {merovingian::database::BoundValue{"@alice:example.org", false}},
         };
-        auto const invalid_name = merovingian::database::PreparedStatement{
-            "select-user",
-            "SELECT id FROM users WHERE id = $1",
-            {},
-        };
-        auto const unsafe_sql = merovingian::database::PreparedStatement{
-            "select_user",
-            "SELECT id FROM users; SELECT id FROM devices",
-            {},
-        };
+        auto const invalid_name = merovingian::database::PreparedStatement{"select-user", "SELECT id FROM users WHERE id = $1", {}};
+        auto const unsafe_sql = merovingian::database::PreparedStatement{"select_user", "SELECT id FROM users; SELECT id FROM devices", {}};
 
         WHEN("the statements are validated")
         {
@@ -151,10 +140,7 @@ SCENARIO("Database bound value summaries redact sensitive values", "[database]")
 {
     GIVEN("public and sensitive bound parameters")
     {
-        auto const parameters = std::vector<merovingian::database::BoundValue>{
-            {"@alice:example.org", false},
-            {"secret-token-hash", true},
-        };
+        auto const parameters = std::vector<merovingian::database::BoundValue>{{"@alice:example.org", false}, {"secret-token-hash", true}};
 
         WHEN("a parameter summary is produced")
         {
@@ -169,40 +155,158 @@ SCENARIO("Database bound value summaries redact sensitive values", "[database]")
     }
 }
 
-SCENARIO("Database migration plans must be contiguous and forward-only", "[database][migration]")
+SCENARIO("Database migration plans are contiguous and direction-aware", "[database][migration]")
 {
-    GIVEN("valid, downgrade, and non-contiguous migration plans")
+    GIVEN("valid, wrong-direction, and non-contiguous migration plans")
     {
         auto const valid_plan = merovingian::database::MigrationPlan{
             0U,
             2U,
             {
                 merovingian::database::MigrationStep{1U, "create_users", {create_users_statement()}},
-                merovingian::database::MigrationStep{2U, "create_devices", {{"create_devices", "CREATE TABLE devices (id TEXT PRIMARY KEY)", {}}}},
+                merovingian::database::MigrationStep{2U, "create_devices", {{"create_devices", "CREATE TABLE devices (device_id TEXT PRIMARY KEY)", {}}}},
             },
+            merovingian::database::MigrationDirection::upgrade,
         };
-        auto const downgrade_plan = merovingian::database::MigrationPlan{2U, 1U, {}};
-        auto const gap_plan = merovingian::database::MigrationPlan{
-            0U,
-            2U,
-            {merovingian::database::MigrationStep{2U, "create_devices", {{"create_devices", "CREATE TABLE devices (id TEXT PRIMARY KEY)", {}}}}},
-        };
+        auto const wrong_direction_plan = merovingian::database::MigrationPlan{2U, 1U, {merovingian::database::MigrationStep{1U, "drop_devices", {{"drop_devices", "DROP TABLE devices", {}}}}}, merovingian::database::MigrationDirection::upgrade};
+        auto const gap_plan = merovingian::database::MigrationPlan{0U, 2U, {merovingian::database::MigrationStep{2U, "create_devices", {{"create_devices", "CREATE TABLE devices (device_id TEXT PRIMARY KEY)", {}}}}}};
 
         WHEN("the migration plans are validated")
         {
             auto const valid_result = merovingian::database::migration_plan_is_valid(valid_plan);
-            auto const downgrade_result = merovingian::database::migration_plan_is_valid(downgrade_plan);
+            auto const wrong_direction_result = merovingian::database::migration_plan_is_valid(wrong_direction_plan);
             auto const gap_result = merovingian::database::migration_plan_is_valid(gap_plan);
             auto const summary = merovingian::database::migration_plan_summary(valid_plan);
 
-            THEN("only the contiguous forward plan is accepted")
+            THEN("only contiguous plans with the correct direction are accepted")
             {
                 REQUIRE(valid_result.valid);
-                REQUIRE_FALSE(downgrade_result.valid);
-                REQUIRE(downgrade_result.reason == "downgrade migrations are not allowed");
+                REQUIRE_FALSE(wrong_direction_result.valid);
+                REQUIRE(wrong_direction_result.reason == "downgrade migration plan has wrong direction");
                 REQUIRE_FALSE(gap_result.valid);
                 REQUIRE(gap_result.reason == "migration versions must be contiguous");
-                REQUIRE(summary == "database migration plan current_version=0 target_version=2 steps=2");
+                REQUIRE(summary == "database migration plan direction=upgrade current_version=0 target_version=2 steps=2");
+            }
+        }
+    }
+}
+
+SCENARIO("Database migration runner applies versioned upgrade and downgrade paths", "[database][migration]")
+{
+    GIVEN("an empty schema state")
+    {
+        auto const empty_state = merovingian::database::SchemaState{};
+
+        WHEN("the initial upgrade and explicit downgrade are applied")
+        {
+            auto const upgrade_plan = merovingian::database::migration_plan_for(empty_state);
+            auto const upgraded = merovingian::database::apply_migration_plan(empty_state, upgrade_plan);
+            auto const second_plan = merovingian::database::migration_plan_for(upgraded.state);
+            auto const compatible = merovingian::database::schema_state_is_compatible(upgraded.state);
+            auto const downgrade_plan = merovingian::database::migration_plan_between(upgraded.state.version, 0U);
+            auto const downgraded = merovingian::database::apply_migration_plan(upgraded.state, downgrade_plan);
+
+            THEN("schema state is derived from migration statements and can be downgraded explicitly")
+            {
+                REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
+                REQUIRE(upgrade_plan.current_version == 0U);
+                REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
+                REQUIRE(upgrade_plan.steps.size() == 1U);
+                REQUIRE(upgrade_plan.steps.front().version == 1U);
+                REQUIRE(upgraded.ok);
+                REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
+                REQUIRE(upgraded.state.applied_migrations.size() == 1U);
+                REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size());
+                REQUIRE(compatible.valid);
+                REQUIRE(second_plan.steps.empty());
+                REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
+                REQUIRE(downgrade_plan.steps.size() == 1U);
+                REQUIRE(downgraded.ok);
+                REQUIRE(downgraded.state.version == 0U);
+                REQUIRE(downgraded.state.tables.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Database schema validation fails closed on incompatible state", "[database][migration]")
+{
+    GIVEN("a migrated schema missing a required table and a future schema")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto missing_table = opened.store.schema;
+        missing_table.tables.clear();
+        auto future_schema = opened.store.schema;
+        future_schema.version = merovingian::database::current_schema_version() + 1U;
+
+        WHEN("compatibility is checked")
+        {
+            auto const missing_result = merovingian::database::schema_state_is_compatible(missing_table);
+            auto const future_result = merovingian::database::schema_state_is_compatible(future_schema);
+            auto const rollback = merovingian::database::migration_rollback_policy();
+
+            THEN("startup blockers are explicit")
+            {
+                REQUIRE_FALSE(missing_result.valid);
+                REQUIRE(missing_result.reason.find("required table is missing") != std::string::npos);
+                REQUIRE_FALSE(future_result.valid);
+                REQUIRE(future_result.reason == "schema version is not compatible");
+                REQUIRE(rollback.find("downgrade") != std::string_view::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Persistent store records MVP homeserver data with hashed tokens only", "[database][persistence]")
+{
+    GIVEN("an opened persistent store")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        WHEN("users devices tokens rooms events state audit and admin actions are stored")
+        {
+            auto const user_ok = merovingian::database::store_user(store, {"@alice:example.org", "password-hash:v1:1", false, false, true});
+            auto const device_ok = merovingian::database::store_device(store, {"@alice:example.org", "DEVICE1", "Alice laptop"});
+            auto const bad_token_ok = merovingian::database::store_access_token(store, {"@alice:example.org", "DEVICE1", "plaintext", false});
+            auto const token_ok = merovingian::database::store_access_token(store, {"@alice:example.org", "DEVICE1", "token-hash:v1:123", false});
+            auto const room_ok = merovingian::database::store_room(store, {"!room1:example.org", "@alice:example.org"});
+            auto const membership_ok = merovingian::database::store_membership(store, {"!room1:example.org", "@alice:example.org"});
+            auto const message_event_ok = merovingian::database::store_event(store, {"$event1:example.org", "!room1:example.org", "@alice:example.org", R"({"type":"m.room.message"})"});
+            auto const message_state_ok = merovingian::database::store_state(store, {"!room1:example.org", "m.room.member", "@alice:example.org", "$event1:example.org"});
+            auto const state_event_ok = merovingian::database::store_event(store, {"$event2:example.org", "!room1:example.org", "@alice:example.org", R"({"type":"m.room.member","state_key":"@alice:example.org"})"});
+            auto const state_ok = merovingian::database::store_state(store, {"!room1:example.org", "m.room.member", "@alice:example.org", "$event2:example.org"});
+            auto const audit_ok = merovingian::database::append_audit_event(store, {"auth", "auth.login", "@alice:example.org", "DEVICE1", "accepted"});
+            auto const admin_ok = merovingian::database::append_admin_action(store, {"@alice:example.org", "quarantine", "!room1:example.org"});
+            auto const revoked = merovingian::database::revoke_access_token(store, "token-hash:v1:123");
+            auto const valid = merovingian::database::validate_persistent_store(store);
+
+            THEN("state rows are only accepted for matching state events")
+            {
+                REQUIRE(user_ok);
+                REQUIRE(device_ok);
+                REQUIRE_FALSE(bad_token_ok);
+                REQUIRE(token_ok);
+                REQUIRE(room_ok);
+                REQUIRE(membership_ok);
+                REQUIRE(message_event_ok);
+                REQUIRE_FALSE(message_state_ok);
+                REQUIRE(state_event_ok);
+                REQUIRE(state_ok);
+                REQUIRE(audit_ok);
+                REQUIRE(admin_ok);
+                REQUIRE(revoked == 1U);
+                REQUIRE(valid.valid);
+                REQUIRE(store.users.size() == 1U);
+                REQUIRE(store.devices.size() == 1U);
+                REQUIRE(store.access_tokens.front().revoked);
+                REQUIRE(store.events.size() == 2U);
+                REQUIRE(store.state.size() == 1U);
+                REQUIRE(store.audit_log.size() == 1U);
+                REQUIRE(store.admin_actions.size() == 1U);
+                REQUIRE(merovingian::database::sensitive_values_are_redacted(store));
             }
         }
     }
@@ -215,17 +319,20 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
         WHEN("core table membership is queried")
         {
             auto const tables = merovingian::database::initial_schema_tables();
-            auto const users_is_core = merovingian::database::schema_table_is_core("users");
-            auto const events_is_core = merovingian::database::schema_table_is_core("events");
-            auto const access_tokens_is_core = merovingian::database::schema_table_is_core("access_tokens");
+            auto const users_definition = merovingian::database::schema_table_definition("users");
+            auto const current_state_definition = merovingian::database::schema_table_definition("current_state");
+            auto const users_sql = users_definition.has_value() ? merovingian::database::create_table_sql(users_definition.value()) : std::string{};
+            auto const current_state_columns = current_state_definition.has_value() ? current_state_definition.value().columns_sql : std::string_view{};
             auto const unknown_is_core = merovingian::database::schema_table_is_core("not_a_table");
 
-            THEN("required Matrix storage areas are present")
+            THEN("required Matrix storage areas have table-specific definitions")
             {
-                REQUIRE(tables.size() == 32U);
-                REQUIRE(users_is_core);
-                REQUIRE(events_is_core);
-                REQUIRE(access_tokens_is_core);
+                REQUIRE(tables.size() == 33U);
+                REQUIRE(merovingian::database::current_schema_version() == 1U);
+                REQUIRE(users_definition.has_value());
+                REQUIRE(current_state_definition.has_value());
+                REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);
+                REQUIRE(current_state_columns.find("PRIMARY KEY (room_id, event_type, state_key)") != std::string_view::npos);
                 REQUIRE_FALSE(unknown_is_core);
             }
         }

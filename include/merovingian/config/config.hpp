@@ -2,6 +2,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -28,10 +29,18 @@ struct ListenersConfig final
     ListenerConfig federation{"127.0.0.1:8448", false};
 };
 
+enum class DatabaseBackend
+{
+    postgresql,
+    sqlite,
+};
+
 struct DatabaseConfig final
 {
     std::string uri_file{"/etc/merovingian/db-uri"};
     std::uint32_t pool_size{16U};
+    DatabaseBackend backend{DatabaseBackend::postgresql};
+    std::string sqlite_path{"/var/lib/merovingian/merovingian.sqlite3"};
 };
 
 struct RegistrationSecurityConfig final
@@ -139,6 +148,9 @@ struct DurationParseResult final
 
 [[nodiscard]] auto is_ascii_digit(char value) noexcept -> bool;
 [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool;
+[[nodiscard]] auto database_backend_name(DatabaseBackend backend) noexcept -> std::string_view;
+[[nodiscard]] auto parse_database_backend(std::string_view value) noexcept -> std::optional<DatabaseBackend>;
+[[nodiscard]] auto database_backend_performance_warning(DatabaseBackend backend) noexcept -> std::string_view;
 [[nodiscard]] auto parse_port(std::string_view value) noexcept -> std::uint32_t;
 [[nodiscard]] auto listener_host(std::string_view bind) noexcept -> std::string_view;
 [[nodiscard]] auto is_loopback_host(std::string_view host) noexcept -> bool;

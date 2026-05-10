@@ -10,51 +10,83 @@ namespace merovingian::database
 namespace
 {
 
+constexpr auto schema_version = std::uint32_t{1U};
+
 constexpr auto core_tables = std::array{
-    std::string_view{"users"},
-    std::string_view{"devices"},
-    std::string_view{"access_tokens"},
-    std::string_view{"refresh_tokens"},
-    std::string_view{"server_signing_keys"},
-    std::string_view{"rooms"},
-    std::string_view{"room_versions"},
-    std::string_view{"events"},
-    std::string_view{"event_json"},
-    std::string_view{"event_edges"},
-    std::string_view{"event_auth"},
-    std::string_view{"event_signatures"},
-    std::string_view{"current_state"},
-    std::string_view{"state_groups"},
-    std::string_view{"state_group_edges"},
-    std::string_view{"membership"},
-    std::string_view{"invites"},
-    std::string_view{"account_data"},
-    std::string_view{"push_rules"},
-    std::string_view{"filters"},
-    std::string_view{"one_time_keys"},
-    std::string_view{"fallback_keys"},
-    std::string_view{"cross_signing_keys"},
-    std::string_view{"key_backups"},
-    std::string_view{"media"},
-    std::string_view{"remote_media"},
-    std::string_view{"federation_destinations"},
-    std::string_view{"federation_transactions"},
-    std::string_view{"rate_limits"},
-    std::string_view{"audit_log"},
-    std::string_view{"policy_rules"},
-    std::string_view{"admin_actions"},
+    SchemaTableDefinition{"schema_migrations", "version TEXT PRIMARY KEY, name TEXT NOT NULL, direction TEXT NOT NULL"},
+    SchemaTableDefinition{"users", "user_id TEXT PRIMARY KEY, password_hash TEXT NOT NULL, locked TEXT NOT NULL, suspended TEXT NOT NULL, admin TEXT NOT NULL"},
+    SchemaTableDefinition{"devices", "user_id TEXT NOT NULL, device_id TEXT NOT NULL, display_name TEXT NOT NULL, PRIMARY KEY (user_id, device_id)"},
+    SchemaTableDefinition{"access_tokens", "user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL"},
+    SchemaTableDefinition{"refresh_tokens", "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL"},
+    SchemaTableDefinition{"server_signing_keys", "key_id TEXT PRIMARY KEY, public_key TEXT NOT NULL, valid_until_ts TEXT NOT NULL"},
+    SchemaTableDefinition{"rooms", "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL"},
+    SchemaTableDefinition{"room_versions", "room_id TEXT PRIMARY KEY, version TEXT NOT NULL"},
+    SchemaTableDefinition{"events", "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, json TEXT NOT NULL"},
+    SchemaTableDefinition{"event_json", "event_id TEXT PRIMARY KEY, json TEXT NOT NULL"},
+    SchemaTableDefinition{"event_edges", "event_id TEXT NOT NULL, prev_event_id TEXT NOT NULL, PRIMARY KEY (event_id, prev_event_id)"},
+    SchemaTableDefinition{"event_auth", "event_id TEXT NOT NULL, auth_event_id TEXT NOT NULL, PRIMARY KEY (event_id, auth_event_id)"},
+    SchemaTableDefinition{"event_signatures", "event_id TEXT NOT NULL, server_name TEXT NOT NULL, key_id TEXT NOT NULL, signature TEXT NOT NULL, PRIMARY KEY (event_id, server_name, key_id)"},
+    SchemaTableDefinition{"current_state", "room_id TEXT NOT NULL, event_type TEXT NOT NULL, state_key TEXT NOT NULL, event_id TEXT NOT NULL, PRIMARY KEY (room_id, event_type, state_key)"},
+    SchemaTableDefinition{"state_groups", "state_group_id TEXT PRIMARY KEY, room_id TEXT NOT NULL"},
+    SchemaTableDefinition{"state_group_edges", "state_group_id TEXT NOT NULL, prev_state_group_id TEXT NOT NULL, PRIMARY KEY (state_group_id, prev_state_group_id)"},
+    SchemaTableDefinition{"membership", "room_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (room_id, user_id)"},
+    SchemaTableDefinition{"invites", "room_id TEXT NOT NULL, user_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, PRIMARY KEY (room_id, user_id)"},
+    SchemaTableDefinition{"account_data", "user_id TEXT NOT NULL, event_type TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, event_type)"},
+    SchemaTableDefinition{"push_rules", "user_id TEXT NOT NULL, rule_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, rule_id)"},
+    SchemaTableDefinition{"filters", "user_id TEXT NOT NULL, filter_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, filter_id)"},
+    SchemaTableDefinition{"one_time_keys", "user_id TEXT NOT NULL, device_id TEXT NOT NULL, key_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, device_id, key_id)"},
+    SchemaTableDefinition{"fallback_keys", "user_id TEXT NOT NULL, device_id TEXT NOT NULL, key_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, device_id, key_id)"},
+    SchemaTableDefinition{"cross_signing_keys", "user_id TEXT NOT NULL, key_type TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, key_type)"},
+    SchemaTableDefinition{"key_backups", "user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version)"},
+    SchemaTableDefinition{"media", "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes TEXT NOT NULL, quarantined TEXT NOT NULL"},
+    SchemaTableDefinition{"remote_media", "server_name TEXT NOT NULL, media_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes TEXT NOT NULL, quarantined TEXT NOT NULL, PRIMARY KEY (server_name, media_id)"},
+    SchemaTableDefinition{"federation_destinations", "server_name TEXT PRIMARY KEY, state TEXT NOT NULL, retry_after_ts TEXT NOT NULL"},
+    SchemaTableDefinition{"federation_transactions", "transaction_id TEXT PRIMARY KEY, server_name TEXT NOT NULL, json TEXT NOT NULL"},
+    SchemaTableDefinition{"rate_limits", "scope TEXT NOT NULL, key TEXT NOT NULL, count TEXT NOT NULL, reset_ts TEXT NOT NULL, PRIMARY KEY (scope, key)"},
+    SchemaTableDefinition{"audit_log", "category TEXT NOT NULL, event_type TEXT NOT NULL, actor TEXT NOT NULL, target TEXT NOT NULL, reason TEXT NOT NULL"},
+    SchemaTableDefinition{"policy_rules", "rule_id TEXT PRIMARY KEY, scope TEXT NOT NULL, entity TEXT NOT NULL, action TEXT NOT NULL, reason TEXT NOT NULL"},
+    SchemaTableDefinition{"admin_actions", "admin_user_id TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL"},
 };
 
 } // namespace
 
-auto initial_schema_tables() -> std::vector<std::string_view>
+auto current_schema_version() noexcept -> std::uint32_t
+{
+    return schema_version;
+}
+
+auto initial_schema_definitions() -> std::vector<SchemaTableDefinition>
 {
     return {core_tables.begin(), core_tables.end()};
 }
 
+auto initial_schema_tables() -> std::vector<std::string_view>
+{
+    auto tables = std::vector<std::string_view>{};
+    tables.reserve(core_tables.size());
+    for (auto const& table : core_tables)
+    {
+        tables.push_back(table.name);
+    }
+    return tables;
+}
+
+auto schema_table_definition(std::string_view table_name) noexcept -> std::optional<SchemaTableDefinition>
+{
+    auto const iterator = std::ranges::find_if(core_tables, [table_name](SchemaTableDefinition const& table) {
+        return table.name == table_name;
+    });
+    return iterator == core_tables.end() ? std::nullopt : std::optional<SchemaTableDefinition>{*iterator};
+}
+
 auto schema_table_is_core(std::string_view table_name) noexcept -> bool
 {
-    return std::ranges::find(core_tables, table_name) != core_tables.end();
+    return schema_table_definition(table_name).has_value();
+}
+
+auto create_table_sql(SchemaTableDefinition const& table) -> std::string
+{
+    return "CREATE TABLE " + std::string{table.name} + " (" + std::string{table.columns_sql} + ")";
 }
 
 } // namespace merovingian::database

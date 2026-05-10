@@ -4,6 +4,12 @@
 [![Coverage](https://codecov.io/gh/James-Chapman/The-Merovingian/graph/badge.svg)](https://codecov.io/gh/James-Chapman/The-Merovingian)
 [![CodeQL](https://github.com/James-Chapman/The-Merovingian/actions/workflows/codeql.yml/badge.svg)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/codeql.yml)
 [![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/James-Chapman/The-Merovingian/security/code-scanning)
+[![Static analysis](https://github.com/James-Chapman/The-Merovingian/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/static-analysis.yml)
+[![Sanitizers](https://github.com/James-Chapman/The-Merovingian/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/sanitizers.yml)
+[![FreeBSD](https://github.com/James-Chapman/The-Merovingian/actions/workflows/bsd.yml/badge.svg)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/bsd.yml)
+[![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
+[![C++26](https://img.shields.io/badge/C%2B%2B-26-blue.svg)]()
+[![Meson](https://img.shields.io/badge/build-Meson-blue.svg)]()
 
 Security-first Matrix homeserver written in modern C++26.
 

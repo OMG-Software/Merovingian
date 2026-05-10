@@ -2,6 +2,7 @@
 #pragma once
 
 #include <merovingian/config/config.hpp>
+#include <merovingian/database/persistent_store.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/observability/observability.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
@@ -46,11 +47,13 @@ struct LocalDatabase final
     bool schema_validated{false};
     std::uint32_t schema_version{0U};
     std::uint64_t next_session_id{1U};
+    std::uint64_t next_event_id{1U};
     std::vector<std::string> tables{};
     std::vector<LocalUser> users{};
     std::vector<LocalSession> sessions{};
     std::vector<LocalRoom> rooms{};
     std::vector<observability::AuditLogEvent> audit_events{};
+    database::PersistentStore persistent_store{};
 };
 
 struct HomeserverRuntime final
@@ -91,8 +94,10 @@ struct LocalHttpResponse final
 };
 
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config) -> LocalDatabase;
+[[nodiscard]] auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state) -> LocalDatabase;
 [[nodiscard]] auto database_has_table(LocalDatabase const& database, std::string_view table_name) noexcept -> bool;
 [[nodiscard]] auto start_runtime(config::Config const& config) -> RuntimeStartResult;
+[[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state) -> RuntimeStartResult;
 [[nodiscard]] auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthCheckSnapshot;
 [[nodiscard]] auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string;
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
@@ -109,6 +114,8 @@ struct LocalHttpResponse final
     std::string_view device_id
 ) -> OperationResult;
 [[nodiscard]] auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token)
+    -> std::optional<std::string>;
+[[nodiscard]] auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>;
 [[nodiscard]] auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
