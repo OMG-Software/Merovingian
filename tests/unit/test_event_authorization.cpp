@@ -57,7 +57,7 @@ SCENARIO("Event authorization rejects insufficient power levels", "[events][auth
     }
 }
 
-SCENARIO("Membership policy primitives cover joins, invites, and restricted targets", "[events][auth][membership]")
+SCENARIO("Membership policy primitives cover joins, invites, removals, and restricted targets", "[events][auth][membership]")
 {
     GIVEN("membership policy decisions")
     {
@@ -71,6 +71,16 @@ SCENARIO("Membership policy primitives cover joins, invites, and restricted targ
         invite.sender_power = 50;
         invite.invite_power = 50;
 
+        auto unauthorized_remove = merovingian::events::MembershipPolicy{};
+        unauthorized_remove.current_membership = merovingian::events::MembershipState::join;
+        unauthorized_remove.requested_membership = merovingian::events::MembershipState::leave;
+        unauthorized_remove.target_is_sender = false;
+        unauthorized_remove.sender_power = 0;
+        unauthorized_remove.remove_power = 50;
+
+        auto authorized_remove = unauthorized_remove;
+        authorized_remove.sender_power = 50;
+
         auto restricted = merovingian::events::MembershipPolicy{};
         restricted.target_is_restricted = true;
 
@@ -78,12 +88,17 @@ SCENARIO("Membership policy primitives cover joins, invites, and restricted targ
         {
             auto const self_join_decision = merovingian::events::membership_policy_allows(self_join);
             auto const invite_decision = merovingian::events::membership_policy_allows(invite);
+            auto const unauthorized_remove_decision = merovingian::events::membership_policy_allows(unauthorized_remove);
+            auto const authorized_remove_decision = merovingian::events::membership_policy_allows(authorized_remove);
             auto const restricted_decision = merovingian::events::membership_policy_allows(restricted);
 
-            THEN("allowed transitions pass and restricted targets fail closed")
+            THEN("allowed transitions pass and unsafe transitions fail closed")
             {
                 REQUIRE(self_join_decision.allowed);
                 REQUIRE(invite_decision.allowed);
+                REQUIRE_FALSE(unauthorized_remove_decision.allowed);
+                REQUIRE(unauthorized_remove_decision.reason == "insufficient power to remove another member");
+                REQUIRE(authorized_remove_decision.allowed);
                 REQUIRE_FALSE(restricted_decision.allowed);
                 REQUIRE(restricted_decision.reason == "target membership is restricted");
             }
@@ -93,27 +108,32 @@ SCENARIO("Membership policy primitives cover joins, invites, and restricted targ
 
 SCENARIO("Auth event selection registers required auth events for membership events", "[events][auth][auth-events]")
 {
-    GIVEN("a membership authorization request")
+    GIVEN("membership authorization requests")
     {
-        auto request = merovingian::events::EventAuthorizationRequest{};
-        request.room_version = "12";
-        request.event_type = "m.room.member";
-        request.state_key = "@bob:example.org";
-        request.membership.requested_membership = merovingian::events::MembershipState::invite;
+        auto normal_invite = merovingian::events::EventAuthorizationRequest{};
+        normal_invite.room_version = "12";
+        normal_invite.event_type = "m.room.member";
+        normal_invite.state_key = "@bob:example.org";
+        normal_invite.membership.requested_membership = merovingian::events::MembershipState::invite;
+
+        auto third_party_invite = normal_invite;
+        third_party_invite.membership.third_party_invite = true;
 
         WHEN("auth events are selected")
         {
-            auto const selection = merovingian::events::select_auth_events(request);
+            auto const normal_selection = merovingian::events::select_auth_events(normal_invite);
+            auto const third_party_selection = merovingian::events::select_auth_events(third_party_invite);
 
-            THEN("create, power-level, join-rules, member, and third-party-invite hooks are represented")
+            THEN("normal invites avoid 3PID auth and third-party invites request it")
             {
-                REQUIRE(selection.required.size() == 5U);
-                REQUIRE(selection.required[0].kind == merovingian::events::AuthEventKind::create);
-                REQUIRE(selection.required[1].kind == merovingian::events::AuthEventKind::power_levels);
-                REQUIRE(selection.required[2].kind == merovingian::events::AuthEventKind::join_rules);
-                REQUIRE(selection.required[3].kind == merovingian::events::AuthEventKind::member);
-                REQUIRE(selection.required[4].kind == merovingian::events::AuthEventKind::third_party_invite);
-                REQUIRE(selection.required[3].state_key == "@bob:example.org");
+                REQUIRE(normal_selection.required.size() == 4U);
+                REQUIRE(normal_selection.required[0].kind == merovingian::events::AuthEventKind::create);
+                REQUIRE(normal_selection.required[1].kind == merovingian::events::AuthEventKind::power_levels);
+                REQUIRE(normal_selection.required[2].kind == merovingian::events::AuthEventKind::join_rules);
+                REQUIRE(normal_selection.required[3].kind == merovingian::events::AuthEventKind::member);
+                REQUIRE(normal_selection.required[3].state_key == "@bob:example.org");
+                REQUIRE(third_party_selection.required.size() == 5U);
+                REQUIRE(third_party_selection.required[4].kind == merovingian::events::AuthEventKind::third_party_invite);
             }
         }
     }
