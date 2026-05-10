@@ -28,6 +28,7 @@ if get_option('build_tests')
       'unit/test_auth_session.cpp',
       'unit/test_canonicaljson_parser.cpp',
       'unit/test_canonicaljson_serializer.cpp',
+      'unit/test_client_server_mvp.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_media_timeout.cpp',
       'unit/test_config_parser.cpp',
@@ -73,6 +74,7 @@ if get_option('build_tests')
     'merovingian-integration-tests',
     sources: files(
       'integration/test_main.cpp',
+      'integration/test_client_server_mvp_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_media_repository_security.cpp',
       'integration/test_observability_flow.cpp',
