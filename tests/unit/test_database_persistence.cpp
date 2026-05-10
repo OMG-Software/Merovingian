@@ -8,7 +8,6 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace
@@ -54,7 +53,7 @@ SCENARIO("Database statement validation enforces prepared statement shape", "[da
         };
         auto const unsafe_sql = merovingian::database::PreparedStatement{
             "select_user",
-            "SELECT id FROM users; DROP TABLE users",
+            "SELECT id FROM users; SELECT id FROM devices",
             {},
         };
 
