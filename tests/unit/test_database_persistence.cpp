@@ -321,7 +321,8 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             auto const tables = merovingian::database::initial_schema_tables();
             auto const users_definition = merovingian::database::schema_table_definition("users");
             auto const current_state_definition = merovingian::database::schema_table_definition("current_state");
-            auto const users_sql = users_definition.has_value() ? merovingian::database::create_table_sql(*users_definition) : std::string{};
+            auto const users_sql = users_definition.has_value() ? merovingian::database::create_table_sql(users_definition.value()) : std::string{};
+            auto const current_state_columns = current_state_definition.has_value() ? current_state_definition.value().columns_sql : std::string_view{};
             auto const unknown_is_core = merovingian::database::schema_table_is_core("not_a_table");
 
             THEN("required Matrix storage areas have table-specific definitions")
@@ -331,7 +332,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);
-                REQUIRE(current_state_definition->columns_sql.find("PRIMARY KEY (room_id, event_type, state_key)") != std::string_view::npos);
+                REQUIRE(current_state_columns.find("PRIMARY KEY (room_id, event_type, state_key)") != std::string_view::npos);
                 REQUIRE_FALSE(unknown_is_core);
             }
         }
