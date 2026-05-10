@@ -12,13 +12,6 @@ namespace merovingian::platform
 namespace
 {
 
-[[nodiscard]] auto contains_path(std::vector<std::string> const& paths, std::string_view path) noexcept -> bool
-{
-    return std::ranges::any_of(paths, [path](std::string const& candidate) {
-        return candidate == path;
-    });
-}
-
 [[nodiscard]] auto reject(std::string reason) -> HardeningPlanDecision
 {
     return {false, true, std::move(reason)};
@@ -27,6 +20,74 @@ namespace
 [[nodiscard]] auto accept() -> HardeningPlanDecision
 {
     return {true, false, {}};
+}
+
+[[nodiscard]] auto accept_optional(std::string reason) -> HardeningPlanDecision
+{
+    return {true, false, "optional hardening unavailable: " + std::move(reason)};
+}
+
+[[nodiscard]] auto reject_if_required(HardeningMode mode, std::string reason) -> HardeningPlanDecision
+{
+    if (mode == HardeningMode::required)
+    {
+        return reject(std::move(reason));
+    }
+
+    return accept_optional(std::move(reason));
+}
+
+[[nodiscard]] auto path_is_absolute_normalized(std::string_view path) noexcept -> bool
+{
+    if (path.empty() || path.front() != '/')
+    {
+        return false;
+    }
+    if (path.size() > 1U && path.back() == '/')
+    {
+        return false;
+    }
+    if (path == "/")
+    {
+        return true;
+    }
+
+    auto segment_start = std::size_t{1U};
+    while (segment_start < path.size())
+    {
+        auto segment_end = path.find('/', segment_start);
+        if (segment_end == std::string_view::npos)
+        {
+            segment_end = path.size();
+        }
+        if (segment_end == segment_start)
+        {
+            return false;
+        }
+
+        auto const segment = path.substr(segment_start, segment_end - segment_start);
+        if (segment == "." || segment == "..")
+        {
+            return false;
+        }
+
+        segment_start = segment_end + 1U;
+    }
+
+    return true;
+}
+
+[[nodiscard]] auto is_path_or_child_of(std::string_view path, std::string_view protected_path) noexcept -> bool
+{
+    return path == protected_path
+        || (path.size() > protected_path.size() && path.substr(0U, protected_path.size()) == protected_path
+            && path[protected_path.size()] == '/');
+}
+
+[[nodiscard]] auto writable_path_is_safe(std::string_view path) noexcept -> bool
+{
+    return path_is_absolute_normalized(path) && path != "/" && !is_path_or_child_of(path, "/etc")
+        && !is_path_or_child_of(path, "/usr");
 }
 
 } // namespace
@@ -103,6 +164,7 @@ auto default_bsd_hardening_profile() -> RuntimeHardeningProfile
 {
     auto profile = default_linux_hardening_profile();
     profile.platform = HardeningPlatform::bsd;
+    profile.filesystem.writable_paths = {"/var/lib/merovingian", "/var/run/merovingian"};
     return profile;
 }
 
@@ -122,13 +184,15 @@ auto privilege_drop_plan_is_safe(PrivilegeDropPlan const& plan) noexcept -> bool
 auto filesystem_plan_is_safe(FilesystemRestrictionPlan const& plan) noexcept -> bool
 {
     return plan.deny_home && plan.deny_proc_write && plan.private_tmp && !plan.writable_paths.empty()
-        && !contains_path(plan.writable_paths, "/") && !contains_path(plan.writable_paths, "/etc")
-        && !contains_path(plan.writable_paths, "/usr");
+        && std::ranges::all_of(plan.writable_paths, [](std::string const& path) {
+               return writable_path_is_safe(path);
+           });
 }
 
 auto resource_limit_plan_is_safe(ResourceLimitPlan const& plan) noexcept -> bool
 {
-    return plan.max_open_files > 0U && plan.max_processes > 0U && plan.max_core_bytes == 0U;
+    return plan.max_open_files > 0U && plan.max_processes > 0U && plan.max_address_space_bytes > 0U
+        && plan.max_core_bytes == 0U;
 }
 
 auto memory_locking_plan_is_safe(MemoryLockingPlan const& plan) noexcept -> bool
@@ -161,37 +225,37 @@ auto bsd_hardening_plan_is_documented(BsdHardeningPlan const& plan) noexcept -> 
 
 auto evaluate_runtime_hardening_profile(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision
 {
-    if (!privilege_drop_plan_is_safe(profile.privilege_drop))
-    {
-        return reject("privilege drop plan is incomplete");
-    }
     if (!filesystem_plan_is_safe(profile.filesystem))
     {
         return reject("filesystem restriction plan is unsafe");
     }
+    if (!privilege_drop_plan_is_safe(profile.privilege_drop))
+    {
+        return reject_if_required(profile.mode, "privilege drop plan is incomplete");
+    }
     if (!resource_limit_plan_is_safe(profile.resources))
     {
-        return reject("resource limit plan is unsafe");
+        return reject_if_required(profile.mode, "resource limit plan is unsafe");
     }
     if (!memory_locking_plan_is_safe(profile.memory))
     {
-        return reject("memory locking plan is unsafe");
+        return reject_if_required(profile.mode, "memory locking plan is unsafe");
     }
     if (!random_source_plan_is_safe(profile.random))
     {
-        return reject("random source plan is unsafe");
+        return reject_if_required(profile.mode, "random source plan is unsafe");
     }
     if (!signal_handling_plan_is_safe(profile.signals))
     {
-        return reject("signal handling plan is unsafe");
+        return reject_if_required(profile.mode, "signal handling plan is unsafe");
     }
     if (profile.platform == HardeningPlatform::linux && !linux_hardening_plan_is_documented(profile.linux))
     {
-        return reject("linux hardening plan is incomplete");
+        return reject_if_required(profile.mode, "linux hardening plan is incomplete");
     }
     if (profile.platform == HardeningPlatform::bsd && !bsd_hardening_plan_is_documented(profile.bsd))
     {
-        return reject("bsd hardening plan is incomplete");
+        return reject_if_required(profile.mode, "bsd hardening plan is incomplete");
     }
 
     return accept();
