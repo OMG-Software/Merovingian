@@ -80,24 +80,24 @@ namespace
 
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool
 {
-    store.prepared_statements.push_back(record_statement("insert_user", "INSERT INTO users VALUES ($1, $2, $3, $4, $5)", {{user.user_id, false}, {user.password_hash, true}, {user.locked ? "true" : "false", false}, {user.suspended ? "true" : "false", false}, {user.admin ? "true" : "false", false}}));
     auto const duplicate = std::ranges::any_of(store.users, [&user](PersistentUser const& existing) { return existing.user_id == user.user_id; });
     if (duplicate)
     {
         return false;
     }
+    store.prepared_statements.push_back(record_statement("insert_user", "INSERT INTO users VALUES ($1, $2, $3, $4, $5)", {{user.user_id, false}, {user.password_hash, true}, {user.locked ? "true" : "false", false}, {user.suspended ? "true" : "false", false}, {user.admin ? "true" : "false", false}}));
     store.users.push_back(std::move(user));
     return true;
 }
 
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool
 {
-    store.prepared_statements.push_back(record_statement("insert_device", "INSERT INTO devices VALUES ($1, $2, $3)", {{device.user_id, false}, {device.device_id, false}, {device.display_name, false}}));
     auto const duplicate = std::ranges::any_of(store.devices, [&device](PersistentDevice const& existing) { return existing.user_id == device.user_id && existing.device_id == device.device_id; });
     if (duplicate)
     {
         return false;
     }
+    store.prepared_statements.push_back(record_statement("insert_device", "INSERT INTO devices VALUES ($1, $2, $3)", {{device.user_id, false}, {device.device_id, false}, {device.display_name, false}}));
     store.devices.push_back(std::move(device));
     return true;
 }
