@@ -7,7 +7,6 @@
 #include <merovingian/database/persistent_store.hpp>
 #include <merovingian/media/repository.hpp>
 
-#include <algorithm>
 #include <string>
 #include <string_view>
 
@@ -15,12 +14,6 @@ namespace merovingian::homeserver
 {
 namespace
 {
-
-[[nodiscard]] auto content_uri_media_id(std::string_view content_uri) -> std::string
-{
-    auto const separator = content_uri.rfind('/');
-    return separator == std::string_view::npos ? std::string{content_uri} : std::string{content_uri.substr(separator + 1U)};
-}
 
 [[nodiscard]] auto admin_result_to_operation(media::LocalMediaAdminResult const& result) -> OperationResult
 {
