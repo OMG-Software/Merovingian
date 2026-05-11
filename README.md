@@ -34,6 +34,20 @@ Security-first Matrix homeserver written in modern C++26.
 
 ## Build
 
+Set up a Linux or BSD development environment:
+
+```bash
+sh scripts/setup-dev-env.sh
+```
+
+Preview the setup commands without changing the host:
+
+```bash
+sh scripts/setup-dev-env.sh --dry-run
+```
+
+Build manually after dependencies are installed:
+
 ```bash
 meson setup build
 meson compile -C build
@@ -74,6 +88,12 @@ See:
 
 - `config/merovingian.conf.example`
 - `docs/configuration.md`
+
+## Developer environment
+
+See:
+
+- `docs/dev-environment.md`
 
 ## Phase status
 
