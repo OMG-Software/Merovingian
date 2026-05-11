@@ -12,6 +12,7 @@ namespace
 {
 
 constexpr auto initial_schema_version = std::uint32_t{1U};
+constexpr auto media_metadata_schema_version = std::uint32_t{2U};
 
 [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table) -> PreparedStatement
 {
@@ -173,6 +174,32 @@ auto initial_schema_migration() -> MigrationStep
     return {initial_schema_version, "initial_schema", std::move(statements), MigrationDirection::upgrade};
 }
 
+auto media_metadata_migration() -> MigrationStep
+{
+    return {
+        media_metadata_schema_version,
+        "media_metadata_columns",
+        {
+            {"media_add_hash_algorithm", "ALTER TABLE media ADD COLUMN hash_algorithm TEXT NOT NULL DEFAULT 'sha256'", {}},
+            {"media_add_digest", "ALTER TABLE media ADD COLUMN digest TEXT NOT NULL DEFAULT 'unknown'", {}},
+            {"media_add_removed", "ALTER TABLE media ADD COLUMN removed TEXT NOT NULL DEFAULT 'false'", {}},
+        },
+        MigrationDirection::upgrade,
+    };
+}
+
+auto downgrade_media_metadata_migration() -> MigrationStep
+{
+    return {
+        initial_schema_version,
+        "media_metadata_columns_downgrade",
+        {
+            {"media_metadata_downgrade_marker", "ALTER TABLE media RENAME TO media", {}},
+        },
+        MigrationDirection::downgrade,
+    };
+}
+
 auto downgrade_initial_schema_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -186,12 +213,12 @@ auto downgrade_initial_schema_migration() -> MigrationStep
 
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration()};
+    return {initial_schema_migration(), media_metadata_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_initial_schema_migration()};
+    return {downgrade_initial_schema_migration(), downgrade_media_metadata_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan
