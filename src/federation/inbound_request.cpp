@@ -67,6 +67,38 @@ auto constexpr clock_skew_seconds = std::uint64_t{300U};
     return {accepted, status, std::move(reason)};
 }
 
+[[nodiscard]] auto sender_domain(std::string_view sender) noexcept -> std::string_view
+{
+    auto const colon = sender.rfind(':');
+    if (colon == std::string_view::npos || colon + 1U >= sender.size())
+    {
+        return {};
+    }
+    return sender.substr(colon + 1U);
+}
+
+[[nodiscard]] auto transaction_id_from_send_target(std::string_view target) -> std::string
+{
+    auto constexpr prefix = std::string_view{"/_matrix/federation/v1/send/"};
+    if (target.size() <= prefix.size() || target.substr(0U, prefix.size()) != prefix)
+    {
+        return {};
+    }
+    auto const transaction_id = target.substr(prefix.size());
+    return transaction_id.find('/') == std::string_view::npos ? std::string{transaction_id} : std::string{};
+}
+
+[[nodiscard]] auto transaction_already_accepted(
+    FederationRuntimeState const& runtime,
+    std::string_view origin,
+    std::string_view transaction_id
+) noexcept -> bool
+{
+    return std::ranges::any_of(runtime.accepted_transactions, [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
+        return accepted.origin == origin && accepted.transaction_id == transaction_id;
+    });
+}
+
 auto audit_federation(FederationRuntimeState& runtime, std::string_view event_type, std::string_view origin, std::string_view target, std::string_view reason) -> void
 {
     runtime.audit_events.push_back(observability::make_audit_event(
@@ -160,7 +192,7 @@ auto verify_signed_federation_request(
     {
         return make_decision(false, 401U, "request signature verification failed");
     }
-    auto const boundary = verify_federation_request_signature({request.origin, request.key_id, request.signature, true});
+    auto const boundary = verify_federation_request_signature({request.origin, request.key_id, request.signature, request.canonical_json_verified});
     if (!boundary.accepted)
     {
         return make_decision(false, 401U, boundary.reason);
@@ -195,7 +227,7 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
     {
         return make_decision(false, 400U, "PDU is missing required fields");
     }
-    if (pdu.sender.find(':' + std::string{expected_origin}) == std::string::npos)
+    if (sender_domain(pdu.sender) != expected_origin)
     {
         return make_decision(false, 403U, "PDU sender does not match origin");
     }
@@ -214,11 +246,11 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
 auto parse_federation_pdu(std::string_view encoded) -> FederationPdu
 {
     auto const fields = split_fields(encoded, ',');
-    if (fields.size() < 6U)
+    if (fields.size() != 7U || fields[6].empty())
     {
         return {};
     }
-    return {fields[0], fields[1], fields[2], fields[3], {{fields[4], fields[5], fields.size() > 6U ? fields[6] : "signature"}}};
+    return {fields[0], fields[1], fields[2], fields[3], {{fields[4], fields[5], fields[6]}}};
 }
 
 auto handle_inbound_federation_request(
@@ -263,9 +295,16 @@ auto handle_inbound_federation_request(
         audit_federation(runtime, "federation.rejected", request.origin, request.target, request_signature.reason);
         return {request_signature.status, request_signature.reason};
     }
+    if (route_match.route.endpoint != FederationEndpoint::transaction)
+    {
+        remote->trust.consecutive_failures = 0U;
+        audit_federation(runtime, "federation.accepted", request.origin, request.target, federation_route_audit_event(route_match.route, request.origin));
+        return {200U, "accepted endpoint=" + std::string{federation_endpoint_name(route_match.route.endpoint)}};
+    }
+
     auto transaction = FederationTransaction{};
     transaction.origin = request.origin;
-    transaction.transaction_id = request.target.substr(request.target.rfind('/') + 1U);
+    transaction.transaction_id = transaction_id_from_send_target(request.target);
     transaction.byte_size = request.body.size();
     auto const encoded_pdus = split_fields(request.body, ';');
     for (auto const& encoded_pdu : encoded_pdus)
@@ -281,6 +320,12 @@ auto handle_inbound_federation_request(
         ++remote->trust.consecutive_failures;
         audit_federation(runtime, "federation.rejected", request.origin, request.target, transaction_decision.reason);
         return {400U, transaction_decision.reason};
+    }
+    if (transaction_already_accepted(runtime, request.origin, transaction.transaction_id))
+    {
+        remote->trust.consecutive_failures = 0U;
+        audit_federation(runtime, "federation.duplicate", request.origin, request.target, "transaction already accepted");
+        return {200U, "duplicate transaction accepted"};
     }
     for (auto const& encoded_pdu : transaction.pdus)
     {
