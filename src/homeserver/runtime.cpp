@@ -5,6 +5,7 @@
 #include "local_services.hpp"
 
 #include <merovingian/database/schema.hpp>
+#include <merovingian/federation/runtime_federation.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
 
 #include <algorithm>
@@ -72,6 +73,7 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
         return {false, "database schema validation failed", {}};
     }
 
+    runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
     runtime.hardening = platform::run_startup_hardening_self_check();
     append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver", "startup");
     runtime.started = true;
@@ -85,6 +87,7 @@ auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthChec
         {"runtime", runtime.started ? observability::HealthStatus::ok : observability::HealthStatus::failed, "started"},
         {"listeners", runtime.listeners.empty() ? observability::HealthStatus::failed : observability::HealthStatus::ok, "configured"},
         {"database", runtime.database.schema_validated ? observability::HealthStatus::ok : observability::HealthStatus::failed, "schema_validated"},
+        {"federation", runtime.federation.config.enabled ? observability::HealthStatus::ok : observability::HealthStatus::degraded, federation::federation_runtime_summary(runtime.federation)},
         {"hardening", runtime.hardening.count() > 0U ? observability::HealthStatus::ok : observability::HealthStatus::degraded, "self_check"},
     };
 
