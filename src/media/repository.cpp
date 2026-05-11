@@ -5,6 +5,7 @@
 #include <merovingian/media/security.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -15,8 +16,41 @@ namespace merovingian::media
 namespace
 {
 
-auto constexpr fnv_offset = std::uint64_t{1469598103934665603ULL};
-auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
+constexpr auto sha256_initial = std::array<std::uint32_t, 8U>{
+    0x6a09e667U, 0xbb67ae85U, 0x3c6ef372U, 0xa54ff53aU,
+    0x510e527fU, 0x9b05688cU, 0x1f83d9abU, 0x5be0cd19U,
+};
+constexpr auto sha256_round_constants = std::array<std::uint32_t, 64U>{
+    0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U, 0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
+    0xd807aa98U, 0x12835b01U, 0x243185beU, 0x550c7dc3U, 0x72be5d74U, 0x80deb1feU, 0x9bdc06a7U, 0xc19bf174U,
+    0xe49b69c1U, 0xefbe4786U, 0x0fc19dc6U, 0x240ca1ccU, 0x2de92c6fU, 0x4a7484aaU, 0x5cb0a9dcU, 0x76f988daU,
+    0x983e5152U, 0xa831c66dU, 0xb00327c8U, 0xbf597fc7U, 0xc6e00bf3U, 0xd5a79147U, 0x06ca6351U, 0x14292967U,
+    0x27b70a85U, 0x2e1b2138U, 0x4d2c6dfcU, 0x53380d13U, 0x650a7354U, 0x766a0abbU, 0x81c2c92eU, 0x92722c85U,
+    0xa2bfe8a1U, 0xa81a664bU, 0xc24b8b70U, 0xc76c51a3U, 0xd192e819U, 0xd6990624U, 0xf40e3585U, 0x106aa070U,
+    0x19a4c116U, 0x1e376c08U, 0x2748774cU, 0x34b0bcb5U, 0x391c0cb3U, 0x4ed8aa4aU, 0x5b9cca4fU, 0x682e6ff3U,
+    0x748f82eeU, 0x78a5636fU, 0x84c87814U, 0x8cc70208U, 0x90befffaU, 0xa4506cebU, 0xbef9a3f7U, 0xc67178f2U,
+};
+
+[[nodiscard]] auto rotate_right(std::uint32_t value, unsigned shift) noexcept -> std::uint32_t
+{
+    return (value >> shift) | (value << (32U - shift));
+}
+
+[[nodiscard]] auto hex_digit(std::uint32_t value) noexcept -> char
+{
+    return static_cast<char>(value < 10U ? ('0' + value) : ('a' + (value - 10U)));
+}
+
+[[nodiscard]] auto word_hex(std::uint32_t value) -> std::string
+{
+    auto output = std::string{};
+    output.reserve(8U);
+    for (auto shift = 28; shift >= 0; shift -= 4)
+    {
+        output.push_back(hex_digit((value >> static_cast<unsigned>(shift)) & 0x0FU));
+    }
+    return output;
+}
 
 [[nodiscard]] auto media_id_is_safe(std::string_view media_id) noexcept -> bool
 {
@@ -24,29 +58,81 @@ auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
         && media_id.find("..") == std::string_view::npos && media_id.find(' ') == std::string_view::npos;
 }
 
-[[nodiscard]] auto stable_hash(std::string_view value) noexcept -> std::uint64_t
+[[nodiscard]] auto sha256_hex(std::string_view bytes) -> std::string
 {
-    auto hash = fnv_offset;
-    for (auto const character : value)
+    auto message = std::string{bytes};
+    auto const bit_length = static_cast<std::uint64_t>(message.size()) * 8U;
+    message.push_back(static_cast<char>(0x80));
+    while ((message.size() % 64U) != 56U)
     {
-        hash ^= static_cast<unsigned char>(character);
-        hash *= fnv_prime;
+        message.push_back('\0');
     }
-    return hash;
-}
-
-[[nodiscard]] auto hex_digit(std::uint64_t value) noexcept -> char
-{
-    return static_cast<char>(value < 10U ? ('0' + value) : ('a' + (value - 10U)));
-}
-
-[[nodiscard]] auto fixed_hex(std::uint64_t value) -> std::string
-{
-    auto output = std::string{};
-    output.reserve(16U);
-    for (auto shift = 60; shift >= 0; shift -= 4)
+    for (auto shift = 56; shift >= 0; shift -= 8)
     {
-        output.push_back(hex_digit((value >> static_cast<unsigned>(shift)) & 0x0FU));
+        message.push_back(static_cast<char>((bit_length >> static_cast<unsigned>(shift)) & 0xffU));
+    }
+
+    auto hash = sha256_initial;
+    for (auto offset = std::size_t{0U}; offset < message.size(); offset += 64U)
+    {
+        auto words = std::array<std::uint32_t, 64U>{};
+        for (auto index = std::size_t{0U}; index < 16U; ++index)
+        {
+            auto const base = offset + (index * 4U);
+            words[index] = (static_cast<std::uint32_t>(static_cast<unsigned char>(message[base])) << 24U)
+                | (static_cast<std::uint32_t>(static_cast<unsigned char>(message[base + 1U])) << 16U)
+                | (static_cast<std::uint32_t>(static_cast<unsigned char>(message[base + 2U])) << 8U)
+                | static_cast<std::uint32_t>(static_cast<unsigned char>(message[base + 3U]));
+        }
+        for (auto index = std::size_t{16U}; index < 64U; ++index)
+        {
+            auto const s0 = rotate_right(words[index - 15U], 7U) ^ rotate_right(words[index - 15U], 18U) ^ (words[index - 15U] >> 3U);
+            auto const s1 = rotate_right(words[index - 2U], 17U) ^ rotate_right(words[index - 2U], 19U) ^ (words[index - 2U] >> 10U);
+            words[index] = words[index - 16U] + s0 + words[index - 7U] + s1;
+        }
+
+        auto a = hash[0U];
+        auto b = hash[1U];
+        auto c = hash[2U];
+        auto d = hash[3U];
+        auto e = hash[4U];
+        auto f = hash[5U];
+        auto g = hash[6U];
+        auto h = hash[7U];
+
+        for (auto index = std::size_t{0U}; index < 64U; ++index)
+        {
+            auto const s1 = rotate_right(e, 6U) ^ rotate_right(e, 11U) ^ rotate_right(e, 25U);
+            auto const choice = (e & f) ^ ((~e) & g);
+            auto const temp1 = h + s1 + choice + sha256_round_constants[index] + words[index];
+            auto const s0 = rotate_right(a, 2U) ^ rotate_right(a, 13U) ^ rotate_right(a, 22U);
+            auto const majority = (a & b) ^ (a & c) ^ (b & c);
+            auto const temp2 = s0 + majority;
+            h = g;
+            g = f;
+            f = e;
+            e = d + temp1;
+            d = c;
+            c = b;
+            b = a;
+            a = temp1 + temp2;
+        }
+
+        hash[0U] += a;
+        hash[1U] += b;
+        hash[2U] += c;
+        hash[3U] += d;
+        hash[4U] += e;
+        hash[5U] += f;
+        hash[6U] += g;
+        hash[7U] += h;
+    }
+
+    auto output = std::string{};
+    output.reserve(64U);
+    for (auto const word : hash)
+    {
+        output += word_hex(word);
     }
     return output;
 }
@@ -61,7 +147,7 @@ auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
     return request.sniffed_mime_type.empty() ? request.declared_mime_type : request.sniffed_mime_type;
 }
 
-[[nodiscard]] auto find_blob(
+[[nodiscard]] auto find_live_blob(
     LocalMediaRepository& repository,
     std::string_view hash_algorithm,
     std::string_view digest,
@@ -69,7 +155,7 @@ auto constexpr fnv_prime = std::uint64_t{1099511628211ULL};
 ) noexcept -> LocalMediaBlob*
 {
     auto const iterator = std::ranges::find_if(repository.blobs, [hash_algorithm, digest, size_bytes](LocalMediaBlob const& blob) {
-        return blob.hash_algorithm == hash_algorithm && blob.digest == digest && blob.size_bytes == size_bytes;
+        return blob.ref_count > 0U && blob.hash_algorithm == hash_algorithm && blob.digest == digest && blob.size_bytes == size_bytes;
     });
     return iterator == repository.blobs.end() ? nullptr : &(*iterator);
 }
@@ -153,7 +239,7 @@ auto make_local_media_repository(RuntimeMediaConfig config) -> LocalMediaReposit
 
 auto calculate_media_digest(std::string_view bytes) -> std::string
 {
-    return fixed_hex(stable_hash(bytes));
+    return sha256_hex(bytes);
 }
 
 auto media_repository_summary(LocalMediaRepository const& repository) -> std::string
@@ -209,16 +295,16 @@ auto upload_local_media(
     if (decision.disposition == MediaDisposition::reject)
     {
         ++repository.metrics.uploads_rejected;
-        return {false, 413U, {}, {}, {}, size_bytes, "fnv1a64", digest, false, false, decision.reason};
+        return {false, 413U, {}, {}, {}, size_bytes, "sha256", digest, false, false, decision.reason};
     }
 
     auto deduplicated = false;
-    auto* blob = find_blob(repository, "fnv1a64", digest, size_bytes);
+    auto* blob = find_live_blob(repository, "sha256", digest, size_bytes);
     if (blob == nullptr)
     {
         auto new_blob = LocalMediaBlob{};
         new_blob.storage_id = make_storage_id(digest, size_bytes);
-        new_blob.hash_algorithm = "fnv1a64";
+        new_blob.hash_algorithm = "sha256";
         new_blob.digest = digest;
         new_blob.size_bytes = size_bytes;
         new_blob.bytes = request.bytes;
@@ -238,7 +324,7 @@ auto upload_local_media(
     record.owner_user_id = request.owner_user_id;
     record.content_type = content_type;
     record.size_bytes = size_bytes;
-    record.hash_algorithm = "fnv1a64";
+    record.hash_algorithm = "sha256";
     record.digest = digest;
     record.storage_id = blob->storage_id;
     record.state = decision.disposition == MediaDisposition::quarantine ? LocalMediaState::quarantined
@@ -261,7 +347,7 @@ auto upload_local_media(
         "mxc://" + std::string{server_name} + "/" + media_id,
         content_type,
         size_bytes,
-        "fnv1a64",
+        "sha256",
         digest,
         deduplicated,
         decision.disposition == MediaDisposition::quarantine,
