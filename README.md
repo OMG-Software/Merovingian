@@ -89,6 +89,8 @@ See:
 - `config/merovingian.conf.example`
 - `docs/configuration.md`
 - `docs/media-repository.md`
+- `docs/production-readiness.md`
+- `docs/security-review-checklist.md`
 
 ## Developer environment
 
@@ -111,4 +113,6 @@ See:
 
 ## Status
 
-Early Phase 1 bootstrap implementation.
+Prototype homeserver with packaging and release-readiness gates in progress.
+Do not deploy as a production Matrix homeserver until `docs/production-readiness.md`
+has no blocking gates.

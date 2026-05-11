@@ -26,10 +26,10 @@ The local HTTP router preserves the media repository status code instead of flat
 
 ## Deduplication
 
-Local media deduplication uses a SHA-256 digest and byte size. Removed blobs with a zero reference count are not reused for future uploads, because their bytes have been cleared and reusing them would corrupt successful reuploads.
+Local media deduplication uses a LibSodium `crypto_generichash` (`blake2b`) digest and byte size. Removed blobs with a zero reference count are not reused for future uploads, because their bytes have been cleared and reusing them would corrupt successful reuploads.
 
 ## Persistence
 
-Schema version `2` adds media metadata columns for `hash_algorithm`, `digest`, and `removed`. Existing version `1` schemas migrate through the `media_metadata_columns` step before startup is considered compatible.
+Schema version `2` adds media metadata columns for `hash_algorithm`, `digest`, and `removed`. Existing version `1` schemas migrate through the `media_metadata_columns` step before startup is considered compatible. New local uploads use LibSodium `crypto_generichash` (`blake2b`) for deduplication digests instead of project-local hash code.
 
 Media moderation events are persisted with the `moderation` audit category so operator filtering can distinguish media policy and admin moderation events from auth or generic admin activity.

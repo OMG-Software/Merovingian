@@ -47,7 +47,7 @@ SCENARIO("Local media repository uploads, downloads, and deduplicates safe media
             THEN("two media records reference one stored blob and bytes are served safely")
             {
                 REQUIRE(first.ok);
-                REQUIRE(first.hash_algorithm == "sha256");
+                REQUIRE(first.hash_algorithm == "blake2b");
                 REQUIRE(first.digest.size() == 64U);
                 REQUIRE_FALSE(first.deduplicated);
                 REQUIRE_FALSE(first.quarantined);

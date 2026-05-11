@@ -15,7 +15,7 @@ Milestone 7 introduces project-owned cryptography interfaces without implementin
 
 ## Security posture
 
-This milestone intentionally does not implement Ed25519, token generation, password hashing, or random byte generation. Those must be supplied by reviewed cryptographic dependencies through these interfaces.
+This milestone intentionally does not implement Ed25519 signing or verification. Local homeserver password hashing, access-token generation, access-token hashing, and media deduplication hashes now use LibSodium directly while the remaining signing-provider boundary is completed.
 
 The boundary provides these guarantees:
 
@@ -29,10 +29,7 @@ The boundary provides these guarantees:
 
 These are deferred to later milestones:
 
-- libsodium or TLS-provider integration.
 - Real Ed25519 signing and verification.
-- Password hashing implementation.
-- Random token generation implementation.
 - Server signing-key persistence.
 - Signing-key rotation and audit-log persistence.
 - Hardware-backed key support.

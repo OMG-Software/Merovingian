@@ -24,6 +24,7 @@ jobs:
           sudo apt-get install -y \
             clang \
             catch2 \
+            libsodium-dev \
             pkg-config
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja
