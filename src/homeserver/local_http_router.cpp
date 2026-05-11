@@ -51,6 +51,35 @@ namespace
     return std::array<std::string_view, 3U>{body.substr(0U, first), body.substr(first + 1U, second - first - 1U), body.substr(second + 1U)};
 }
 
+[[nodiscard]] auto split_pipe_4(std::string_view body) -> std::optional<std::array<std::string_view, 4U>>
+{
+    auto fields = std::array<std::string_view, 4U>{};
+    auto remaining = body;
+    for (auto index = std::size_t{0U}; index < fields.size(); ++index)
+    {
+        if (index + 1U == fields.size())
+        {
+            fields[index] = remaining;
+            break;
+        }
+        auto const separator = remaining.find('|');
+        if (separator == std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        fields[index] = remaining.substr(0U, separator);
+        remaining = remaining.substr(separator + 1U);
+    }
+    for (auto const field : fields)
+    {
+        if (field.empty())
+        {
+            return std::nullopt;
+        }
+    }
+    return fields;
+}
+
 [[nodiscard]] auto split_pipe_6(std::string_view body) -> std::optional<std::array<std::string_view, 6U>>
 {
     auto fields = std::array<std::string_view, 6U>{};
@@ -105,11 +134,11 @@ namespace
 
 [[nodiscard]] auto parse_bool_flag(std::string_view value) noexcept -> std::optional<bool>
 {
-    if (value == "canonical")
+    if (value == "canonical" || value == "true" || value == "clean")
     {
         return true;
     }
-    if (value == "uncanonical")
+    if (value == "uncanonical" || value == "false" || value == "dirty")
     {
         return false;
     }
@@ -143,6 +172,27 @@ namespace
     };
 }
 
+[[nodiscard]] auto path_suffix(std::string_view target, std::string_view prefix) noexcept -> std::string_view
+{
+    return starts_with(target, prefix) ? target.substr(prefix.size()) : std::string_view{};
+}
+
+[[nodiscard]] auto local_media_download_parts(std::string_view suffix) -> std::optional<std::array<std::string_view, 2U>>
+{
+    auto const separator = suffix.find('/');
+    if (separator == std::string_view::npos || separator == 0U || separator + 1U >= suffix.size())
+    {
+        return std::nullopt;
+    }
+    auto const server_name = suffix.substr(0U, separator);
+    auto const media_id = suffix.substr(separator + 1U);
+    if (media_id.find('/') != std::string_view::npos)
+    {
+        return std::nullopt;
+    }
+    return std::array<std::string_view, 2U>{server_name, media_id};
+}
+
 } // namespace
 
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request) -> LocalHttpResponse
@@ -154,6 +204,11 @@ namespace
     if (request.method == "GET" && request.target == "/_merovingian/admin/health")
     {
         return authenticated_admin_user(runtime, request.access_token).has_value() ? response(200U, admin_health_summary(runtime))
+                                                                 : response(401U, "admin authentication required");
+    }
+    if (request.method == "GET" && request.target == "/_merovingian/admin/media/metrics")
+    {
+        return authenticated_admin_user(runtime, request.access_token).has_value() ? response(200U, media_metrics_summary(runtime))
                                                                  : response(401U, "admin authentication required");
     }
     if (starts_with(request.target, "/_matrix/federation/"))
@@ -182,6 +237,53 @@ namespace
     {
         auto result = logout_local_user(runtime, request.access_token);
         return result.ok ? response(200U, "logged out") : response(401U, result.reason);
+    }
+    if (request.method == "POST" && request.target == "/_matrix/media/v3/upload")
+    {
+        auto const fields = split_pipe_4(request.body);
+        if (!fields.has_value())
+        {
+            return response(400U, "upload body must be declared_mime|sniffed_mime|scanner_clean|bytes");
+        }
+        auto const scanner_clean = parse_bool_flag((*fields)[2]);
+        if (!scanner_clean.has_value())
+        {
+            return response(400U, "scanner_clean must be clean or dirty");
+        }
+        auto const result = upload_local_media(runtime, request.access_token, (*fields)[0], (*fields)[1], *scanner_clean, (*fields)[3]);
+        return result.ok ? response(200U, result.value) : response(400U, result.reason);
+    }
+    auto constexpr download_prefix = std::string_view{"/_matrix/media/v3/download/"};
+    if (request.method == "GET" && starts_with(request.target, download_prefix))
+    {
+        auto const parts = local_media_download_parts(path_suffix(request.target, download_prefix));
+        if (!parts.has_value())
+        {
+            return response(404U, "route not found");
+        }
+        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1]);
+        return result.ok ? response(200U, result.value) : response(404U, result.reason);
+    }
+    auto constexpr quarantine_prefix = std::string_view{"/_merovingian/admin/media/quarantine/"};
+    if (request.method == "POST" && starts_with(request.target, quarantine_prefix))
+    {
+        auto const media_id = path_suffix(request.target, quarantine_prefix);
+        auto const result = admin_quarantine_local_media(runtime, request.access_token, media_id, request.body);
+        return result.ok ? response(200U, result.value) : response(400U, result.reason);
+    }
+    auto constexpr release_prefix = std::string_view{"/_merovingian/admin/media/release/"};
+    if (request.method == "POST" && starts_with(request.target, release_prefix))
+    {
+        auto const media_id = path_suffix(request.target, release_prefix);
+        auto const result = admin_release_local_media(runtime, request.access_token, media_id);
+        return result.ok ? response(200U, result.value) : response(400U, result.reason);
+    }
+    auto constexpr remove_prefix = std::string_view{"/_merovingian/admin/media/remove/"};
+    if (request.method == "POST" && starts_with(request.target, remove_prefix))
+    {
+        auto const media_id = path_suffix(request.target, remove_prefix);
+        auto const result = admin_remove_local_media(runtime, request.access_token, media_id, request.body);
+        return result.ok ? response(200U, result.value) : response(400U, result.reason);
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/createRoom")
     {
