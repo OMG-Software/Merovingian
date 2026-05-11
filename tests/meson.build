@@ -39,6 +39,7 @@ if get_option('build_tests')
       'unit/test_database_persistence.cpp',
       'unit/test_event_authorization.cpp',
       'unit/test_events.cpp',
+      'unit/test_federation_inbound_request.cpp',
       'unit/test_federation_security.cpp',
       'unit/test_federation_transactions.cpp',
       'unit/test_file_descriptor.cpp',
@@ -77,6 +78,7 @@ if get_option('build_tests')
     sources: files(
       'integration/test_main.cpp',
       'integration/test_client_server_mvp_flow.cpp',
+      'integration/test_federation_inbound_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_media_repository_security.cpp',
       'integration/test_observability_flow.cpp',
