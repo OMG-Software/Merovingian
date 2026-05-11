@@ -209,7 +209,7 @@ auto upload_local_media(
     if (decision.disposition == MediaDisposition::reject)
     {
         ++repository.metrics.uploads_rejected;
-        return {false, 413U, {}, {}, {}, "fnv1a64", digest, false, false, decision.reason};
+        return {false, 413U, {}, {}, {}, size_bytes, "fnv1a64", digest, false, false, decision.reason};
     }
 
     auto deduplicated = false;
@@ -260,6 +260,7 @@ auto upload_local_media(
         media_id,
         "mxc://" + std::string{server_name} + "/" + media_id,
         content_type,
+        size_bytes,
         "fnv1a64",
         digest,
         deduplicated,
