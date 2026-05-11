@@ -1,5 +1,6 @@
 smoke_test = find_program('sh')
 server_executable = meson.project_build_root() / 'src' / 'merovingian-server'
+setup_dev_env_script = meson.project_source_root() / 'scripts' / 'setup-dev-env.sh'
 example_config = meson.project_source_root() / 'config' / 'merovingian.conf.example'
 valid_config = meson.project_build_root() / 'valid-smoke.conf'
 check_config = meson.project_build_root() / 'check-smoke.conf'
@@ -33,11 +34,80 @@ test(
 )
 
 test(
+  'setup-dev-env-help-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'sh ' + setup_dev_env_script + ' --help 2>&1 | grep -q "Usage:"',
+  ],
+)
+
+test(
+  'setup-dev-env-linux-dry-run-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'sh '
+      + setup_dev_env_script
+      + ' --dry-run --no-configure 2>&1 | grep -q "apt-get install -y"',
+  ],
+  env: {
+    'MEROVINGIAN_SETUP_OS': 'Linux',
+    'MEROVINGIAN_SETUP_PACKAGE_MANAGER': 'apt',
+  },
+)
+
+test(
+  'setup-dev-env-freebsd-dry-run-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'sh '
+      + setup_dev_env_script
+      + ' --dry-run --no-configure 2>&1 | grep -q "pkg install -y"',
+  ],
+  env: {
+    'MEROVINGIAN_SETUP_OS': 'FreeBSD',
+    'MEROVINGIAN_SETUP_PACKAGE_MANAGER': 'pkg',
+  },
+)
+
+test(
+  'setup-dev-env-openbsd-dry-run-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'sh '
+      + setup_dev_env_script
+      + ' --dry-run --no-configure 2>&1 | grep -q "pkg_add"',
+  ],
+  env: {
+    'MEROVINGIAN_SETUP_OS': 'OpenBSD',
+    'MEROVINGIAN_SETUP_PACKAGE_MANAGER': 'pkg_add',
+  },
+)
+
+test(
+  'setup-dev-env-netbsd-dry-run-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'sh '
+      + setup_dev_env_script
+      + ' --dry-run --no-configure 2>&1 | grep -q "pkgin -y install"',
+  ],
+  env: {
+    'MEROVINGIAN_SETUP_OS': 'NetBSD',
+    'MEROVINGIAN_SETUP_PACKAGE_MANAGER': 'pkgin',
+  },
+)
+
+test(
   'server-version-smoke-test',
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --version 2>&1 | grep -q "merovingian-server 0.1.0"',
+    server_executable + ' --version 2>&1 | grep -q "merovingian-server 0.1.1"',
   ],
 )
 
