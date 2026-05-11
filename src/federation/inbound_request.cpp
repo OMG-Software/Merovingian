@@ -253,7 +253,8 @@ auto handle_inbound_federation_request(
     if (!trust.accepted)
     {
         audit_federation(runtime, "federation.rejected", request.origin, request.target, trust.reason);
-        return {trust.apply_backoff ? 429U : 403U, trust.reason};
+        auto const status = static_cast<std::uint16_t>(trust.apply_backoff ? 429U : 403U);
+        return {status, trust.reason};
     }
     auto const request_signature = verify_signed_federation_request(request, remote->signing_key, clock_skew_seconds);
     if (!request_signature.accepted)
