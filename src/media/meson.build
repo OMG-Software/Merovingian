@@ -1,4 +1,5 @@
 media_sources = files(
+  'repository.cpp',
   'runtime_media.cpp',
   'security.cpp',
 )
