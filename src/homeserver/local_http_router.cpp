@@ -3,6 +3,7 @@
 #include <merovingian/homeserver/vertical_slice.hpp>
 
 #include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -49,6 +50,78 @@ namespace
     return std::array<std::string_view, 3U>{body.substr(0U, first), body.substr(first + 1U, second - first - 1U), body.substr(second + 1U)};
 }
 
+[[nodiscard]] auto split_pipe_6(std::string_view body) -> std::optional<std::array<std::string_view, 6U>>
+{
+    auto fields = std::array<std::string_view, 6U>{};
+    auto remaining = body;
+    for (auto index = std::size_t{0U}; index < fields.size(); ++index)
+    {
+        auto const separator = remaining.find('|');
+        if (index + 1U == fields.size())
+        {
+            fields[index] = remaining;
+            break;
+        }
+        if (separator == std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        fields[index] = remaining.substr(0U, separator);
+        remaining = remaining.substr(separator + 1U);
+    }
+    for (auto const field : fields)
+    {
+        if (field.empty())
+        {
+            return std::nullopt;
+        }
+    }
+    return fields;
+}
+
+[[nodiscard]] auto parse_u64(std::string_view value) noexcept -> std::optional<std::uint64_t>
+{
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+    auto result = std::uint64_t{0U};
+    for (auto const character : value)
+    {
+        if (character < '0' || character > '9')
+        {
+            return std::nullopt;
+        }
+        result = (result * 10U) + static_cast<std::uint64_t>(character - '0');
+    }
+    return result;
+}
+
+[[nodiscard]] auto parse_signed_federation_request(LocalHttpRequest const& request) -> std::optional<federation::SignedFederationRequest>
+{
+    auto const fields = split_pipe_6(request.access_token);
+    if (!fields.has_value())
+    {
+        return std::nullopt;
+    }
+    auto const origin_ts = parse_u64((*fields)[3]);
+    auto const now_ts = parse_u64((*fields)[4]);
+    if (!origin_ts.has_value() || !now_ts.has_value())
+    {
+        return std::nullopt;
+    }
+    return federation::SignedFederationRequest{
+        request.method,
+        request.target,
+        std::string{(*fields)[0]},
+        std::string{(*fields)[1]},
+        std::string{(*fields)[2]},
+        *origin_ts,
+        *now_ts,
+        request.body,
+    };
+}
+
 } // namespace
 
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request) -> LocalHttpResponse
@@ -61,6 +134,16 @@ namespace
     {
         return authenticated_admin_user(runtime, request.access_token).has_value() ? response(200U, admin_health_summary(runtime))
                                                                  : response(401U, "admin authentication required");
+    }
+    if (starts_with(request.target, "/_matrix/federation/"))
+    {
+        auto signed_request = parse_signed_federation_request(request);
+        if (!signed_request.has_value())
+        {
+            return response(401U, "malformed federation authorization");
+        }
+        auto const federation_response = federation::handle_inbound_federation_request(runtime.federation, *signed_request);
+        return response(federation_response.status, federation_response.body);
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/register")
     {
