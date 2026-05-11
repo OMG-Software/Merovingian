@@ -4,6 +4,7 @@
 
 #include <array>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -92,9 +93,27 @@ namespace
         {
             return std::nullopt;
         }
-        result = (result * 10U) + static_cast<std::uint64_t>(character - '0');
+        auto const digit = static_cast<std::uint64_t>(character - '0');
+        if (result > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U)
+        {
+            return std::nullopt;
+        }
+        result = (result * 10U) + digit;
     }
     return result;
+}
+
+[[nodiscard]] auto parse_bool_flag(std::string_view value) noexcept -> std::optional<bool>
+{
+    if (value == "canonical")
+    {
+        return true;
+    }
+    if (value == "uncanonical")
+    {
+        return false;
+    }
+    return std::nullopt;
 }
 
 [[nodiscard]] auto parse_signed_federation_request(LocalHttpRequest const& request) -> std::optional<federation::SignedFederationRequest>
@@ -105,8 +124,9 @@ namespace
         return std::nullopt;
     }
     auto const origin_ts = parse_u64((*fields)[3]);
-    auto const now_ts = parse_u64((*fields)[4]);
-    if (!origin_ts.has_value() || !now_ts.has_value())
+    auto const received_ts = parse_u64((*fields)[4]);
+    auto const canonical_json_verified = parse_bool_flag((*fields)[5]);
+    if (!origin_ts.has_value() || !received_ts.has_value() || !canonical_json_verified.has_value())
     {
         return std::nullopt;
     }
@@ -117,7 +137,8 @@ namespace
         std::string{(*fields)[1]},
         std::string{(*fields)[2]},
         *origin_ts,
-        *now_ts,
+        *received_ts,
+        *canonical_json_verified,
         request.body,
     };
 }
