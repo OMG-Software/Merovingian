@@ -40,6 +40,7 @@ struct SignedFederationRequest final
     std::string signature{};
     std::uint64_t origin_server_ts{0U};
     std::uint64_t now_ts{0U};
+    bool canonical_json_verified{false};
     std::string body{};
 };
 
