@@ -39,6 +39,7 @@ if get_option('build_tests')
       'unit/test_database_persistence.cpp',
       'unit/test_event_authorization.cpp',
       'unit/test_events.cpp',
+      'unit/test_federation_inbound_request.cpp',
       'unit/test_federation_security.cpp',
       'unit/test_federation_transactions.cpp',
       'unit/test_file_descriptor.cpp',
