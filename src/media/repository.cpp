@@ -342,7 +342,7 @@ auto upload_local_media(
 
     return {
         true,
-        decision.disposition == MediaDisposition::quarantine ? 202U : 200U,
+        static_cast<std::uint16_t>(decision.disposition == MediaDisposition::quarantine ? 202U : 200U),
         media_id,
         "mxc://" + std::string{server_name} + "/" + media_id,
         content_type,
