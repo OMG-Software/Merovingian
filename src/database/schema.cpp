@@ -10,7 +10,7 @@ namespace merovingian::database
 namespace
 {
 
-constexpr auto schema_version = std::uint32_t{1U};
+constexpr auto schema_version = std::uint32_t{2U};
 
 constexpr auto core_tables = std::array{
     SchemaTableDefinition{"schema_migrations", "version TEXT PRIMARY KEY, name TEXT NOT NULL, direction TEXT NOT NULL"},
@@ -38,7 +38,7 @@ constexpr auto core_tables = std::array{
     SchemaTableDefinition{"fallback_keys", "user_id TEXT NOT NULL, device_id TEXT NOT NULL, key_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, device_id, key_id)"},
     SchemaTableDefinition{"cross_signing_keys", "user_id TEXT NOT NULL, key_type TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, key_type)"},
     SchemaTableDefinition{"key_backups", "user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version)"},
-    SchemaTableDefinition{"media", "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes TEXT NOT NULL, quarantined TEXT NOT NULL"},
+    SchemaTableDefinition{"media", "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes TEXT NOT NULL, hash_algorithm TEXT NOT NULL, digest TEXT NOT NULL, quarantined TEXT NOT NULL, removed TEXT NOT NULL"},
     SchemaTableDefinition{"remote_media", "server_name TEXT NOT NULL, media_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes TEXT NOT NULL, quarantined TEXT NOT NULL, PRIMARY KEY (server_name, media_id)"},
     SchemaTableDefinition{"federation_destinations", "server_name TEXT PRIMARY KEY, state TEXT NOT NULL, retry_after_ts TEXT NOT NULL"},
     SchemaTableDefinition{"federation_transactions", "transaction_id TEXT PRIMARY KEY, server_name TEXT NOT NULL, json TEXT NOT NULL"},

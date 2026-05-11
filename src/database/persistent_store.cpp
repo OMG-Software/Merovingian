@@ -21,6 +21,11 @@ namespace
     return token_hash.starts_with("token-hash:") || token_hash.starts_with("token-hash:v1:");
 }
 
+[[nodiscard]] auto media_hash_is_valid(std::string_view hash_algorithm, std::string_view digest) noexcept -> bool
+{
+    return !hash_algorithm.empty() && !digest.empty() && digest.find('/') == std::string_view::npos;
+}
+
 [[nodiscard]] auto is_json_space(char value) noexcept -> bool
 {
     return value == ' ' || value == '\n' || value == '\r' || value == '\t';
@@ -180,6 +185,13 @@ auto skip_json_space(std::string_view input, std::size_t& cursor) noexcept -> vo
             return {false, "access token is not stored as a hash"};
         }
     }
+    for (auto const& media : store.local_media)
+    {
+        if (!media_hash_is_valid(media.hash_algorithm, media.digest) || media.size_bytes == 0U)
+        {
+            return {false, "local media metadata is incomplete"};
+        }
+    }
     return {true, {}};
 }
 
@@ -274,6 +286,52 @@ auto skip_json_space(std::string_view input, std::size_t& cursor) noexcept -> vo
     }
     store.prepared_statements.push_back(record_statement("insert_state", "INSERT INTO current_state VALUES ($1, $2, $3, $4)", {{state.room_id, false}, {state.event_type, false}, {state.state_key, false}, {state.event_id, false}}));
     store.state.push_back(std::move(state));
+    return true;
+}
+
+[[nodiscard]] auto store_local_media(PersistentStore& store, PersistentLocalMedia media) -> bool
+{
+    if (!media_hash_is_valid(media.hash_algorithm, media.digest) || media.size_bytes == 0U)
+    {
+        return false;
+    }
+    auto const duplicate = std::ranges::any_of(store.local_media, [&media](PersistentLocalMedia const& existing) { return existing.media_id == media.media_id; });
+    if (duplicate)
+    {
+        return false;
+    }
+    store.prepared_statements.push_back(record_statement("insert_media", "INSERT INTO media VALUES ($1, $2, $3, $4, $5, $6, $7, $8)", {{media.media_id, false}, {media.owner_user_id, false}, {media.content_type, false}, {std::to_string(media.size_bytes), false}, {media.hash_algorithm, false}, {media.digest, false}, {media.quarantined ? "true" : "false", false}, {media.removed ? "true" : "false", false}}));
+    store.local_media.push_back(std::move(media));
+    return true;
+}
+
+[[nodiscard]] auto update_local_media_state(
+    PersistentStore& store,
+    std::string_view media_id,
+    bool quarantined,
+    bool removed
+) -> bool
+{
+    auto const existing = std::ranges::find_if(store.local_media, [media_id](PersistentLocalMedia const& media) { return media.media_id == media_id; });
+    if (existing == store.local_media.end())
+    {
+        return false;
+    }
+    existing->quarantined = quarantined;
+    existing->removed = removed;
+    store.prepared_statements.push_back(record_statement("update_media_state", "UPDATE media SET quarantined = $2, removed = $3 WHERE media_id = $1", {{std::string{media_id}, false}, {quarantined ? "true" : "false", false}, {removed ? "true" : "false", false}}));
+    return true;
+}
+
+[[nodiscard]] auto store_remote_media(PersistentStore& store, PersistentRemoteMedia media) -> bool
+{
+    auto const duplicate = std::ranges::any_of(store.remote_media, [&media](PersistentRemoteMedia const& existing) { return existing.server_name == media.server_name && existing.media_id == media.media_id; });
+    if (duplicate)
+    {
+        return false;
+    }
+    store.prepared_statements.push_back(record_statement("insert_remote_media", "INSERT INTO remote_media VALUES ($1, $2, $3, $4, $5)", {{media.server_name, false}, {media.media_id, false}, {media.content_type, false}, {std::to_string(media.size_bytes), false}, {media.quarantined ? "true" : "false", false}}));
+    store.remote_media.push_back(std::move(media));
     return true;
 }
 

@@ -4,6 +4,7 @@
 #include <merovingian/config/config.hpp>
 #include <merovingian/database/persistent_store.hpp>
 #include <merovingian/federation/inbound_request.hpp>
+#include <merovingian/media/repository.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/observability/observability.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
@@ -63,6 +64,7 @@ struct HomeserverRuntime final
     net::RuntimeListeners listeners{};
     LocalDatabase database{};
     federation::FederationRuntimeState federation{};
+    media::LocalMediaRepository media_repository{};
     platform::HardeningSelfCheck hardening{};
     bool started{false};
 };
@@ -77,6 +79,7 @@ struct RuntimeStartResult final
 struct OperationResult final
 {
     bool ok{false};
+    std::uint16_t status{500U};
     std::string value{};
     std::string reason{};
 };
@@ -96,47 +99,60 @@ struct LocalHttpResponse final
 };
 
 [[nodiscard]] auto bootstrap_local_database(config::Config const& config) -> LocalDatabase;
-[[nodiscard]] auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state) -> LocalDatabase;
-[[nodiscard]] auto database_has_table(LocalDatabase const& database, std::string_view table_name) noexcept -> bool;
+[[nodiscard]] auto bootstrap_local_database(config::Config const& config,
+                                            database::SchemaState existing_state) -> LocalDatabase;
+[[nodiscard]] auto database_has_table(LocalDatabase const& database,
+                                      std::string_view table_name) noexcept -> bool;
 [[nodiscard]] auto start_runtime(config::Config const& config) -> RuntimeStartResult;
-[[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state) -> RuntimeStartResult;
-[[nodiscard]] auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthCheckSnapshot;
+[[nodiscard]] auto start_runtime(config::Config const& config, database::SchemaState existing_state)
+    -> RuntimeStartResult;
+[[nodiscard]] auto admin_health(HomeserverRuntime const& runtime)
+    -> observability::HealthCheckSnapshot;
 [[nodiscard]] auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string;
-[[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
-    -> LocalHttpResponse;
-[[nodiscard]] auto register_local_user(
-    HomeserverRuntime& runtime,
-    std::string_view localpart,
-    std::string_view password
-) -> OperationResult;
-[[nodiscard]] auto login_local_user(
-    HomeserverRuntime& runtime,
-    std::string_view user_id,
-    std::string_view password,
-    std::string_view device_id
-) -> OperationResult;
-[[nodiscard]] auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token)
+[[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime,
+                                             LocalHttpRequest const& request) -> LocalHttpResponse;
+[[nodiscard]] auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
+                                       std::string_view password) -> OperationResult;
+[[nodiscard]] auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id,
+                                    std::string_view password, std::string_view device_id)
+    -> OperationResult;
+[[nodiscard]] auto authenticated_user(HomeserverRuntime const& runtime,
+                                      std::string_view access_token) -> std::optional<std::string>;
+[[nodiscard]] auto authenticated_admin_user(HomeserverRuntime const& runtime,
+                                            std::string_view access_token)
     -> std::optional<std::string>;
-[[nodiscard]] auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token)
-    -> std::optional<std::string>;
-[[nodiscard]] auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
-[[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
-[[nodiscard]] auto join_room(
-    HomeserverRuntime& runtime,
-    std::string_view access_token,
-    std::string_view room_id
-) -> OperationResult;
-[[nodiscard]] auto send_event(
-    HomeserverRuntime& runtime,
-    std::string_view access_token,
-    std::string_view room_id,
-    std::string_view event_json
-) -> OperationResult;
-[[nodiscard]] auto fetch_room_state(
-    HomeserverRuntime const& runtime,
-    std::string_view access_token,
-    std::string_view room_id
-) -> OperationResult;
+[[nodiscard]] auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token)
+    -> OperationResult;
+[[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token)
+    -> OperationResult;
+[[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token,
+                             std::string_view room_id) -> OperationResult;
+[[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token,
+                              std::string_view room_id, std::string_view event_json)
+    -> OperationResult;
+[[nodiscard]] auto fetch_room_state(HomeserverRuntime const& runtime, std::string_view access_token,
+                                    std::string_view room_id) -> OperationResult;
+[[nodiscard]] auto upload_local_media(HomeserverRuntime& runtime, std::string_view access_token,
+                                      std::string_view declared_mime_type,
+                                      std::string_view sniffed_mime_type, bool scanner_clean,
+                                      std::string_view bytes) -> OperationResult;
+[[nodiscard]] auto download_local_media(HomeserverRuntime& runtime, std::string_view server_name,
+                                        std::string_view media_id) -> OperationResult;
+[[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime,
+                                                std::string_view access_token,
+                                                std::string_view media_id, std::string_view reason)
+    -> OperationResult;
+[[nodiscard]] auto admin_release_local_media(HomeserverRuntime& runtime,
+                                             std::string_view access_token,
+                                             std::string_view media_id) -> OperationResult;
+[[nodiscard]] auto admin_remove_local_media(HomeserverRuntime& runtime,
+                                            std::string_view access_token,
+                                            std::string_view media_id, std::string_view reason)
+    -> OperationResult;
+[[nodiscard]] auto remote_media_fetch_disabled(HomeserverRuntime& runtime,
+                                               std::string_view origin_server,
+                                               std::string_view media_id) -> OperationResult;
+[[nodiscard]] auto media_metrics_summary(HomeserverRuntime const& runtime) -> std::string;
 [[nodiscard]] auto audit_event_count(HomeserverRuntime const& runtime) noexcept -> std::size_t;
 [[nodiscard]] auto run_local_vertical_slice(config::Config const& config) -> OperationResult;
 

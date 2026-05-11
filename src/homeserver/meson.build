@@ -4,6 +4,7 @@ homeserver_sources = files(
   'local_demo_flow.cpp',
   'local_http_router.cpp',
   'local_services.cpp',
+  'media_service.cpp',
   'room_service.cpp',
   'runtime.cpp',
 )
