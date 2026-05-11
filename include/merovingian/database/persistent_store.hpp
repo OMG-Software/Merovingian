@@ -5,6 +5,7 @@
 #include <merovingian/database/statement.hpp>
 
 #include <cstddef>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -64,6 +65,27 @@ struct PersistentStateEvent final
     std::string event_id{};
 };
 
+struct PersistentLocalMedia final
+{
+    std::string media_id{};
+    std::string owner_user_id{};
+    std::string content_type{};
+    std::uint64_t size_bytes{0U};
+    std::string hash_algorithm{};
+    std::string digest{};
+    bool quarantined{false};
+    bool removed{false};
+};
+
+struct PersistentRemoteMedia final
+{
+    std::string server_name{};
+    std::string media_id{};
+    std::string content_type{};
+    std::uint64_t size_bytes{0U};
+    bool quarantined{false};
+};
+
 struct PersistentAuditEvent final
 {
     std::string category{};
@@ -91,6 +113,8 @@ struct PersistentStore final
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentEvent> events{};
     std::vector<PersistentStateEvent> state{};
+    std::vector<PersistentLocalMedia> local_media{};
+    std::vector<PersistentRemoteMedia> remote_media{};
     std::vector<PersistentAuditEvent> audit_log{};
     std::vector<PersistentAdminAction> admin_actions{};
     std::vector<PreparedStatement> prepared_statements{};
@@ -113,6 +137,14 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
+[[nodiscard]] auto store_local_media(PersistentStore& store, PersistentLocalMedia media) -> bool;
+[[nodiscard]] auto update_local_media_state(
+    PersistentStore& store,
+    std::string_view media_id,
+    bool quarantined,
+    bool removed
+) -> bool;
+[[nodiscard]] auto store_remote_media(PersistentStore& store, PersistentRemoteMedia media) -> bool;
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool;
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool;
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool;
