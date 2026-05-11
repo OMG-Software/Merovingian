@@ -3,6 +3,7 @@
 
 #include <merovingian/config/config.hpp>
 #include <merovingian/database/persistent_store.hpp>
+#include <merovingian/federation/inbound_request.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/observability/observability.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
@@ -61,6 +62,7 @@ struct HomeserverRuntime final
     config::Config config{};
     net::RuntimeListeners listeners{};
     LocalDatabase database{};
+    federation::FederationRuntimeState federation{};
     platform::HardeningSelfCheck hardening{};
     bool started{false};
 };
