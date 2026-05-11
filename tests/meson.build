@@ -78,6 +78,7 @@ if get_option('build_tests')
     sources: files(
       'integration/test_main.cpp',
       'integration/test_client_server_mvp_flow.cpp',
+      'integration/test_federation_inbound_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_media_repository_security.cpp',
       'integration/test_observability_flow.cpp',
