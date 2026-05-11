@@ -4,21 +4,18 @@
 #include <merovingian/homeserver/vertical_slice.hpp>
 #include <merovingian/observability/observability.hpp>
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
 namespace merovingian::homeserver
 {
 
-[[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason = {}) -> OperationResult;
+[[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason = {},
+                                         std::uint16_t status = 0U) -> OperationResult;
 
-auto append_local_audit(
-    LocalDatabase& database,
-    observability::AuditCategory category,
-    std::string_view event_type,
-    std::string_view actor,
-    std::string_view target,
-    std::string_view reason
-) -> void;
+auto append_local_audit(LocalDatabase& database, observability::AuditCategory category,
+                        std::string_view event_type, std::string_view actor,
+                        std::string_view target, std::string_view reason) -> void;
 
 } // namespace merovingian::homeserver

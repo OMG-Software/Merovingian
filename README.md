@@ -88,6 +88,7 @@ See:
 
 - `config/merovingian.conf.example`
 - `docs/configuration.md`
+- `docs/media-repository.md`
 
 ## Developer environment
 

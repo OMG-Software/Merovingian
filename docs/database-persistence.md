@@ -12,8 +12,9 @@ Milestone 8 introduces the project-owned database persistence boundary needed be
 - Database executor interface.
 - Validated execution helper that rejects invalid statements before they reach an executor.
 - Migration step and migration plan models.
-- Forward-only contiguous migration-plan validation.
+- Contiguous upgrade and explicit downgrade migration-plan validation.
 - Initial schema table inventory covering the Matrix storage areas from the project plan.
+- Media metadata schema migration from version `1` to version `2`.
 - Unit coverage for statement validation, executor gating, redaction, migration planning, and schema inventory.
 
 ## Security posture
@@ -26,8 +27,9 @@ The boundary provides these guarantees:
 - Invalid statement names fail before reaching the executor.
 - Obvious multi-statement/comment-shaped SQL is rejected at the boundary.
 - Sensitive parameter values can be summarized without leaking the value.
-- Migration plans are forward-only and contiguous.
+- Migration plans are contiguous and direction-aware.
 - Core table inventory is explicit and test-covered.
+- Media rows include hash algorithm, digest, quarantine state, and removal state before runtime media writes are accepted.
 
 ## Deliberately not included
 
@@ -39,7 +41,7 @@ These are deferred to later milestones:
 - Transaction handling.
 - Runtime/migration role separation.
 - Physical SQL migration files.
-- Database-backed users, devices, tokens, rooms, events, media, federation, policy, or audit storage.
+- Live PostgreSQL-backed users, devices, tokens, rooms, events, media, federation, policy, or audit storage.
 - Integration tests against a running PostgreSQL instance.
 
 ## Next starting points
