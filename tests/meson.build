@@ -51,6 +51,7 @@ if get_option('build_tests')
       'unit/test_http_request.cpp',
       'unit/test_http_request_limits.cpp',
       'unit/test_key_api.cpp',
+      'unit/test_media_repository.cpp',
       'unit/test_media_security.cpp',
       'unit/test_not_null.cpp',
       'unit/test_observability.cpp',
