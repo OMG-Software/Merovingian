@@ -6,6 +6,7 @@
 
 #include <merovingian/database/schema.hpp>
 #include <merovingian/federation/runtime_federation.hpp>
+#include <merovingian/media/runtime_media.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
 
 #include <algorithm>
@@ -68,12 +69,14 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
         || !database_has_table(runtime.database, "devices") || !database_has_table(runtime.database, "access_tokens")
         || !database_has_table(runtime.database, "rooms") || !database_has_table(runtime.database, "membership")
         || !database_has_table(runtime.database, "events") || !database_has_table(runtime.database, "current_state")
+        || !database_has_table(runtime.database, "media") || !database_has_table(runtime.database, "remote_media")
         || !database_has_table(runtime.database, "audit_log") || !database_has_table(runtime.database, "admin_actions"))
     {
         return {false, "database schema validation failed", {}};
     }
 
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
+    runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     runtime.hardening = platform::run_startup_hardening_self_check();
     append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver", "startup");
     runtime.started = true;
@@ -85,11 +88,13 @@ auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthChec
     auto snapshot = observability::HealthCheckSnapshot{};
     auto const federation_detail = runtime.federation.config.enabled ? federation::federation_runtime_summary(runtime.federation)
                                                                     : std::string{"federation disabled by configuration"};
+    auto const media_detail = media::media_repository_summary(runtime.media_repository);
     snapshot.components = {
         {"runtime", runtime.started ? observability::HealthStatus::ok : observability::HealthStatus::failed, "started"},
         {"listeners", runtime.listeners.empty() ? observability::HealthStatus::failed : observability::HealthStatus::ok, "configured"},
         {"database", runtime.database.schema_validated ? observability::HealthStatus::ok : observability::HealthStatus::failed, "schema_validated"},
         {"federation", observability::HealthStatus::ok, federation_detail},
+        {"media", runtime.media_repository.config.max_upload_bytes > 0U ? observability::HealthStatus::ok : observability::HealthStatus::failed, media_detail},
         {"hardening", runtime.hardening.count() > 0U ? observability::HealthStatus::ok : observability::HealthStatus::degraded, "self_check"},
     };
 
