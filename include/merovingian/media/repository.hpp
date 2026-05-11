@@ -5,7 +5,6 @@
 #include <merovingian/observability/observability.hpp>
 
 #include <cstdint>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -84,6 +83,7 @@ struct LocalMediaUploadResult final
     std::string media_id{};
     std::string content_uri{};
     std::string content_type{};
+    std::uint64_t size_bytes{0U};
     std::string hash_algorithm{};
     std::string digest{};
     bool deduplicated{false};
