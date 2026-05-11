@@ -83,11 +83,13 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
 auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthCheckSnapshot
 {
     auto snapshot = observability::HealthCheckSnapshot{};
+    auto const federation_detail = runtime.federation.config.enabled ? federation::federation_runtime_summary(runtime.federation)
+                                                                    : std::string{"federation disabled by configuration"};
     snapshot.components = {
         {"runtime", runtime.started ? observability::HealthStatus::ok : observability::HealthStatus::failed, "started"},
         {"listeners", runtime.listeners.empty() ? observability::HealthStatus::failed : observability::HealthStatus::ok, "configured"},
         {"database", runtime.database.schema_validated ? observability::HealthStatus::ok : observability::HealthStatus::failed, "schema_validated"},
-        {"federation", runtime.federation.config.enabled ? observability::HealthStatus::ok : observability::HealthStatus::degraded, federation::federation_runtime_summary(runtime.federation)},
+        {"federation", observability::HealthStatus::ok, federation_detail},
         {"hardening", runtime.hardening.count() > 0U ? observability::HealthStatus::ok : observability::HealthStatus::degraded, "self_check"},
     };
 
