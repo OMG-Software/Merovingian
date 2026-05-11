@@ -10,15 +10,6 @@
 
 namespace merovingian::homeserver
 {
-namespace
-{
-
-[[nodiscard]] auto persistent_audit_category_name(observability::AuditCategory category) -> std::string
-{
-    return category == observability::AuditCategory::auth ? "auth" : "admin";
-}
-
-} // namespace
 
 [[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason) -> OperationResult
 {
@@ -34,12 +25,10 @@ auto append_local_audit(
     std::string_view reason
 ) -> void
 {
-    database.audit_events.push_back(
-        observability::make_audit_event(category, event_type, actor, target, reason, "local-vertical-slice")
-    );
+    database.audit_events.push_back(observability::make_audit_event(category, event_type, actor, target, reason, "local-vertical-slice"));
     (void)database::append_audit_event(
         database.persistent_store,
-        {persistent_audit_category_name(category), std::string{event_type}, std::string{actor}, std::string{target}, std::string{reason}}
+        {observability::audit_category_name(category), std::string{event_type}, std::string{actor}, std::string{target}, std::string{reason}}
     );
 }
 
