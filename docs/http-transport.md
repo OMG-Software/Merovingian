@@ -22,15 +22,20 @@ Implemented now:
 - slowloris progress policy scaffolding
 - per-endpoint rate-limit policy scaffolding
 - HTTP request-head fuzz target
+- TCP listener and accept loop via `merovingian::net::TcpAcceptor`
+- RAII signal-safe shutdown via `merovingian::net::ShutdownSignal` (SIGINT, SIGTERM)
+- per-connection request read, parse, and dispatch into the local HTTP router via `merovingian::homeserver::serve_http`
+- single-mutex serialisation of runtime mutation across acceptors
 
 Not implemented yet:
 
-- socket accept/read/write loop integration
-- TLS provider integration
+- TLS provider integration (TLS listeners fail closed at startup)
 - `llhttp` dependency wrapper
 - request body streaming implementation
-- socket-backed route dispatch
+- per-endpoint rate-limit enforcement
+- runtime application of the slowloris progress policy
 - HTTP/2
+- keep-alive (every connection currently sends `Connection: close`)
 
 ## Request limits
 

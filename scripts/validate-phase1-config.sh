@@ -16,15 +16,15 @@ if [[ ! -x "${server}" ]]; then
   exit 1
 fi
 
-"${server}" >/dev/null
-"${server}" --config "${example_config}" >/dev/null
+"${server}" --dry-run >/dev/null
+"${server}" --dry-run --config "${example_config}" >/dev/null
 
 printf '%s\n' \
   'server.public_baseurl=http://matrix.example.org' \
   'listeners.client.bind=0.0.0.0:8008' \
   > "${invalid_config}"
 
-if "${server}" --config "${invalid_config}" >/dev/null 2>&1; then
+if "${server}" --dry-run --config "${invalid_config}" >/dev/null 2>&1; then
   echo "invalid Phase 1 config was accepted" >&2
   exit 1
 fi

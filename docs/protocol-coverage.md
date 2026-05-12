@@ -14,17 +14,30 @@ fixtures.
 - `covered`: Matrix v1.18 behavior is implemented, tested, and documented.
 - `blocked`: implementation depends on an unfinished lower-level capability.
 
+## Listener wiring
+
+The runtime listener (`merovingian::homeserver::serve_http`) now binds the
+configured client (and federation, when enabled) listeners and dispatches
+parsed HTTP/1.1 requests into `handle_local_http_request`. That means routes
+served by the legacy local router are reachable over a real socket. The
+`client_server` Matrix-JSON adapter (`handle_client_server_request`) is not
+yet wired through the listener, so any endpoint whose Matrix v1.18 wire
+format requires the JSON adapter is still served by the legacy
+pipe-delimited request format when entered through the listener. Advancing
+endpoints below to `covered` requires routing them through the JSON adapter
+as well as adding the listed Matrix v1.18 behavior.
+
 ## Client-server API
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Authentication | `POST /_matrix/client/v3/register` | `partial` | Matrix JSON body is parsed and local registration works in the in-process runtime. Needs UI auth, registration tokens, persistence, and real listener wiring. |
-| Authentication | `POST /_matrix/client/v3/login` | `partial` | Password login works for local users with LibSodium-backed hashes. Needs full Matrix login flows, refresh behavior, persistence, and conformance fixtures. |
-| Authentication | `POST /_matrix/client/v3/logout` | `partial` | Local bearer-token logout works in the in-process runtime. Needs durable token revocation and real listener wiring. |
+| Authentication | `POST /_matrix/client/v3/register` | `partial` | Matrix JSON body is parsed and local registration works in the in-process `client_server` adapter. The TCP listener serves the legacy local router for this route; needs UI auth, registration tokens, persistence, and routing through the JSON adapter. |
+| Authentication | `POST /_matrix/client/v3/login` | `partial` | Password login works for local users with LibSodium-backed hashes via the in-process JSON adapter. Needs full Matrix login flows, refresh behavior, persistence, JSON-adapter routing through the listener, and conformance fixtures. |
+| Authentication | `POST /_matrix/client/v3/logout` | `partial` | Local bearer-token logout works in the in-process JSON adapter. Needs durable token revocation and JSON-adapter routing through the listener. |
 | Authentication | `POST /_matrix/client/v3/logout/all` | `scaffolded` | Route planning exists in the auth boundary. Runtime behavior is not complete. |
 | Authentication | `POST /_matrix/client/v3/refresh` | `scaffolded` | Route and token-hashing plan exist. Refresh-token rotation is not implemented. |
-| Account | `GET /_matrix/client/v3/account/whoami` | `partial` | Local token identity works in the client-server facade. Needs persistence and listener wiring. |
-| Devices | `GET /_matrix/client/v3/devices` | `partial` | In-memory device listing exists. Needs durable device storage and complete device semantics. |
+| Account | `GET /_matrix/client/v3/account/whoami` | `partial` | Local token identity works in the client-server JSON adapter. Needs persistence and JSON-adapter routing through the listener. |
+| Devices | `GET /_matrix/client/v3/devices` | `partial` | In-memory device listing exists in the JSON adapter. Needs durable device storage, complete device semantics, and JSON-adapter routing through the listener. |
 | Devices | `GET /_matrix/client/v3/devices/{deviceId}` | `scaffolded` | Route planning exists. Runtime behavior is incomplete. |
 | Devices | `PUT /_matrix/client/v3/devices/{deviceId}` | `partial` | Display-name update works in the facade. Needs persistence and full validation. |
 | Devices | `DELETE /_matrix/client/v3/devices/{deviceId}` | `scaffolded` | Route planning exists. Runtime behavior is incomplete. |
@@ -53,7 +66,7 @@ fixtures.
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Health | `GET /_merovingian/admin/health` | `partial` | In-process admin health exists. Needs real admin auth model, listener wiring, and deployment checks. |
+| Health | `GET /_merovingian/admin/health` | `partial` | In-process admin health exists and is reachable over the TCP listener via the legacy local router. Needs a real admin auth model, JSON response shape, and deployment checks. |
 | Media moderation | Quarantine, release, remove, metrics | `partial` | Admin media actions exist locally with audit and metrics. Needs durable storage, authorization model, and operator docs. |
 | Trust and safety review | Reports and admin review | `scaffolded` | Policy engine and route matching exist. Runtime integration is incomplete. |
 | Metrics | Exported metrics | `scaffolded` | Internal metric samples exist. No production scrape/export contract yet. |

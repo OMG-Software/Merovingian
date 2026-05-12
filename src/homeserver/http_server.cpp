@@ -1,0 +1,360 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include <merovingian/homeserver/http_server.hpp>
+
+#include <merovingian/core/socket_handle.hpp>
+#include <merovingian/http/request.hpp>
+#include <merovingian/http/request_limits.hpp>
+
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+#include <array>
+#include <cerrno>
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <string_view>
+#include <utility>
+
+namespace merovingian::homeserver
+{
+namespace
+{
+
+// Conservative deadlines for the minimal serve loop. The slowloris policy
+// scaffolding in http/connection_guard.cpp will replace these once
+// connection-level accounting lands.
+constexpr auto receive_timeout_milliseconds = 15000;
+constexpr auto header_terminator = std::string_view{"\r\n\r\n"};
+
+[[nodiscard]] auto header_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
+{
+    auto const headers = static_cast<std::size_t>(limits.max_header_bytes);
+    auto const start = static_cast<std::size_t>(limits.max_start_line_bytes);
+    // Allow for the start line, the header block, and a trailing CRLFCRLF.
+    return start + headers + header_terminator.size();
+}
+
+[[nodiscard]] auto body_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
+{
+    return static_cast<std::size_t>(limits.max_body_bytes);
+}
+
+[[nodiscard]] auto recv_with_timeout(int fd, char* buffer, std::size_t capacity) noexcept -> ssize_t
+{
+    auto entry = pollfd{};
+    entry.fd = fd;
+    entry.events = POLLIN;
+    auto const poll_result = ::poll(&entry, 1U, receive_timeout_milliseconds);
+    if (poll_result <= 0)
+    {
+        return -1;
+    }
+    if ((entry.revents & POLLIN) == 0)
+    {
+        return -1;
+    }
+    return ::recv(fd, buffer, capacity, 0);
+}
+
+[[nodiscard]] auto read_request_head(int fd, std::size_t cap) -> std::pair<std::string, std::size_t>
+{
+    auto buffer = std::string{};
+    auto chunk = std::array<char, 4096U>{};
+    while (true)
+    {
+        if (buffer.size() >= cap)
+        {
+            return {std::move(buffer), std::string::npos};
+        }
+        auto const remaining_capacity = cap - buffer.size();
+        auto const wanted = remaining_capacity < chunk.size() ? remaining_capacity : chunk.size();
+        auto const received = recv_with_timeout(fd, chunk.data(), wanted);
+        if (received <= 0)
+        {
+            return {std::move(buffer), std::string::npos};
+        }
+        buffer.append(chunk.data(), static_cast<std::size_t>(received));
+        auto const terminator = buffer.find(header_terminator);
+        if (terminator != std::string::npos)
+        {
+            return {std::move(buffer), terminator + header_terminator.size()};
+        }
+    }
+}
+
+[[nodiscard]] auto read_remaining_body(int fd, std::string head_tail, std::size_t expected, std::size_t cap) -> std::string
+{
+    if (expected > cap)
+    {
+        return {};
+    }
+    auto body = std::move(head_tail);
+    if (body.size() >= expected)
+    {
+        body.resize(expected);
+        return body;
+    }
+    auto chunk = std::array<char, 4096U>{};
+    while (body.size() < expected)
+    {
+        auto const remaining = expected - body.size();
+        auto const wanted = remaining < chunk.size() ? remaining : chunk.size();
+        auto const received = recv_with_timeout(fd, chunk.data(), wanted);
+        if (received <= 0)
+        {
+            return {};
+        }
+        body.append(chunk.data(), static_cast<std::size_t>(received));
+    }
+    return body;
+}
+
+[[nodiscard]] auto reason_phrase(std::uint16_t status) noexcept -> char const*
+{
+    switch (status)
+    {
+    case 200U:
+        return "OK";
+    case 400U:
+        return "Bad Request";
+    case 401U:
+        return "Unauthorized";
+    case 403U:
+        return "Forbidden";
+    case 404U:
+        return "Not Found";
+    case 408U:
+        return "Request Timeout";
+    case 413U:
+        return "Payload Too Large";
+    case 429U:
+        return "Too Many Requests";
+    case 500U:
+        return "Internal Server Error";
+    case 501U:
+        return "Not Implemented";
+    case 502U:
+        return "Bad Gateway";
+    case 503U:
+        return "Service Unavailable";
+    default:
+        return "OK";
+    }
+}
+
+[[nodiscard]] auto format_response(std::uint16_t status, std::string_view body) -> std::string
+{
+    auto response = std::string{};
+    response.reserve(body.size() + 128U);
+    response.append("HTTP/1.1 ");
+    response.append(std::to_string(status));
+    response.push_back(' ');
+    response.append(reason_phrase(status));
+    response.append("\r\nContent-Length: ");
+    response.append(std::to_string(body.size()));
+    response.append("\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n");
+    response.append(body);
+    return response;
+}
+
+auto send_all(int fd, std::string_view data) noexcept -> bool
+{
+    auto remaining = data;
+    while (!remaining.empty())
+    {
+        // MSG_NOSIGNAL avoids SIGPIPE on early client close (POSIX 2008).
+        auto const sent = ::send(fd, remaining.data(), remaining.size(), MSG_NOSIGNAL);
+        if (sent <= 0)
+        {
+            return false;
+        }
+        remaining.remove_prefix(static_cast<std::size_t>(sent));
+    }
+    return true;
+}
+
+[[nodiscard]] auto find_header_value(http::RequestHead const& head, std::string_view name) -> std::string
+{
+    for (auto const& header : head.headers)
+    {
+        if (header.name.size() != name.size())
+        {
+            continue;
+        }
+        auto match = true;
+        for (auto index = std::size_t{0U}; index < name.size(); ++index)
+        {
+            auto const left = header.name[index];
+            auto const right = name[index];
+            auto const left_lower = (left >= 'A' && left <= 'Z') ? static_cast<char>(left - 'A' + 'a') : left;
+            auto const right_lower = (right >= 'A' && right <= 'Z') ? static_cast<char>(right - 'A' + 'a') : right;
+            if (left_lower != right_lower)
+            {
+                match = false;
+                break;
+            }
+        }
+        if (match)
+        {
+            return header.value;
+        }
+    }
+    return {};
+}
+
+[[nodiscard]] auto extract_bearer_token(std::string_view authorization) -> std::string
+{
+    auto constexpr prefix = std::string_view{"Bearer "};
+    if (authorization.size() <= prefix.size())
+    {
+        return std::string{authorization};
+    }
+    // Compare case-insensitively only on the scheme name.
+    for (auto index = std::size_t{0U}; index < prefix.size(); ++index)
+    {
+        auto const candidate = authorization[index];
+        auto const expected = prefix[index];
+        auto const candidate_lower = (candidate >= 'A' && candidate <= 'Z')
+            ? static_cast<char>(candidate - 'A' + 'a')
+            : candidate;
+        auto const expected_lower = (expected >= 'A' && expected <= 'Z')
+            ? static_cast<char>(expected - 'A' + 'a')
+            : expected;
+        if (candidate_lower != expected_lower)
+        {
+            return std::string{authorization};
+        }
+    }
+    return std::string{authorization.substr(prefix.size())};
+}
+
+[[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body) -> LocalHttpRequest
+{
+    auto request = LocalHttpRequest{};
+    request.method = head.method;
+    request.target = head.target;
+    request.body = std::move(body);
+    auto const authorization = find_header_value(head, "authorization");
+    if (!authorization.empty())
+    {
+        request.access_token = extract_bearer_token(authorization);
+    }
+    return request;
+}
+
+auto write_error_response(int client_fd, std::uint16_t status, std::string_view body) noexcept -> void
+{
+    auto const response = format_response(status, body);
+    static_cast<void>(send_all(client_fd, response));
+}
+
+} // namespace
+
+auto serve_one_http_connection(int client_fd, HomeserverRuntime& runtime, std::mutex& runtime_lock,
+                               HttpServeStats& stats) -> void
+{
+    auto const limits = http::RequestLimits{};
+    auto const head_cap = header_size_cap(limits);
+    auto [buffer, head_end] = read_request_head(client_fd, head_cap);
+
+    if (head_end == std::string::npos)
+    {
+        ++stats.rejected_requests;
+        if (buffer.size() >= head_cap)
+        {
+            write_error_response(client_fd, 413U, "request head too large");
+        }
+        else
+        {
+            write_error_response(client_fd, 408U, "request head incomplete or timed out");
+        }
+        return;
+    }
+
+    auto const parse = http::parse_request_head(std::string_view{buffer.data(), head_end});
+    if (parse.error != http::RequestErrorCode::none)
+    {
+        ++stats.rejected_requests;
+        auto reason = std::string{"request rejected: "};
+        reason.append(http::request_error_name(parse.error));
+        write_error_response(client_fd, http::request_error_status(parse.error), reason);
+        return;
+    }
+
+    auto body_tail = std::string{buffer.substr(head_end)};
+    auto body = std::string{};
+    if (parse.request.has_content_length && parse.request.content_length > 0U)
+    {
+        auto const expected = static_cast<std::size_t>(parse.request.content_length);
+        body = read_remaining_body(client_fd, std::move(body_tail), expected, body_size_cap(limits));
+        if (body.size() != expected)
+        {
+            ++stats.rejected_requests;
+            write_error_response(client_fd, 408U, "request body incomplete or timed out");
+            return;
+        }
+    }
+
+    auto const local_request = build_local_request(parse.request, std::move(body));
+
+    auto response = LocalHttpResponse{};
+    {
+        auto guard = std::lock_guard<std::mutex>{runtime_lock};
+        response = handle_local_http_request(runtime, local_request);
+    }
+
+    auto const formatted = format_response(response.status, response.body);
+    static_cast<void>(send_all(client_fd, formatted));
+    ++stats.completed_requests;
+}
+
+auto serve_http(net::TcpAcceptor& acceptor, HomeserverRuntime& runtime, std::mutex& runtime_lock,
+                net::ShutdownSignal& shutdown, HttpServeStats& stats) -> void
+{
+    while (!shutdown.fired() && acceptor.valid())
+    {
+        auto entries = std::array<pollfd, 2U>{};
+        entries[0].fd = acceptor.fd();
+        entries[0].events = POLLIN;
+        entries[1].fd = shutdown.read_fd();
+        entries[1].events = POLLIN;
+
+        auto const poll_result = ::poll(entries.data(), entries.size(), -1);
+        if (poll_result < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            return;
+        }
+        if ((entries[1].revents & POLLIN) != 0 || shutdown.fired())
+        {
+            return;
+        }
+        if ((entries[0].revents & POLLIN) == 0)
+        {
+            continue;
+        }
+
+        auto raw_client = ::accept(acceptor.fd(), nullptr, nullptr);
+        if (raw_client < 0)
+        {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                continue;
+            }
+            return;
+        }
+        auto client = core::SocketHandle{raw_client};
+        ++stats.accepted_connections;
+        serve_one_http_connection(client.native_handle(), runtime, runtime_lock, stats);
+        static_cast<void>(::shutdown(client.native_handle(), SHUT_RDWR));
+    }
+}
+
+} // namespace merovingian::homeserver

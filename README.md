@@ -80,7 +80,7 @@ Show version:
 ./build/src/merovingian-server --version
 ```
 
-Use compiled secure defaults:
+Use compiled secure defaults (binds the client listener on `127.0.0.1:8008`):
 
 ```bash
 ./build/src/merovingian-server
@@ -92,7 +92,14 @@ Use the checked-in Phase 1 starter config:
 ./build/src/merovingian-server --config config/merovingian.conf.example
 ```
 
-Configuration is validated before startup continues. Parser or validation findings cause startup to fail closed.
+Validate the config and print the startup summary without binding any listener:
+
+```bash
+./build/src/merovingian-server --dry-run
+./build/src/merovingian-server --dry-run --config config/merovingian.conf.example
+```
+
+Configuration is validated before startup continues. Parser or validation findings cause startup to fail closed. TLS listeners (`tls=true`) are refused at startup until the crypto stack is in place. Send `SIGINT` (Ctrl-C) or `SIGTERM` for graceful shutdown.
 
 ## Configuration
 
@@ -128,5 +135,7 @@ See:
 ## Status
 
 Prototype homeserver with packaging and release-readiness gates in progress.
-Do not deploy as a production Matrix homeserver until `docs/01-production-readiness.md`
-has no blocking gates.
+The bootstrap binary now opens TCP listeners and serves HTTP/1.1 requests
+through the local router; TLS and persistent storage are still pending.
+Do not deploy as a production Matrix homeserver until
+`docs/01-production-readiness.md` has no blocking gates.
