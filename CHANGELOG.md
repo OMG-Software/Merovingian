@@ -9,6 +9,9 @@
   does not parse third-party C inline implementation details.
 - Updated the server version smoke test to assert `meson.project_version()`
   instead of a stale literal.
+- Bounded clang-tidy CI to changed translation units with parallel per-file log
+  groups and timeouts; headers remain covered transitively through compile
+  commands.
 
 ## 0.1.16
 

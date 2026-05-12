@@ -24,6 +24,10 @@ system includes so Merovingian's warning-as-error policy applies to project
 code without turning third-party C inline headers into CI blockers. C++ sources
 include a project-owned adapter rather than `yyjson.h` directly.
 
+CI runs clang-tidy on changed C++ translation units with parallel per-file log
+groups and timeouts. Headers are analyzed transitively through the Meson compile
+database instead of being invoked as standalone clang-tidy inputs.
+
 ## Common Usage
 
 Preview the commands without installing packages:
