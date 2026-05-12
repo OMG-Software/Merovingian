@@ -572,15 +572,21 @@ Subject to security review.
 
 ### JSON
 
-Candidates:
+Selected dependency:
 
-- `yyjson`
+- `yyjson` for strict RFC 8259 parsing behind the project-owned canonical JSON
+  boundary.
+
+Previously considered:
+
 - `simdjson`
 - `jansson`
 
 Rules:
 
 - Canonical JSON serialization remains project-owned.
+- Parsed JSON is copied into `merovingian::canonicaljson::Value`; no `yyjson_*`
+  type crosses the module boundary.
 - Duplicate-key rejection must be verified.
 - UTF-8 validation must be verified.
 - Integer bounds must be verified.

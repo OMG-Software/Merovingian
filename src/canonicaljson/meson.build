@@ -9,4 +9,5 @@ canonicaljson_lib = static_library(
   'merovingian-canonicaljson',
   canonicaljson_sources,
   include_directories: inc,
+  dependencies: [yyjson_dep],
 )

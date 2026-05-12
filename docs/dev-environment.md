@@ -15,7 +15,11 @@ The script supports these package managers:
 - Linux: `apt`, `dnf`, `zypper`, `pacman`, `apk`
 - BSD: `pkg`, `pkg_add`, `pkgin`
 
-The package set intentionally avoids Boost. It installs C++ toolchains, Meson, Ninja, pkg-config/pkgconf, Git, Python, libsodium, PostgreSQL client headers, SQLite, TLS headers, Catch2, clang tooling, and cppcheck.
+The package set intentionally avoids Boost. It installs C++ toolchains, Meson,
+Ninja, pkg-config/pkgconf, Git, Python, libsodium, PostgreSQL client headers,
+SQLite, TLS headers, Catch2, clang tooling, and cppcheck. `yyjson` is used for
+strict JSON parsing; Meson uses a pinned wrap fallback when the host does not
+provide a `yyjson` pkg-config module.
 
 ## Common Usage
 

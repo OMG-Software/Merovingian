@@ -1,7 +1,8 @@
 project(
   'the-merovingian',
   'cpp',
-  version: '0.1.14',
+  'c',
+  version: '0.1.16',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -15,6 +16,12 @@ project(
 cpp = meson.get_compiler('cpp')
 thread_dep = dependency('threads')
 libsodium_dep = dependency('libsodium')
+yyjson_dep = dependency(
+  'yyjson',
+  version: '>=0.12.0',
+  required: false,
+  fallback: ['yyjson', 'yyjson_dep'],
+)
 
 warning_flags = [
   '-Wall',

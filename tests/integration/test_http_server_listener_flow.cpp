@@ -1,25 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/config.hpp>
-#include <merovingian/homeserver/http_server.hpp>
-#include <merovingian/homeserver/vertical_slice.hpp>
-#include <merovingian/net/shutdown_signal.hpp>
-#include <merovingian/net/tcp_acceptor.hpp>
-
 #include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include <catch2/catch_test_macros.hpp>
-
 #include <array>
+#include <catch2/catch_test_macros.hpp>
 #include <cstdint>
 #include <cstring>
+#include <merovingian/config/config.hpp>
+#include <merovingian/homeserver/client_server.hpp>
+#include <merovingian/homeserver/http_server.hpp>
+#include <merovingian/net/shutdown_signal.hpp>
+#include <merovingian/net/tcp_acceptor.hpp>
 #include <mutex>
+#include <netinet/in.h>
 #include <string>
 #include <string_view>
+#include <sys/socket.h>
 #include <thread>
+#include <unistd.h>
 
 namespace
 {
@@ -95,7 +92,7 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
     GIVEN("a started runtime and a TCP acceptor bound to an ephemeral loopback port")
     {
         auto const config = registration_enabled_config();
-        auto runtime_result = merovingian::homeserver::start_runtime(config);
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
         REQUIRE(runtime_result.started);
 
         auto acceptor = merovingian::net::TcpAcceptor{};
@@ -111,7 +108,8 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
         WHEN("a client sends an HTTP/1.1 request to an unknown route")
         {
             auto server_thread = std::thread{[&]() {
-                merovingian::homeserver::serve_http(acceptor, runtime, runtime_lock, shutdown, stats);
+                merovingian::homeserver::serve_http(acceptor, runtime, runtime_lock, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::local_router);
             }};
 
             auto const client_fd = connect_loopback(port);
@@ -137,13 +135,63 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
     }
 }
 
+SCENARIO("merovingian-server routes client listener traffic through the Matrix JSON adapter",
+         "[homeserver][http][listener][client-server][integration]")
+{
+    GIVEN("a registration-enabled client-server runtime and a loopback HTTP listener")
+    {
+        auto const config = registration_enabled_config();
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
+        REQUIRE(runtime_result.started);
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        REQUIRE(port > 0U);
+
+        auto shutdown = merovingian::net::ShutdownSignal{};
+        auto runtime_lock = std::mutex{};
+        auto stats = merovingian::homeserver::HttpServeStats{};
+        auto runtime = std::move(runtime_result.runtime);
+
+        WHEN("a client sends Matrix JSON registration over TCP")
+        {
+            auto server_thread = std::thread{[&]() {
+                merovingian::homeserver::serve_http(acceptor, runtime, runtime_lock, shutdown, stats,
+                                                    merovingian::homeserver::HttpDispatchMode::client_server);
+            }};
+
+            auto const body = std::string{R"({"username":"alice","password":"CorrectHorse7!"})"};
+            auto const request = "POST /_matrix/client/v3/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: " +
+                                 std::to_string(body.size()) + "\r\n\r\n" + body;
+
+            auto const client_fd = connect_loopback(port);
+            REQUIRE(client_fd >= 0);
+            REQUIRE(send_all(client_fd, request));
+            auto const response = receive_until_close(client_fd);
+            ::close(client_fd);
+
+            shutdown.fire();
+            server_thread.join();
+
+            THEN("the listener returns the Matrix JSON registration response")
+            {
+                REQUIRE(response.starts_with("HTTP/1.1 200"));
+                REQUIRE(response.find(R"("user_id":"@alice:example.org")") != std::string::npos);
+                REQUIRE(stats.accepted_connections >= 1U);
+                REQUIRE(stats.completed_requests >= 1U);
+            }
+        }
+    }
+}
+
 SCENARIO("merovingian-server rejects an oversized request head with a 4xx status and stays alive",
          "[homeserver][http][listener][integration]")
 {
     GIVEN("a started runtime and an active HTTP listener")
     {
         auto const config = registration_enabled_config();
-        auto runtime_result = merovingian::homeserver::start_runtime(config);
+        auto runtime_result = merovingian::homeserver::start_client_server(config);
         REQUIRE(runtime_result.started);
 
         auto acceptor = merovingian::net::TcpAcceptor{};
@@ -156,7 +204,8 @@ SCENARIO("merovingian-server rejects an oversized request head with a 4xx status
         auto runtime = std::move(runtime_result.runtime);
 
         auto server_thread = std::thread{[&]() {
-            merovingian::homeserver::serve_http(acceptor, runtime, runtime_lock, shutdown, stats);
+            merovingian::homeserver::serve_http(acceptor, runtime, runtime_lock, shutdown, stats,
+                                                merovingian::homeserver::HttpDispatchMode::client_server);
         }};
 
         WHEN("a client sends a request with a header that exceeds the configured limit")

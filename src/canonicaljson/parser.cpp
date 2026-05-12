@@ -1,373 +1,85 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/serializer.hpp>
-
+#include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
+#include <memory>
+#include <merovingian/canonicaljson/parser.hpp>
 #include <string>
 #include <string_view>
+#include <system_error>
+#include <utility>
+#include <yyjson.h>
 
 namespace merovingian::canonicaljson
 {
 namespace
 {
 
-constexpr auto max_depth = std::size_t{64U};
+    constexpr auto max_depth = std::size_t{64U};
 
-class Parser final
-{
-public:
-    explicit Parser(std::string_view input) noexcept
-        : m_input{input}
+    struct YyjsonDocumentDeleter final
     {
-    }
-
-    [[nodiscard]] auto parse() -> ParseResult
-    {
-        skip_whitespace();
-        auto result = parse_value(0U);
-        if (result.error != ParseError::none)
+        auto operator()(yyjson_doc* document) const noexcept -> void
         {
-            return result;
+            yyjson_doc_free(document);
         }
-        skip_whitespace();
-        if (m_offset != m_input.size())
-        {
-            return {{}, ParseError::trailing_data};
-        }
+    };
 
-        return result;
-    }
+    using YyjsonDocument = std::unique_ptr<yyjson_doc, YyjsonDocumentDeleter>;
 
-private:
-    [[nodiscard]] auto at_end() const noexcept -> bool
+    struct ConvertResult final
     {
-        return m_offset >= m_input.size();
-    }
-
-    [[nodiscard]] auto peek() const noexcept -> char
-    {
-        return at_end() ? '\0' : m_input[m_offset];
-    }
-
-    auto skip_whitespace() noexcept -> void
-    {
-        while (!at_end() && (peek() == ' ' || peek() == '\n' || peek() == '\r' || peek() == '\t'))
-        {
-            ++m_offset;
-        }
-    }
-
-    [[nodiscard]] auto consume(char expected) noexcept -> bool
-    {
-        if (peek() != expected)
-        {
-            return false;
-        }
-        ++m_offset;
-        return true;
-    }
-
-    [[nodiscard]] auto consume_literal(std::string_view literal) noexcept -> bool
-    {
-        if (m_input.substr(m_offset, literal.size()) != literal)
-        {
-            return false;
-        }
-        m_offset += literal.size();
-        return true;
-    }
-
-    // JSON is recursively structured; recursion is bounded by max_depth above.
-    // NOLINTNEXTLINE(misc-no-recursion)
-    [[nodiscard]] auto parse_value(std::size_t depth) -> ParseResult
-    {
-        if (depth > max_depth)
-        {
-            return {{}, ParseError::nesting_too_deep};
-        }
-
-        skip_whitespace();
-        if (at_end())
-        {
-            return {{}, ParseError::unexpected_end};
-        }
-
-        switch (peek())
-        {
-        case 'n':
-            return parse_null();
-        case 't':
-            return parse_true();
-        case 'f':
-            return parse_false();
-        case '"':
-            return parse_string_value();
-        case '[':
-            return parse_array(depth);
-        case '{':
-            return parse_object(depth);
-        default:
-            if (peek() == '-' || (peek() >= '0' && peek() <= '9'))
-            {
-                return parse_number();
-            }
-            return {{}, ParseError::unexpected_token};
-        }
-    }
-
-    [[nodiscard]] auto parse_null() -> ParseResult
-    {
-        if (!consume_literal("null"))
-        {
-            return {{}, ParseError::invalid_literal};
-        }
-        return {Value{nullptr}, ParseError::none};
-    }
-
-    [[nodiscard]] auto parse_true() -> ParseResult
-    {
-        if (!consume_literal("true"))
-        {
-            return {{}, ParseError::invalid_literal};
-        }
-        return {Value{true}, ParseError::none};
-    }
-
-    [[nodiscard]] auto parse_false() -> ParseResult
-    {
-        if (!consume_literal("false"))
-        {
-            return {{}, ParseError::invalid_literal};
-        }
-        return {Value{false}, ParseError::none};
-    }
-
-    [[nodiscard]] auto parse_string_value() -> ParseResult
-    {
-        auto string_result = parse_string();
-        if (string_result.error != ParseError::none)
-        {
-            return {{}, string_result.error};
-        }
-        return {Value{std::move(string_result.value)}, ParseError::none};
-    }
-
-    struct StringResult final
-    {
-        std::string value{};
+        Value value{};
         ParseError error{ParseError::none};
     };
 
-    [[nodiscard]] auto parse_hex4(char32_t& output) -> bool
+    [[nodiscard]] auto map_yyjson_error(yyjson_read_err const& error) noexcept -> ParseError
     {
-        if (m_offset + 4U > m_input.size())
+        switch (error.code)
         {
-            return false;
+        case YYJSON_READ_SUCCESS:
+            return ParseError::none;
+        case YYJSON_READ_ERROR_EMPTY_CONTENT:
+        case YYJSON_READ_ERROR_UNEXPECTED_END:
+        case YYJSON_READ_ERROR_MORE:
+            return ParseError::unexpected_end;
+        case YYJSON_READ_ERROR_UNEXPECTED_CONTENT:
+            return ParseError::trailing_data;
+        case YYJSON_READ_ERROR_INVALID_NUMBER:
+            return ParseError::invalid_number;
+        case YYJSON_READ_ERROR_INVALID_STRING:
+            return ParseError::invalid_string;
+        case YYJSON_READ_ERROR_LITERAL:
+            return ParseError::invalid_literal;
+        case YYJSON_READ_ERROR_UNEXPECTED_CHARACTER:
+        case YYJSON_READ_ERROR_JSON_STRUCTURE:
+        case YYJSON_READ_ERROR_INVALID_COMMENT:
+        case YYJSON_READ_ERROR_INVALID_PARAMETER:
+        case YYJSON_READ_ERROR_MEMORY_ALLOCATION:
+        case YYJSON_READ_ERROR_FILE_OPEN:
+        case YYJSON_READ_ERROR_FILE_READ:
+        default:
+            return ParseError::unexpected_token;
         }
-
-        auto value = char32_t{0U};
-        for (auto index = std::size_t{0U}; index < 4U; ++index)
-        {
-            auto const character = m_input[m_offset + index];
-            value <<= 4U;
-            if (character >= '0' && character <= '9')
-            {
-                value += static_cast<char32_t>(character - '0');
-            }
-            else if (character >= 'a' && character <= 'f')
-            {
-                value += static_cast<char32_t>(character - 'a' + 10);
-            }
-            else if (character >= 'A' && character <= 'F')
-            {
-                value += static_cast<char32_t>(character - 'A' + 10);
-            }
-            else
-            {
-                return false;
-            }
-        }
-        m_offset += 4U;
-        output = value;
-        return true;
     }
 
-    auto append_utf8(std::string& output, char32_t codepoint) -> bool
+    [[nodiscard]] auto input_is_blank(std::string_view input) noexcept -> bool
     {
-        if (codepoint > 0x10FFFFU || (codepoint >= 0xD800U && codepoint <= 0xDFFFU))
-        {
-            return false;
-        }
-
-        if (codepoint <= 0x7FU)
-        {
-            output.push_back(static_cast<char>(codepoint));
-        }
-        else if (codepoint <= 0x7FFU)
-        {
-            output.push_back(static_cast<char>(0xC0U | (codepoint >> 6U)));
-            output.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
-        }
-        else if (codepoint <= 0xFFFFU)
-        {
-            output.push_back(static_cast<char>(0xE0U | (codepoint >> 12U)));
-            output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3FU)));
-            output.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
-        }
-        else
-        {
-            output.push_back(static_cast<char>(0xF0U | (codepoint >> 18U)));
-            output.push_back(static_cast<char>(0x80U | ((codepoint >> 12U) & 0x3FU)));
-            output.push_back(static_cast<char>(0x80U | ((codepoint >> 6U) & 0x3FU)));
-            output.push_back(static_cast<char>(0x80U | (codepoint & 0x3FU)));
-        }
-
-        return true;
+        return std::ranges::all_of(input, [](char character) {
+            return character == ' ' || character == '\n' || character == '\r' || character == '\t';
+        });
     }
 
-    [[nodiscard]] auto parse_string() -> StringResult
+    [[nodiscard]] auto raw_number_as_int64(std::string_view token) noexcept -> ConvertResult
     {
-        if (!consume('"'))
-        {
-            return {{}, ParseError::invalid_string};
-        }
-
-        auto output = std::string{};
-        while (!at_end())
-        {
-            auto const character = m_input[m_offset++];
-            if (character == '"')
-            {
-                if (!utf8_is_valid(output))
-                {
-                    return {{}, ParseError::invalid_string};
-                }
-                return {std::move(output), ParseError::none};
-            }
-
-            auto const byte = static_cast<unsigned char>(character);
-            if (byte < 0x20U)
-            {
-                return {{}, ParseError::invalid_string};
-            }
-
-            if (character != '\\')
-            {
-                output.push_back(character);
-                continue;
-            }
-
-            if (at_end())
-            {
-                return {{}, ParseError::unexpected_end};
-            }
-
-            auto const escape = m_input[m_offset++];
-            switch (escape)
-            {
-            case '"':
-                output.push_back('"');
-                break;
-            case '\\':
-                output.push_back('\\');
-                break;
-            case '/':
-                output.push_back('/');
-                break;
-            case 'b':
-                output.push_back('\b');
-                break;
-            case 'f':
-                output.push_back('\f');
-                break;
-            case 'n':
-                output.push_back('\n');
-                break;
-            case 'r':
-                output.push_back('\r');
-                break;
-            case 't':
-                output.push_back('\t');
-                break;
-            case 'u': {
-                auto high = char32_t{0U};
-                if (!parse_hex4(high))
-                {
-                    return {{}, ParseError::invalid_unicode_escape};
-                }
-                if (high >= 0xD800U && high <= 0xDBFFU)
-                {
-                    if (!consume('\\') || !consume('u'))
-                    {
-                        return {{}, ParseError::invalid_unicode_escape};
-                    }
-                    auto low = char32_t{0U};
-                    if (!parse_hex4(low) || low < 0xDC00U || low > 0xDFFFU)
-                    {
-                        return {{}, ParseError::invalid_unicode_escape};
-                    }
-                    auto const codepoint = 0x10000U + (((high - 0xD800U) << 10U) | (low - 0xDC00U));
-                    if (!append_utf8(output, codepoint))
-                    {
-                        return {{}, ParseError::invalid_unicode_escape};
-                    }
-                }
-                else if (!append_utf8(output, high))
-                {
-                    return {{}, ParseError::invalid_unicode_escape};
-                }
-                break;
-            }
-            default:
-                return {{}, ParseError::invalid_escape};
-            }
-        }
-
-        return {{}, ParseError::unexpected_end};
-    }
-
-    [[nodiscard]] auto parse_number() -> ParseResult
-    {
-        auto const begin = m_offset;
-        if (peek() == '-')
-        {
-            ++m_offset;
-        }
-        if (at_end())
-        {
-            return {{}, ParseError::invalid_number};
-        }
-        if (peek() == '0')
-        {
-            ++m_offset;
-            if (!at_end() && peek() >= '0' && peek() <= '9')
-            {
-                return {{}, ParseError::invalid_number};
-            }
-        }
-        else if (peek() >= '1' && peek() <= '9')
-        {
-            while (!at_end() && peek() >= '0' && peek() <= '9')
-            {
-                ++m_offset;
-            }
-        }
-        else
-        {
-            return {{}, ParseError::invalid_number};
-        }
-
-        if (!at_end() && (peek() == '.' || peek() == 'e' || peek() == 'E'))
+        if (token.find_first_of(".eE") != std::string_view::npos)
         {
             return {{}, ParseError::invalid_number};
         }
 
         auto parsed = std::int64_t{0};
-        auto const token = m_input.substr(begin, m_offset - begin);
         auto const [ptr, error] = std::from_chars(token.data(), token.data() + token.size(), parsed);
         if (error == std::errc::result_out_of_range)
         {
@@ -380,97 +92,97 @@ private:
         return {Value{parsed}, ParseError::none};
     }
 
-    // JSON arrays recurse through nested values; recursion is bounded by max_depth.
+    // yyjson owns parsed values through the document; conversion copies into
+    // Merovingian's canonical JSON tree before the document is released.
     // NOLINTNEXTLINE(misc-no-recursion)
-    [[nodiscard]] auto parse_array(std::size_t depth) -> ParseResult
+    [[nodiscard]] auto convert_yyjson_value(yyjson_val* value, std::size_t depth) -> ConvertResult
     {
-        if (!consume('['))
+        if (depth > max_depth)
+        {
+            return {{}, ParseError::nesting_too_deep};
+        }
+        if (value == nullptr)
         {
             return {{}, ParseError::unexpected_token};
         }
-        skip_whitespace();
-        auto array = Array{};
-        if (consume(']'))
+
+        if (yyjson_is_null(value))
         {
+            return {Value{nullptr}, ParseError::none};
+        }
+        if (yyjson_is_bool(value))
+        {
+            return {Value{yyjson_get_bool(value)}, ParseError::none};
+        }
+        if (yyjson_is_raw(value))
+        {
+            auto const* raw = yyjson_get_raw(value);
+            auto const length = yyjson_get_len(value);
+            return raw_number_as_int64({raw, length});
+        }
+        if (yyjson_is_str(value))
+        {
+            auto const* data = yyjson_get_str(value);
+            auto const length = yyjson_get_len(value);
+            if (data == nullptr)
+            {
+                return {{}, ParseError::invalid_string};
+            }
+            return {Value{std::string{data, length}}, ParseError::none};
+        }
+        if (yyjson_is_arr(value))
+        {
+            auto array = Array{};
+            array.reserve(yyjson_arr_size(value));
+
+            auto iterator = yyjson_arr_iter_with(value);
+            while (auto* item = yyjson_arr_iter_next(&iterator))
+            {
+                auto converted = convert_yyjson_value(item, depth + 1U);
+                if (converted.error != ParseError::none)
+                {
+                    return converted;
+                }
+                array.push_back(std::move(converted.value));
+            }
             return {Value{std::move(array)}, ParseError::none};
         }
+        if (yyjson_is_obj(value))
+        {
+            auto object = Object{};
+            object.reserve(yyjson_obj_size(value));
 
-        while (true)
-        {
-            auto item = parse_value(depth + 1U);
-            if (item.error != ParseError::none)
+            auto iterator = yyjson_obj_iter_with(value);
+            while (auto* key = yyjson_obj_iter_next(&iterator))
             {
-                return item;
-            }
-            array.push_back(std::move(item.value));
-            skip_whitespace();
-            if (consume(']'))
-            {
-                return {Value{std::move(array)}, ParseError::none};
-            }
-            if (!consume(','))
-            {
-                return {{}, ParseError::unexpected_token};
-            }
-        }
-    }
-
-    // JSON objects recurse through nested values; recursion is bounded by max_depth.
-    // NOLINTNEXTLINE(misc-no-recursion)
-    [[nodiscard]] auto parse_object(std::size_t depth) -> ParseResult
-    {
-        if (!consume('{'))
-        {
-            return {{}, ParseError::unexpected_token};
-        }
-        skip_whitespace();
-        auto object = Object{};
-        if (consume('}'))
-        {
-            return {Value{std::move(object)}, ParseError::none};
-        }
-
-        while (true)
-        {
-            skip_whitespace();
-            auto key = parse_string();
-            if (key.error != ParseError::none)
-            {
-                return {{}, key.error};
-            }
-            for (auto const& existing : object)
-            {
-                if (existing.key == key.value)
+                auto const* key_data = yyjson_get_str(key);
+                auto const key_length = yyjson_get_len(key);
+                if (key_data == nullptr)
+                {
+                    return {{}, ParseError::invalid_string};
+                }
+                auto key_value = std::string{key_data, key_length};
+                auto const duplicate = std::ranges::any_of(object, [&key_value](ObjectMember const& member) {
+                    return member.key == key_value;
+                });
+                if (duplicate)
                 {
                     return {{}, ParseError::duplicate_object_key};
                 }
-            }
-            skip_whitespace();
-            if (!consume(':'))
-            {
-                return {{}, ParseError::unexpected_token};
-            }
-            auto value = parse_value(depth + 1U);
-            if (value.error != ParseError::none)
-            {
-                return value;
-            }
-            object.push_back(make_member(std::move(key.value), std::move(value.value)));
-            skip_whitespace();
-            if (consume('}'))
-            {
-                return {Value{std::move(object)}, ParseError::none};
-            }
-            if (!consume(','))
-            {
-                return {{}, ParseError::unexpected_token};
-            }
-        }
-    }
 
-    std::string_view m_input{};
-    std::size_t m_offset{0U};
-};
+                auto* member_value = yyjson_obj_iter_get_val(key);
+                auto converted = convert_yyjson_value(member_value, depth + 1U);
+                if (converted.error != ParseError::none)
+                {
+                    return converted;
+                }
+                object.push_back(make_member(std::move(key_value), std::move(converted.value)));
+            }
+            return {Value{std::move(object)}, ParseError::none};
+        }
+
+        return {{}, ParseError::unexpected_token};
+    }
 
 } // namespace
 
@@ -570,8 +282,28 @@ auto utf8_is_valid(std::string_view value) noexcept -> bool
 
 auto parse_lossless(std::string_view input) -> ParseResult
 {
-    auto parser = Parser{input};
-    return parser.parse();
+    if (input_is_blank(input))
+    {
+        return {{}, ParseError::unexpected_end};
+    }
+
+    if (!utf8_is_valid(input))
+    {
+        return {{}, ParseError::invalid_string};
+    }
+
+    auto owned_input = std::string{input};
+    auto error = yyjson_read_err{};
+    auto* raw_document =
+        yyjson_read_opts(owned_input.data(), owned_input.size(), YYJSON_READ_NUMBER_AS_RAW, nullptr, &error);
+    auto document = YyjsonDocument{raw_document};
+    if (document == nullptr)
+    {
+        return {{}, map_yyjson_error(error)};
+    }
+
+    auto converted = convert_yyjson_value(yyjson_doc_get_root(document.get()), 0U);
+    return {std::move(converted.value), converted.error};
 }
 
 } // namespace merovingian::canonicaljson
