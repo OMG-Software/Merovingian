@@ -107,7 +107,7 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --version 2>&1 | grep -q "merovingian-server 0.1.2"',
+    server_executable + ' --version 2>&1 | grep -q "merovingian-server 0.1.3"',
   ],
 )
 
@@ -125,7 +125,7 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' >/dev/null 2>&1',
+    server_executable + ' --dry-run >/dev/null 2>&1',
   ],
 )
 
@@ -134,7 +134,7 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' 2>&1 | grep -q "Configuration validation passed"',
+    server_executable + ' --dry-run 2>&1 | grep -q "Configuration validation passed"',
   ],
 )
 
@@ -143,7 +143,7 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' 2>&1 | grep -q "Configuration source: defaults"',
+    server_executable + ' --dry-run 2>&1 | grep -q "Configuration source: defaults"',
   ],
 )
 
@@ -152,8 +152,8 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' 2>&1 | grep -q "Startup hardening checks:" && '
-      + server_executable + ' 2>&1 | grep -q "Hardening self-check: seccomp=unknown"',
+    server_executable + ' --dry-run 2>&1 | grep -q "Startup hardening checks:" && '
+      + server_executable + ' --dry-run 2>&1 | grep -q "Hardening self-check: seccomp=unknown"',
   ],
 )
 
@@ -319,7 +319,7 @@ test(
   args: [
     '-c',
     server_executable
-      + ' --config '
+      + ' --dry-run --config '
       + example_config
       + ' 2>&1 | grep -q "Configuration validation passed"',
   ],
@@ -331,7 +331,7 @@ test(
   args: [
     '-c',
     server_executable
-      + ' --config '
+      + ' --dry-run --config '
       + example_config
       + ' 2>&1 | grep -q "Configuration source: file"',
   ],
@@ -348,7 +348,7 @@ test(
       + valid_config
       + ' && '
       + server_executable
-      + ' --config '
+      + ' --dry-run --config '
       + valid_config
       + ' 2>&1 | grep -q "Server name: matrix.example.org"',
   ],
@@ -422,7 +422,7 @@ test(
       + secure_secret_config
       + ' && '
       + server_executable
-      + ' --config '
+      + ' --dry-run --config '
       + secure_secret_config
       + ' 2>&1 | grep -q "Configuration validation passed"',
   ],
@@ -468,7 +468,7 @@ test(
       + redaction_config
       + ' && output=$( '
       + server_executable
-      + ' --config '
+      + ' --dry-run --config '
       + redaction_config
       + ' 2>&1 ) && echo "$output" | grep -q "Database URI source file configured; pool_size=16" && ! echo "$output" | grep -q "topsecret" && ! echo "$output" | grep -q "postgresql://" && ! echo "$output" | grep -q "'
       + redaction_secret

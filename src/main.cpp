@@ -7,22 +7,33 @@
 #include <merovingian/config/reload_policy.hpp>
 #include <merovingian/database/runtime_database.hpp>
 #include <merovingian/federation/runtime_federation.hpp>
+#include <merovingian/homeserver/http_server.hpp>
+#include <merovingian/homeserver/vertical_slice.hpp>
 #include <merovingian/media/runtime_media.hpp>
 #include <merovingian/net/listener.hpp>
+#include <merovingian/net/shutdown_signal.hpp>
+#include <merovingian/net/tcp_acceptor.hpp>
 #include <merovingian/observability/logger.hpp>
 #include <merovingian/platform/file_metadata.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
 
+#include <poll.h>
+
+#include <cerrno>
+#include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
+#include <vector>
 
 namespace
 {
 
-constexpr auto version = std::string_view{"0.1.2"};
+constexpr auto version = std::string_view{"0.1.3"};
 
 struct BootstrapConfigResult final
 {
@@ -204,23 +215,46 @@ struct BootstrapConfigResult final
     return result;
 }
 
-[[nodiscard]] auto build_config(int argc, char const* const* argv) -> BootstrapConfigResult
+struct ParsedArgs final
 {
-    if (argc == 1)
+    bool dry_run{false};
+    std::vector<std::string_view> positional{};
+};
+
+[[nodiscard]] auto parse_args(int argc, char const* const* argv) -> ParsedArgs
+{
+    auto parsed = ParsedArgs{};
+    parsed.positional.reserve(static_cast<std::size_t>(argc));
+    for (auto index = 1; index < argc; ++index)
+    {
+        auto const argument = std::string_view{argv[index]};
+        if (argument == "--dry-run")
+        {
+            parsed.dry_run = true;
+            continue;
+        }
+        parsed.positional.push_back(argument);
+    }
+    return parsed;
+}
+
+[[nodiscard]] auto build_config_from_positional(std::vector<std::string_view> const& positional) -> BootstrapConfigResult
+{
+    if (positional.empty())
     {
         auto const config = merovingian::config::Config{};
         return classify_config_findings({config, merovingian::config::validate(config)}, "defaults");
     }
 
-    if (argc == 3 && std::string_view{argv[1]} == "--config")
+    if (positional.size() == 2U && positional[0] == "--config")
     {
-        return load_config_from_file(argv[2]);
+        return load_config_from_file(std::string{positional[1]});
     }
 
     return reject_config(
         merovingian::bootstrap::ExitCode::usage_error,
         "arguments",
-        "usage: merovingian-server [--config <path>] [--check-config <path>] [--plan-config-reload <current> <next>] [--help] [--version]"
+        "usage: merovingian-server [--dry-run] [--config <path>] [--check-config <path>] [--plan-config-reload <current> <next>] [--help] [--version]"
     );
 }
 
@@ -249,14 +283,15 @@ auto print_help() -> void
     std::cout << "The Merovingian bootstrap server\n"
               << "\n"
               << "Usage:\n"
-              << "  merovingian-server\n"
-              << "  merovingian-server --config <path>\n"
+              << "  merovingian-server [--dry-run]\n"
+              << "  merovingian-server [--dry-run] --config <path>\n"
               << "  merovingian-server --check-config <path>\n"
               << "  merovingian-server --plan-config-reload <current> <next>\n"
               << "  merovingian-server --help\n"
               << "  merovingian-server --version\n"
               << "\n"
-              << "Configuration is validated before startup continues.\n";
+              << "Configuration is validated before startup continues.\n"
+              << "--dry-run validates and prints the startup summary without binding listeners.\n";
 }
 
 auto print_version() -> void
@@ -363,6 +398,181 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     LOG_INFO("Media upload limit: " + config.security().media.max_upload_size);
 }
 
+struct BindEndpoint final
+{
+    bool ok{false};
+    std::string host{};
+    std::uint16_t port{0U};
+    std::string error{};
+};
+
+[[nodiscard]] auto parse_bind(std::string_view bind) -> BindEndpoint
+{
+    auto const separator = bind.rfind(':');
+    if (separator == std::string_view::npos || separator == 0U || separator + 1U >= bind.size())
+    {
+        return {false, {}, 0U, "listener bind must be host:port"};
+    }
+    auto host = bind.substr(0U, separator);
+    if (!host.empty() && host.front() == '[' && host.back() == ']')
+    {
+        host.remove_prefix(1U);
+        host.remove_suffix(1U);
+    }
+    auto port = std::uint32_t{0U};
+    for (auto const character : bind.substr(separator + 1U))
+    {
+        if (character < '0' || character > '9')
+        {
+            return {false, {}, 0U, "listener port must be numeric"};
+        }
+        auto const digit = static_cast<std::uint32_t>(character - '0');
+        port = (port * 10U) + digit;
+        if (port > 65535U)
+        {
+            return {false, {}, 0U, "listener port is out of range"};
+        }
+    }
+    if (port == 0U)
+    {
+        return {false, {}, 0U, "listener port must be non-zero"};
+    }
+    return {true, std::string{host}, static_cast<std::uint16_t>(port), {}};
+}
+
+struct ListenerBinding final
+{
+    merovingian::net::ListenerRole role{merovingian::net::ListenerRole::client};
+    merovingian::net::TcpAcceptor acceptor{};
+};
+
+[[nodiscard]] auto open_listeners(
+    merovingian::net::RuntimeListeners const& plans,
+    std::vector<ListenerBinding>& bindings,
+    std::string& error
+) -> bool
+{
+    for (auto const& plan : plans.plans())
+    {
+        if (plan.tls)
+        {
+            error = "TLS listener requested but TLS is not yet implemented; refusing to start "
+                  + std::string{merovingian::net::listener_role_name(plan.role)} + " on " + plan.bind;
+            return false;
+        }
+
+        auto const endpoint = parse_bind(plan.bind);
+        if (!endpoint.ok)
+        {
+            error = "Listener " + std::string{merovingian::net::listener_role_name(plan.role)}
+                  + " has invalid bind '" + plan.bind + "': " + endpoint.error;
+            return false;
+        }
+
+        auto binding = ListenerBinding{};
+        binding.role = plan.role;
+        auto const bind_result = binding.acceptor.bind(endpoint.host, endpoint.port);
+        if (!bind_result.ok)
+        {
+            error = "Listener " + std::string{merovingian::net::listener_role_name(plan.role)}
+                  + " failed to bind " + plan.bind + ": " + bind_result.error;
+            return false;
+        }
+
+        LOG_INFO(
+            "Listening: " + std::string{merovingian::net::listener_role_name(plan.role)}
+            + " bound=" + endpoint.host + ":" + std::to_string(binding.acceptor.bound_port())
+        );
+        bindings.push_back(std::move(binding));
+    }
+    return true;
+}
+
+[[nodiscard]] auto serve_until_shutdown(
+    merovingian::homeserver::HomeserverRuntime& runtime,
+    std::vector<ListenerBinding>& bindings,
+    merovingian::net::ShutdownSignal& shutdown
+) -> merovingian::homeserver::HttpServeStats
+{
+    auto runtime_lock = std::mutex{};
+    auto stats = merovingian::homeserver::HttpServeStats{};
+    auto threads = std::vector<std::thread>{};
+    threads.reserve(bindings.size());
+
+    for (auto& binding : bindings)
+    {
+        // Explicit init-capture binds `target` to bindings[i] directly rather
+        // than to the per-iteration alias `binding`, which would dangle once
+        // the loop advances.
+        threads.emplace_back([&runtime, &runtime_lock, &shutdown, &stats, &target = binding]() {
+            merovingian::homeserver::serve_http(target.acceptor, runtime, runtime_lock, shutdown, stats);
+        });
+    }
+
+    // Block the main thread until shutdown fires. We do not poll a queue —
+    // the signal handler writes to the self-pipe and any blocked poll(2) call
+    // in the worker threads returns immediately.
+    auto entry = pollfd{};
+    entry.fd = shutdown.read_fd();
+    entry.events = POLLIN;
+    while (!shutdown.fired())
+    {
+        auto const poll_result = ::poll(&entry, 1U, -1);
+        if (poll_result < 0 && errno != EINTR)
+        {
+            break;
+        }
+    }
+
+    for (auto& worker : threads)
+    {
+        if (worker.joinable())
+        {
+            worker.join();
+        }
+    }
+
+    return stats;
+}
+
+[[nodiscard]] auto run_server(BootstrapConfigResult const& result) -> int
+{
+    auto runtime_result = merovingian::homeserver::start_runtime(result.parsed.config);
+    if (!runtime_result.started)
+    {
+        LOG_CRITICAL("Runtime failed to start: " + runtime_result.reason);
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+    }
+
+    auto const plans = merovingian::net::make_runtime_listeners(result.parsed.config);
+    auto bindings = std::vector<ListenerBinding>{};
+    auto bind_error = std::string{};
+    if (!open_listeners(plans, bindings, bind_error))
+    {
+        LOG_CRITICAL("Listener setup failed: " + bind_error);
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::listener_error);
+    }
+
+    auto shutdown = merovingian::net::ShutdownSignal{};
+    if (!shutdown.valid() || !merovingian::net::install_shutdown_signal_handlers(shutdown))
+    {
+        LOG_CRITICAL("Failed to install shutdown signal handlers");
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::listener_error);
+    }
+
+    LOG_INFO("Listeners active; awaiting traffic. Send SIGINT or SIGTERM to stop.");
+    auto runtime = std::move(runtime_result.runtime);
+    auto const stats = serve_until_shutdown(runtime, bindings, shutdown);
+
+    merovingian::net::uninstall_shutdown_signal_handlers();
+    LOG_INFO(
+        "Server stopped. accepted=" + std::to_string(stats.accepted_connections)
+        + " completed=" + std::to_string(stats.completed_requests)
+        + " rejected=" + std::to_string(stats.rejected_requests)
+    );
+    return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
+}
+
 } // namespace
 
 auto main(int argc, char const* const* argv) -> int
@@ -391,7 +601,8 @@ auto main(int argc, char const* const* argv) -> int
 
     LOG_INFO("Starting The Merovingian bootstrap server");
 
-    auto const result = build_config(argc, argv);
+    auto const args = parse_args(argc, argv);
+    auto const result = build_config_from_positional(args.positional);
     if (!result.parsed.findings.empty())
     {
         log_config_findings(result);
@@ -400,5 +611,11 @@ auto main(int argc, char const* const* argv) -> int
 
     log_startup_summary(result);
 
-    return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
+    if (args.dry_run)
+    {
+        LOG_INFO("Dry run requested; skipping listener bind");
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
+    }
+
+    return run_server(result);
 }
