@@ -1,6 +1,7 @@
 # Canonical JSON
 
-Milestone 4 implements the Matrix signing-critical canonical JSON foundation.
+This capability note describes the Matrix signing-critical canonical JSON
+foundation.
 
 ## Current scope
 
@@ -45,8 +46,12 @@ The parser and serializer must:
 
 ## Numeric policy
 
-Only signed 64-bit integers are accepted in this milestone. Floating-point values and exponent notation are rejected until Matrix-specific numeric handling is reviewed with signing fixtures.
+Only signed 64-bit integers are accepted in the current implementation.
+Floating-point values and exponent notation are rejected until Matrix-specific
+numeric handling is reviewed with signing fixtures.
 
 ## Signable object view
 
-`make_signable_object_view` currently serializes the supplied canonical JSON value deterministically. Later event-signing milestones will layer Matrix-specific event field elision and signing-key metadata over this primitive.
+`make_signable_object_view` currently serializes the supplied canonical JSON
+value deterministically. Later event-signing work will layer Matrix-specific
+event field elision and signing-key metadata over this primitive.

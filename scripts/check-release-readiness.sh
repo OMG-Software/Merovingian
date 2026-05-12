@@ -18,6 +18,8 @@ require_file Dockerfile
 require_file packaging/systemd/merovingian.service
 require_file packaging/openrc/merovingian
 require_file packaging/rc.d/merovingian
+require_file docs/progress.md
+require_file docs/protocol-coverage.md
 require_file docs/01-production-readiness.md
 require_file docs/security-review-checklist.md
 require_file scripts/build-linux.sh

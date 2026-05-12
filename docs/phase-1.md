@@ -1,5 +1,10 @@
 # Phase 1: Secure bootstrap configuration
 
+Historical note: this document records the original secure-configuration phase.
+It is not the current project progress source. Current progress is tracked in
+`docs/progress.md`, and Matrix v1.18 coverage is tracked in
+`docs/protocol-coverage.md`.
+
 Phase 1 establishes a secure, validated bootstrap path before adding Matrix runtime behavior.
 
 ## Completed in Phase 1

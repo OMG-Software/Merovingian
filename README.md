@@ -110,11 +110,13 @@ See:
 
 - `docs/dev-environment.md`
 
-## Phase status
+## Project status
 
 See:
 
-- `docs/phase-1.md`
+- `docs/progress.md`
+- `docs/protocol-coverage.md`
+- `docs/01-production-readiness.md`
 
 ## Test standards
 

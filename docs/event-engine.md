@@ -1,6 +1,7 @@
 # Event engine
 
-Milestone 5 starts the Matrix event-engine foundation on top of canonical JSON.
+This capability note describes the Matrix event-engine foundation on top of
+canonical JSON.
 
 ## Current scope
 
@@ -33,12 +34,19 @@ The event signing payload is produced from canonical JSON after removing fields 
 - `unsigned`
 - `signatures`
 
-This milestone does not implement Ed25519. `attach_event_signature` records a caller-supplied signature under a server name and key ID so later crypto integration has a stable event-shape boundary.
+The current implementation does not implement Ed25519. `attach_event_signature`
+records a caller-supplied signature under a server name and key ID so later
+crypto integration has a stable event-shape boundary.
 
 ## Event IDs
 
-`make_content_hash_id` is currently a deterministic scaffold over canonical JSON. It is not the final Matrix room-version-specific event ID algorithm. Later crypto/event milestones must replace the placeholder hash with the correct Matrix reference-hash behavior for each room version.
+`make_content_hash_id` is currently a deterministic scaffold over canonical
+JSON. It is not the final Matrix room-version-specific event ID algorithm.
+Later crypto/event work must replace the placeholder hash with the correct
+Matrix reference-hash behavior for each room version.
 
 ## Redaction
 
-The redaction engine currently retains a conservative key allowlist and switches `unsigned` retention based on room-version redaction policy. Later milestones must expand this with full Matrix room-version fixtures.
+The redaction engine currently retains a conservative key allowlist and switches
+`unsigned` retention based on room-version redaction policy. Later work must
+expand this with full Matrix room-version fixtures.

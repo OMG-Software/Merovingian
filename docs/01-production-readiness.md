@@ -5,6 +5,10 @@ CI and the release artifact records the evidence. Packaging files exist so Linux
 and BSD operators can test deployment shape early, but packages must not be
 published as production releases while any blocking gate is open.
 
+Progress is tracked by capability in `docs/progress.md`. Matrix v1.18 endpoint
+coverage is tracked in `docs/protocol-coverage.md`. Numbered milestone and phase
+documents are historical notes only.
+
 ## Blocking gates
 
 - The server executable must run a real listener and serve requests until it is

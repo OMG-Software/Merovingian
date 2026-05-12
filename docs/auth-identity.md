@@ -1,8 +1,10 @@
-# Milestone 6: Authentication and identity foundation
+# Authentication and identity foundation
 
-Milestone 6 introduces the narrow authentication and identity policy boundary needed before adding Matrix Client-Server login, registration, and device APIs.
+This capability note describes the authentication and identity policy boundary
+used before full Matrix Client-Server login, registration, and device APIs are
+production-gated.
 
-## Included in Milestone 6
+## Included now
 
 - Matrix-shaped user ID validation.
 - Server-name validation for local identity handling.
@@ -24,7 +26,7 @@ hashing, token generation, and random number generation. The local homeserver
 runtime now performs those operations through the reviewed LibSodium-backed
 boundary rather than storing plaintext credentials or bearer tokens.
 
-The milestone establishes these guarantees:
+The boundary establishes these guarantees:
 
 - Plaintext tokens are not a persistable representation.
 - Token logging emits only redacted metadata.
@@ -35,7 +37,7 @@ The milestone establishes these guarantees:
 
 ## Deliberately not included
 
-These are deferred to later milestones:
+These remain deferred:
 
 - Full Matrix `/login`, `/logout`, `/register`, or device-management endpoint
   conformance.

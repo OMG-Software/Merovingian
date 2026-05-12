@@ -34,4 +34,5 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - After code change, run the new test(s).
 - Increment the version number on each set of changes.
 - Record changes for each version in CHANGELOG.md
-- ignore `.clwb` folder.
+- Ignore `.clwb` folder.
+- Always work in feature or bug branches, never main.
