@@ -2,11 +2,13 @@
 #pragma once
 
 #include <cstdint>
-#include <merovingian/homeserver/client_server.hpp>
-#include <merovingian/net/shutdown_signal.hpp>
-#include <merovingian/net/tcp_acceptor.hpp>
 #include <mutex>
 #include <string>
+
+#include <merovingian/homeserver/client_server.hpp>
+#include <merovingian/homeserver/tls.hpp>
+#include <merovingian/net/shutdown_signal.hpp>
+#include <merovingian/net/tcp_acceptor.hpp>
 
 namespace merovingian::homeserver
 {
@@ -40,5 +42,12 @@ auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, std:
 // shutdown signal fires or the acceptor becomes invalid.
 auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::mutex& runtime_lock,
                 net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode) -> void;
+
+// TLS variant of `serve_http`. The accepted socket is upgraded through the
+// supplied OpenSSL-backed context before the shared HTTP parser/dispatcher sees
+// any bytes.
+auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
+                    std::mutex& runtime_lock, net::ShutdownSignal& shutdown, HttpServeStats& stats,
+                    HttpDispatchMode dispatch_mode) -> void;
 
 } // namespace merovingian::homeserver

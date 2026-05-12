@@ -8,11 +8,12 @@ homeserver_sources = files(
   'media_service.cpp',
   'room_service.cpp',
   'runtime.cpp',
+  'tls.cpp',
 )
 
 homeserver_lib = static_library(
   'merovingian-homeserver',
   homeserver_sources,
   include_directories: inc,
-  dependencies: [libsodium_dep],
+  dependencies: [libsodium_dep, openssl_dep],
 )

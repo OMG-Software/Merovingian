@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/config/config.hpp>
-
 #include <cstdint>
 #include <string>
 #include <vector>
+
+#include <merovingian/config/config.hpp>
 
 namespace merovingian::net
 {
@@ -21,6 +21,8 @@ struct ListenerPlan final
     ListenerRole role{ListenerRole::client};
     std::string bind{};
     bool tls{false};
+    std::string tls_certificate_file{};
+    std::string tls_private_key_file{};
 };
 
 class RuntimeListeners final

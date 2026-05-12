@@ -4,6 +4,14 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
 #include <merovingian/bootstrap/exit_code.hpp>
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/config_parser.hpp>
@@ -13,6 +21,7 @@
 #include <merovingian/federation/runtime_federation.hpp>
 #include <merovingian/homeserver/client_server.hpp>
 #include <merovingian/homeserver/http_server.hpp>
+#include <merovingian/homeserver/tls.hpp>
 #include <merovingian/media/runtime_media.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/net/shutdown_signal.hpp>
@@ -20,18 +29,12 @@
 #include <merovingian/observability/logger.hpp>
 #include <merovingian/platform/file_metadata.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
-#include <mutex>
 #include <poll.h>
-#include <string>
-#include <string_view>
-#include <thread>
-#include <utility>
-#include <vector>
 
 namespace
 {
 
-constexpr auto version = std::string_view{"0.1.17"};
+constexpr auto version = std::string_view{"0.1.18"};
 
 struct BootstrapConfigResult final
 {
@@ -100,32 +103,94 @@ struct BootstrapConfigResult final
     return {};
 }
 
-[[nodiscard]] auto validate_existing_secret_file_metadata(std::string const& path) -> BootstrapConfigResult
+[[nodiscard]] auto validate_existing_secret_file_metadata(std::string const& path, std::string const& field,
+                                                          bool allow_missing) -> BootstrapConfigResult
 {
     auto const metadata_result = merovingian::platform::read_posix_file_metadata(path);
     if (!metadata_result.metadata.has_value())
     {
-        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, "database.uri_file",
-                             "unable to inspect database URI file metadata: " + metadata_result.error);
+        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, field,
+                             "unable to inspect secret file metadata: " + metadata_result.error);
     }
 
     if (metadata_result.metadata->kind == merovingian::platform::FileKind::missing)
     {
-        return {};
+        if (allow_missing)
+        {
+            return {};
+        }
+        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, field, "secret file does not exist");
     }
 
     if (!merovingian::platform::is_secure_secret_file(*metadata_result.metadata))
     {
-        return reject_config(merovingian::bootstrap::ExitCode::config_validation_error, "database.uri_file",
-                             "database URI file must be a regular owner-only non-executable secret file");
+        return reject_config(merovingian::bootstrap::ExitCode::config_validation_error, field,
+                             "secret file must be a regular owner-only non-executable file");
     }
 
     return {};
 }
 
+[[nodiscard]] auto validate_existing_certificate_file_metadata(std::string const& path, std::string const& field)
+    -> BootstrapConfigResult
+{
+    auto const metadata_result = merovingian::platform::read_posix_file_metadata(path);
+    if (!metadata_result.metadata.has_value())
+    {
+        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, field,
+                             "unable to inspect TLS certificate file metadata: " + metadata_result.error);
+    }
+
+    if (metadata_result.metadata->kind == merovingian::platform::FileKind::missing)
+    {
+        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, field,
+                             "TLS certificate file does not exist");
+    }
+
+    if (!merovingian::platform::is_secure_config_file(*metadata_result.metadata))
+    {
+        return reject_config(merovingian::bootstrap::ExitCode::config_validation_error, field,
+                             "TLS certificate file must be a regular non-executable file without group/other write");
+    }
+
+    return {};
+}
+
+[[nodiscard]] auto validate_existing_listener_tls_files(merovingian::config::ListenerConfig const& listener,
+                                                        std::string const& prefix) -> BootstrapConfigResult
+{
+    if (!listener.tls)
+    {
+        return {};
+    }
+
+    auto certificate_validation =
+        validate_existing_certificate_file_metadata(listener.tls_certificate_file, prefix + ".tls_certificate_file");
+    if (!certificate_validation.parsed.findings.empty())
+    {
+        return certificate_validation;
+    }
+
+    return validate_existing_secret_file_metadata(listener.tls_private_key_file, prefix + ".tls_private_key_file",
+                                                  false);
+}
+
 [[nodiscard]] auto validate_existing_secret_files(merovingian::config::Config const& config) -> BootstrapConfigResult
 {
-    return validate_existing_secret_file_metadata(config.database().uri_file);
+    auto database_validation =
+        validate_existing_secret_file_metadata(config.database().uri_file, "database.uri_file", true);
+    if (!database_validation.parsed.findings.empty())
+    {
+        return database_validation;
+    }
+
+    auto client_tls_validation = validate_existing_listener_tls_files(config.listeners().client, "listeners.client");
+    if (!client_tls_validation.parsed.findings.empty())
+    {
+        return client_tls_validation;
+    }
+
+    return validate_existing_listener_tls_files(config.listeners().federation, "listeners.federation");
 }
 
 [[nodiscard]] auto load_config_from_file(std::string const& path) -> BootstrapConfigResult
@@ -408,6 +473,7 @@ struct ListenerBinding final
 {
     merovingian::net::ListenerRole role{merovingian::net::ListenerRole::client};
     merovingian::net::TcpAcceptor acceptor{};
+    std::optional<merovingian::homeserver::TlsServerContext> tls_context{};
 };
 
 [[nodiscard]] auto open_listeners(merovingian::net::RuntimeListeners const& plans,
@@ -415,11 +481,18 @@ struct ListenerBinding final
 {
     for (auto const& plan : plans.plans())
     {
+        auto tls_context = std::optional<merovingian::homeserver::TlsServerContext>{};
         if (plan.tls)
         {
-            error = "TLS listener requested but TLS is not yet implemented; refusing to start " +
-                    std::string{merovingian::net::listener_role_name(plan.role)} + " on " + plan.bind;
-            return false;
+            auto context_result =
+                merovingian::homeserver::make_tls_server_context(plan.tls_certificate_file, plan.tls_private_key_file);
+            if (!context_result.ok())
+            {
+                error = "Listener " + std::string{merovingian::net::listener_role_name(plan.role)} +
+                        " failed to configure TLS: " + context_result.error;
+                return false;
+            }
+            tls_context = std::move(context_result.context);
         }
 
         auto const endpoint = parse_bind(plan.bind);
@@ -432,6 +505,7 @@ struct ListenerBinding final
 
         auto binding = ListenerBinding{};
         binding.role = plan.role;
+        binding.tls_context = std::move(tls_context);
         auto const bind_result = binding.acceptor.bind(endpoint.host, endpoint.port);
         if (!bind_result.ok)
         {
@@ -441,7 +515,8 @@ struct ListenerBinding final
         }
 
         LOG_INFO("Listening: " + std::string{merovingian::net::listener_role_name(plan.role)} +
-                 " bound=" + endpoint.host + ":" + std::to_string(binding.acceptor.bound_port()));
+                 " bound=" + endpoint.host + ":" + std::to_string(binding.acceptor.bound_port()) +
+                 " tls=" + std::string{plan.tls ? "true" : "false"});
         bindings.push_back(std::move(binding));
     }
     return true;
@@ -466,7 +541,15 @@ struct ListenerBinding final
             auto const mode = target.role == merovingian::net::ListenerRole::client
                                   ? merovingian::homeserver::HttpDispatchMode::client_server
                                   : merovingian::homeserver::HttpDispatchMode::local_router;
-            merovingian::homeserver::serve_http(target.acceptor, runtime, runtime_lock, shutdown, stats, mode);
+            if (target.tls_context.has_value())
+            {
+                merovingian::homeserver::serve_tls_http(*target.tls_context, target.acceptor, runtime, runtime_lock,
+                                                        shutdown, stats, mode);
+            }
+            else
+            {
+                merovingian::homeserver::serve_http(target.acceptor, runtime, runtime_lock, shutdown, stats, mode);
+            }
         });
     }
 

@@ -21,6 +21,8 @@ struct ListenerConfig final
 {
     std::string bind{};
     bool tls{false};
+    std::string tls_certificate_file{};
+    std::string tls_private_key_file{};
 };
 
 struct ListenersConfig final
@@ -67,12 +69,7 @@ struct FederationSecurityConfig final
     bool require_valid_tls{true};
     bool verify_json_signatures{true};
     std::vector<std::string> deny_ip_ranges{
-        "127.0.0.0/8",
-        "10.0.0.0/8",
-        "172.16.0.0/12",
-        "192.168.0.0/16",
-        "::1/128",
-        "fc00::/7",
+        "127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "::1/128", "fc00::/7",
     };
     std::string max_transaction_size{"10MiB"};
     std::string remote_timeout{"30s"};
@@ -109,12 +106,7 @@ class Config final
 public:
     Config() = default;
 
-    Config(
-        ServerConfig server,
-        ListenersConfig listeners,
-        DatabaseConfig database,
-        SecurityConfig security
-    );
+    Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security);
 
     [[nodiscard]] auto server() const noexcept -> ServerConfig const&;
     [[nodiscard]] auto listeners() const noexcept -> ListenersConfig const&;

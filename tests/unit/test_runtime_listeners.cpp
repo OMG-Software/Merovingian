@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/config.hpp>
-#include <merovingian/net/listener.hpp>
+#include <string>
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <string>
+#include <merovingian/config/config.hpp>
+#include <merovingian/net/listener.hpp>
 
 SCENARIO("Runtime listener planning includes client and federation listeners by default", "[net][listener]")
 {
@@ -24,9 +23,47 @@ SCENARIO("Runtime listener planning includes client and federation listeners by 
                 REQUIRE(listeners.plans()[0].role == merovingian::net::ListenerRole::client);
                 REQUIRE(listeners.plans()[0].bind == "127.0.0.1:8008");
                 REQUIRE_FALSE(listeners.plans()[0].tls);
+                REQUIRE(listeners.plans()[0].tls_certificate_file.empty());
+                REQUIRE(listeners.plans()[0].tls_private_key_file.empty());
                 REQUIRE(listeners.plans()[1].role == merovingian::net::ListenerRole::federation);
                 REQUIRE(listeners.plans()[1].bind == "127.0.0.1:8448");
                 REQUIRE_FALSE(listeners.plans()[1].tls);
+            }
+        }
+    }
+}
+
+SCENARIO("Runtime listener planning carries TLS certificate paths", "[net][listener][tls]")
+{
+    GIVEN("configuration with TLS enabled for both runtime listeners")
+    {
+        auto listeners_config = merovingian::config::ListenersConfig{};
+        listeners_config.client.tls = true;
+        listeners_config.client.tls_certificate_file = "/etc/merovingian/client.pem";
+        listeners_config.client.tls_private_key_file = "/etc/merovingian/client.key";
+        listeners_config.federation.tls = true;
+        listeners_config.federation.tls_certificate_file = "/etc/merovingian/federation.pem";
+        listeners_config.federation.tls_private_key_file = "/etc/merovingian/federation.key";
+        auto const config = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            listeners_config,
+            merovingian::config::DatabaseConfig{},
+            merovingian::config::SecurityConfig{},
+        };
+
+        WHEN("runtime listeners are planned")
+        {
+            auto const listeners = merovingian::net::make_runtime_listeners(config);
+
+            THEN("the TLS key material paths are retained for listener startup")
+            {
+                REQUIRE(listeners.count() == 2U);
+                REQUIRE(listeners.plans()[0].tls);
+                REQUIRE(listeners.plans()[0].tls_certificate_file == "/etc/merovingian/client.pem");
+                REQUIRE(listeners.plans()[0].tls_private_key_file == "/etc/merovingian/client.key");
+                REQUIRE(listeners.plans()[1].tls);
+                REQUIRE(listeners.plans()[1].tls_certificate_file == "/etc/merovingian/federation.pem");
+                REQUIRE(listeners.plans()[1].tls_private_key_file == "/etc/merovingian/federation.key");
             }
         }
     }
