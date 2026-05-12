@@ -25,6 +25,7 @@ jobs:
             clang \
             clang-tidy \
             catch2 \
+            libsodium-dev \
             pkg-config
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja
@@ -44,12 +45,15 @@ jobs:
       - name: Reject unsafe allocation patterns
         run: bash scripts/reject-unsafe.sh
 
+      - name: Check release readiness metadata
+        run: sh scripts/check-release-readiness.sh
+
       - name: Stage CI artifacts
         run: |
           mkdir -p artifacts/bin artifacts/config artifacts/docs
           cp build/src/merovingian-server artifacts/bin/
           cp config/merovingian.conf.example artifacts/config/
-          cp README.md docs/configuration.md docs/phase-1.md artifacts/docs/
+          cp README.md docs/configuration.md docs/progress.md docs/protocol-coverage.md docs/01-production-readiness.md docs/security-review-checklist.md artifacts/docs/
           tar -C artifacts -czf merovingian-ci-artifacts.tar.gz .
 
       - name: Upload CI artifacts

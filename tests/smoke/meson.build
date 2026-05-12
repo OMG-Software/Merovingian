@@ -1,28 +1,10 @@
 smoke_test = find_program('sh')
 server_executable = meson.project_build_root() / 'src' / 'merovingian-server'
 setup_dev_env_script = meson.project_source_root() / 'scripts' / 'setup-dev-env.sh'
+build_linux_script = meson.project_source_root() / 'scripts' / 'build-linux.sh'
 example_config = meson.project_source_root() / 'config' / 'merovingian.conf.example'
-valid_config = meson.project_build_root() / 'valid-smoke.conf'
-check_config = meson.project_build_root() / 'check-smoke.conf'
-noop_reload_current_config = meson.project_build_root() / 'noop-reload-current-smoke.conf'
-noop_reload_next_config = meson.project_build_root() / 'noop-reload-next-smoke.conf'
-reloadable_current_config = meson.project_build_root() / 'reloadable-current-smoke.conf'
-reloadable_next_config = meson.project_build_root() / 'reloadable-next-smoke.conf'
-restart_current_config = meson.project_build_root() / 'restart-current-smoke.conf'
-restart_next_config = meson.project_build_root() / 'restart-next-smoke.conf'
-invalid_reload_current_config = meson.project_build_root() / 'invalid-reload-current-smoke.conf'
-invalid_reload_next_config = meson.project_build_root() / 'invalid-reload-next-smoke.conf'
-invalid_current_reload_config = meson.project_build_root() / 'invalid-current-reload-smoke.conf'
-valid_next_reload_config = meson.project_build_root() / 'valid-next-reload-smoke.conf'
-invalid_config = meson.project_build_root() / 'invalid-smoke.conf'
-oversized_config = meson.project_build_root() / 'oversized-smoke.conf'
-unsafe_config = meson.project_build_root() / 'unsafe-smoke.conf'
-secure_secret_config = meson.project_build_root() / 'secret-secure-smoke.conf'
-unsafe_secret_config = meson.project_build_root() / 'secret-unsafe-smoke.conf'
-redaction_config = meson.project_build_root() / 'redaction-smoke.conf'
-redaction_secret = meson.project_build_root() / 'db-uri-redaction-smoke.secret'
-secure_secret = meson.project_build_root() / 'db-uri-secure-smoke.secret'
-unsafe_secret = meson.project_build_root() / 'db-uri-unsafe-smoke.secret'
+tmp_smoke_prefix = 'tmpdir=$(mktemp -d) && trap "rm -rf \"$tmpdir\"" EXIT HUP INT TERM && '
+secure_example_config = 'example_config="$tmpdir/merovingian.conf.example" && cp ' + example_config + ' "$example_config" && chmod 0644 "$example_config" && '
 
 test(
   'server-help-smoke-test',
@@ -55,6 +37,26 @@ test(
     'MEROVINGIAN_SETUP_OS': 'Linux',
     'MEROVINGIAN_SETUP_PACKAGE_MANAGER': 'apt',
   },
+)
+
+test(
+  'build-linux-help-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'sh ' + build_linux_script + ' --help 2>&1 | grep -q "Usage:"',
+  ],
+)
+
+test(
+  'build-linux-dry-run-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    'sh '
+      + build_linux_script
+      + ' --dry-run --builddir build-clang22 --cc clang-22 --cxx clang++-22 --no-tests 2>&1 | grep -q "meson setup build-clang22"',
+  ],
 )
 
 test(
@@ -107,7 +109,7 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --version 2>&1 | grep -q "merovingian-server 0.1.3"',
+    server_executable + ' --version 2>&1 | grep -q "merovingian-server 0.1.14"',
   ],
 )
 
@@ -162,9 +164,10 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable
-      + ' --check-config '
-      + example_config
+    tmp_smoke_prefix
+      + secure_example_config
+      + server_executable
+      + ' --check-config "$example_config"'
       + ' 2>&1 | grep -q "Configuration check passed:"',
   ],
 )
@@ -174,9 +177,10 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable
-      + ' --check-config '
-      + example_config
+    tmp_smoke_prefix
+      + secure_example_config
+      + server_executable
+      + ' --check-config "$example_config"'
       + ' 2>&1 | grep -vq "Starting The Merovingian bootstrap server"',
   ],
 )
@@ -186,14 +190,12 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "server.public_baseurl=http://matrix.example.org" > '
-      + check_config
-      + ' && chmod 0644 '
-      + check_config
+    tmp_smoke_prefix
+      + 'check_config="$tmpdir/check-smoke.conf" && printf "%s\n" "server.public_baseurl=http://matrix.example.org" > "$check_config"'
+      + ' && chmod 0644 "$check_config"'
       + ' && '
       + server_executable
-      + ' --check-config '
-      + check_config
+      + ' --check-config "$check_config"'
       + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
@@ -203,20 +205,15 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "security.federation.remote_timeout=30s" > '
-      + noop_reload_current_config
-      + ' && chmod 0644 '
-      + noop_reload_current_config
-      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > '
-      + noop_reload_next_config
-      + ' && chmod 0644 '
-      + noop_reload_next_config
+    tmp_smoke_prefix
+      + 'current_config="$tmpdir/noop-reload-current-smoke.conf" && next_config="$tmpdir/noop-reload-next-smoke.conf"'
+      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > "$current_config"'
+      + ' && chmod 0644 "$current_config"'
+      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > "$next_config"'
+      + ' && chmod 0644 "$next_config"'
       + ' && output=$( '
       + server_executable
-      + ' --plan-config-reload '
-      + noop_reload_current_config
-      + ' '
-      + noop_reload_next_config
+      + ' --plan-config-reload "$current_config" "$next_config"'
       + ' 2>&1 ) && echo "$output" | grep -q "Reload plan: changes=0 reloadable=0 restart_required=0" && echo "$output" | grep -q "Reload action: no changes"',
   ],
 )
@@ -226,20 +223,15 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "security.federation.remote_timeout=30s" > '
-      + reloadable_current_config
-      + ' && chmod 0644 '
-      + reloadable_current_config
-      + ' && printf "%s\n" "security.federation.remote_timeout=45s" > '
-      + reloadable_next_config
-      + ' && chmod 0644 '
-      + reloadable_next_config
+    tmp_smoke_prefix
+      + 'current_config="$tmpdir/reloadable-current-smoke.conf" && next_config="$tmpdir/reloadable-next-smoke.conf"'
+      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > "$current_config"'
+      + ' && chmod 0644 "$current_config"'
+      + ' && printf "%s\n" "security.federation.remote_timeout=45s" > "$next_config"'
+      + ' && chmod 0644 "$next_config"'
       + ' && output=$( '
       + server_executable
-      + ' --plan-config-reload '
-      + reloadable_current_config
-      + ' '
-      + reloadable_next_config
+      + ' --plan-config-reload "$current_config" "$next_config"'
       + ' 2>&1 ) && echo "$output" | grep -q "Reload plan: changes=1 reloadable=1 restart_required=0" && echo "$output" | grep -q "Reload action: reloadable"',
   ],
 )
@@ -249,20 +241,15 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "server.name=example.org" > '
-      + restart_current_config
-      + ' && chmod 0644 '
-      + restart_current_config
-      + ' && printf "%s\n" "server.name=new.example.org" > '
-      + restart_next_config
-      + ' && chmod 0644 '
-      + restart_next_config
+    tmp_smoke_prefix
+      + 'current_config="$tmpdir/restart-current-smoke.conf" && next_config="$tmpdir/restart-next-smoke.conf"'
+      + ' && printf "%s\n" "server.name=example.org" > "$current_config"'
+      + ' && chmod 0644 "$current_config"'
+      + ' && printf "%s\n" "server.name=new.example.org" > "$next_config"'
+      + ' && chmod 0644 "$next_config"'
       + ' && output=$( '
       + server_executable
-      + ' --plan-config-reload '
-      + restart_current_config
-      + ' '
-      + restart_next_config
+      + ' --plan-config-reload "$current_config" "$next_config"'
       + ' 2>&1 ) && echo "$output" | grep -q "server.name=restart_required" && echo "$output" | grep -q "Reload action: restart required"',
   ],
 )
@@ -272,20 +259,15 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "security.federation.remote_timeout=30s" > '
-      + invalid_reload_current_config
-      + ' && chmod 0644 '
-      + invalid_reload_current_config
-      + ' && printf "%s\n" "security.federation.remote_timeout=forever" > '
-      + invalid_reload_next_config
-      + ' && chmod 0644 '
-      + invalid_reload_next_config
+    tmp_smoke_prefix
+      + 'current_config="$tmpdir/invalid-reload-current-smoke.conf" && next_config="$tmpdir/invalid-reload-next-smoke.conf"'
+      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > "$current_config"'
+      + ' && chmod 0644 "$current_config"'
+      + ' && printf "%s\n" "security.federation.remote_timeout=forever" > "$next_config"'
+      + ' && chmod 0644 "$next_config"'
       + ' && '
       + server_executable
-      + ' --plan-config-reload '
-      + invalid_reload_current_config
-      + ' '
-      + invalid_reload_next_config
+      + ' --plan-config-reload "$current_config" "$next_config"'
       + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
@@ -295,20 +277,15 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "security.federation.remote_timeout=forever" > '
-      + invalid_current_reload_config
-      + ' && chmod 0644 '
-      + invalid_current_reload_config
-      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > '
-      + valid_next_reload_config
-      + ' && chmod 0644 '
-      + valid_next_reload_config
+    tmp_smoke_prefix
+      + 'current_config="$tmpdir/invalid-current-reload-smoke.conf" && next_config="$tmpdir/valid-next-reload-smoke.conf"'
+      + ' && printf "%s\n" "security.federation.remote_timeout=forever" > "$current_config"'
+      + ' && chmod 0644 "$current_config"'
+      + ' && printf "%s\n" "security.federation.remote_timeout=30s" > "$next_config"'
+      + ' && chmod 0644 "$next_config"'
       + ' && '
       + server_executable
-      + ' --plan-config-reload '
-      + invalid_current_reload_config
-      + ' '
-      + valid_next_reload_config
+      + ' --plan-config-reload "$current_config" "$next_config"'
       + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
@@ -318,9 +295,10 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable
-      + ' --dry-run --config '
-      + example_config
+    tmp_smoke_prefix
+      + secure_example_config
+      + server_executable
+      + ' --dry-run --config "$example_config"'
       + ' 2>&1 | grep -q "Configuration validation passed"',
   ],
 )
@@ -330,9 +308,10 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable
-      + ' --dry-run --config '
-      + example_config
+    tmp_smoke_prefix
+      + secure_example_config
+      + server_executable
+      + ' --dry-run --config "$example_config"'
       + ' 2>&1 | grep -q "Configuration source: file"',
   ],
 )
@@ -342,14 +321,12 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "server.name=matrix.example.org" "server.public_baseurl=https://matrix.example.org" > '
-      + valid_config
-      + ' && chmod 0644 '
-      + valid_config
+    tmp_smoke_prefix
+      + 'valid_config="$tmpdir/valid-smoke.conf" && printf "%s\n" "server.name=matrix.example.org" "server.public_baseurl=https://matrix.example.org" > "$valid_config"'
+      + ' && chmod 0644 "$valid_config"'
       + ' && '
       + server_executable
-      + ' --dry-run --config '
-      + valid_config
+      + ' --dry-run --config "$valid_config"'
       + ' 2>&1 | grep -q "Server name: matrix.example.org"',
   ],
 )
@@ -359,14 +336,12 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "server.public_baseurl=http://matrix.example.org" > '
-      + invalid_config
-      + ' && chmod 0644 '
-      + invalid_config
+    tmp_smoke_prefix
+      + 'invalid_config="$tmpdir/invalid-smoke.conf" && printf "%s\n" "server.public_baseurl=http://matrix.example.org" > "$invalid_config"'
+      + ' && chmod 0644 "$invalid_config"'
       + ' && '
       + server_executable
-      + ' --config '
-      + invalid_config
+      + ' --config "$invalid_config"'
       + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
@@ -376,14 +351,12 @@ test(
   smoke_test,
   args: [
     '-c',
-    'dd if=/dev/zero bs=1048577 count=1 2>/dev/null | tr "\\000" "#" > '
-      + oversized_config
-      + ' && chmod 0644 '
-      + oversized_config
+    tmp_smoke_prefix
+      + 'oversized_config="$tmpdir/oversized-smoke.conf" && dd if=/dev/zero bs=1048577 count=1 2>/dev/null | tr "\\000" "#" > "$oversized_config"'
+      + ' && chmod 0644 "$oversized_config"'
       + ' && '
       + server_executable
-      + ' --config '
-      + oversized_config
+      + ' --config "$oversized_config"'
       + ' >/dev/null 2>&1; test $? -eq 78',
   ],
 )
@@ -393,14 +366,12 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "server.name=matrix.example.org" > '
-      + unsafe_config
-      + ' && chmod 0664 '
-      + unsafe_config
+    tmp_smoke_prefix
+      + 'unsafe_config="$tmpdir/unsafe-smoke.conf" && printf "%s\n" "server.name=matrix.example.org" > "$unsafe_config"'
+      + ' && chmod 0664 "$unsafe_config"'
       + ' && '
       + server_executable
-      + ' --config '
-      + unsafe_config
+      + ' --config "$unsafe_config"'
       + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
@@ -410,20 +381,15 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "postgresql://merovingian@example.invalid/merovingian" > '
-      + secure_secret
-      + ' && chmod 0600 '
-      + secure_secret
-      + ' && printf "%s\n" "database.uri_file='
-      + secure_secret
-      + '" > '
-      + secure_secret_config
-      + ' && chmod 0644 '
-      + secure_secret_config
+    tmp_smoke_prefix
+      + 'secure_secret="$tmpdir/db-uri-secure-smoke.secret" && secure_secret_config="$tmpdir/secret-secure-smoke.conf"'
+      + ' && printf "%s\n" "postgresql://merovingian@example.invalid/merovingian" > "$secure_secret"'
+      + ' && chmod 0600 "$secure_secret"'
+      + ' && printf "%s\n" "database.uri_file=$secure_secret" > "$secure_secret_config"'
+      + ' && chmod 0644 "$secure_secret_config"'
       + ' && '
       + server_executable
-      + ' --dry-run --config '
-      + secure_secret_config
+      + ' --dry-run --config "$secure_secret_config"'
       + ' 2>&1 | grep -q "Configuration validation passed"',
   ],
 )
@@ -433,20 +399,15 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "postgresql://merovingian@example.invalid/merovingian" > '
-      + unsafe_secret
-      + ' && chmod 0644 '
-      + unsafe_secret
-      + ' && printf "%s\n" "database.uri_file='
-      + unsafe_secret
-      + '" > '
-      + unsafe_secret_config
-      + ' && chmod 0644 '
-      + unsafe_secret_config
+    tmp_smoke_prefix
+      + 'unsafe_secret="$tmpdir/db-uri-unsafe-smoke.secret" && unsafe_secret_config="$tmpdir/secret-unsafe-smoke.conf"'
+      + ' && printf "%s\n" "postgresql://merovingian@example.invalid/merovingian" > "$unsafe_secret"'
+      + ' && chmod 0644 "$unsafe_secret"'
+      + ' && printf "%s\n" "database.uri_file=$unsafe_secret" > "$unsafe_secret_config"'
+      + ' && chmod 0644 "$unsafe_secret_config"'
       + ' && '
       + server_executable
-      + ' --config '
-      + unsafe_secret_config
+      + ' --config "$unsafe_secret_config"'
       + ' >/dev/null 2>&1; test $? -eq 79',
   ],
 )
@@ -456,22 +417,16 @@ test(
   smoke_test,
   args: [
     '-c',
-    'printf "%s\n" "postgresql://merovingian:topsecret@example.invalid/merovingian" > '
-      + redaction_secret
-      + ' && chmod 0600 '
-      + redaction_secret
-      + ' && printf "%s\n" "database.uri_file='
-      + redaction_secret
-      + '" > '
-      + redaction_config
-      + ' && chmod 0644 '
-      + redaction_config
+    tmp_smoke_prefix
+      + 'redaction_secret="$tmpdir/db-uri-redaction-smoke.secret" && redaction_config="$tmpdir/redaction-smoke.conf"'
+      + ' && printf "%s\n" "postgresql://merovingian:topsecret@example.invalid/merovingian" > "$redaction_secret"'
+      + ' && chmod 0600 "$redaction_secret"'
+      + ' && printf "%s\n" "database.uri_file=$redaction_secret" > "$redaction_config"'
+      + ' && chmod 0644 "$redaction_config"'
       + ' && output=$( '
       + server_executable
-      + ' --dry-run --config '
-      + redaction_config
+      + ' --dry-run --config "$redaction_config"'
       + ' 2>&1 ) && echo "$output" | grep -q "Database URI source file configured; pool_size=16" && ! echo "$output" | grep -q "topsecret" && ! echo "$output" | grep -q "postgresql://" && ! echo "$output" | grep -q "'
-      + redaction_secret
-      + '"',
+      + '$redaction_secret"',
   ],
 )

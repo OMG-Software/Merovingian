@@ -1,12 +1,14 @@
 # Media Repository
 
-Milestone 21 introduces the local media repository MVP through the real runtime path.
+This capability note describes the local media repository slice through the
+current in-process runtime path.
 
 ## Runtime Behavior
 
 - Authenticated local uploads run through the homeserver media route.
 - Downloads serve only local media owned by the configured server name.
-- Remote media fetches remain disabled and fail closed until a later milestone.
+- Remote media fetches remain disabled and fail closed until a later capability
+  change.
 - Admin quarantine, release, and remove actions update repository state, persistent metadata, admin actions, and audit events.
 - Media metrics expose accepted uploads, rejected uploads, quarantines, releases, removals, remote fetch rejections, stored blobs, and stored bytes.
 
@@ -26,10 +28,10 @@ The local HTTP router preserves the media repository status code instead of flat
 
 ## Deduplication
 
-Local media deduplication uses a SHA-256 digest and byte size. Removed blobs with a zero reference count are not reused for future uploads, because their bytes have been cleared and reusing them would corrupt successful reuploads.
+Local media deduplication uses a LibSodium `crypto_generichash` (`blake2b`) digest and byte size. Removed blobs with a zero reference count are not reused for future uploads, because their bytes have been cleared and reusing them would corrupt successful reuploads.
 
 ## Persistence
 
-Schema version `2` adds media metadata columns for `hash_algorithm`, `digest`, and `removed`. Existing version `1` schemas migrate through the `media_metadata_columns` step before startup is considered compatible.
+Schema version `2` adds media metadata columns for `hash_algorithm`, `digest`, and `removed`. Existing version `1` schemas migrate through the `media_metadata_columns` step before startup is considered compatible. New local uploads use LibSodium `crypto_generichash` (`blake2b`) for deduplication digests instead of project-local hash code.
 
 Media moderation events are persisted with the `moderation` audit category so operator filtering can distinguish media policy and admin moderation events from auth or generic admin activity.

@@ -16,6 +16,9 @@ Implemented now:
 - structured request error codes
 - content-length validation
 - transfer-encoding rejection until streaming support exists
+- single-request HTTP/1.1 adapter from parsed request heads to client-server
+  Matrix JSON handlers
+- production-named client-server API boundary in `client_server.hpp`
 - slowloris progress policy scaffolding
 - per-endpoint rate-limit policy scaffolding
 - HTTP request-head fuzz target

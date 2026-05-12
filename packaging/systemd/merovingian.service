@@ -1,0 +1,29 @@
+[Unit]
+Description=The Merovingian Matrix homeserver
+Documentation=file:/usr/share/doc/merovingian/production-readiness.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=merovingian
+Group=merovingian
+ExecStart=/usr/bin/merovingian-server --config /etc/merovingian/merovingian.conf
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/merovingian /var/log/merovingian /run/merovingian
+CapabilityBoundingSet=
+AmbientCapabilities=
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=multi-user.target

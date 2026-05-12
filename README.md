@@ -54,6 +54,18 @@ meson compile -C build
 meson test -C build
 ```
 
+Or use the checked wrapper for a Clang 22 build:
+
+```bash
+sh scripts/build-linux.sh
+```
+
+From Windows PowerShell with WSL:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-wsl.ps1 -Distro Ubuntu-24.04
+```
+
 ## Run
 
 Show usage:
@@ -96,6 +108,8 @@ See:
 - `config/merovingian.conf.example`
 - `docs/configuration.md`
 - `docs/media-repository.md`
+- `docs/01-production-readiness.md`
+- `docs/security-review-checklist.md`
 
 ## Developer environment
 
@@ -103,11 +117,13 @@ See:
 
 - `docs/dev-environment.md`
 
-## Phase status
+## Project status
 
 See:
 
-- `docs/phase-1.md`
+- `docs/progress.md`
+- `docs/protocol-coverage.md`
+- `docs/01-production-readiness.md`
 
 ## Test standards
 
@@ -118,4 +134,8 @@ See:
 
 ## Status
 
-Bootstrap binary now opens TCP listeners and serves HTTP/1.1 requests through the local router. TLS, libsodium-backed crypto, and on-disk persistence are still pending.
+Prototype homeserver with packaging and release-readiness gates in progress.
+The bootstrap binary now opens TCP listeners and serves HTTP/1.1 requests
+through the local router; TLS and persistent storage are still pending.
+Do not deploy as a production Matrix homeserver until
+`docs/01-production-readiness.md` has no blocking gates.

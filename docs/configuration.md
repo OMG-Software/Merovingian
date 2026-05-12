@@ -250,6 +250,20 @@ Startup logs a fixed checklist of hardening signals. Phase 2 exposes the checkli
 | `privilege drop` | Placeholder, currently `unknown` |
 | `filesystem restrictions` | Placeholder, currently `unknown` |
 | `core dump policy` | Placeholder, currently `unknown` |
+
+## Production packaging
+
+Production package assets are intentionally separated from the bootstrap config:
+
+- `packaging/systemd/merovingian.service`
+- `packaging/openrc/merovingian`
+- `packaging/rc.d/merovingian`
+- `Dockerfile`
+
+These assets are deployment scaffolds until the production-readiness gates in
+`docs/01-production-readiness.md` pass. Do not publish them as a production release
+while runtime listeners, durable storage, federation verification, or hardening
+checks remain incomplete.
 | `secret redaction policy` | Enabled by validated logging defaults |
 
 Unknown values are not success claims. They mark work that still requires platform-specific runtime probes or sandbox setup.

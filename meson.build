@@ -1,7 +1,7 @@
 project(
   'the-merovingian',
   'cpp',
-  version: '0.1.3',
+  version: '0.1.14',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -14,6 +14,7 @@ project(
 
 cpp = meson.get_compiler('cpp')
 thread_dep = dependency('threads')
+libsodium_dep = dependency('libsodium')
 
 warning_flags = [
   '-Wall',
@@ -31,6 +32,7 @@ warning_flags = [
   '-Wdouble-promotion',
   '-Wformat=2',
   '-Wimplicit-fallthrough',
+  '-Wno-c2y-extensions',
 ]
 
 hardening_compile_flags = [

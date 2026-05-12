@@ -16,8 +16,11 @@ public:
     ShutdownSignal(ShutdownSignal const&) = delete;
     auto operator=(ShutdownSignal const&) -> ShutdownSignal& = delete;
 
-    ShutdownSignal(ShutdownSignal&&) noexcept = default;
-    auto operator=(ShutdownSignal&&) noexcept -> ShutdownSignal& = default;
+    // The atomic flag is not movable, and install_shutdown_signal_handlers
+    // stores the address of this object for the signal handler; moving would
+    // dangle that pointer. Pin the object to its construction site.
+    ShutdownSignal(ShutdownSignal&&) noexcept = delete;
+    auto operator=(ShutdownSignal&&) noexcept -> ShutdownSignal& = delete;
 
     ~ShutdownSignal() = default;
 

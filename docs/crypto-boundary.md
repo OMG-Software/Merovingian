@@ -1,8 +1,9 @@
-# Milestone 7: Cryptography boundary and signing service scaffold
+# Cryptography boundary and signing service scaffold
 
-Milestone 7 introduces project-owned cryptography interfaces without implementing custom cryptographic primitives.
+This capability note describes project-owned cryptography interfaces without
+implementing custom cryptographic primitives.
 
-## Included in Milestone 7
+## Included now
 
 - Constant-time comparison boundary.
 - Random-source interface for future reviewed RNG integration.
@@ -15,7 +16,10 @@ Milestone 7 introduces project-owned cryptography interfaces without implementin
 
 ## Security posture
 
-This milestone intentionally does not implement Ed25519, token generation, password hashing, or random byte generation. Those must be supplied by reviewed cryptographic dependencies through these interfaces.
+This capability intentionally does not yet implement Ed25519 signing or
+verification. Local homeserver password hashing, access-token generation,
+access-token hashing, and media deduplication hashes now use LibSodium directly
+while the remaining signing-provider boundary is completed.
 
 The boundary provides these guarantees:
 
@@ -27,12 +31,9 @@ The boundary provides these guarantees:
 
 ## Deliberately not included
 
-These are deferred to later milestones:
+These remain deferred:
 
-- libsodium or TLS-provider integration.
 - Real Ed25519 signing and verification.
-- Password hashing implementation.
-- Random token generation implementation.
 - Server signing-key persistence.
 - Signing-key rotation and audit-log persistence.
 - Hardware-backed key support.

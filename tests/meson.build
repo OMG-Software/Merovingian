@@ -1,22 +1,21 @@
 if get_option('build_tests')
+  shell = find_program('sh')
   catch2_dep = dependency(
     'catch2',
     required: false,
     fallback: ['catch2', 'catch2_dep'],
   )
 
-  unit_test_registration_check = find_program('../scripts/check-unit-test-registration.sh')
   test(
     'unit-test-registration',
-    unit_test_registration_check,
-    args: [meson.project_source_root()],
+    shell,
+    args: [meson.project_source_root() / 'scripts' / 'check-unit-test-registration.sh', meson.project_source_root()],
   )
 
-  catch2_bdd_check = find_program('../scripts/check-catch2-bdd-tests.sh')
   test(
     'catch2-bdd-tests',
-    catch2_bdd_check,
-    args: [meson.project_source_root()],
+    shell,
+    args: [meson.project_source_root() / 'scripts' / 'check-catch2-bdd-tests.sh', meson.project_source_root()],
   )
 
   unit_tests = executable(
@@ -28,7 +27,7 @@ if get_option('build_tests')
       'unit/test_auth_session.cpp',
       'unit/test_canonicaljson_parser.cpp',
       'unit/test_canonicaljson_serializer.cpp',
-      'unit/test_client_server_mvp.cpp',
+      'unit/test_client_server.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_media_timeout.cpp',
       'unit/test_config_parser.cpp',
@@ -70,7 +69,7 @@ if get_option('build_tests')
       'unit/test_trust_safety_policy.cpp',
     ),
     include_directories: inc,
-    dependencies: [catch2_dep, thread_dep],
+    dependencies: [catch2_dep, thread_dep, libsodium_dep],
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, trust_safety_lib],
   )
 
@@ -80,7 +79,7 @@ if get_option('build_tests')
     'merovingian-integration-tests',
     sources: files(
       'integration/test_main.cpp',
-      'integration/test_client_server_mvp_flow.cpp',
+      'integration/test_client_server_flow.cpp',
       'integration/test_federation_inbound_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_http_server_listener_flow.cpp',
@@ -91,7 +90,7 @@ if get_option('build_tests')
       'integration/test_trust_safety_policy_flow.cpp',
     ),
     include_directories: inc,
-    dependencies: [catch2_dep, thread_dep],
+    dependencies: [catch2_dep, thread_dep, libsodium_dep],
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, trust_safety_lib],
   )
 

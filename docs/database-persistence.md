@@ -1,8 +1,9 @@
-# Milestone 8: Database persistence and migration scaffold
+# Database persistence and migration scaffold
 
-Milestone 8 introduces the project-owned database persistence boundary needed before adding concrete PostgreSQL/libpq integration.
+This capability note describes the project-owned database persistence boundary
+needed before adding concrete PostgreSQL/libpq and SQLite integration.
 
-## Included in Milestone 8
+## Included now
 
 - Prepared statement representation.
 - Bound parameter representation with sensitivity metadata.
@@ -19,7 +20,8 @@ Milestone 8 introduces the project-owned database persistence boundary needed be
 
 ## Security posture
 
-The database module deliberately does not add libpq yet. The milestone establishes a narrow project-owned boundary first so later database code does not leak dependency-specific types through the homeserver.
+The database module deliberately does not add libpq or SQLite execution yet. The
+current boundary keeps dependency-specific types out of the homeserver.
 
 The boundary provides these guarantees:
 
@@ -33,7 +35,7 @@ The boundary provides these guarantees:
 
 ## Deliberately not included
 
-These are deferred to later milestones:
+These remain deferred:
 
 - libpq dependency integration.
 - Live PostgreSQL connection management.
