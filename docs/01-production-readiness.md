@@ -13,6 +13,9 @@ documents are historical notes only.
 
 - The server executable must keep real listener coverage in CI and serve
   requests until it is stopped by the service manager.
+- Public listeners must use configured TLS with validated certificate and
+  private-key files; loopback cleartext remains available for reverse-proxy
+  deployments.
 - Client-server routes run through the socket accept/read/write loop and the
   Matrix JSON adapter. They still require full Matrix v1.18 conformance,
   persistence, endpoint coverage, and production-grade rate limiting before

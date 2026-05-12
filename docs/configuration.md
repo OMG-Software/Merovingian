@@ -67,6 +67,9 @@ Rejected cases include:
 - non-HTTPS public base URL
 - malformed listener bind address
 - cleartext listener on a non-loopback interface
+- TLS listener without certificate or private-key paths
+- missing configured TLS certificate or private-key file
+- unsafe configured TLS certificate or private-key file permissions
 - open registration without token requirement
 - disabled default encryption for new rooms
 - disabled direct-message encryption requirement
@@ -109,6 +112,24 @@ A listener with `tls=false` must bind to one of:
 - `[::1]`
 
 A non-loopback listener must set `tls=true`.
+
+When a listener sets `tls=true`, it must also set both key-material paths:
+
+```text
+listeners.client.tls=true
+listeners.client.tls_certificate_file=/etc/merovingian/client.pem
+listeners.client.tls_private_key_file=/etc/merovingian/client.key
+listeners.federation.tls=true
+listeners.federation.tls_certificate_file=/etc/merovingian/federation.pem
+listeners.federation.tls_private_key_file=/etc/merovingian/federation.key
+```
+
+Configured TLS certificate files must exist as regular non-executable files
+without group or other write permission. Configured TLS private-key files must
+exist as regular owner-only non-executable secret files. Startup loads the
+certificate chain and private key before binding the listener, verifies that the
+private key matches the certificate, and fails closed if OpenSSL rejects either
+file.
 
 ## Federation exposure policy
 
@@ -208,8 +229,10 @@ Reload action: no changes
 | --- | --- |
 | `server.name` | Restart required |
 | `database.uri_file` | Restart required |
+| `listeners.*.tls_certificate_file` | Restart required |
+| `listeners.*.tls_private_key_file` | Restart required |
 | `database.pool_size` | Reloadable |
-| `listeners.*` | Reloadable |
+| Other `listeners.*` keys | Reloadable |
 | `security.registration.*` | Reloadable |
 | `security.encryption.*` | Reloadable |
 | `security.federation.*` | Reloadable |

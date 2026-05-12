@@ -29,17 +29,31 @@ Implemented now:
 - dispatch-mode separation so client listeners use the Matrix JSON
   `client_server` adapter while federation/internal compatibility paths can
   keep using the local router
+- OpenSSL-backed TLS server context and connection wrappers
+- TLS listener accept path with bounded handshake timeout
 - single-mutex serialisation of runtime mutation across acceptors
 
 Not implemented yet:
 
-- TLS provider integration (TLS listeners fail closed at startup)
 - `llhttp` dependency wrapper
 - request body streaming implementation
 - per-endpoint rate-limit enforcement
 - runtime application of the slowloris progress policy
 - HTTP/2
 - keep-alive (every connection currently sends `Connection: close`)
+
+## TLS listener boundary
+
+TLS is a runtime listener boundary, not a replacement for the HTTP parser. The
+listener accepts TCP, upgrades the accepted socket through
+`merovingian::homeserver::TlsServerContext`, then passes a stream abstraction to
+the same bounded HTTP/1.1 request path used by cleartext loopback listeners.
+
+TLS startup fails closed when OpenSSL cannot initialise, load the certificate
+chain, load the private key, or verify that the private key matches the
+certificate. Handshakes use a bounded timeout aligned with the current
+per-connection read deadline. The server currently enforces TLS 1.2 or newer and
+keeps connection lifetime to a single HTTP request.
 
 ## Request limits
 

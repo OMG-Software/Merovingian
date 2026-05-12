@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.18
+
+- Added an OpenSSL-backed TLS server boundary with RAII context and connection
+  wrappers, handshake timeouts, TLS 1.2 minimum protocol enforcement, and
+  fail-closed certificate/key loading.
+- Wired TLS listener plans into the runtime accept loop so `listeners.*.tls=true`
+  can serve the existing HTTP Matrix JSON adapter instead of being rejected at
+  startup.
+- Added listener TLS certificate/private-key configuration keys, validation,
+  reload planning, secure file metadata checks, and loopback TLS integration
+  coverage.
+
 ## 0.1.17
 
 - Marked the pinned `yyjson` fallback include directory as a system include so

@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/reload_policy.hpp>
-
-#include <catch2/catch_test_macros.hpp>
-
 #include <array>
 #include <string>
 #include <string_view>
+
+#include <catch2/catch_test_macros.hpp>
+#include <merovingian/config/reload_policy.hpp>
 
 SCENARIO("Runtime-facing config keys are reloadable", "[config][reload]")
 {
@@ -69,8 +68,8 @@ SCENARIO("Runtime-facing config groups are reloadable", "[config][reload]")
             auto all_reloadable = true;
             for (auto const key : keys)
             {
-                all_reloadable = all_reloadable
-                    && merovingian::config::reload_policy_for_key(key) == merovingian::config::ReloadPolicy::reloadable;
+                all_reloadable = all_reloadable && merovingian::config::reload_policy_for_key(key) ==
+                                                       merovingian::config::ReloadPolicy::reloadable;
             }
 
             THEN("each policy is reloadable")
@@ -87,16 +86,22 @@ SCENARIO("Identity and secret source config keys require restart", "[config][rel
     {
         auto constexpr server_name_key = "server.name";
         auto constexpr database_uri_key = "database.uri_file";
+        auto constexpr tls_certificate_key = "listeners.client.tls_certificate_file";
+        auto constexpr tls_private_key = "listeners.client.tls_private_key_file";
 
         WHEN("their reload policies are requested")
         {
             auto const server_name_policy = merovingian::config::reload_policy_for_key(server_name_key);
             auto const database_uri_policy = merovingian::config::reload_policy_for_key(database_uri_key);
+            auto const tls_certificate_policy = merovingian::config::reload_policy_for_key(tls_certificate_key);
+            auto const tls_private_key_policy = merovingian::config::reload_policy_for_key(tls_private_key);
 
             THEN("both policies require restart")
             {
                 REQUIRE(server_name_policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(database_uri_policy == merovingian::config::ReloadPolicy::restart_required);
+                REQUIRE(tls_certificate_policy == merovingian::config::ReloadPolicy::restart_required);
+                REQUIRE(tls_private_key_policy == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }

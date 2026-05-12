@@ -5,17 +5,19 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <merovingian/core/socket_handle.hpp>
-#include <merovingian/homeserver/http_server.hpp>
-#include <merovingian/http/request.hpp>
-#include <merovingian/http/request_limits.hpp>
 #include <mutex>
-#include <poll.h>
 #include <string>
 #include <string_view>
+#include <utility>
+
+#include <merovingian/core/socket_handle.hpp>
+#include <merovingian/homeserver/http_server.hpp>
+#include <merovingian/homeserver/tls.hpp>
+#include <merovingian/http/request.hpp>
+#include <merovingian/http/request_limits.hpp>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
-#include <utility>
 
 namespace merovingian::homeserver
 {
@@ -27,6 +29,76 @@ namespace
     // connection-level accounting lands.
     constexpr auto receive_timeout_milliseconds = 15000;
     constexpr auto header_terminator = std::string_view{"\r\n\r\n"};
+
+    class ConnectionStream
+    {
+    public:
+        ConnectionStream() = default;
+        virtual ~ConnectionStream() = default;
+
+        ConnectionStream(ConnectionStream const&) = delete;
+        auto operator=(ConnectionStream const&) -> ConnectionStream& = delete;
+
+        ConnectionStream(ConnectionStream&&) = delete;
+        auto operator=(ConnectionStream&&) -> ConnectionStream& = delete;
+
+        [[nodiscard]] virtual auto fd() const noexcept -> int = 0;
+        [[nodiscard]] virtual auto read(char* buffer, std::size_t capacity) noexcept -> std::ptrdiff_t = 0;
+        [[nodiscard]] virtual auto write(std::string_view data) noexcept -> std::ptrdiff_t = 0;
+    };
+
+    class PlainConnectionStream final : public ConnectionStream
+    {
+    public:
+        explicit PlainConnectionStream(int file_descriptor) noexcept : m_fd{file_descriptor}
+        {
+        }
+
+        [[nodiscard]] auto fd() const noexcept -> int override
+        {
+            return m_fd;
+        }
+
+        [[nodiscard]] auto read(char* buffer, std::size_t capacity) noexcept -> std::ptrdiff_t override
+        {
+            return ::recv(m_fd, buffer, capacity, 0);
+        }
+
+        [[nodiscard]] auto write(std::string_view data) noexcept -> std::ptrdiff_t override
+        {
+            // MSG_NOSIGNAL avoids SIGPIPE on early client close (POSIX 2008).
+            return ::send(m_fd, data.data(), data.size(), MSG_NOSIGNAL);
+        }
+
+    private:
+        int m_fd;
+    };
+
+    class TlsConnectionStream final : public ConnectionStream
+    {
+    public:
+        explicit TlsConnectionStream(TlsConnection& connection) noexcept : m_connection{connection}
+        {
+        }
+
+        [[nodiscard]] auto fd() const noexcept -> int override
+        {
+            return m_connection.fd();
+        }
+
+        [[nodiscard]] auto read(char* buffer, std::size_t capacity) noexcept -> std::ptrdiff_t override
+        {
+            return m_connection.read(buffer, capacity);
+        }
+
+        [[nodiscard]] auto write(std::string_view data) noexcept -> std::ptrdiff_t override
+        {
+            return m_connection.write(data);
+        }
+
+    private:
+        TlsConnection& m_connection;
+    };
 
     [[nodiscard]] auto header_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
     {
@@ -41,10 +113,11 @@ namespace
         return static_cast<std::size_t>(limits.max_body_bytes);
     }
 
-    [[nodiscard]] auto recv_with_timeout(int fd, char* buffer, std::size_t capacity) noexcept -> ssize_t
+    [[nodiscard]] auto recv_with_timeout(ConnectionStream& stream, char* buffer, std::size_t capacity) noexcept
+        -> std::ptrdiff_t
     {
         auto entry = pollfd{};
-        entry.fd = fd;
+        entry.fd = stream.fd();
         entry.events = POLLIN;
         auto const poll_result = ::poll(&entry, 1U, receive_timeout_milliseconds);
         if (poll_result <= 0)
@@ -55,10 +128,11 @@ namespace
         {
             return -1;
         }
-        return ::recv(fd, buffer, capacity, 0);
+        return stream.read(buffer, capacity);
     }
 
-    [[nodiscard]] auto read_request_head(int fd, std::size_t cap) -> std::pair<std::string, std::size_t>
+    [[nodiscard]] auto read_request_head(ConnectionStream& stream, std::size_t cap)
+        -> std::pair<std::string, std::size_t>
     {
         auto buffer = std::string{};
         auto chunk = std::array<char, 4096U>{};
@@ -70,7 +144,7 @@ namespace
             }
             auto const remaining_capacity = cap - buffer.size();
             auto const wanted = remaining_capacity < chunk.size() ? remaining_capacity : chunk.size();
-            auto const received = recv_with_timeout(fd, chunk.data(), wanted);
+            auto const received = recv_with_timeout(stream, chunk.data(), wanted);
             if (received <= 0)
             {
                 return {std::move(buffer), std::string::npos};
@@ -84,8 +158,8 @@ namespace
         }
     }
 
-    [[nodiscard]] auto read_remaining_body(int fd, std::string head_tail, std::size_t expected, std::size_t cap)
-        -> std::string
+    [[nodiscard]] auto read_remaining_body(ConnectionStream& stream, std::string head_tail, std::size_t expected,
+                                           std::size_t cap) -> std::string
     {
         if (expected > cap)
         {
@@ -102,7 +176,7 @@ namespace
         {
             auto const remaining = expected - body.size();
             auto const wanted = remaining < chunk.size() ? remaining : chunk.size();
-            auto const received = recv_with_timeout(fd, chunk.data(), wanted);
+            auto const received = recv_with_timeout(stream, chunk.data(), wanted);
             if (received <= 0)
             {
                 return {};
@@ -160,13 +234,12 @@ namespace
         return response;
     }
 
-    auto send_all(int fd, std::string_view data) noexcept -> bool
+    auto send_all(ConnectionStream& stream, std::string_view data) noexcept -> bool
     {
         auto remaining = data;
         while (!remaining.empty())
         {
-            // MSG_NOSIGNAL avoids SIGPIPE on early client close (POSIX 2008).
-            auto const sent = ::send(fd, remaining.data(), remaining.size(), MSG_NOSIGNAL);
+            auto const sent = stream.write(remaining);
             if (sent <= 0)
             {
                 return false;
@@ -243,10 +316,10 @@ namespace
         return request;
     }
 
-    auto write_error_response(int client_fd, std::uint16_t status, std::string_view body) noexcept -> void
+    auto write_error_response(ConnectionStream& stream, std::uint16_t status, std::string_view body) noexcept -> void
     {
         auto const response = format_response(status, body);
-        static_cast<void>(send_all(client_fd, response));
+        static_cast<void>(send_all(stream, response));
     }
 
     [[nodiscard]] auto dispatch_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
@@ -260,73 +333,80 @@ namespace
         return handle_local_http_request(runtime.homeserver, request);
     }
 
-} // namespace
-
-auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, std::mutex& runtime_lock,
-                               HttpServeStats& stats, HttpDispatchMode dispatch_mode) -> void
-{
-    auto const limits = http::RequestLimits{};
-    auto const head_cap = header_size_cap(limits);
-    auto [buffer, head_end] = read_request_head(client_fd, head_cap);
-
-    if (head_end == std::string::npos)
+    auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, std::mutex& runtime_lock,
+                      HttpServeStats& stats, HttpDispatchMode dispatch_mode) -> void
     {
-        {
-            auto guard = std::lock_guard<std::mutex>{runtime_lock};
-            ++stats.rejected_requests;
-        }
-        if (buffer.size() >= head_cap)
-        {
-            write_error_response(client_fd, 413U, "request head too large");
-        }
-        else
-        {
-            write_error_response(client_fd, 408U, "request head incomplete or timed out");
-        }
-        return;
-    }
+        auto const limits = http::RequestLimits{};
+        auto const head_cap = header_size_cap(limits);
+        auto [buffer, head_end] = read_request_head(stream, head_cap);
 
-    auto const parse = http::parse_request_head(std::string_view{buffer.data(), head_end});
-    if (parse.error != http::RequestErrorCode::none)
-    {
-        {
-            auto guard = std::lock_guard<std::mutex>{runtime_lock};
-            ++stats.rejected_requests;
-        }
-        auto reason = std::string{"request rejected: "};
-        reason.append(http::request_error_name(parse.error));
-        write_error_response(client_fd, http::request_error_status(parse.error), reason);
-        return;
-    }
-
-    auto body_tail = std::string{buffer.substr(head_end)};
-    auto body = std::string{};
-    if (parse.request.has_content_length && parse.request.content_length > 0U)
-    {
-        auto const expected = static_cast<std::size_t>(parse.request.content_length);
-        body = read_remaining_body(client_fd, std::move(body_tail), expected, body_size_cap(limits));
-        if (body.size() != expected)
+        if (head_end == std::string::npos)
         {
             {
                 auto guard = std::lock_guard<std::mutex>{runtime_lock};
                 ++stats.rejected_requests;
             }
-            write_error_response(client_fd, 408U, "request body incomplete or timed out");
+            if (buffer.size() >= head_cap)
+            {
+                write_error_response(stream, 413U, "request head too large");
+            }
+            else
+            {
+                write_error_response(stream, 408U, "request head incomplete or timed out");
+            }
             return;
         }
+
+        auto const parse = http::parse_request_head(std::string_view{buffer.data(), head_end});
+        if (parse.error != http::RequestErrorCode::none)
+        {
+            {
+                auto guard = std::lock_guard<std::mutex>{runtime_lock};
+                ++stats.rejected_requests;
+            }
+            auto reason = std::string{"request rejected: "};
+            reason.append(http::request_error_name(parse.error));
+            write_error_response(stream, http::request_error_status(parse.error), reason);
+            return;
+        }
+
+        auto body_tail = std::string{buffer.substr(head_end)};
+        auto body = std::string{};
+        if (parse.request.has_content_length && parse.request.content_length > 0U)
+        {
+            auto const expected = static_cast<std::size_t>(parse.request.content_length);
+            body = read_remaining_body(stream, std::move(body_tail), expected, body_size_cap(limits));
+            if (body.size() != expected)
+            {
+                {
+                    auto guard = std::lock_guard<std::mutex>{runtime_lock};
+                    ++stats.rejected_requests;
+                }
+                write_error_response(stream, 408U, "request body incomplete or timed out");
+                return;
+            }
+        }
+
+        auto const local_request = build_local_request(parse.request, std::move(body));
+
+        auto response = LocalHttpResponse{};
+        {
+            auto guard = std::lock_guard<std::mutex>{runtime_lock};
+            response = dispatch_request(runtime, local_request, dispatch_mode);
+            ++stats.completed_requests;
+        }
+
+        auto const formatted = format_response(response.status, response.body);
+        static_cast<void>(send_all(stream, formatted));
     }
 
-    auto const local_request = build_local_request(parse.request, std::move(body));
+} // namespace
 
-    auto response = LocalHttpResponse{};
-    {
-        auto guard = std::lock_guard<std::mutex>{runtime_lock};
-        response = dispatch_request(runtime, local_request, dispatch_mode);
-        ++stats.completed_requests;
-    }
-
-    auto const formatted = format_response(response.status, response.body);
-    static_cast<void>(send_all(client_fd, formatted));
+auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, std::mutex& runtime_lock,
+                               HttpServeStats& stats, HttpDispatchMode dispatch_mode) -> void
+{
+    auto stream = PlainConnectionStream{client_fd};
+    serve_stream(stream, runtime, runtime_lock, stats, dispatch_mode);
 }
 
 auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::mutex& runtime_lock,
@@ -373,6 +453,65 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::m
             ++stats.accepted_connections;
         }
         serve_one_http_connection(client.native_handle(), runtime, runtime_lock, stats, dispatch_mode);
+        static_cast<void>(::shutdown(client.native_handle(), SHUT_RDWR));
+    }
+}
+
+auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
+                    std::mutex& runtime_lock, net::ShutdownSignal& shutdown, HttpServeStats& stats,
+                    HttpDispatchMode dispatch_mode) -> void
+{
+    while (!shutdown.fired() && acceptor.valid())
+    {
+        auto entries = std::array<pollfd, 2U>{};
+        entries[0].fd = acceptor.fd();
+        entries[0].events = POLLIN;
+        entries[1].fd = shutdown.read_fd();
+        entries[1].events = POLLIN;
+
+        auto const poll_result = ::poll(entries.data(), entries.size(), -1);
+        if (poll_result < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            return;
+        }
+        if ((entries[1].revents & POLLIN) != 0 || shutdown.fired())
+        {
+            return;
+        }
+        if ((entries[0].revents & POLLIN) == 0)
+        {
+            continue;
+        }
+
+        auto raw_client = ::accept(acceptor.fd(), nullptr, nullptr);
+        if (raw_client < 0)
+        {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
+            {
+                continue;
+            }
+            return;
+        }
+        auto client = core::SocketHandle{raw_client};
+        {
+            auto guard = std::lock_guard<std::mutex>{runtime_lock};
+            ++stats.accepted_connections;
+        }
+
+        auto accepted_tls = accept_tls_connection(tls_context, client.native_handle(), receive_timeout_milliseconds);
+        if (!accepted_tls.ok())
+        {
+            auto guard = std::lock_guard<std::mutex>{runtime_lock};
+            ++stats.rejected_requests;
+            continue;
+        }
+
+        auto stream = TlsConnectionStream{*accepted_tls.connection};
+        serve_stream(stream, runtime, runtime_lock, stats, dispatch_mode);
         static_cast<void>(::shutdown(client.native_handle(), SHUT_RDWR));
     }
 }

@@ -1,22 +1,40 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/config.hpp>
-
 #include <limits>
 #include <utility>
+
+#include <merovingian/config/config.hpp>
 
 namespace merovingian::config
 {
 
-Config::Config(
-    ServerConfig server,
-    ListenersConfig listeners,
-    DatabaseConfig database,
-    SecurityConfig security
-)
-    : m_server{std::move(server)},
-      m_listeners{std::move(listeners)},
-      m_database{std::move(database)},
+namespace
+{
+
+    auto validate_listener_tls_files(std::vector<ConfigValidationFinding>& findings, ListenerConfig const& listener,
+                                     std::string_view prefix) -> void
+    {
+        if (!listener.tls)
+        {
+            return;
+        }
+
+        if (listener.tls_certificate_file.empty())
+        {
+            findings.push_back(
+                {std::string{prefix} + ".tls_certificate_file", "TLS listener requires a certificate file"});
+        }
+        if (listener.tls_private_key_file.empty())
+        {
+            findings.push_back(
+                {std::string{prefix} + ".tls_private_key_file", "TLS listener requires a private key file"});
+        }
+    }
+
+} // namespace
+
+Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security)
+    : m_server{std::move(server)}, m_listeners{std::move(listeners)}, m_database{std::move(database)},
       m_security{std::move(security)}
 {
 }
@@ -72,8 +90,9 @@ auto parse_database_backend(std::string_view value) noexcept -> std::optional<Da
 auto database_backend_performance_warning(DatabaseBackend backend) noexcept -> std::string_view
 {
     return backend == DatabaseBackend::sqlite
-        ? "SQLite is intended only for small installations and development; PostgreSQL is recommended for production or high-throughput deployments."
-        : std::string_view{};
+               ? "SQLite is intended only for small installations and development; PostgreSQL is recommended for "
+                 "production or high-throughput deployments."
+               : std::string_view{};
 }
 
 auto parse_port(std::string_view value) noexcept -> std::uint32_t
@@ -284,8 +303,8 @@ auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseRes
 
 auto is_private_or_loopback_range(std::string_view range) noexcept -> bool
 {
-    return range == "127.0.0.0/8" || range == "10.0.0.0/8" || range == "172.16.0.0/12"
-        || range == "192.168.0.0/16" || range == "::1/128" || range == "fc00::/7";
+    return range == "127.0.0.0/8" || range == "10.0.0.0/8" || range == "172.16.0.0/12" || range == "192.168.0.0/16" ||
+           range == "::1/128" || range == "fc00::/7";
 }
 
 auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
@@ -310,6 +329,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"listeners.client.tls", "cleartext client listener must bind only to loopback"});
     }
+    validate_listener_tls_files(findings, config.listeners().client, "listeners.client");
 
     if (!is_valid_listener_bind(config.listeners().federation.bind))
     {
@@ -319,6 +339,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     {
         findings.push_back({"listeners.federation.tls", "cleartext federation listener must bind only to loopback"});
     }
+    validate_listener_tls_files(findings, config.listeners().federation, "listeners.federation");
 
     if (config.database().backend == DatabaseBackend::postgresql && config.database().uri_file.empty())
     {
@@ -347,7 +368,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 
     if (!config.security().encryption.require_for_direct_messages)
     {
-        findings.push_back({"security.encryption.require_for_direct_messages", "direct messages must require encryption"});
+        findings.push_back(
+            {"security.encryption.require_for_direct_messages", "direct messages must require encryption"});
     }
 
     if (!is_valid_federation_policy(config.security().federation.default_policy))
@@ -355,10 +377,11 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.federation.default_policy", "federation default policy must be allow or deny"});
     }
 
-    if (config.security().federation.enabled && config.security().federation.default_policy == "deny"
-        && config.security().federation.allowed_servers.empty())
+    if (config.security().federation.enabled && config.security().federation.default_policy == "deny" &&
+        config.security().federation.allowed_servers.empty())
     {
-        findings.push_back({"security.federation.allowed_servers", "deny-by-default federation requires an allowed server list"});
+        findings.push_back(
+            {"security.federation.allowed_servers", "deny-by-default federation requires an allowed server list"});
     }
 
     for (auto const& allowed_server : config.security().federation.allowed_servers)
@@ -386,7 +409,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 
     if (!config.security().federation.verify_json_signatures)
     {
-        findings.push_back({"security.federation.verify_json_signatures", "federation JSON signatures must be verified"});
+        findings.push_back(
+            {"security.federation.verify_json_signatures", "federation JSON signatures must be verified"});
     }
 
     auto has_private_or_loopback_block = false;
@@ -403,19 +427,22 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     auto const federation_max_transaction_size = parse_size_limit(config.security().federation.max_transaction_size);
     if (!federation_max_transaction_size.valid)
     {
-        findings.push_back({"security.federation.max_transaction_size", "federation transaction size must be a positive bounded byte size"});
+        findings.push_back({"security.federation.max_transaction_size",
+                            "federation transaction size must be a positive bounded byte size"});
     }
 
     auto const federation_remote_timeout = parse_duration_seconds(config.security().federation.remote_timeout);
     if (!federation_remote_timeout.valid)
     {
-        findings.push_back({"security.federation.remote_timeout", "federation remote timeout must be a positive bounded duration"});
+        findings.push_back(
+            {"security.federation.remote_timeout", "federation remote timeout must be a positive bounded duration"});
     }
 
     auto const media_max_upload_size = parse_size_limit(config.security().media.max_upload_size);
     if (!media_max_upload_size.valid)
     {
-        findings.push_back({"security.media.max_upload_size", "media upload size must be a positive bounded byte size"});
+        findings.push_back(
+            {"security.media.max_upload_size", "media upload size must be a positive bounded byte size"});
     }
 
     if (!config.security().media.block_private_ip_fetches)
@@ -426,7 +453,8 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     auto const media_remote_fetch_timeout = parse_duration_seconds(config.security().media.remote_fetch_timeout);
     if (!media_remote_fetch_timeout.valid)
     {
-        findings.push_back({"security.media.remote_fetch_timeout", "media remote fetch timeout must be a positive bounded duration"});
+        findings.push_back(
+            {"security.media.remote_fetch_timeout", "media remote fetch timeout must be a positive bounded duration"});
     }
 
     if (!config.security().media.decode_in_sandbox)

@@ -16,11 +16,12 @@ fixtures.
 
 ## Listener wiring
 
-The runtime listener (`merovingian::homeserver::serve_http`) now binds the
-configured client (and federation, when enabled) listeners. Client listeners
-dispatch parsed HTTP/1.1 requests into the `client_server` Matrix JSON adapter
-(`handle_client_server_request`). Federation and internal compatibility paths
-can still dispatch into the legacy local router until those surfaces have
+The runtime listener (`merovingian::homeserver::serve_http` and
+`serve_tls_http`) now binds the configured client (and federation, when enabled)
+listeners. Client listeners dispatch parsed HTTP/1.1 requests into the
+`client_server` Matrix JSON adapter (`handle_client_server_request`) over either
+loopback cleartext or configured TLS. Federation and internal compatibility
+paths can still dispatch into the legacy local router until those surfaces have
 production adapters. Advancing endpoints below to `covered` still requires full
 Matrix v1.18 behavior, durable state where applicable, and conformance evidence.
 

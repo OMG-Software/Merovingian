@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/config.hpp>
-
-#include <catch2/catch_test_macros.hpp>
-
 #include <cstdint>
 #include <string>
+
+#include <catch2/catch_test_macros.hpp>
+#include <merovingian/config/config.hpp>
 
 SCENARIO("Config provides secure server and listener defaults", "[config]")
 {
@@ -26,10 +25,43 @@ SCENARIO("Config provides secure server and listener defaults", "[config]")
                 REQUIRE(server.trusted_proxies.empty());
                 REQUIRE(listeners.client.bind == "127.0.0.1:8008");
                 REQUIRE_FALSE(listeners.client.tls);
+                REQUIRE(listeners.client.tls_certificate_file.empty());
+                REQUIRE(listeners.client.tls_private_key_file.empty());
                 REQUIRE(listeners.federation.bind == "127.0.0.1:8448");
                 REQUIRE_FALSE(listeners.federation.tls);
+                REQUIRE(listeners.federation.tls_certificate_file.empty());
+                REQUIRE(listeners.federation.tls_private_key_file.empty());
                 REQUIRE(database.uri_file == "/etc/merovingian/db-uri");
                 REQUIRE(database.pool_size == 16U);
+            }
+        }
+    }
+}
+
+SCENARIO("Config validation rejects TLS listeners without configured certificate files", "[config][validation][tls]")
+{
+    GIVEN("a listener with TLS enabled and no certificate or private key path")
+    {
+        auto listeners = merovingian::config::ListenersConfig{};
+        listeners.client.tls = true;
+
+        WHEN("the config is constructed and validated")
+        {
+            auto const config = merovingian::config::Config{
+                merovingian::config::ServerConfig{},
+                listeners,
+                merovingian::config::DatabaseConfig{},
+                merovingian::config::SecurityConfig{},
+            };
+            auto const findings = merovingian::config::validate(config);
+            auto const valid = merovingian::config::is_valid(config);
+
+            THEN("both missing key material paths are reported")
+            {
+                REQUIRE(findings.size() == 2U);
+                REQUIRE(findings[0].field == "listeners.client.tls_certificate_file");
+                REQUIRE(findings[1].field == "listeners.client.tls_private_key_file");
+                REQUIRE_FALSE(valid);
             }
         }
     }
@@ -287,10 +319,12 @@ SCENARIO("Config validation helpers reject unsafe address-shaped values", "[conf
 
         WHEN("the values are validated")
         {
-            auto const insecure_public_baseurl_valid = merovingian::config::is_valid_public_baseurl(insecure_public_baseurl);
+            auto const insecure_public_baseurl_valid =
+                merovingian::config::is_valid_public_baseurl(insecure_public_baseurl);
             auto const empty_host_bind_valid = merovingian::config::is_valid_listener_bind(empty_host_bind);
             auto const missing_port_bind_valid = merovingian::config::is_valid_listener_bind(missing_port_bind);
-            auto const out_of_range_port_bind_valid = merovingian::config::is_valid_listener_bind(out_of_range_port_bind);
+            auto const out_of_range_port_bind_valid =
+                merovingian::config::is_valid_listener_bind(out_of_range_port_bind);
             auto const permissive_policy_valid = merovingian::config::is_valid_federation_policy("permissive");
 
             THEN("the unsafe values are rejected")
@@ -474,7 +508,8 @@ SCENARIO("Config validation rejects invalid federation transaction limits", "[co
     }
 }
 
-SCENARIO("Config validation rejects unsafe public URL, listener bind, and federation policy", "[config][validation][security]")
+SCENARIO("Config validation rejects unsafe public URL, listener bind, and federation policy",
+         "[config][validation][security]")
 {
     GIVEN("config sections with unsafe public URL, listener bind, and federation policy")
     {

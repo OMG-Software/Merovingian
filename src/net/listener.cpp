@@ -1,14 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/net/listener.hpp>
-
 #include <utility>
+
+#include <merovingian/net/listener.hpp>
 
 namespace merovingian::net
 {
 
-RuntimeListeners::RuntimeListeners(std::vector<ListenerPlan> plans)
-    : m_plans{std::move(plans)}
+RuntimeListeners::RuntimeListeners(std::vector<ListenerPlan> plans) : m_plans{std::move(plans)}
 {
 }
 
@@ -32,13 +31,14 @@ auto make_runtime_listeners(config::Config const& config) -> RuntimeListeners
     auto plans = std::vector<ListenerPlan>{};
     plans.reserve(2U);
 
-    plans.push_back({ListenerRole::client, config.listeners().client.bind, config.listeners().client.tls});
+    plans.push_back({ListenerRole::client, config.listeners().client.bind, config.listeners().client.tls,
+                     config.listeners().client.tls_certificate_file, config.listeners().client.tls_private_key_file});
 
     if (config.security().federation.enabled)
     {
-        plans.push_back(
-            {ListenerRole::federation, config.listeners().federation.bind, config.listeners().federation.tls}
-        );
+        plans.push_back({ListenerRole::federation, config.listeners().federation.bind,
+                         config.listeners().federation.tls, config.listeners().federation.tls_certificate_file,
+                         config.listeners().federation.tls_private_key_file});
     }
 
     return RuntimeListeners{std::move(plans)};
