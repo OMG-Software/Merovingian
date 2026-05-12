@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.1.19
+
+- Added an SQLite-backed persistent store with RAII connection/statement
+  wrappers, current-schema bootstrap for new database files, row hydration at
+  startup, and write-through persistence behind the existing database boundary.
+- Hydrated runtime users, sessions, rooms, memberships, events, and client
+  device listings from persisted SQLite rows when the homeserver restarts.
+- Added integration coverage proving a SQLite-backed runtime can register,
+  login, create a room, send an event, restart, authenticate the old token, and
+  expose the persisted room state.
+- Changed auth and room runtime mutations to fail the operation when the
+  backing persistent store rejects required writes.
+- Fixed the unsafe source gate regex literals so CI rejects banned allocation
+  APIs instead of treating malformed grep patterns as success.
+
 ## 0.1.18
 
 - Added an OpenSSL-backed TLS server boundary with RAII context and connection

@@ -1,12 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <chrono>
+#include <filesystem>
+#include <string>
+
 #include <catch2/catch_test_macros.hpp>
 #include <merovingian/config/config.hpp>
 #include <merovingian/database/migration.hpp>
 #include <merovingian/database/schema.hpp>
 #include <merovingian/homeserver/client_server.hpp>
 #include <merovingian/homeserver/vertical_slice.hpp>
-#include <string>
 
 namespace
 {
@@ -19,6 +22,24 @@ namespace
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
+        security,
+    };
+}
+
+[[nodiscard]] auto sqlite_registration_enabled_config(std::filesystem::path const& sqlite_path)
+    -> merovingian::config::Config
+{
+    auto database = merovingian::config::DatabaseConfig{};
+    database.backend = merovingian::config::DatabaseBackend::sqlite;
+    database.sqlite_path = sqlite_path.string();
+
+    auto security = merovingian::config::SecurityConfig{};
+    security.registration.enabled = true;
+
+    return {
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        database,
         security,
     };
 }
@@ -45,7 +66,82 @@ namespace
     return body.substr(value_begin, value_end - value_begin);
 }
 
+[[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path
+{
+    auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
+    return std::filesystem::temp_directory_path() / ("merovingian-restart-flow-" + std::to_string(now) + ".sqlite3");
+}
+
 } // namespace
+
+SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions rooms and events",
+         "[database][sqlite][homeserver][integration]")
+{
+    GIVEN("a registration-enabled SQLite homeserver config")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto const config = sqlite_registration_enabled_config(sqlite_path);
+
+        WHEN("a user creates a room and the runtime is started again from the same SQLite file")
+        {
+            auto token = std::string{};
+            auto room_id = std::string{};
+            {
+                auto started = merovingian::homeserver::start_client_server(config);
+                REQUIRE(started.started);
+                auto& runtime = started.runtime;
+
+                auto const registered = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              R"({"username":"restart","password":"CorrectHorse7!"})"});
+                auto const login = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST",
+                     "/_matrix/client/v3/login",
+                     {},
+                     R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@restart:example.org"},"password":"CorrectHorse7!","device_id":"RESTART1"})"});
+                token = token_from_login_body(login.body);
+                auto const room = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+                room_id = room_from_body(room.body);
+                auto const send = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/send", token,
+                              R"({"type":"m.room.message","body":"persisted"})"});
+
+                REQUIRE(registered.status == 200U);
+                REQUIRE(login.status == 200U);
+                REQUIRE(room.status == 200U);
+                REQUIRE(send.status == 200U);
+                REQUIRE(std::filesystem::exists(sqlite_path));
+            }
+
+            auto restarted = merovingian::homeserver::start_client_server(config);
+            REQUIRE(restarted.started);
+            auto& restarted_runtime = restarted.runtime;
+            auto const whoami = merovingian::homeserver::handle_client_server_request(
+                restarted_runtime, {"GET", "/_matrix/client/v3/account/whoami", token, {}});
+            auto const state = merovingian::homeserver::handle_client_server_request(
+                restarted_runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state", token, {}});
+
+            THEN("the restarted runtime authenticates the old token and exposes the persisted room state")
+            {
+                REQUIRE(whoami.status == 200U);
+                REQUIRE(whoami.body.find(R"("@restart:example.org")") != std::string::npos);
+                REQUIRE(state.status == 200U);
+                REQUIRE(state.body.find("events=1") != std::string::npos);
+                REQUIRE(restarted_runtime.homeserver.database.persistent_store.users.size() == 1U);
+                REQUIRE(restarted_runtime.homeserver.database.persistent_store.access_tokens.size() == 1U);
+                REQUIRE(restarted_runtime.homeserver.database.persistent_store.rooms.size() == 1U);
+                REQUIRE(restarted_runtime.homeserver.database.persistent_store.events.size() == 1U);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
 
 SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[database][homeserver][integration]")
 {

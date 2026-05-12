@@ -143,6 +143,8 @@ check_command meson
 check_command ninja
 check_command pkg-config
 check_pkg_config_module libsodium
+check_pkg_config_module openssl
+check_pkg_config_module sqlite3
 
 if [ -f "$builddir/build.ninja" ]; then
     run env CC="$cc" CXX="$cxx" meson setup "$builddir" --reconfigure \

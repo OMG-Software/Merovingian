@@ -29,22 +29,22 @@ Matrix v1.18 behavior, durable state where applicable, and conformance evidence.
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Authentication | `POST /_matrix/client/v3/register` | `partial` | Matrix JSON body is parsed and local registration is reachable through the client listener. Needs UI auth, registration tokens, persistence, and conformance fixtures. |
-| Authentication | `POST /_matrix/client/v3/login` | `partial` | Password login works for local users with LibSodium-backed hashes and is reachable through the client listener. Needs full Matrix login flows, refresh behavior, persistence, and conformance fixtures. |
-| Authentication | `POST /_matrix/client/v3/logout` | `partial` | Local bearer-token logout works through the client listener. Needs durable token revocation. |
+| Authentication | `POST /_matrix/client/v3/register` | `partial` | Matrix JSON body is parsed, local registration is reachable through the client listener, and SQLite-backed local users survive restart. Needs UI auth, registration tokens, PostgreSQL coverage, and conformance fixtures. |
+| Authentication | `POST /_matrix/client/v3/login` | `partial` | Password login works for local users with LibSodium-backed hashes, token hashes are SQLite-persisted, and restart-survival is tested. Needs full Matrix login flows, refresh behavior, PostgreSQL coverage, and conformance fixtures. |
+| Authentication | `POST /_matrix/client/v3/logout` | `partial` | Local bearer-token logout works through the client listener and token revocation is routed through the persistent store. Needs global logout and conformance fixtures. |
 | Authentication | `POST /_matrix/client/v3/logout/all` | `scaffolded` | Route planning exists in the auth boundary. Runtime behavior is not complete. |
 | Authentication | `POST /_matrix/client/v3/refresh` | `scaffolded` | Route and token-hashing plan exist. Refresh-token rotation is not implemented. |
-| Account | `GET /_matrix/client/v3/account/whoami` | `partial` | Local token identity works through the client listener. Needs persistence. |
-| Devices | `GET /_matrix/client/v3/devices` | `partial` | In-memory device listing works through the client listener. Needs durable device storage and complete device semantics. |
+| Account | `GET /_matrix/client/v3/account/whoami` | `partial` | Local token identity works through the client listener and is covered after SQLite restart. Needs conformance fixtures. |
+| Devices | `GET /_matrix/client/v3/devices` | `partial` | Device listing works through the client listener and is hydrated from SQLite devices. Needs complete device semantics. |
 | Devices | `GET /_matrix/client/v3/devices/{deviceId}` | `scaffolded` | Route planning exists. Runtime behavior is incomplete. |
 | Devices | `PUT /_matrix/client/v3/devices/{deviceId}` | `partial` | Display-name update works through the client listener. Needs persistence and full validation. |
 | Devices | `DELETE /_matrix/client/v3/devices/{deviceId}` | `scaffolded` | Route planning exists. Runtime behavior is incomplete. |
-| Rooms | `POST /_matrix/client/v3/createRoom` | `partial` | Local room creation works through the client listener. Needs full create-room semantics, auth events, persistence, and conformance fixtures. |
-| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/join` | `partial` | Local join slice works through the client listener. Needs full membership rules and federation-aware joins. |
-| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/send` | `partial` | Local send slice works through the client listener. Needs transaction IDs, event auth, event IDs, signatures, DAG persistence, and full response semantics. |
-| Rooms | `GET /_matrix/client/v3/rooms/{roomId}/state` | `partial` | Local state summary works through the client listener. Needs full state event retrieval and state resolution semantics. |
+| Rooms | `POST /_matrix/client/v3/createRoom` | `partial` | Local room creation works through the client listener and SQLite-persisted rooms survive restart. Needs full create-room semantics, auth events, and conformance fixtures. |
+| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/join` | `partial` | Local join slice works through the client listener and membership writes route through the persistent store. Needs full membership rules and federation-aware joins. |
+| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/send` | `partial` | Local send slice works through the client listener and SQLite-persisted events survive restart. Needs transaction IDs, event auth, event IDs, signatures, DAG persistence, and full response semantics. |
+| Rooms | `GET /_matrix/client/v3/rooms/{roomId}/state` | `partial` | Local state summary works through the client listener and is covered after SQLite restart. Needs full state event retrieval and state resolution semantics. |
 | Sync | `GET /_matrix/client/v3/sync` | `partial` | In-memory joined-room summary works through the client listener and avoids plaintext event content. Needs incremental sync, filters, presence, device updates, to-device messages, and durable stream tokens. |
-| Joined rooms | `GET /_matrix/client/v3/joined_rooms` | `partial` | In-memory joined-room list works through the client listener. Needs persistence and full access checks. |
+| Joined rooms | `GET /_matrix/client/v3/joined_rooms` | `partial` | Joined-room list works through the client listener and is hydrated from SQLite memberships. Needs full access checks. |
 | Media | `POST /_matrix/media/v3/upload` | `partial` | Local authenticated upload, MIME checks, quarantine, digest, and metrics exist. Needs multipart/content handling through real HTTP and durable storage. |
 | Media | `GET /_matrix/media/v3/download/{serverName}/{mediaId}` | `partial` | Local download exists. Remote fetch is disabled and fail-closed. |
 | Reports | `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` | `scaffolded` | Trust and safety route matching and validation exist. Runtime route is not wired. |

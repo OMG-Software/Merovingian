@@ -36,6 +36,8 @@ jobs:
             clang \
             clang-tidy \
             catch2 \
+            libssl-dev \
+            libsqlite3-dev \
             libsodium-dev \
             pkg-config
           python -m pip install --upgrade pip
@@ -87,7 +89,7 @@ jobs:
         with:
           usesh: true
           run: |
-            pkg install -y meson ninja llvm catch2 pkgconf git libsodium
+            pkg install -y meson ninja llvm catch2 pkgconf git libsodium openssl sqlite3
             meson setup build -Dbuild_tests=true -Dbuild_fuzz=false
             meson compile -C build
             meson test -C build --print-errorlogs

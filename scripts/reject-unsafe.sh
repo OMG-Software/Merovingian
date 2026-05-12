@@ -13,10 +13,10 @@ reject_pattern() {
   fi
 }
 
-reject_pattern '\\bnew\\s+' 'naked new'
-reject_pattern '\\bdelete\\s+' 'naked delete'
-reject_pattern '\\bmalloc\\s*\\(' 'malloc'
-reject_pattern '\\bcalloc\\s*\\(' 'calloc'
-reject_pattern '\\brealloc\\s*\\(' 'realloc'
-reject_pattern '\\bfree\\s*\\(' 'free'
+reject_pattern '(^|[=(:,{]\s*|return\s+)new\s+[A-Za-z_:]' 'naked new'
+reject_pattern '(^|[;{]\s*)delete\s+[A-Za-z_]' 'naked delete'
+reject_pattern '\bmalloc\s*\(' 'malloc'
+reject_pattern '\bcalloc\s*\(' 'calloc'
+reject_pattern '\brealloc\s*\(' 'realloc'
+reject_pattern '\bfree\s*\(' 'free'
 reject_pattern 'std::shared_ptr' 'shared_ptr requires explicit review'

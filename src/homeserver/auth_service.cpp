@@ -1,11 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/homeserver/vertical_slice.hpp>
-
 #include "local_services.hpp"
-
-#include <merovingian/auth/identity.hpp>
-#include <merovingian/trust_safety/policy_engine.hpp>
 
 #include <algorithm>
 #include <array>
@@ -16,6 +11,9 @@
 #include <string_view>
 #include <vector>
 
+#include <merovingian/auth/identity.hpp>
+#include <merovingian/homeserver/vertical_slice.hpp>
+#include <merovingian/trust_safety/policy_engine.hpp>
 #include <sodium.h>
 
 namespace merovingian::homeserver
@@ -23,146 +21,139 @@ namespace merovingian::homeserver
 namespace
 {
 
-auto constexpr token_secret_bytes = std::size_t{32U};
-auto constexpr token_hash_bytes = std::size_t{crypto_generichash_BYTES};
+    auto constexpr token_secret_bytes = std::size_t{32U};
+    auto constexpr token_hash_bytes = std::size_t{crypto_generichash_BYTES};
 
-[[nodiscard]] auto sodium_is_ready() noexcept -> bool
-{
-    static auto const ready = sodium_init() >= 0;
-    return ready;
-}
-
-[[nodiscard]] auto to_hex(unsigned char const* bytes, std::size_t size) -> std::string
-{
-    auto output = std::string((size * 2U) + 1U, '\0');
-    static_cast<void>(sodium_bin2hex(output.data(), output.size(), bytes, size));
-    output.pop_back();
-    return output;
-}
-
-[[nodiscard]] auto password_hash_is_v2(std::string_view password_hash) noexcept -> bool
-{
-    return password_hash.starts_with("password-hash:v2:");
-}
-
-[[nodiscard]] auto token_hash_is_v2(std::string_view token_hash) noexcept -> bool
-{
-    return token_hash.starts_with("token-hash:v2:");
-}
-
-[[nodiscard]] auto password_hash_payload(std::string_view password_hash) noexcept
-    -> std::string_view
-{
-    auto constexpr prefix = std::string_view{"password-hash:v2:"};
-    return password_hash_is_v2(password_hash) ? password_hash.substr(prefix.size())
-                                              : std::string_view{};
-}
-
-[[nodiscard]] auto hash_password(std::string_view password) -> std::optional<std::string>
-{
-    if (!sodium_is_ready())
+    [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
-        return std::nullopt;
+        static auto const ready = sodium_init() >= 0;
+        return ready;
     }
-    auto output = std::array<char, crypto_pwhash_STRBYTES>{};
-    if (crypto_pwhash_str(
-            output.data(), password.data(), static_cast<unsigned long long>(password.size()),
-            crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0)
+
+    [[nodiscard]] auto to_hex(unsigned char const* bytes, std::size_t size) -> std::string
     {
-        return std::nullopt;
+        auto output = std::string((size * 2U) + 1U, '\0');
+        static_cast<void>(sodium_bin2hex(output.data(), output.size(), bytes, size));
+        output.pop_back();
+        return output;
     }
-    return "password-hash:v2:" + std::string{output.data()};
-}
 
-[[nodiscard]] auto password_matches(std::string_view password_hash,
-                                    std::string_view password) noexcept -> bool
-{
-    if (!sodium_is_ready())
+    [[nodiscard]] auto password_hash_is_v2(std::string_view password_hash) noexcept -> bool
     {
-        return false;
+        return password_hash.starts_with("password-hash:v2:");
     }
-    auto const payload = password_hash_payload(password_hash);
-    if (payload.empty())
+
+    [[nodiscard]] auto token_hash_is_v2(std::string_view token_hash) noexcept -> bool
     {
-        return false;
+        return token_hash.starts_with("token-hash:v2:");
     }
-    return crypto_pwhash_str_verify(payload.data(), password.data(),
-                                    static_cast<unsigned long long>(password.size())) == 0;
-}
 
-[[nodiscard]] auto user_id_from_localpart(std::string_view server_name, std::string_view localpart)
-    -> std::string
-{
-    return "@" + std::string{localpart} + ":" + std::string{server_name};
-}
-
-[[nodiscard]] auto hash_token(std::string_view token) -> std::optional<std::string>
-{
-    if (!sodium_is_ready())
+    [[nodiscard]] auto password_hash_payload(std::string_view password_hash) noexcept -> std::string_view
     {
-        return std::nullopt;
+        auto constexpr prefix = std::string_view{"password-hash:v2:"};
+        return password_hash_is_v2(password_hash) ? password_hash.substr(prefix.size()) : std::string_view{};
     }
-    auto digest = std::array<unsigned char, token_hash_bytes>{};
-    auto token_bytes = std::vector<unsigned char>{};
-    token_bytes.reserve(token.size());
-    for (auto const character : token)
+
+    [[nodiscard]] auto hash_password(std::string_view password) -> std::optional<std::string>
     {
-        token_bytes.push_back(static_cast<unsigned char>(character));
+        if (!sodium_is_ready())
+        {
+            return std::nullopt;
+        }
+        auto output = std::array<char, crypto_pwhash_STRBYTES>{};
+        if (crypto_pwhash_str(output.data(), password.data(), static_cast<unsigned long long>(password.size()),
+                              crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0)
+        {
+            return std::nullopt;
+        }
+        return "password-hash:v2:" + std::string{output.data()};
     }
-    if (crypto_generichash(digest.data(), digest.size(), token_bytes.data(), token_bytes.size(),
-                           nullptr, 0U) != 0)
+
+    [[nodiscard]] auto password_matches(std::string_view password_hash, std::string_view password) noexcept -> bool
     {
-        return std::nullopt;
+        if (!sodium_is_ready())
+        {
+            return false;
+        }
+        auto const payload = password_hash_payload(password_hash);
+        if (payload.empty())
+        {
+            return false;
+        }
+        return crypto_pwhash_str_verify(payload.data(), password.data(),
+                                        static_cast<unsigned long long>(password.size())) == 0;
     }
-    return "token-hash:v2:" + to_hex(digest.data(), digest.size());
-}
 
-[[nodiscard]] auto token_hash_matches(std::string_view left, std::string_view right) noexcept
-    -> bool
-{
-    return token_hash_is_v2(left) && token_hash_is_v2(right) && left.size() == right.size() &&
-           sodium_memcmp(left.data(), right.data(), left.size()) == 0;
-}
-
-[[nodiscard]] auto issue_token() -> std::optional<std::string>
-{
-    if (!sodium_is_ready())
+    [[nodiscard]] auto user_id_from_localpart(std::string_view server_name, std::string_view localpart) -> std::string
     {
-        return std::nullopt;
+        return "@" + std::string{localpart} + ":" + std::string{server_name};
     }
-    auto bytes = std::array<unsigned char, token_secret_bytes>{};
-    randombytes_buf(bytes.data(), bytes.size());
-    return "mvs_" + to_hex(bytes.data(), bytes.size());
-}
 
-[[nodiscard]] auto find_user(LocalDatabase& database, std::string_view user_id) -> LocalUser*
-{
-    auto const iterator = std::ranges::find_if(database.users, [user_id](LocalUser const& user)
-                                               { return user.user_id == user_id; });
-    return iterator == database.users.end() ? nullptr : &(*iterator);
-}
+    [[nodiscard]] auto hash_token(std::string_view token) -> std::optional<std::string>
+    {
+        if (!sodium_is_ready())
+        {
+            return std::nullopt;
+        }
+        auto digest = std::array<unsigned char, token_hash_bytes>{};
+        auto token_bytes = std::vector<unsigned char>{};
+        token_bytes.reserve(token.size());
+        for (auto const character : token)
+        {
+            token_bytes.push_back(static_cast<unsigned char>(character));
+        }
+        if (crypto_generichash(digest.data(), digest.size(), token_bytes.data(), token_bytes.size(), nullptr, 0U) != 0)
+        {
+            return std::nullopt;
+        }
+        return "token-hash:v2:" + to_hex(digest.data(), digest.size());
+    }
 
-[[nodiscard]] auto find_user(LocalDatabase const& database, std::string_view user_id)
-    -> LocalUser const*
-{
-    auto const iterator = std::ranges::find_if(database.users, [user_id](LocalUser const& user)
-                                               { return user.user_id == user_id; });
-    return iterator == database.users.end() ? nullptr : &(*iterator);
-}
+    [[nodiscard]] auto token_hash_matches(std::string_view left, std::string_view right) noexcept -> bool
+    {
+        return token_hash_is_v2(left) && token_hash_is_v2(right) && left.size() == right.size() &&
+               sodium_memcmp(left.data(), right.data(), left.size()) == 0;
+    }
 
-[[nodiscard]] auto find_session(LocalDatabase const& database, std::string_view token_hash)
-    -> LocalSession const*
-{
-    auto const iterator = std::ranges::find_if(
-        database.sessions, [token_hash](LocalSession const& session)
-        { return token_hash_matches(session.access_token_hash, token_hash) && !session.revoked; });
-    return iterator == database.sessions.end() ? nullptr : &(*iterator);
-}
+    [[nodiscard]] auto issue_token() -> std::optional<std::string>
+    {
+        if (!sodium_is_ready())
+        {
+            return std::nullopt;
+        }
+        auto bytes = std::array<unsigned char, token_secret_bytes>{};
+        randombytes_buf(bytes.data(), bytes.size());
+        return "mvs_" + to_hex(bytes.data(), bytes.size());
+    }
+
+    [[nodiscard]] auto find_user(LocalDatabase& database, std::string_view user_id) -> LocalUser*
+    {
+        auto const iterator = std::ranges::find_if(database.users, [user_id](LocalUser const& user) {
+            return user.user_id == user_id;
+        });
+        return iterator == database.users.end() ? nullptr : &(*iterator);
+    }
+
+    [[nodiscard]] auto find_user(LocalDatabase const& database, std::string_view user_id) -> LocalUser const*
+    {
+        auto const iterator = std::ranges::find_if(database.users, [user_id](LocalUser const& user) {
+            return user.user_id == user_id;
+        });
+        return iterator == database.users.end() ? nullptr : &(*iterator);
+    }
+
+    [[nodiscard]] auto find_session(LocalDatabase const& database, std::string_view token_hash) -> LocalSession const*
+    {
+        auto const iterator = std::ranges::find_if(database.sessions, [token_hash](LocalSession const& session) {
+            return token_hash_matches(session.access_token_hash, token_hash) && !session.revoked;
+        });
+        return iterator == database.sessions.end() ? nullptr : &(*iterator);
+    }
 
 } // namespace
 
-auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
-                         std::string_view password) -> OperationResult
+auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password)
+    -> OperationResult
 {
     auto const user_id = user_id_from_localpart(runtime.config.server().server_name, localpart);
     if (!auth::user_id_is_valid(user_id))
@@ -191,17 +182,20 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
     {
         return make_operation_result(false, {}, "password hashing failed");
     }
+    if (!database::store_user(runtime.database.persistent_store,
+                              {user_id, *password_hash, false, false, first_user_is_admin}))
+    {
+        return make_operation_result(false, {}, "user persistence failed", 500U);
+    }
     runtime.database.users.push_back({user_id, *password_hash, false, false, first_user_is_admin});
-    (void)database::store_user(runtime.database.persistent_store,
-                               {user_id, *password_hash, false, false, first_user_is_admin});
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.user_registered",
-                       user_id, user_id, first_user_is_admin ? "created_admin" : "created");
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.user_registered", user_id, user_id,
+                       first_user_is_admin ? "created_admin" : "created");
     return make_operation_result(true, user_id);
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
-auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id,
-                      std::string_view password, std::string_view device_id) -> OperationResult
+auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
+                      std::string_view device_id) -> OperationResult
 {
     auto* user = find_user(runtime.database, user_id);
     if (user == nullptr)
@@ -242,21 +236,29 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id,
     {
         return make_operation_result(false, {}, "token hashing failed");
     }
+    auto const device_exists = std::ranges::any_of(
+        runtime.database.persistent_store.devices, [user, device_id](database::PersistentDevice const& device) {
+            return device.user_id == user->user_id && device.device_id == device_id;
+        });
+    if (!device_exists && !database::store_device(runtime.database.persistent_store,
+                                                  {user->user_id, std::string{device_id}, std::string{device_id}}))
+    {
+        return make_operation_result(false, {}, "device persistence failed", 500U);
+    }
+    if (!database::store_access_token(runtime.database.persistent_store,
+                                      {user->user_id, std::string{device_id}, *token_hash, false}))
+    {
+        return make_operation_result(false, {}, "token persistence failed", 500U);
+    }
     ++runtime.database.next_session_id;
-    runtime.database.sessions.push_back(
-        {user->user_id, std::string{device_id}, *token_hash, false});
-    (void)database::store_device(runtime.database.persistent_store,
-                                 {user->user_id, std::string{device_id}, std::string{device_id}});
-    (void)database::store_access_token(runtime.database.persistent_store,
-                                       {user->user_id, std::string{device_id}, *token_hash, false});
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login",
-                       user->user_id, std::string{device_id}, "accepted");
+    runtime.database.sessions.push_back({user->user_id, std::string{device_id}, *token_hash, false});
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user->user_id,
+                       std::string{device_id}, "accepted");
     return make_operation_result(true, *token);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
-auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token)
-    -> std::optional<std::string>
+auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token) -> std::optional<std::string>
 {
     auto const token_hash = hash_token(access_token);
     if (!token_hash.has_value())
@@ -303,7 +305,6 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
                 user_id = session.user_id;
                 device_id = session.device_id;
             }
-            session.revoked = true;
             revoked_any = true;
         }
     }
@@ -312,9 +313,19 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
         return make_operation_result(false, {}, "unauthenticated");
     }
 
-    (void)database::revoke_access_token(runtime.database.persistent_store, *token_hash);
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout", user_id,
-                       device_id, "revoked");
+    if (database::revoke_access_token(runtime.database.persistent_store, *token_hash) == 0U)
+    {
+        return make_operation_result(false, {}, "token revocation persistence failed", 500U);
+    }
+    for (auto& session : runtime.database.sessions)
+    {
+        if (token_hash_matches(session.access_token_hash, *token_hash))
+        {
+            session.revoked = true;
+        }
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout", user_id, device_id,
+                       "revoked");
     return make_operation_result(true, user_id);
 }
 
