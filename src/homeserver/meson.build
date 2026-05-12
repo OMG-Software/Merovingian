@@ -13,4 +13,5 @@ homeserver_lib = static_library(
   'merovingian-homeserver',
   homeserver_sources,
   include_directories: inc,
+  dependencies: [libsodium_dep],
 )

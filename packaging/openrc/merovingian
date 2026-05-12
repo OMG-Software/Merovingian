@@ -1,0 +1,23 @@
+#!/sbin/openrc-run
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+description="The Merovingian Matrix homeserver"
+command="/usr/bin/merovingian-server"
+command_args="--config /etc/merovingian/merovingian.conf"
+command_user="merovingian:merovingian"
+pidfile="/run/merovingian/merovingian.pid"
+directory="/var/lib/merovingian"
+supervisor="supervise-daemon"
+output_log="/var/log/merovingian/stdout.log"
+error_log="/var/log/merovingian/stderr.log"
+
+depend() {
+    need net
+    after firewall
+}
+
+start_pre() {
+    checkpath -d -m 0750 -o merovingian:merovingian /run/merovingian
+    checkpath -d -m 0750 -o merovingian:merovingian /var/lib/merovingian
+    checkpath -d -m 0750 -o merovingian:merovingian /var/log/merovingian
+}

@@ -14,7 +14,8 @@ namespace
 constexpr auto initial_schema_version = std::uint32_t{1U};
 constexpr auto media_metadata_schema_version = std::uint32_t{2U};
 
-[[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table) -> PreparedStatement
+[[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table)
+    -> PreparedStatement
 {
     return {"create_" + std::string{table.name}, create_table_sql(table), {}};
 }
@@ -26,12 +27,16 @@ constexpr auto media_metadata_schema_version = std::uint32_t{2U};
 
 [[nodiscard]] auto has_table(SchemaState const& state, std::string_view table_name) noexcept -> bool
 {
-    return std::ranges::any_of(state.tables, [table_name](std::string const& table) { return table == table_name; });
+    return std::ranges::any_of(state.tables, [table_name](std::string const& table)
+                               { return table == table_name; });
 }
 
-[[nodiscard]] auto has_migration_record(SchemaState const& state, std::uint32_t version, MigrationDirection direction) noexcept -> bool
+[[nodiscard]] auto has_migration_record(SchemaState const& state, std::uint32_t version,
+                                        MigrationDirection direction) noexcept -> bool
 {
-    return std::ranges::any_of(state.applied_migrations, [version, direction](MigrationRecord const& record) { return record.version == version && record.direction == direction; });
+    return std::ranges::any_of(
+        state.applied_migrations, [version, direction](MigrationRecord const& record)
+        { return record.version == version && record.direction == direction; });
 }
 
 [[nodiscard]] auto table_from_create_table(std::string_view sql) -> std::string
@@ -43,7 +48,8 @@ constexpr auto media_metadata_schema_version = std::uint32_t{2U};
     }
     auto const begin = prefix.size();
     auto const end = sql.find(' ', begin);
-    return end == std::string_view::npos ? std::string{} : std::string{sql.substr(begin, end - begin)};
+    return end == std::string_view::npos ? std::string{}
+                                         : std::string{sql.substr(begin, end - begin)};
 }
 
 [[nodiscard]] auto table_from_drop_table(std::string_view sql) -> std::string
@@ -117,7 +123,9 @@ auto migration_plan_is_valid(MigrationPlan const& plan) -> MigrationValidationRe
 {
     if (plan.current_version == plan.target_version)
     {
-        return plan.steps.empty() ? MigrationValidationResult{true, {}} : MigrationValidationResult{false, "no-op migration plan must not contain steps"};
+        return plan.steps.empty() ? MigrationValidationResult{true, {}}
+                                  : MigrationValidationResult{
+                                        false, "no-op migration plan must not contain steps"};
     }
     if (plan.steps.empty())
     {
@@ -127,12 +135,15 @@ auto migration_plan_is_valid(MigrationPlan const& plan) -> MigrationValidationRe
     {
         return {false, "upgrade migration plan has wrong direction"};
     }
-    if (plan.target_version < plan.current_version && plan.direction != MigrationDirection::downgrade)
+    if (plan.target_version < plan.current_version &&
+        plan.direction != MigrationDirection::downgrade)
     {
         return {false, "downgrade migration plan has wrong direction"};
     }
 
-    auto expected_version = plan.direction == MigrationDirection::upgrade ? plan.current_version + 1U : plan.current_version - 1U;
+    auto expected_version = plan.direction == MigrationDirection::upgrade
+                                ? plan.current_version + 1U
+                                : plan.current_version - 1U;
     for (auto const& step : plan.steps)
     {
         if (step.version != expected_version || step.direction != plan.direction)
@@ -154,14 +165,18 @@ auto migration_plan_is_valid(MigrationPlan const& plan) -> MigrationValidationRe
         }
     }
 
-    return plan.steps.back().version == plan.target_version ? MigrationValidationResult{true, {}} : MigrationValidationResult{false, "migration plan does not reach target version"};
+    return plan.steps.back().version == plan.target_version
+               ? MigrationValidationResult{true, {}}
+               : MigrationValidationResult{false, "migration plan does not reach target version"};
 }
 
 auto migration_plan_summary(MigrationPlan const& plan) -> std::string
 {
-    return "database migration plan direction=" + std::string{migration_direction_name(plan.direction)}
-        + " current_version=" + std::to_string(plan.current_version) + " target_version=" + std::to_string(plan.target_version)
-        + " steps=" + std::to_string(plan.steps.size());
+    return "database migration plan direction=" +
+           std::string{migration_direction_name(plan.direction)} +
+           " current_version=" + std::to_string(plan.current_version) +
+           " target_version=" + std::to_string(plan.target_version) +
+           " steps=" + std::to_string(plan.steps.size());
 }
 
 auto initial_schema_migration() -> MigrationStep
@@ -171,7 +186,8 @@ auto initial_schema_migration() -> MigrationStep
     {
         statements.push_back(make_create_table_statement(table));
     }
-    return {initial_schema_version, "initial_schema", std::move(statements), MigrationDirection::upgrade};
+    return {initial_schema_version, "initial_schema", std::move(statements),
+            MigrationDirection::upgrade};
 }
 
 auto media_metadata_migration() -> MigrationStep
@@ -180,9 +196,15 @@ auto media_metadata_migration() -> MigrationStep
         media_metadata_schema_version,
         "media_metadata_columns",
         {
-            {"media_add_hash_algorithm", "ALTER TABLE media ADD COLUMN hash_algorithm TEXT NOT NULL DEFAULT 'sha256'", {}},
-            {"media_add_digest", "ALTER TABLE media ADD COLUMN digest TEXT NOT NULL DEFAULT 'unknown'", {}},
-            {"media_add_removed", "ALTER TABLE media ADD COLUMN removed TEXT NOT NULL DEFAULT 'false'", {}},
+            {"media_add_hash_algorithm",
+             "ALTER TABLE media ADD COLUMN hash_algorithm TEXT NOT NULL DEFAULT 'blake2b'",
+             {}},
+            {"media_add_digest",
+             "ALTER TABLE media ADD COLUMN digest TEXT NOT NULL DEFAULT 'unknown'",
+             {}},
+            {"media_add_removed",
+             "ALTER TABLE media ADD COLUMN removed TEXT NOT NULL DEFAULT 'false'",
+             {}},
         },
         MigrationDirection::upgrade,
     };
@@ -221,7 +243,8 @@ auto downgrade_migration_catalog() -> std::vector<MigrationStep>
     return {downgrade_initial_schema_migration(), downgrade_media_metadata_migration()};
 }
 
-auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan
+auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version)
+    -> MigrationPlan
 {
     if (current_version == target_version)
     {
@@ -229,17 +252,25 @@ auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_
     }
     if (current_version > current_schema_version() || target_version > current_schema_version())
     {
-        auto const direction = target_version > current_version ? MigrationDirection::upgrade : MigrationDirection::downgrade;
+        auto const direction = target_version > current_version ? MigrationDirection::upgrade
+                                                                : MigrationDirection::downgrade;
         return {current_version, target_version, {}, direction};
     }
-    auto const direction = target_version > current_version ? MigrationDirection::upgrade : MigrationDirection::downgrade;
-    auto const catalog = direction == MigrationDirection::upgrade ? upgrade_migration_catalog() : downgrade_migration_catalog();
+    auto const direction = target_version > current_version ? MigrationDirection::upgrade
+                                                            : MigrationDirection::downgrade;
+    auto const catalog = direction == MigrationDirection::upgrade ? upgrade_migration_catalog()
+                                                                  : downgrade_migration_catalog();
     auto steps = std::vector<MigrationStep>{};
     if (direction == MigrationDirection::upgrade)
     {
         for (auto version = current_version + 1U; version <= target_version; ++version)
         {
-            auto const iterator = std::ranges::find_if(catalog, [version](MigrationStep const& step) { return step.version == version && step.direction == MigrationDirection::upgrade; });
+            auto const iterator = std::ranges::find_if(
+                catalog,
+                [version](MigrationStep const& step)
+                {
+                    return step.version == version && step.direction == MigrationDirection::upgrade;
+                });
             if (iterator != catalog.end())
             {
                 steps.push_back(*iterator);
@@ -250,7 +281,13 @@ auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_
     {
         for (auto version = current_version - 1U;; --version)
         {
-            auto const iterator = std::ranges::find_if(catalog, [version](MigrationStep const& step) { return step.version == version && step.direction == MigrationDirection::downgrade; });
+            auto const iterator =
+                std::ranges::find_if(catalog,
+                                     [version](MigrationStep const& step)
+                                     {
+                                         return step.version == version &&
+                                                step.direction == MigrationDirection::downgrade;
+                                     });
             if (iterator != catalog.end())
             {
                 steps.push_back(*iterator);
@@ -286,7 +323,8 @@ auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> Migra
         {
             if (!apply_statement_to_schema_state(state, statement))
             {
-                return {false, "migration statement cannot update schema state: " + statement.name, std::move(state)};
+                return {false, "migration statement cannot update schema state: " + statement.name,
+                        std::move(state)};
             }
         }
         state.applied_migrations.push_back({step.version, step.name, step.direction});
@@ -317,7 +355,8 @@ auto schema_state_is_compatible(SchemaState const& state) -> MigrationValidation
 
 auto migration_rollback_policy() noexcept -> std::string_view
 {
-    return "schema library exposes explicit downgrade plans; production rollback remains operator-controlled and must be paired with backup/restore validation";
+    return "schema library exposes explicit downgrade plans; production rollback remains "
+           "operator-controlled and must be paired with backup/restore validation";
 }
 
 } // namespace merovingian::database

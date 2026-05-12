@@ -185,7 +185,7 @@ SCENARIO("Persistent homeserver store records the client-server MVP flow",
                 REQUIRE(runtime.homeserver.database.persistent_store.devices.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.access_tokens.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.access_tokens.front()
-                            .token_hash.find("token-hash:v1:") == 0U);
+                            .token_hash.find("token-hash:v2:") == 0U);
                 REQUIRE(runtime.homeserver.database.persistent_store.access_tokens.front().revoked);
                 REQUIRE(runtime.homeserver.database.persistent_store.rooms.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.memberships.size() == 1U);
