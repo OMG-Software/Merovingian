@@ -8,7 +8,9 @@ foundation.
 Implemented now:
 
 - project-owned canonical JSON value model
-- bounded lossless JSON parser
+- `yyjson`-backed strict JSON parser behind the project-owned canonical JSON
+  boundary
+- bounded conversion into the project-owned value model
 - deterministic canonical serialization
 - whitespace-free arrays and objects
 - lexicographic object key ordering
@@ -27,7 +29,6 @@ Not implemented yet:
 
 - event-signing integration
 - room/event fixture suite beyond canonical JSON shape fixtures
-- JSON dependency wrapper
 - full Matrix event ID/signature pipeline
 
 ## Rules
@@ -44,11 +45,18 @@ The parser and serializer must:
 - preserve integer values without lossy conversion
 - avoid dependency-defined signing semantics
 
+`yyjson` is used only to parse strict RFC 8259 JSON and validate UTF-8. A small
+C adapter owns the direct `yyjson.h` include so C++ static analysis and warning
+policy stay focused on project code. The parser copies parsed data into
+`merovingian::canonicaljson::Value` and applies Matrix-specific policy there.
+No `yyjson_*` type is exposed outside the canonical JSON implementation.
+
 ## Numeric policy
 
 Only signed 64-bit integers are accepted in the current implementation.
-Floating-point values and exponent notation are rejected until Matrix-specific
-numeric handling is reviewed with signing fixtures.
+Floating-point values, exponent notation, and unsigned values outside the
+signed 64-bit range are rejected even though `yyjson` can parse broader JSON
+number forms. This keeps Matrix signing inputs lossless and deterministic.
 
 ## Signable object view
 

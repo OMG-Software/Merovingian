@@ -15,7 +15,18 @@ The script supports these package managers:
 - Linux: `apt`, `dnf`, `zypper`, `pacman`, `apk`
 - BSD: `pkg`, `pkg_add`, `pkgin`
 
-The package set intentionally avoids Boost. It installs C++ toolchains, Meson, Ninja, pkg-config/pkgconf, Git, Python, libsodium, PostgreSQL client headers, SQLite, TLS headers, Catch2, clang tooling, and cppcheck.
+The package set intentionally avoids Boost. It installs C++ toolchains, Meson,
+Ninja, pkg-config/pkgconf, Git, Python, libsodium, PostgreSQL client headers,
+SQLite, TLS headers, Catch2, clang tooling, and cppcheck. `yyjson` is used for
+strict JSON parsing; Meson uses a pinned wrap fallback when the host does not
+provide a `yyjson` pkg-config module. The fallback exposes yyjson headers as
+system includes so Merovingian's warning-as-error policy applies to project
+code without turning third-party C inline headers into CI blockers. C++ sources
+include a project-owned adapter rather than `yyjson.h` directly.
+
+CI runs clang-tidy on changed C++ translation units with parallel per-file log
+groups and timeouts. Headers are analyzed transitively through the Meson compile
+database instead of being invoked as standalone clang-tidy inputs.
 
 ## Common Usage
 

@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.17
+
+- Marked the pinned `yyjson` fallback include directory as a system include so
+  project warning-as-error policy does not fail CI on third-party C header
+  implementation details.
+- Moved direct `yyjson.h` inclusion behind a C adapter so C++ static analysis
+  does not parse third-party C inline implementation details.
+- Updated the server version smoke test to assert `meson.project_version()`
+  instead of a stale literal.
+- Bounded clang-tidy CI to changed translation units with parallel per-file log
+  groups and timeouts; headers remain covered transitively through compile
+  commands.
+
+## 0.1.16
+
+- Added `yyjson` as the strict JSON parser dependency with a pinned Meson wrap
+  fallback.
+- Replaced the hand-written canonical JSON parser with a `yyjson` adapter that
+  copies into the project-owned `canonicaljson::Value` model.
+- Kept Matrix canonical JSON policy in Merovingian by rejecting duplicate keys,
+  floats, exponent numbers, and unsigned values outside the signed 64-bit range
+  during adapter conversion.
+
+## 0.1.15
+
+- Routed client listener traffic through the Matrix JSON client-server adapter
+  while preserving local-router dispatch for federation/internal compatibility
+  paths.
+- Added loopback integration coverage proving TCP listener registration accepts
+  Matrix JSON request bodies.
+- Updated progress, protocol coverage, HTTP transport, and production-readiness
+  docs for the client-listener dispatch change.
+
 ## 0.1.14
 
 - Wired the `merovingian-server` binary to actually serve traffic: it now opens TCP listeners for the configured client (and federation, when enabled) binds, accepts HTTP/1.1 connections, parses request heads through the existing transport limits, and dispatches them to the local HTTP router.

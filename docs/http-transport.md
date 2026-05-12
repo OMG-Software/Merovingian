@@ -1,6 +1,7 @@
 # HTTP transport
 
-The Phase 3 HTTP transport scaffolding is a narrow Matrix API transport boundary, not a general web framework.
+The HTTP transport capability is a narrow Matrix API transport boundary, not a
+general web framework.
 
 ## Current scope
 
@@ -24,7 +25,10 @@ Implemented now:
 - HTTP request-head fuzz target
 - TCP listener and accept loop via `merovingian::net::TcpAcceptor`
 - RAII signal-safe shutdown via `merovingian::net::ShutdownSignal` (SIGINT, SIGTERM)
-- per-connection request read, parse, and dispatch into the local HTTP router via `merovingian::homeserver::serve_http`
+- per-connection request read, parse, and dispatch via `merovingian::homeserver::serve_http`
+- dispatch-mode separation so client listeners use the Matrix JSON
+  `client_server` adapter while federation/internal compatibility paths can
+  keep using the local router
 - single-mutex serialisation of runtime mutation across acceptors
 
 Not implemented yet:

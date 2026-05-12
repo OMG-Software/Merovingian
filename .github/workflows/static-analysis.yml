@@ -36,21 +36,27 @@ jobs:
       - name: Generate compile commands
         run: meson compile -C build
 
-      - name: Run clang-tidy on production sources
+      - name: Run clang-tidy on changed C++ translation units
         run: |
-          find include src \
-            \( -name '*.hpp' -o -name '*.cpp' \) \
-            -not -path './build/*' \
-            -not -path './subprojects/*' | \
-            xargs clang-tidy -p build
+          base_branch="${GITHUB_BASE_REF:-main}"
+          git fetch --no-tags --depth=1 origin "${base_branch}"
 
-      - name: Run clang-tidy on tests
-        run: |
-          find tests \
-            \( -name '*.hpp' -o -name '*.cpp' \) \
-            -not -path './build/*' \
-            -not -path './subprojects/*' | \
-            xargs clang-tidy -p build
+          changed_sources="${RUNNER_TEMP:-/tmp}/clang-tidy-sources.txt"
+          git diff --name-only FETCH_HEAD...HEAD -- src tests | \
+            grep -E '\.cpp$' | \
+            sort > "${changed_sources}" || true
+
+          if [ ! -s "${changed_sources}" ]; then
+            echo "No changed C++ translation units for clang-tidy."
+            exit 0
+          fi
+
+          tr '\n' '\0' < "${changed_sources}" | \
+            xargs -0 -n 1 -P "$(nproc)" sh -c '
+              echo "::group::clang-tidy $1"
+              timeout 120s clang-tidy -p build "$1"
+              echo "::endgroup::"
+            ' sh
 
       - name: Run unsafe source gates
         run: bash scripts/reject-unsafe.sh

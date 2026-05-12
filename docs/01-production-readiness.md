@@ -11,14 +11,12 @@ documents are historical notes only.
 
 ## Blocking gates
 
-- The server executable must run a real listener and serve requests until it is
-  stopped by the service manager.
-- Client-server routes must run through the socket accept/read/write loop. The
-  current client-server facade accepts Matrix JSON request bodies for
-  registration, password login, and device updates, and has a single-request
-  HTTP/1.1 adapter for tests. The public client-server API is production-named
-  through `client_server.hpp`, but runtime listeners do not yet read requests
-  from sockets.
+- The server executable must keep real listener coverage in CI and serve
+  requests until it is stopped by the service manager.
+- Client-server routes run through the socket accept/read/write loop and the
+  Matrix JSON adapter. They still require full Matrix v1.18 conformance,
+  persistence, endpoint coverage, and production-grade rate limiting before
+  release.
 - Access tokens must be generated with LibSodium CSPRNG output and stored only as
   versioned cryptographic hashes.
 - Passwords must be stored with LibSodium Argon2id password hashes.

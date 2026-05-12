@@ -17,36 +17,33 @@ fixtures.
 ## Listener wiring
 
 The runtime listener (`merovingian::homeserver::serve_http`) now binds the
-configured client (and federation, when enabled) listeners and dispatches
-parsed HTTP/1.1 requests into `handle_local_http_request`. That means routes
-served by the legacy local router are reachable over a real socket. The
-`client_server` Matrix-JSON adapter (`handle_client_server_request`) is not
-yet wired through the listener, so any endpoint whose Matrix v1.18 wire
-format requires the JSON adapter is still served by the legacy
-pipe-delimited request format when entered through the listener. Advancing
-endpoints below to `covered` requires routing them through the JSON adapter
-as well as adding the listed Matrix v1.18 behavior.
+configured client (and federation, when enabled) listeners. Client listeners
+dispatch parsed HTTP/1.1 requests into the `client_server` Matrix JSON adapter
+(`handle_client_server_request`). Federation and internal compatibility paths
+can still dispatch into the legacy local router until those surfaces have
+production adapters. Advancing endpoints below to `covered` still requires full
+Matrix v1.18 behavior, durable state where applicable, and conformance evidence.
 
 ## Client-server API
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Authentication | `POST /_matrix/client/v3/register` | `partial` | Matrix JSON body is parsed and local registration works in the in-process `client_server` adapter. The TCP listener serves the legacy local router for this route; needs UI auth, registration tokens, persistence, and routing through the JSON adapter. |
-| Authentication | `POST /_matrix/client/v3/login` | `partial` | Password login works for local users with LibSodium-backed hashes via the in-process JSON adapter. Needs full Matrix login flows, refresh behavior, persistence, JSON-adapter routing through the listener, and conformance fixtures. |
-| Authentication | `POST /_matrix/client/v3/logout` | `partial` | Local bearer-token logout works in the in-process JSON adapter. Needs durable token revocation and JSON-adapter routing through the listener. |
+| Authentication | `POST /_matrix/client/v3/register` | `partial` | Matrix JSON body is parsed and local registration is reachable through the client listener. Needs UI auth, registration tokens, persistence, and conformance fixtures. |
+| Authentication | `POST /_matrix/client/v3/login` | `partial` | Password login works for local users with LibSodium-backed hashes and is reachable through the client listener. Needs full Matrix login flows, refresh behavior, persistence, and conformance fixtures. |
+| Authentication | `POST /_matrix/client/v3/logout` | `partial` | Local bearer-token logout works through the client listener. Needs durable token revocation. |
 | Authentication | `POST /_matrix/client/v3/logout/all` | `scaffolded` | Route planning exists in the auth boundary. Runtime behavior is not complete. |
 | Authentication | `POST /_matrix/client/v3/refresh` | `scaffolded` | Route and token-hashing plan exist. Refresh-token rotation is not implemented. |
-| Account | `GET /_matrix/client/v3/account/whoami` | `partial` | Local token identity works in the client-server JSON adapter. Needs persistence and JSON-adapter routing through the listener. |
-| Devices | `GET /_matrix/client/v3/devices` | `partial` | In-memory device listing exists in the JSON adapter. Needs durable device storage, complete device semantics, and JSON-adapter routing through the listener. |
+| Account | `GET /_matrix/client/v3/account/whoami` | `partial` | Local token identity works through the client listener. Needs persistence. |
+| Devices | `GET /_matrix/client/v3/devices` | `partial` | In-memory device listing works through the client listener. Needs durable device storage and complete device semantics. |
 | Devices | `GET /_matrix/client/v3/devices/{deviceId}` | `scaffolded` | Route planning exists. Runtime behavior is incomplete. |
-| Devices | `PUT /_matrix/client/v3/devices/{deviceId}` | `partial` | Display-name update works in the facade. Needs persistence and full validation. |
+| Devices | `PUT /_matrix/client/v3/devices/{deviceId}` | `partial` | Display-name update works through the client listener. Needs persistence and full validation. |
 | Devices | `DELETE /_matrix/client/v3/devices/{deviceId}` | `scaffolded` | Route planning exists. Runtime behavior is incomplete. |
-| Rooms | `POST /_matrix/client/v3/createRoom` | `partial` | Local room creation works through the in-process route. Needs full create-room semantics, auth events, persistence, and conformance fixtures. |
-| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/join` | `partial` | Local join slice exists. Needs full membership rules and federation-aware joins. |
-| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/send` | `partial` | Local send slice exists. Needs transaction IDs, event auth, event IDs, signatures, DAG persistence, and full response semantics. |
-| Rooms | `GET /_matrix/client/v3/rooms/{roomId}/state` | `partial` | Local state summary route exists. Needs full state event retrieval and state resolution semantics. |
-| Sync | `GET /_matrix/client/v3/sync` | `partial` | In-memory joined-room summary exists and avoids plaintext event content. Needs incremental sync, filters, presence, device updates, to-device messages, and durable stream tokens. |
-| Joined rooms | `GET /_matrix/client/v3/joined_rooms` | `partial` | In-memory joined-room list exists. Needs persistence and full access checks. |
+| Rooms | `POST /_matrix/client/v3/createRoom` | `partial` | Local room creation works through the client listener. Needs full create-room semantics, auth events, persistence, and conformance fixtures. |
+| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/join` | `partial` | Local join slice works through the client listener. Needs full membership rules and federation-aware joins. |
+| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/send` | `partial` | Local send slice works through the client listener. Needs transaction IDs, event auth, event IDs, signatures, DAG persistence, and full response semantics. |
+| Rooms | `GET /_matrix/client/v3/rooms/{roomId}/state` | `partial` | Local state summary works through the client listener. Needs full state event retrieval and state resolution semantics. |
+| Sync | `GET /_matrix/client/v3/sync` | `partial` | In-memory joined-room summary works through the client listener and avoids plaintext event content. Needs incremental sync, filters, presence, device updates, to-device messages, and durable stream tokens. |
+| Joined rooms | `GET /_matrix/client/v3/joined_rooms` | `partial` | In-memory joined-room list works through the client listener. Needs persistence and full access checks. |
 | Media | `POST /_matrix/media/v3/upload` | `partial` | Local authenticated upload, MIME checks, quarantine, digest, and metrics exist. Needs multipart/content handling through real HTTP and durable storage. |
 | Media | `GET /_matrix/media/v3/download/{serverName}/{mediaId}` | `partial` | Local download exists. Remote fetch is disabled and fail-closed. |
 | Reports | `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` | `scaffolded` | Trust and safety route matching and validation exist. Runtime route is not wired. |

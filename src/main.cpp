@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <cerrno>
+#include <cstdint>
+#include <fstream>
+#include <iostream>
 #include <merovingian/bootstrap/exit_code.hpp>
 #include <merovingian/config/config.hpp>
 #include <merovingian/config/config_parser.hpp>
@@ -7,8 +11,8 @@
 #include <merovingian/config/reload_policy.hpp>
 #include <merovingian/database/runtime_database.hpp>
 #include <merovingian/federation/runtime_federation.hpp>
+#include <merovingian/homeserver/client_server.hpp>
 #include <merovingian/homeserver/http_server.hpp>
-#include <merovingian/homeserver/vertical_slice.hpp>
 #include <merovingian/media/runtime_media.hpp>
 #include <merovingian/net/listener.hpp>
 #include <merovingian/net/shutdown_signal.hpp>
@@ -16,14 +20,8 @@
 #include <merovingian/observability/logger.hpp>
 #include <merovingian/platform/file_metadata.hpp>
 #include <merovingian/platform/hardening_self_check.hpp>
-
-#include <poll.h>
-
-#include <cerrno>
-#include <cstdint>
-#include <fstream>
-#include <iostream>
 #include <mutex>
+#include <poll.h>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -33,7 +31,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.1.14"};
+constexpr auto version = std::string_view{"0.1.17"};
 
 struct BootstrapConfigResult final
 {
@@ -42,11 +40,8 @@ struct BootstrapConfigResult final
     std::string source{"defaults"};
 };
 
-[[nodiscard]] auto reject_config(
-    merovingian::bootstrap::ExitCode code,
-    std::string field,
-    std::string message
-) -> BootstrapConfigResult
+[[nodiscard]] auto reject_config(merovingian::bootstrap::ExitCode code, std::string field, std::string message)
+    -> BootstrapConfigResult
 {
     auto result = BootstrapConfigResult{};
     result.failure_code = code;
@@ -54,10 +49,8 @@ struct BootstrapConfigResult final
     return result;
 }
 
-[[nodiscard]] auto classify_config_findings(
-    merovingian::config::ConfigParseResult parsed,
-    std::string source
-) -> BootstrapConfigResult
+[[nodiscard]] auto classify_config_findings(merovingian::config::ConfigParseResult parsed, std::string source)
+    -> BootstrapConfigResult
 {
     if (parsed.findings.empty())
     {
@@ -67,10 +60,11 @@ struct BootstrapConfigResult final
     auto has_parse_finding = false;
     for (auto const& finding : parsed.findings)
     {
-        has_parse_finding = has_parse_finding || finding.field == "config" || finding.field == "arguments"
-            || finding.field.starts_with("line ") || finding.message == "unknown configuration key"
-            || finding.message == "duplicate configuration key" || finding.message == "expected boolean value"
-            || finding.message == "expected unsigned integer value";
+        has_parse_finding = has_parse_finding || finding.field == "config" || finding.field == "arguments" ||
+                            finding.field.starts_with("line ") || finding.message == "unknown configuration key" ||
+                            finding.message == "duplicate configuration key" ||
+                            finding.message == "expected boolean value" ||
+                            finding.message == "expected unsigned integer value";
     }
 
     return {
@@ -86,29 +80,21 @@ struct BootstrapConfigResult final
     auto const metadata_result = merovingian::platform::read_posix_file_metadata(path);
     if (!metadata_result.metadata.has_value())
     {
-        return reject_config(
-            merovingian::bootstrap::ExitCode::config_io_error,
-            "config.path",
-            "unable to inspect configuration file metadata: " + metadata_result.error
-        );
+        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, "config.path",
+                             "unable to inspect configuration file metadata: " + metadata_result.error);
     }
 
     if (metadata_result.metadata->kind == merovingian::platform::FileKind::missing)
     {
-        return reject_config(
-            merovingian::bootstrap::ExitCode::config_io_error,
-            "config.path",
-            "configuration file does not exist"
-        );
+        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, "config.path",
+                             "configuration file does not exist");
     }
 
     if (!merovingian::platform::is_secure_config_file(*metadata_result.metadata))
     {
         return reject_config(
-            merovingian::bootstrap::ExitCode::config_validation_error,
-            "config.path",
-            "configuration file must be a regular file without group/other write or execute permissions"
-        );
+            merovingian::bootstrap::ExitCode::config_validation_error, "config.path",
+            "configuration file must be a regular file without group/other write or execute permissions");
     }
 
     return {};
@@ -119,11 +105,8 @@ struct BootstrapConfigResult final
     auto const metadata_result = merovingian::platform::read_posix_file_metadata(path);
     if (!metadata_result.metadata.has_value())
     {
-        return reject_config(
-            merovingian::bootstrap::ExitCode::config_io_error,
-            "database.uri_file",
-            "unable to inspect database URI file metadata: " + metadata_result.error
-        );
+        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, "database.uri_file",
+                             "unable to inspect database URI file metadata: " + metadata_result.error);
     }
 
     if (metadata_result.metadata->kind == merovingian::platform::FileKind::missing)
@@ -133,19 +116,14 @@ struct BootstrapConfigResult final
 
     if (!merovingian::platform::is_secure_secret_file(*metadata_result.metadata))
     {
-        return reject_config(
-            merovingian::bootstrap::ExitCode::config_validation_error,
-            "database.uri_file",
-            "database URI file must be a regular owner-only non-executable secret file"
-        );
+        return reject_config(merovingian::bootstrap::ExitCode::config_validation_error, "database.uri_file",
+                             "database URI file must be a regular owner-only non-executable secret file");
     }
 
     return {};
 }
 
-[[nodiscard]] auto validate_existing_secret_files(
-    merovingian::config::Config const& config
-) -> BootstrapConfigResult
+[[nodiscard]] auto validate_existing_secret_files(merovingian::config::Config const& config) -> BootstrapConfigResult
 {
     return validate_existing_secret_file_metadata(config.database().uri_file);
 }
@@ -161,11 +139,8 @@ struct BootstrapConfigResult final
     auto input = std::ifstream{path, std::ios::binary};
     if (!input.is_open())
     {
-        return reject_config(
-            merovingian::bootstrap::ExitCode::config_io_error,
-            "config.path",
-            "unable to open configuration file"
-        );
+        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, "config.path",
+                             "unable to open configuration file");
     }
 
     auto contents = std::string{};
@@ -180,11 +155,8 @@ struct BootstrapConfigResult final
         {
             if (contents.size() + static_cast<std::size_t>(bytes_read) > merovingian::config::max_config_bytes)
             {
-                return reject_config(
-                    merovingian::bootstrap::ExitCode::config_parse_error,
-                    "config",
-                    "configuration file is too large"
-                );
+                return reject_config(merovingian::bootstrap::ExitCode::config_parse_error, "config",
+                                     "configuration file is too large");
             }
 
             contents.append(chunk.data(), static_cast<std::size_t>(bytes_read));
@@ -193,11 +165,8 @@ struct BootstrapConfigResult final
 
     if (input.bad())
     {
-        return reject_config(
-            merovingian::bootstrap::ExitCode::config_io_error,
-            "config.path",
-            "error while reading configuration file"
-        );
+        return reject_config(merovingian::bootstrap::ExitCode::config_io_error, "config.path",
+                             "error while reading configuration file");
     }
 
     auto result = classify_config_findings(merovingian::config::parse_key_value_config(contents), "file");
@@ -238,7 +207,8 @@ struct ParsedArgs final
     return parsed;
 }
 
-[[nodiscard]] auto build_config_from_positional(std::vector<std::string_view> const& positional) -> BootstrapConfigResult
+[[nodiscard]] auto build_config_from_positional(std::vector<std::string_view> const& positional)
+    -> BootstrapConfigResult
 {
     if (positional.empty())
     {
@@ -251,11 +221,9 @@ struct ParsedArgs final
         return load_config_from_file(std::string{positional[1]});
     }
 
-    return reject_config(
-        merovingian::bootstrap::ExitCode::usage_error,
-        "arguments",
-        "usage: merovingian-server [--dry-run] [--config <path>] [--check-config <path>] [--plan-config-reload <current> <next>] [--help] [--version]"
-    );
+    return reject_config(merovingian::bootstrap::ExitCode::usage_error, "arguments",
+                         "usage: merovingian-server [--dry-run] [--config <path>] [--check-config <path>] "
+                         "[--plan-config-reload <current> <next>] [--help] [--version]");
 }
 
 [[nodiscard]] auto is_help_request(int argc, char const* const* argv) noexcept -> bool
@@ -375,10 +343,8 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     LOG_INFO("Startup hardening checks: " + std::to_string(hardening_self_check.count()));
     for (auto const& check : hardening_self_check.checks())
     {
-        LOG_INFO(
-            "Hardening self-check: " + check.name + "="
-            + merovingian::platform::hardening_status_name(check.status)
-        );
+        LOG_INFO("Hardening self-check: " + check.name + "=" +
+                 merovingian::platform::hardening_status_name(check.status));
     }
     LOG_INFO(merovingian::database::database_summary(runtime_database));
     LOG_INFO(merovingian::federation::federation_summary(runtime_federation));
@@ -388,10 +354,8 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     LOG_INFO("Planned runtime listeners: " + std::to_string(runtime_listeners.count()));
     for (auto const& listener : runtime_listeners.plans())
     {
-        LOG_INFO(
-            "Runtime listener planned: " + std::string{merovingian::net::listener_role_name(listener.role)}
-            + " " + listener.bind + " tls=" + std::string{listener.tls ? "true" : "false"}
-        );
+        LOG_INFO("Runtime listener planned: " + std::string{merovingian::net::listener_role_name(listener.role)} + " " +
+                 listener.bind + " tls=" + std::string{listener.tls ? "true" : "false"});
     }
     LOG_INFO("Registration enabled: " + std::string{config.security().registration.enabled ? "true" : "false"});
     LOG_INFO("Federation enabled: " + std::string{config.security().federation.enabled ? "true" : "false"});
@@ -446,26 +410,23 @@ struct ListenerBinding final
     merovingian::net::TcpAcceptor acceptor{};
 };
 
-[[nodiscard]] auto open_listeners(
-    merovingian::net::RuntimeListeners const& plans,
-    std::vector<ListenerBinding>& bindings,
-    std::string& error
-) -> bool
+[[nodiscard]] auto open_listeners(merovingian::net::RuntimeListeners const& plans,
+                                  std::vector<ListenerBinding>& bindings, std::string& error) -> bool
 {
     for (auto const& plan : plans.plans())
     {
         if (plan.tls)
         {
-            error = "TLS listener requested but TLS is not yet implemented; refusing to start "
-                  + std::string{merovingian::net::listener_role_name(plan.role)} + " on " + plan.bind;
+            error = "TLS listener requested but TLS is not yet implemented; refusing to start " +
+                    std::string{merovingian::net::listener_role_name(plan.role)} + " on " + plan.bind;
             return false;
         }
 
         auto const endpoint = parse_bind(plan.bind);
         if (!endpoint.ok)
         {
-            error = "Listener " + std::string{merovingian::net::listener_role_name(plan.role)}
-                  + " has invalid bind '" + plan.bind + "': " + endpoint.error;
+            error = "Listener " + std::string{merovingian::net::listener_role_name(plan.role)} + " has invalid bind '" +
+                    plan.bind + "': " + endpoint.error;
             return false;
         }
 
@@ -474,25 +435,22 @@ struct ListenerBinding final
         auto const bind_result = binding.acceptor.bind(endpoint.host, endpoint.port);
         if (!bind_result.ok)
         {
-            error = "Listener " + std::string{merovingian::net::listener_role_name(plan.role)}
-                  + " failed to bind " + plan.bind + ": " + bind_result.error;
+            error = "Listener " + std::string{merovingian::net::listener_role_name(plan.role)} + " failed to bind " +
+                    plan.bind + ": " + bind_result.error;
             return false;
         }
 
-        LOG_INFO(
-            "Listening: " + std::string{merovingian::net::listener_role_name(plan.role)}
-            + " bound=" + endpoint.host + ":" + std::to_string(binding.acceptor.bound_port())
-        );
+        LOG_INFO("Listening: " + std::string{merovingian::net::listener_role_name(plan.role)} +
+                 " bound=" + endpoint.host + ":" + std::to_string(binding.acceptor.bound_port()));
         bindings.push_back(std::move(binding));
     }
     return true;
 }
 
-[[nodiscard]] auto serve_until_shutdown(
-    merovingian::homeserver::HomeserverRuntime& runtime,
-    std::vector<ListenerBinding>& bindings,
-    merovingian::net::ShutdownSignal& shutdown
-) -> merovingian::homeserver::HttpServeStats
+[[nodiscard]] auto serve_until_shutdown(merovingian::homeserver::ClientServerRuntime& runtime,
+                                        std::vector<ListenerBinding>& bindings,
+                                        merovingian::net::ShutdownSignal& shutdown)
+    -> merovingian::homeserver::HttpServeStats
 {
     auto runtime_lock = std::mutex{};
     auto stats = merovingian::homeserver::HttpServeStats{};
@@ -505,11 +463,14 @@ struct ListenerBinding final
         // than to the per-iteration alias `binding`, which would dangle once
         // the loop advances.
         threads.emplace_back([&runtime, &runtime_lock, &shutdown, &stats, &target = binding]() {
-            merovingian::homeserver::serve_http(target.acceptor, runtime, runtime_lock, shutdown, stats);
+            auto const mode = target.role == merovingian::net::ListenerRole::client
+                                  ? merovingian::homeserver::HttpDispatchMode::client_server
+                                  : merovingian::homeserver::HttpDispatchMode::local_router;
+            merovingian::homeserver::serve_http(target.acceptor, runtime, runtime_lock, shutdown, stats, mode);
         });
     }
 
-    // Block the main thread until shutdown fires. We do not poll a queue —
+    // Block the main thread until shutdown fires. We do not poll a queue -
     // the signal handler writes to the self-pipe and any blocked poll(2) call
     // in the worker threads returns immediately.
     auto entry = pollfd{};
@@ -537,7 +498,7 @@ struct ListenerBinding final
 
 [[nodiscard]] auto run_server(BootstrapConfigResult const& result) -> int
 {
-    auto runtime_result = merovingian::homeserver::start_runtime(result.parsed.config);
+    auto runtime_result = merovingian::homeserver::start_client_server(result.parsed.config);
     if (!runtime_result.started)
     {
         LOG_CRITICAL("Runtime failed to start: " + runtime_result.reason);
@@ -565,11 +526,8 @@ struct ListenerBinding final
     auto const stats = serve_until_shutdown(runtime, bindings, shutdown);
 
     merovingian::net::uninstall_shutdown_signal_handlers();
-    LOG_INFO(
-        "Server stopped. accepted=" + std::to_string(stats.accepted_connections)
-        + " completed=" + std::to_string(stats.completed_requests)
-        + " rejected=" + std::to_string(stats.rejected_requests)
-    );
+    LOG_INFO("Server stopped. accepted=" + std::to_string(stats.accepted_connections) + " completed=" +
+             std::to_string(stats.completed_requests) + " rejected=" + std::to_string(stats.rejected_requests));
     return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
 }
 

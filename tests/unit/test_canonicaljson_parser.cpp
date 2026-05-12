@@ -1,18 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <catch2/catch_test_macros.hpp>
 #include <merovingian/canonicaljson/parser.hpp>
 #include <merovingian/canonicaljson/serializer.hpp>
 #include <merovingian/canonicaljson/signable.hpp>
-
-#include <catch2/catch_test_macros.hpp>
-
 #include <string>
 
 SCENARIO("Canonical JSON parser accepts and canonicalizes Matrix-style objects", "[canonicaljson][parser]")
 {
     GIVEN("a Matrix-style JSON object")
     {
-        auto constexpr input = "{\"unsigned\":{},\"origin\":\"example.org\",\"depth\":12,\"content\":{\"body\":\"hi\"}}";
+        auto constexpr input =
+            "{\"unsigned\":{},\"origin\":\"example.org\",\"depth\":12,\"content\":{\"body\":\"hi\"}}";
 
         WHEN("it is parsed and serialized canonically")
         {
@@ -23,7 +22,8 @@ SCENARIO("Canonical JSON parser accepts and canonicalizes Matrix-style objects",
             {
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
                 REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
-                REQUIRE(serialized.output == "{\"content\":{\"body\":\"hi\"},\"depth\":12,\"origin\":\"example.org\",\"unsigned\":{}}");
+                REQUIRE(serialized.output ==
+                        "{\"content\":{\"body\":\"hi\"},\"depth\":12,\"origin\":\"example.org\",\"unsigned\":{}}");
             }
         }
     }
@@ -72,18 +72,21 @@ SCENARIO("Canonical JSON parser rejects non-integer and out-of-range numbers", "
         auto constexpr fractional_input = "1.25";
         auto constexpr exponent_input = "1e2";
         auto constexpr too_large_input = "9223372036854775808";
+        auto constexpr unsigned_64_input = "18446744073709551615";
 
         WHEN("the number tokens are parsed")
         {
             auto const fractional = merovingian::canonicaljson::parse_lossless(fractional_input);
             auto const exponent = merovingian::canonicaljson::parse_lossless(exponent_input);
             auto const too_large = merovingian::canonicaljson::parse_lossless(too_large_input);
+            auto const unsigned_64 = merovingian::canonicaljson::parse_lossless(unsigned_64_input);
 
             THEN("lossy or out-of-range numbers are rejected")
             {
                 REQUIRE(fractional.error == merovingian::canonicaljson::ParseError::invalid_number);
                 REQUIRE(exponent.error == merovingian::canonicaljson::ParseError::invalid_number);
                 REQUIRE(too_large.error == merovingian::canonicaljson::ParseError::integer_out_of_range);
+                REQUIRE(unsigned_64.error == merovingian::canonicaljson::ParseError::integer_out_of_range);
             }
         }
     }
