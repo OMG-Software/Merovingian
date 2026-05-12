@@ -9,7 +9,7 @@ project(
   ],
 )
 
-yyjson_inc = include_directories('src')
+yyjson_inc = include_directories('src', is_system: true)
 
 yyjson_lib = static_library(
   'yyjson',

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.17
+
+- Marked the pinned `yyjson` fallback include directory as a system include so
+  project warning-as-error policy does not fail CI on third-party C header
+  implementation details.
+
 ## 0.1.16
 
 - Added `yyjson` as the strict JSON parser dependency with a pinned Meson wrap
