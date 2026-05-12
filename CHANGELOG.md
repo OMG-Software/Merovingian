@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.12
+
+- Update release readiness and CI artifact paths after numbering the
+  production-readiness document.
+- Remove clang-tidy-blocked `reinterpret_cast` calls from token and media
+  digest input handling.
+
 ## 0.1.11
 
 - Install LibSodium development headers in CodeQL and coverage CI jobs.

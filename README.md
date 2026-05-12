@@ -101,7 +101,7 @@ See:
 - `config/merovingian.conf.example`
 - `docs/configuration.md`
 - `docs/media-repository.md`
-- `docs/production-readiness.md`
+- `docs/01-production-readiness.md`
 - `docs/security-review-checklist.md`
 
 ## Developer environment
@@ -126,5 +126,5 @@ See:
 ## Status
 
 Prototype homeserver with packaging and release-readiness gates in progress.
-Do not deploy as a production Matrix homeserver until `docs/production-readiness.md`
+Do not deploy as a production Matrix homeserver until `docs/01-production-readiness.md`
 has no blocking gates.

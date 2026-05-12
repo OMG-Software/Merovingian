@@ -11,6 +11,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <sodium.h>
 
@@ -166,9 +167,14 @@ auto calculate_media_digest(std::string_view bytes) -> std::string
         return {};
     }
     auto digest = std::array<unsigned char, media_digest_bytes>{};
-    if (crypto_generichash(digest.data(), digest.size(),
-                           reinterpret_cast<unsigned char const*>(bytes.data()),
-                           static_cast<unsigned long long>(bytes.size()), nullptr, 0U) != 0)
+    auto media_bytes = std::vector<unsigned char>{};
+    media_bytes.reserve(bytes.size());
+    for (auto const byte : bytes)
+    {
+        media_bytes.push_back(static_cast<unsigned char>(byte));
+    }
+    if (crypto_generichash(digest.data(), digest.size(), media_bytes.data(), media_bytes.size(),
+                           nullptr, 0U) != 0)
     {
         return {};
     }

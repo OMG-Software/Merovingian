@@ -109,7 +109,7 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --version 2>&1 | grep -q "merovingian-server 0.1.11"',
+    server_executable + ' --version 2>&1 | grep -q "merovingian-server 0.1.12"',
   ],
 )
 
