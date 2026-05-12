@@ -1,5 +1,9 @@
 # Phase 0 Checklist
 
+Historical note: this checklist is retained as a snapshot of early bootstrap
+work. Current progress is tracked in `docs/progress.md` and Matrix v1.18
+coverage is tracked in `docs/protocol-coverage.md`.
+
 ## Build system
 
 - [x] Meson bootstrap

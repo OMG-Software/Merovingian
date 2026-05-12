@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.13
+
+- Added authoritative capability progress tracking and Matrix v1.18 protocol
+  coverage documents.
+- Marked numbered phase and milestone documents as historical tracking notes.
+- Updated CI artifact and release-readiness checks to require the current
+  progress documents.
+
 ## 0.1.12
 
 - Update release readiness and CI artifact paths after numbering the

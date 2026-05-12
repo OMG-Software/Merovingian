@@ -1,0 +1,58 @@
+# Project progress
+
+This is the authoritative progress ledger for The Merovingian. The older
+numbered milestone and phase documents are historical notes only; do not use
+them to decide whether a capability is production-ready.
+
+## Status model
+
+Use these states consistently:
+
+- `not-started`: no project-owned implementation exists.
+- `scaffolded`: types, interfaces, or planning code exist, but there is no
+  complete behavior.
+- `unit-covered`: behavior exists behind unit tests, but is not wired into the
+  runtime path.
+- `integrated`: behavior is composed with neighbouring modules in integration
+  tests.
+- `runtime-wired`: behavior is served through the real executable/runtime path.
+- `spec-covered`: behavior is checked against Matrix v1.18 fixtures or
+  conformance tests.
+- `production-gated`: release, security, CI, fuzz, sanitizer, and deployment
+  gates pass for the capability.
+
+No capability is production-ready until it reaches `production-gated`.
+
+## Capability ledger
+
+| Capability | Current status | Evidence | Production gap |
+| --- | --- | --- | --- |
+| Build and warning policy | `integrated` | Meson C++26 build, warnings-as-errors, hardening flags, Linux and FreeBSD CI | Add named build profiles for release, debug, sanitizers, fuzz, and hardened production. |
+| Secure configuration | `runtime-wired` | Validated defaults, bounded parser, config-file metadata checks, reload planning, smoke tests | Replace phase-specific CI naming with capability gates and add production profile enforcement. |
+| Runtime listener | `scaffolded` | Listener plans are built from config | Bind sockets, accept connections, read/write HTTP, handle shutdown, and serve until stopped. |
+| HTTP transport | `unit-covered` | HTTP/1.1 request-head parser, limits, rate-limit helpers, single-request adapter | Add real socket integration, `llhttp` or reviewed parser boundary, response serialization, TLS boundary, and backpressure. |
+| Client-server API | `integrated` | Registration, password login, logout, whoami, devices, room creation, send, joined rooms, and sync slices | Complete Matrix v1.18 endpoint coverage, route through real listener, add conformance coverage, and persist runtime state. |
+| Authentication and sessions | `integrated` | LibSodium password hashing, CSPRNG access tokens, token hashes, policy checks, audit events | Add durable token/session storage, refresh-token rotation, registration tokens, admin bootstrap, and account recovery controls. |
+| E2EE key APIs | `unit-covered` | Key API route/planning boundary exists | Implement upload/query/claim, fallback keys, device list updates, cross-signing, and key backup storage through runtime and persistence. |
+| Rooms, events, and sync | `integrated` | Canonical JSON, event envelope, redaction, state-resolution scaffold, encrypted-room policy, local room flow | Replace event ID/signature scaffolds with Matrix room-version-correct algorithms, full auth rules, event DAG persistence, and spec fixtures. |
+| Federation | `integrated` | Route matching, inbound transaction scaffold, SSRF/TLS policy checks, trust-state logic | Implement real server discovery, TLS verification, canonical JSON signing, Ed25519 verification, joins/invites/backfill, and durable federation queues. |
+| Media repository | `integrated` | Local upload/download, MIME policy, quarantine/release/remove, LibSodium digest, metrics, audit | Add sandboxed processing worker, remote fetch, AV hook boundary, thumbnailing, decompression limits, and durable blob metadata. |
+| Database persistence | `scaffolded` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store | Add PostgreSQL/libpq and SQLite RAII backends, migration files, transaction handling, temporary DB integration tests, and runtime repositories. |
+| Observability and audit | `integrated` | Structured logging, health snapshots, metrics, redaction helpers, audit events | Add durable audit log, metrics export endpoint, log format contract, trace correlation, and operator docs. |
+| Trust and safety | `unit-covered` | Policy engine for registration, accounts, invites, federation, media, reports, and admin review routes | Wire reporting/admin endpoints into runtime, persist policy actions, add Matrix v1.18 fixtures, and integrate policy server transport. |
+| Runtime hardening | `scaffolded` | Systemd/OpenRC/rc.d packaging, hardening plan and self-check surfaces | Enforce fail-closed controls, implement seccomp/AppArmor/Landlock notes or profiles, OpenBSD pledge/unveil, FreeBSD Capsicum where practical. |
+| Platform support | `integrated` | Linux and FreeBSD CI, setup-command planning for OpenBSD and NetBSD | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
+| Fuzzing and conformance | `scaffolded` | Canonical JSON and HTTP fuzz targets can be built | Run fuzz targets in CI, add corpus management, Matrix conformance suite, property tests, load tests, and chaos tests. |
+| Supply chain and release | `scaffolded` | Release-readiness script and packaging skeletons exist | Add SBOM, dependency pinning policy, license review, artifact signing, checksums, provenance, and reproducible build notes. |
+
+## Immediate priority order
+
+1. Wire the real runtime listener to the client-server HTTP adapter.
+2. Add live PostgreSQL or SQLite persistence behind the existing database
+   boundary.
+3. Replace federation and event signing scaffolds with Matrix canonical JSON
+   and Ed25519 verification.
+4. Start protocol coverage tracking in `docs/protocol-coverage.md` and keep it
+   updated with every endpoint change.
+5. Promote CI from build/test checks to capability gates with conformance,
+   fuzzing, platform, packaging, and release evidence.

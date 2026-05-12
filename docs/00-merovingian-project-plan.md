@@ -1755,6 +1755,10 @@ known limitations
 
 ## 37. Milestone plan
 
+Historical note: this numbered milestone plan is retained as an original project
+planning sketch. Current progress is tracked by capability in `docs/progress.md`,
+and Matrix v1.18 coverage is tracked in `docs/protocol-coverage.md`.
+
 ### Milestone 0: skeleton and hardening foundation
 
 Deliverables:

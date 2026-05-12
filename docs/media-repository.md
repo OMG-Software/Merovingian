@@ -1,12 +1,14 @@
 # Media Repository
 
-Milestone 21 introduces the local media repository MVP through the real runtime path.
+This capability note describes the local media repository slice through the
+current in-process runtime path.
 
 ## Runtime Behavior
 
 - Authenticated local uploads run through the homeserver media route.
 - Downloads serve only local media owned by the configured server name.
-- Remote media fetches remain disabled and fail closed until a later milestone.
+- Remote media fetches remain disabled and fail closed until a later capability
+  change.
 - Admin quarantine, release, and remove actions update repository state, persistent metadata, admin actions, and audit events.
 - Media metrics expose accepted uploads, rejected uploads, quarantines, releases, removals, remote fetch rejections, stored blobs, and stored bytes.
 
