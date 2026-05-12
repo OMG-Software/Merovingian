@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/config.hpp>
-#include <merovingian/homeserver/client_server_mvp.hpp>
-
 #include <catch2/catch_test_macros.hpp>
-
+#include <merovingian/config/config.hpp>
+#include <merovingian/homeserver/client_server.hpp>
 #include <string>
 
 namespace
@@ -24,15 +22,16 @@ namespace
 
 } // namespace
 
-SCENARIO("Integrated client-server MVP flow covers auth devices rooms state joined rooms sync and logout", "[homeserver][client-server][integration]")
+SCENARIO("Integrated client-server flow covers auth devices rooms state joined rooms sync and logout",
+         "[homeserver][client-server][integration]")
 {
-    GIVEN("registration-enabled MVP config")
+    GIVEN("registration-enabled client-server config")
     {
         auto const config = registration_enabled_config();
 
-        WHEN("the MVP client-server flow is run")
+        WHEN("the client-server flow is run")
         {
-            auto const result = merovingian::homeserver::run_client_server_mvp_flow(config);
+            auto const result = merovingian::homeserver::run_client_server_flow(config);
 
             THEN("the flow completes and sync returns bounded safe summaries")
             {
@@ -46,7 +45,7 @@ SCENARIO("Integrated client-server MVP flow covers auth devices rooms state join
     }
 }
 
-SCENARIO("Integrated client-server MVP flow fails closed on invalid config", "[homeserver][client-server][integration]")
+SCENARIO("Integrated client-server flow fails closed on invalid config", "[homeserver][client-server][integration]")
 {
     GIVEN("an invalid listener config")
     {
@@ -59,9 +58,9 @@ SCENARIO("Integrated client-server MVP flow fails closed on invalid config", "[h
             merovingian::config::SecurityConfig{},
         };
 
-        WHEN("the MVP client-server flow is run")
+        WHEN("the client-server flow is run")
         {
-            auto const result = merovingian::homeserver::run_client_server_mvp_flow(config);
+            auto const result = merovingian::homeserver::run_client_server_flow(config);
 
             THEN("startup fails before serving API requests")
             {

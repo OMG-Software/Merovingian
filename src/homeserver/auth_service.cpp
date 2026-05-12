@@ -14,6 +14,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <sodium.h>
 
@@ -102,8 +103,13 @@ auto constexpr token_hash_bytes = std::size_t{crypto_generichash_BYTES};
         return std::nullopt;
     }
     auto digest = std::array<unsigned char, token_hash_bytes>{};
-    if (crypto_generichash(digest.data(), digest.size(),
-                           reinterpret_cast<unsigned char const*>(token.data()), token.size(),
+    auto token_bytes = std::vector<unsigned char>{};
+    token_bytes.reserve(token.size());
+    for (auto const character : token)
+    {
+        token_bytes.push_back(static_cast<unsigned char>(character));
+    }
+    if (crypto_generichash(digest.data(), digest.size(), token_bytes.data(), token_bytes.size(),
                            nullptr, 0U) != 0)
     {
         return std::nullopt;

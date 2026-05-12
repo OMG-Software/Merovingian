@@ -19,7 +19,10 @@ Milestone 6 introduces the narrow authentication and identity policy boundary ne
 
 ## Security posture
 
-The auth module deliberately does not implement cryptographic password hashing, token generation, or random number generation. Those must come from reviewed external cryptographic primitives through the future crypto boundary.
+The core auth policy module deliberately stays free of cryptographic password
+hashing, token generation, and random number generation. The local homeserver
+runtime now performs those operations through the reviewed LibSodium-backed
+boundary rather than storing plaintext credentials or bearer tokens.
 
 The milestone establishes these guarantees:
 
@@ -34,9 +37,8 @@ The milestone establishes these guarantees:
 
 These are deferred to later milestones:
 
-- Matrix `/login`, `/logout`, `/register`, or device-management endpoints.
-- Password hashing implementation.
-- Token generation implementation.
+- Full Matrix `/login`, `/logout`, `/register`, or device-management endpoint
+  conformance.
 - Refresh-token rotation.
 - Access-token database persistence.
 - Admin bootstrap flow.
@@ -50,5 +52,6 @@ These are deferred to later milestones:
 
 1. Add a reviewed crypto dependency boundary for random token generation and password hashing.
 2. Add database persistence interfaces for users, devices, token hashes, and audit events.
-3. Add Client-Server auth endpoint scaffolding behind HTTP route dispatch.
+3. Wire the Matrix JSON client-server auth facade into real HTTP listener
+   dispatch.
 4. Add rate-limit hooks for login, registration, and device APIs.
