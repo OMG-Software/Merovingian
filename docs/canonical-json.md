@@ -45,10 +45,11 @@ The parser and serializer must:
 - preserve integer values without lossy conversion
 - avoid dependency-defined signing semantics
 
-`yyjson` is used only to parse strict RFC 8259 JSON and validate UTF-8. The
-adapter copies parsed data into `merovingian::canonicaljson::Value` and applies
-Matrix-specific policy there. No `yyjson_*` type is exposed outside the
-canonical JSON implementation.
+`yyjson` is used only to parse strict RFC 8259 JSON and validate UTF-8. A small
+C adapter owns the direct `yyjson.h` include so C++ static analysis and warning
+policy stay focused on project code. The parser copies parsed data into
+`merovingian::canonicaljson::Value` and applies Matrix-specific policy there.
+No `yyjson_*` type is exposed outside the canonical JSON implementation.
 
 ## Numeric policy
 

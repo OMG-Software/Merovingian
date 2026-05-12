@@ -5,6 +5,8 @@
 - Marked the pinned `yyjson` fallback include directory as a system include so
   project warning-as-error policy does not fail CI on third-party C header
   implementation details.
+- Moved direct `yyjson.h` inclusion behind a C adapter so C++ static analysis
+  does not parse third-party C inline implementation details.
 - Updated the server version smoke test to assert `meson.project_version()`
   instead of a stale literal.
 

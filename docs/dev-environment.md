@@ -21,7 +21,8 @@ SQLite, TLS headers, Catch2, clang tooling, and cppcheck. `yyjson` is used for
 strict JSON parsing; Meson uses a pinned wrap fallback when the host does not
 provide a `yyjson` pkg-config module. The fallback exposes yyjson headers as
 system includes so Merovingian's warning-as-error policy applies to project
-code without turning third-party C inline headers into CI blockers.
+code without turning third-party C inline headers into CI blockers. C++ sources
+include a project-owned adapter rather than `yyjson.h` directly.
 
 ## Common Usage
 

@@ -3,6 +3,7 @@ canonicaljson_sources = files(
   'serializer.cpp',
   'signable.cpp',
   'value.cpp',
+  'yyjson_adapter.c',
 )
 
 canonicaljson_lib = static_library(

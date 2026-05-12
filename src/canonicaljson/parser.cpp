@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "yyjson_adapter.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
-#include <merovingian/canonicaljson/parser.hpp>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
-#include <yyjson.h>
+
+#include <merovingian/canonicaljson/parser.hpp>
 
 namespace merovingian::canonicaljson
 {
@@ -21,13 +23,13 @@ namespace
 
     struct YyjsonDocumentDeleter final
     {
-        auto operator()(yyjson_doc* document) const noexcept -> void
+        auto operator()(MerovingianYyjsonDoc* document) const noexcept -> void
         {
-            yyjson_doc_free(document);
+            merovingian_yyjson_doc_free(document);
         }
     };
 
-    using YyjsonDocument = std::unique_ptr<yyjson_doc, YyjsonDocumentDeleter>;
+    using YyjsonDocument = std::unique_ptr<MerovingianYyjsonDoc, YyjsonDocumentDeleter>;
 
     struct ConvertResult final
     {
@@ -35,31 +37,31 @@ namespace
         ParseError error{ParseError::none};
     };
 
-    [[nodiscard]] auto map_yyjson_error(yyjson_read_err const& error) noexcept -> ParseError
+    [[nodiscard]] auto map_yyjson_error(MerovingianYyjsonReadCode error) noexcept -> ParseError
     {
-        switch (error.code)
+        switch (error)
         {
-        case YYJSON_READ_SUCCESS:
+        case MEROVINGIAN_YYJSON_READ_SUCCESS:
             return ParseError::none;
-        case YYJSON_READ_ERROR_EMPTY_CONTENT:
-        case YYJSON_READ_ERROR_UNEXPECTED_END:
-        case YYJSON_READ_ERROR_MORE:
+        case MEROVINGIAN_YYJSON_READ_ERROR_EMPTY_CONTENT:
+        case MEROVINGIAN_YYJSON_READ_ERROR_UNEXPECTED_END:
+        case MEROVINGIAN_YYJSON_READ_ERROR_MORE:
             return ParseError::unexpected_end;
-        case YYJSON_READ_ERROR_UNEXPECTED_CONTENT:
+        case MEROVINGIAN_YYJSON_READ_ERROR_UNEXPECTED_CONTENT:
             return ParseError::trailing_data;
-        case YYJSON_READ_ERROR_INVALID_NUMBER:
+        case MEROVINGIAN_YYJSON_READ_ERROR_INVALID_NUMBER:
             return ParseError::invalid_number;
-        case YYJSON_READ_ERROR_INVALID_STRING:
+        case MEROVINGIAN_YYJSON_READ_ERROR_INVALID_STRING:
             return ParseError::invalid_string;
-        case YYJSON_READ_ERROR_LITERAL:
+        case MEROVINGIAN_YYJSON_READ_ERROR_LITERAL:
             return ParseError::invalid_literal;
-        case YYJSON_READ_ERROR_UNEXPECTED_CHARACTER:
-        case YYJSON_READ_ERROR_JSON_STRUCTURE:
-        case YYJSON_READ_ERROR_INVALID_COMMENT:
-        case YYJSON_READ_ERROR_INVALID_PARAMETER:
-        case YYJSON_READ_ERROR_MEMORY_ALLOCATION:
-        case YYJSON_READ_ERROR_FILE_OPEN:
-        case YYJSON_READ_ERROR_FILE_READ:
+        case MEROVINGIAN_YYJSON_READ_ERROR_UNEXPECTED_CHARACTER:
+        case MEROVINGIAN_YYJSON_READ_ERROR_JSON_STRUCTURE:
+        case MEROVINGIAN_YYJSON_READ_ERROR_INVALID_COMMENT:
+        case MEROVINGIAN_YYJSON_READ_ERROR_INVALID_PARAMETER:
+        case MEROVINGIAN_YYJSON_READ_ERROR_MEMORY_ALLOCATION:
+        case MEROVINGIAN_YYJSON_READ_ERROR_FILE_OPEN:
+        case MEROVINGIAN_YYJSON_READ_ERROR_FILE_READ:
         default:
             return ParseError::unexpected_token;
         }
@@ -95,7 +97,7 @@ namespace
     // yyjson owns parsed values through the document; conversion copies into
     // Merovingian's canonical JSON tree before the document is released.
     // NOLINTNEXTLINE(misc-no-recursion)
-    [[nodiscard]] auto convert_yyjson_value(yyjson_val* value, std::size_t depth) -> ConvertResult
+    [[nodiscard]] auto convert_yyjson_value(MerovingianYyjsonValue* value, std::size_t depth) -> ConvertResult
     {
         if (depth > max_depth)
         {
@@ -106,79 +108,110 @@ namespace
             return {{}, ParseError::unexpected_token};
         }
 
-        if (yyjson_is_null(value))
+        switch (merovingian_yyjson_value_type(value))
         {
+        case MEROVINGIAN_YYJSON_TYPE_NULL:
             return {Value{nullptr}, ParseError::none};
+        case MEROVINGIAN_YYJSON_TYPE_BOOL:
+            return {Value{merovingian_yyjson_bool_value(value) != 0}, ParseError::none};
+        case MEROVINGIAN_YYJSON_TYPE_RAW: {
+            auto length = std::size_t{0U};
+            auto const* raw = merovingian_yyjson_raw_data(value, &length);
+            return raw == nullptr ? ConvertResult{{}, ParseError::invalid_number} : raw_number_as_int64({raw, length});
         }
-        if (yyjson_is_bool(value))
-        {
-            return {Value{yyjson_get_bool(value)}, ParseError::none};
-        }
-        if (yyjson_is_raw(value))
-        {
-            auto const* raw = yyjson_get_raw(value);
-            auto const length = yyjson_get_len(value);
-            return raw_number_as_int64({raw, length});
-        }
-        if (yyjson_is_str(value))
-        {
-            auto const* data = yyjson_get_str(value);
-            auto const length = yyjson_get_len(value);
+        case MEROVINGIAN_YYJSON_TYPE_STRING: {
+            auto length = std::size_t{0U};
+            auto const* data = merovingian_yyjson_string_data(value, &length);
             if (data == nullptr)
             {
                 return {{}, ParseError::invalid_string};
             }
             return {Value{std::string{data, length}}, ParseError::none};
         }
-        if (yyjson_is_arr(value))
-        {
+        case MEROVINGIAN_YYJSON_TYPE_ARRAY: {
             auto array = Array{};
-            array.reserve(yyjson_arr_size(value));
+            array.reserve(merovingian_yyjson_array_size(value));
 
-            auto iterator = yyjson_arr_iter_with(value);
-            while (auto* item = yyjson_arr_iter_next(&iterator))
+            struct ArrayContext final
             {
-                auto converted = convert_yyjson_value(item, depth + 1U);
-                if (converted.error != ParseError::none)
-                {
-                    return converted;
-                }
-                array.push_back(std::move(converted.value));
+                Array* array;
+                std::size_t depth;
+                ParseError error{ParseError::none};
+            };
+
+            auto context = ArrayContext{&array, depth};
+            auto const completed = merovingian_yyjson_array_foreach(
+                value,
+                [](MerovingianYyjsonValue* item, void* user_data) -> int {
+                    auto& callback_context = *static_cast<ArrayContext*>(user_data);
+                    auto converted = convert_yyjson_value(item, callback_context.depth + 1U);
+                    if (converted.error != ParseError::none)
+                    {
+                        callback_context.error = converted.error;
+                        return 0;
+                    }
+                    callback_context.array->push_back(std::move(converted.value));
+                    return 1;
+                },
+                &context);
+            if (completed == 0)
+            {
+                return {{}, context.error};
             }
             return {Value{std::move(array)}, ParseError::none};
         }
-        if (yyjson_is_obj(value))
-        {
+        case MEROVINGIAN_YYJSON_TYPE_OBJECT: {
             auto object = Object{};
-            object.reserve(yyjson_obj_size(value));
+            object.reserve(merovingian_yyjson_object_size(value));
 
-            auto iterator = yyjson_obj_iter_with(value);
-            while (auto* key = yyjson_obj_iter_next(&iterator))
+            struct ObjectContext final
             {
-                auto const* key_data = yyjson_get_str(key);
-                auto const key_length = yyjson_get_len(key);
-                if (key_data == nullptr)
-                {
-                    return {{}, ParseError::invalid_string};
-                }
-                auto key_value = std::string{key_data, key_length};
-                auto const duplicate = std::ranges::any_of(object, [&key_value](ObjectMember const& member) {
-                    return member.key == key_value;
-                });
-                if (duplicate)
-                {
-                    return {{}, ParseError::duplicate_object_key};
-                }
+                Object* object;
+                std::size_t depth;
+                ParseError error{ParseError::none};
+            };
 
-                auto* member_value = yyjson_obj_iter_get_val(key);
-                auto converted = convert_yyjson_value(member_value, depth + 1U);
-                if (converted.error != ParseError::none)
-                {
-                    return converted;
-                }
-                object.push_back(make_member(std::move(key_value), std::move(converted.value)));
+            auto context = ObjectContext{&object, depth};
+            auto const completed = merovingian_yyjson_object_foreach(
+                value,
+                [](char const* key_data, std::size_t key_length, MerovingianYyjsonValue* member_value,
+                   void* user_data) -> int {
+                    auto& callback_context = *static_cast<ObjectContext*>(user_data);
+                    if (key_data == nullptr)
+                    {
+                        callback_context.error = ParseError::invalid_string;
+                        return 0;
+                    }
+                    auto key_value = std::string{key_data, key_length};
+                    auto const duplicate =
+                        std::ranges::any_of(*callback_context.object, [&key_value](ObjectMember const& member) {
+                            return member.key == key_value;
+                        });
+                    if (duplicate)
+                    {
+                        callback_context.error = ParseError::duplicate_object_key;
+                        return 0;
+                    }
+
+                    auto converted = convert_yyjson_value(member_value, callback_context.depth + 1U);
+                    if (converted.error != ParseError::none)
+                    {
+                        callback_context.error = converted.error;
+                        return 0;
+                    }
+                    callback_context.object->push_back(make_member(std::move(key_value), std::move(converted.value)));
+                    return 1;
+                },
+                &context);
+            if (completed == 0)
+            {
+                return {{}, context.error};
             }
             return {Value{std::move(object)}, ParseError::none};
+        }
+        case MEROVINGIAN_YYJSON_TYPE_UNKNOWN:
+        default:
+            break;
         }
 
         return {{}, ParseError::unexpected_token};
@@ -293,16 +326,15 @@ auto parse_lossless(std::string_view input) -> ParseResult
     }
 
     auto owned_input = std::string{input};
-    auto error = yyjson_read_err{};
-    auto* raw_document =
-        yyjson_read_opts(owned_input.data(), owned_input.size(), YYJSON_READ_NUMBER_AS_RAW, nullptr, &error);
+    auto error = MEROVINGIAN_YYJSON_READ_SUCCESS;
+    auto* raw_document = merovingian_yyjson_read_raw_numbers(owned_input.data(), owned_input.size(), &error);
     auto document = YyjsonDocument{raw_document};
     if (document == nullptr)
     {
         return {{}, map_yyjson_error(error)};
     }
 
-    auto converted = convert_yyjson_value(yyjson_doc_get_root(document.get()), 0U);
+    auto converted = convert_yyjson_value(merovingian_yyjson_doc_root(document.get()), 0U);
     return {std::move(converted.value), converted.error};
 }
 
