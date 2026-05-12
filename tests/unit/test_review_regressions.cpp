@@ -1,13 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <catch2/catch_test_macros.hpp>
 #include <merovingian/config/config.hpp>
 #include <merovingian/database/migration.hpp>
 #include <merovingian/database/persistent_store.hpp>
 #include <merovingian/database/schema.hpp>
 #include <merovingian/homeserver/vertical_slice.hpp>
-
-#include <catch2/catch_test_macros.hpp>
-
 #include <string>
 
 namespace
@@ -35,22 +33,27 @@ SCENARIO("Admin health remains admin-only after router split", "[homeserver][sec
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const admin_user = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!");
-        auto const admin_login = merovingian::homeserver::login_local_user(runtime, admin_user.value, "CorrectHorse7!", "ADMIN1");
+        auto const admin_login =
+            merovingian::homeserver::login_local_user(runtime, admin_user.value, "CorrectHorse7!", "ADMIN1");
         auto const normal_user = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse8!");
-        auto const normal_login = merovingian::homeserver::login_local_user(runtime, normal_user.value, "CorrectHorse8!", "USER1");
+        auto const normal_login =
+            merovingian::homeserver::login_local_user(runtime, normal_user.value, "CorrectHorse8!", "USER1");
         REQUIRE(admin_login.ok);
         REQUIRE(normal_login.ok);
 
         WHEN("both users request admin health")
         {
-            auto const admin_response = merovingian::homeserver::handle_local_http_request(runtime, {"GET", "/_merovingian/admin/health", admin_login.value, {}});
-            auto const normal_response = merovingian::homeserver::handle_local_http_request(runtime, {"GET", "/_merovingian/admin/health", normal_login.value, {}});
+            auto const admin_response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/health", admin_login.value, {}});
+            auto const normal_response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/health", normal_login.value, {}});
 
             THEN("only the admin session can read operational health")
             {
                 REQUIRE(admin_response.status == 200U);
                 REQUIRE(normal_response.status == 401U);
-                REQUIRE_FALSE(merovingian::homeserver::authenticated_admin_user(runtime, normal_login.value).has_value());
+                REQUIRE_FALSE(
+                    merovingian::homeserver::authenticated_admin_user(runtime, normal_login.value).has_value());
             }
         }
     }
@@ -83,14 +86,17 @@ SCENARIO("Migration application reapplies upgrade statements after downgrade", "
 {
     GIVEN("a schema upgraded, downgraded, and then upgraded again")
     {
-        auto const upgraded = merovingian::database::apply_migration_plan({}, merovingian::database::migration_plan_between(0U, 1U));
+        auto const upgraded =
+            merovingian::database::apply_migration_plan({}, merovingian::database::migration_plan_between(0U, 1U));
         REQUIRE(upgraded.ok);
-        auto const downgraded = merovingian::database::apply_migration_plan(upgraded.state, merovingian::database::migration_plan_between(1U, 0U));
+        auto const downgraded = merovingian::database::apply_migration_plan(
+            upgraded.state, merovingian::database::migration_plan_between(1U, 0U));
         REQUIRE(downgraded.ok);
 
         WHEN("the schema is upgraded again")
         {
-            auto const reapplied = merovingian::database::apply_migration_plan(downgraded.state, merovingian::database::migration_plan_between(0U, 1U));
+            auto const reapplied = merovingian::database::apply_migration_plan(
+                downgraded.state, merovingian::database::migration_plan_between(0U, 1U));
 
             THEN("tables are recreated even though migration history still contains the old upgrade record")
             {
@@ -102,7 +108,8 @@ SCENARIO("Migration application reapplies upgrade statements after downgrade", "
     }
 }
 
-SCENARIO("Persistent store records insert statements only for accepted user and device rows", "[database][persistence][review]")
+SCENARIO("Persistent store records insert statements only for accepted user and device rows",
+         "[database][persistence][review]")
 {
     GIVEN("an opened persistent store")
     {
@@ -112,10 +119,14 @@ SCENARIO("Persistent store records insert statements only for accepted user and 
 
         WHEN("duplicate users and devices are stored")
         {
-            auto const first_user = merovingian::database::store_user(store, {"@alice:example.org", "password-hash:v1:1", false, false, true});
-            auto const duplicate_user = merovingian::database::store_user(store, {"@alice:example.org", "password-hash:v1:2", false, false, false});
-            auto const first_device = merovingian::database::store_device(store, {"@alice:example.org", "DEVICE1", "Alice laptop"});
-            auto const duplicate_device = merovingian::database::store_device(store, {"@alice:example.org", "DEVICE1", "Duplicate laptop"});
+            auto const first_user = merovingian::database::store_user(
+                store, {"@alice:example.org", "password-hash:v1:1", false, false, true});
+            auto const duplicate_user = merovingian::database::store_user(
+                store, {"@alice:example.org", "password-hash:v1:2", false, false, false});
+            auto const first_device =
+                merovingian::database::store_device(store, {"@alice:example.org", "DEVICE1", "Alice laptop"});
+            auto const duplicate_device =
+                merovingian::database::store_device(store, {"@alice:example.org", "DEVICE1", "Duplicate laptop"});
 
             THEN("rejected duplicates do not leave replay statements behind")
             {
@@ -143,8 +154,10 @@ SCENARIO("Persistent store rejects duplicate token hashes before recording inser
 
         WHEN("the same token hash is stored twice")
         {
-            auto const first = merovingian::database::store_access_token(store, {"@alice:example.org", "DEVICE1", "token-hash:v1:abc", false});
-            auto const duplicate = merovingian::database::store_access_token(store, {"@alice:example.org", "DEVICE1", "token-hash:v1:abc", false});
+            auto const first = merovingian::database::store_access_token(
+                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:abc", false});
+            auto const duplicate = merovingian::database::store_access_token(
+                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:abc", false});
 
             THEN("only one token row and statement are recorded")
             {
@@ -158,22 +171,29 @@ SCENARIO("Persistent store rejects duplicate token hashes before recording inser
     }
 }
 
-SCENARIO("Persistent store matches state event JSON with whitespace and upserts current state", "[database][persistence][review]")
+SCENARIO("Persistent store matches state event JSON with whitespace and upserts current state",
+         "[database][persistence][review]")
 {
     GIVEN("state events with equivalent formatted JSON")
     {
         auto opened = merovingian::database::open_persistent_store();
         REQUIRE(opened.ok);
         auto& store = opened.store;
-        auto const first_event = merovingian::database::store_event(store, {"$event1:example.org", "!room:example.org", "@alice:example.org", R"({ "type" : "m.room.topic" , "state_key" : "" })"});
-        auto const second_event = merovingian::database::store_event(store, {"$event2:example.org", "!room:example.org", "@alice:example.org", R"({ "type" : "m.room.topic" , "state_key" : "" })"});
+        auto const first_event =
+            merovingian::database::store_event(store, {"$event1:example.org", "!room:example.org", "@alice:example.org",
+                                                       R"({ "type" : "m.room.topic" , "state_key" : "" })"});
+        auto const second_event =
+            merovingian::database::store_event(store, {"$event2:example.org", "!room:example.org", "@alice:example.org",
+                                                       R"({ "type" : "m.room.topic" , "state_key" : "" })"});
         REQUIRE(first_event);
         REQUIRE(second_event);
 
         WHEN("the same current-state key is stored twice")
         {
-            auto const first_state = merovingian::database::store_state(store, {"!room:example.org", "m.room.topic", "", "$event1:example.org"});
-            auto const second_state = merovingian::database::store_state(store, {"!room:example.org", "m.room.topic", "", "$event2:example.org"});
+            auto const first_state = merovingian::database::store_state(
+                store, {"!room:example.org", "m.room.topic", "", "$event1:example.org"});
+            auto const second_state = merovingian::database::store_state(
+                store, {"!room:example.org", "m.room.topic", "", "$event2:example.org"});
 
             THEN("formatted JSON is accepted and the current-state row is replaced")
             {
@@ -203,8 +223,10 @@ SCENARIO("Persisted local event ids are unique across rooms", "[homeserver][room
 
         WHEN("one event is sent to each room")
         {
-            auto const first_event = merovingian::homeserver::send_event(runtime, login.value, first_room.value, "event-one");
-            auto const second_event = merovingian::homeserver::send_event(runtime, login.value, second_room.value, "event-two");
+            auto const first_event =
+                merovingian::homeserver::send_event(runtime, login.value, first_room.value, "event-one");
+            auto const second_event =
+                merovingian::homeserver::send_event(runtime, login.value, second_room.value, "event-two");
 
             THEN("event ids do not collide in persistent storage")
             {
@@ -212,7 +234,8 @@ SCENARIO("Persisted local event ids are unique across rooms", "[homeserver][room
                 REQUIRE(second_event.ok);
                 REQUIRE(first_event.value != second_event.value);
                 REQUIRE(runtime.database.persistent_store.events.size() == 2U);
-                REQUIRE(runtime.database.persistent_store.events[0].event_id != runtime.database.persistent_store.events[1].event_id);
+                REQUIRE(runtime.database.persistent_store.events[0].event_id !=
+                        runtime.database.persistent_store.events[1].event_id);
             }
         }
     }
@@ -232,7 +255,8 @@ SCENARIO("Sending a state event mirrors current state", "[homeserver][rooms][rev
 
         WHEN("a room state event is sent")
         {
-            auto const event = merovingian::homeserver::send_event(runtime, login.value, room.value, R"({ "type" : "m.room.topic" , "state_key" : "" })");
+            auto const event = merovingian::homeserver::send_event(runtime, login.value, room.value,
+                                                                   R"({ "type" : "m.room.topic" , "state_key" : "" })");
 
             THEN("the event is persisted and materialized as current state")
             {

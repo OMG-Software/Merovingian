@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.11
+
+- Install LibSodium development headers in CodeQL and coverage CI jobs.
+- Remove the legacy `token-hash:v1` marker from production persistence
+  validation and align persistence tests on the current `token-hash:v2`
+  format.
+
 ## 0.1.10
 
 - Keep the smoke-test secure example config command as a single Meson

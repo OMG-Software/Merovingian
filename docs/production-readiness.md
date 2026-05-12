@@ -26,6 +26,9 @@ published as production releases while any blocking gate is open.
   unavailable.
 - Conformance, fuzz, sanitizer, static-analysis, and packaging checks must pass
   before a release tag is created.
+- CodeQL, coverage, sanitizer, static-analysis, and Linux CI jobs install
+  LibSodium development headers before configuring Meson so production
+  cryptographic dependencies are validated consistently.
 
 ## Packaging targets
 
