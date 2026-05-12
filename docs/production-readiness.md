@@ -9,8 +9,12 @@ published as production releases while any blocking gate is open.
 
 - The server executable must run a real listener and serve requests until it is
   stopped by the service manager.
-- Client-server routes must accept Matrix JSON over HTTP, not local test-only
-  request structs or pipe-delimited bodies.
+- Client-server routes must run through the socket accept/read/write loop. The
+  current client-server facade accepts Matrix JSON request bodies for
+  registration, password login, and device updates, and has a single-request
+  HTTP/1.1 adapter for tests. The public client-server API is production-named
+  through `client_server.hpp`, but runtime listeners do not yet read requests
+  from sockets.
 - Access tokens must be generated with LibSodium CSPRNG output and stored only as
   versioned cryptographic hashes.
 - Passwords must be stored with LibSodium Argon2id password hashes.

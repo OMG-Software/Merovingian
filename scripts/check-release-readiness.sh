@@ -20,6 +20,8 @@ require_file packaging/openrc/merovingian
 require_file packaging/rc.d/merovingian
 require_file docs/production-readiness.md
 require_file docs/security-review-checklist.md
+require_file scripts/build-linux.sh
+require_file scripts/build-wsl.ps1
 
 if grep -R "password-hash:v1" src include >/dev/null 2>&1; then
     fail "production sources still contain legacy password-hash:v1"

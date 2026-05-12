@@ -1,6 +1,6 @@
 homeserver_sources = files(
   'auth_service.cpp',
-  'client_server_mvp.cpp',
+  'client_server.cpp',
   'local_demo_flow.cpp',
   'local_http_router.cpp',
   'local_services.cpp',

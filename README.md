@@ -54,6 +54,18 @@ meson compile -C build
 meson test -C build
 ```
 
+Or use the checked wrapper for a Clang 22 build:
+
+```bash
+sh scripts/build-linux.sh
+```
+
+From Windows PowerShell with WSL:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-wsl.ps1 -Distro Ubuntu-24.04
+```
+
 ## Run
 
 Show usage:

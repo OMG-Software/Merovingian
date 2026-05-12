@@ -49,6 +49,45 @@ Skip package installation when dependencies are already managed externally:
 sh scripts/setup-dev-env.sh --no-install
 ```
 
+## Build Wrappers
+
+Use the Linux wrapper inside WSL or a native Linux shell to configure, compile,
+and test with a C++26-capable Clang toolchain:
+
+```sh
+sh scripts/build-linux.sh
+```
+
+The default build directory is `build-clang22`, with `CC=clang-22` and
+`CXX=clang++-22`. Override these when using another compiler:
+
+```sh
+sh scripts/build-linux.sh --builddir build-dev --cc clang-22 --cxx clang++-22
+```
+
+From Windows PowerShell, call the WSL wrapper with the distro name that appears
+in `wsl -l -v`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\build-wsl.ps1 -Distro Ubuntu-24.04
+```
+
+Both wrappers use Meson wrap fallback mode by default so the pinned Catch2
+subproject can be fetched when the system package is unavailable.
+
+Meson launches repository shell-based source gates through `sh`, which keeps
+WSL builds on `/mnt/c` independent of Windows executable-bit metadata.
+
+Smoke tests that need Unix file modes create their fixtures under the WSL
+temporary directory instead of the Windows-mounted build directory. This keeps
+the server's permission checks enabled while avoiding DrvFS `chmod` failures.
+The smoke-test Meson file keeps shared shell fragments as single expressions so
+the Ubuntu 24.04 Meson parser accepts them during setup.
+
+Clang 22 builds keep `-Werror` enabled, but suppress the narrow
+`-Wc2y-extensions` diagnostic because Catch2 uses `__COUNTER__` for test
+registration.
+
 ## BSD Notes
 
 FreeBSD and HardenedBSD use `pkg`. OpenBSD uses `pkg_add`. NetBSD prefers `pkgin` and falls back to `pkg_add` when available.
