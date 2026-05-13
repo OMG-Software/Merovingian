@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/auth/identity.hpp>
-#include <merovingian/auth/token.hpp>
+#include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/token.hpp"
 
 #include <chrono>
 #include <string>
@@ -67,13 +67,9 @@ struct ClientAuthAuditEvent final
 [[nodiscard]] auto registration_policy(RegistrationPolicy policy) -> RegistrationPolicyDecision;
 [[nodiscard]] auto session_is_active(SessionRecord const& session, std::chrono::system_clock::time_point now)
     -> SessionInvalidationDecision;
-[[nodiscard]] auto make_client_auth_audit_event(
-    ClientAuthEndpoint endpoint,
-    std::string_view user_id,
-    std::string_view device_id,
-    bool allowed,
-    std::string_view reason
-) -> ClientAuthAuditEvent;
+[[nodiscard]] auto make_client_auth_audit_event(ClientAuthEndpoint endpoint, std::string_view user_id,
+                                                std::string_view device_id, bool allowed, std::string_view reason)
+    -> ClientAuthAuditEvent;
 [[nodiscard]] auto client_auth_audit_summary(ClientAuthAuditEvent const& event) -> std::string;
 
 } // namespace merovingian::auth

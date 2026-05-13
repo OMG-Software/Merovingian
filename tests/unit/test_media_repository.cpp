@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/media/repository.hpp>
+#include "merovingian/media/repository.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -26,8 +26,7 @@ namespace
 
 } // namespace
 
-SCENARIO("Local media repository uploads, downloads, and deduplicates safe media",
-         "[media][repository]")
+SCENARIO("Local media repository uploads, downloads, and deduplicates safe media", "[media][repository]")
 {
     GIVEN("a configured local media repository")
     {
@@ -36,13 +35,10 @@ SCENARIO("Local media repository uploads, downloads, and deduplicates safe media
         WHEN("the same safe content is uploaded twice")
         {
             auto const first = merovingian::media::upload_local_media(
-                repository, "example.org",
-                {"@alice:example.org", "text/plain", "text/plain", "hello", true});
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
             auto const second = merovingian::media::upload_local_media(
-                repository, "example.org",
-                {"@alice:example.org", "text/plain", "text/plain", "hello", true});
-            auto const downloaded =
-                merovingian::media::download_local_media(repository, "example.org", first.media_id);
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "hello", true});
+            auto const downloaded = merovingian::media::download_local_media(repository, "example.org", first.media_id);
 
             THEN("two media records reference one stored blob and bytes are served safely")
             {
@@ -75,14 +71,11 @@ SCENARIO("Local media repository quarantines scanner failures and blocks downloa
         WHEN("scanner failure quarantines an upload")
         {
             auto const uploaded = merovingian::media::upload_local_media(
-                repository, "example.org",
-                {"@alice:example.org", "image/png", "image/png", "png-bytes", false});
-            auto const blocked = merovingian::media::download_local_media(repository, "example.org",
-                                                                          uploaded.media_id);
-            auto const released =
-                merovingian::media::release_local_media(repository, uploaded.media_id);
-            auto const downloaded = merovingian::media::download_local_media(
-                repository, "example.org", uploaded.media_id);
+                repository, "example.org", {"@alice:example.org", "image/png", "image/png", "png-bytes", false});
+            auto const blocked = merovingian::media::download_local_media(repository, "example.org", uploaded.media_id);
+            auto const released = merovingian::media::release_local_media(repository, uploaded.media_id);
+            auto const downloaded =
+                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id);
 
             THEN("quarantined media cannot be served until an admin release")
             {
@@ -99,8 +92,7 @@ SCENARIO("Local media repository quarantines scanner failures and blocks downloa
     }
 }
 
-SCENARIO("Local media repository rejects oversized media and removes stored references",
-         "[media][repository]")
+SCENARIO("Local media repository rejects oversized media and removes stored references", "[media][repository]")
 {
     GIVEN("a configured local media repository")
     {
@@ -112,12 +104,11 @@ SCENARIO("Local media repository rejects oversized media and removes stored refe
                 repository, "example.org",
                 {"@alice:example.org", "text/plain", "text/plain", "0123456789abcdefg", true});
             auto const uploaded = merovingian::media::upload_local_media(
-                repository, "example.org",
-                {"@alice:example.org", "text/plain", "text/plain", "small", true});
-            auto const removed = merovingian::media::remove_local_media(
-                repository, uploaded.media_id, "retention expired");
-            auto const after_remove = merovingian::media::download_local_media(
-                repository, "example.org", uploaded.media_id);
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "small", true});
+            auto const removed =
+                merovingian::media::remove_local_media(repository, uploaded.media_id, "retention expired");
+            auto const after_remove =
+                merovingian::media::download_local_media(repository, "example.org", uploaded.media_id);
 
             THEN("oversized uploads fail closed and removed bytes are no longer served")
             {
@@ -135,8 +126,7 @@ SCENARIO("Local media repository rejects oversized media and removes stored refe
     }
 }
 
-SCENARIO("Local media repository does not deduplicate against removed zero-reference blobs",
-         "[media][repository]")
+SCENARIO("Local media repository does not deduplicate against removed zero-reference blobs", "[media][repository]")
 {
     GIVEN("a configured local media repository with removed media")
     {
@@ -145,15 +135,13 @@ SCENARIO("Local media repository does not deduplicate against removed zero-refer
         WHEN("the same bytes are uploaded after their previous record is removed")
         {
             auto const first = merovingian::media::upload_local_media(
-                repository, "example.org",
-                {"@alice:example.org", "text/plain", "text/plain", "reupload", true});
-            auto const removed = merovingian::media::remove_local_media(repository, first.media_id,
-                                                                        "retention expired");
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "reupload", true});
+            auto const removed =
+                merovingian::media::remove_local_media(repository, first.media_id, "retention expired");
             auto const second = merovingian::media::upload_local_media(
-                repository, "example.org",
-                {"@alice:example.org", "text/plain", "text/plain", "reupload", true});
-            auto const downloaded = merovingian::media::download_local_media(
-                repository, "example.org", second.media_id);
+                repository, "example.org", {"@alice:example.org", "text/plain", "text/plain", "reupload", true});
+            auto const downloaded =
+                merovingian::media::download_local_media(repository, "example.org", second.media_id);
 
             THEN("a new live blob is created and downloads return the original bytes")
             {
@@ -180,8 +168,7 @@ SCENARIO("Remote media fetches fail closed for the MVP", "[media][repository][re
         WHEN("a remote media fetch is requested")
         {
             auto const result = merovingian::media::fetch_remote_media_disabled(
-                repository,
-                {"remote.example.org", "media123", "remote.example.org", {"203.0.113.20"}});
+                repository, {"remote.example.org", "media123", "remote.example.org", {"203.0.113.20"}});
 
             THEN("the fetch is explicitly rejected and counted")
             {

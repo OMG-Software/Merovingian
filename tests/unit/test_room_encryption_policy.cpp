@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/rooms/encryption_policy.hpp>
+#include "merovingian/rooms/encryption_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -69,7 +69,8 @@ SCENARIO("Room creation policy rejects explicit unencrypted private rooms and DM
         WHEN("room creation encryption policy is evaluated")
         {
             auto const private_decision = merovingian::rooms::room_creation_encryption_policy(private_room);
-            auto const federated_private_decision = merovingian::rooms::room_creation_encryption_policy(federated_private_room);
+            auto const federated_private_decision =
+                merovingian::rooms::room_creation_encryption_policy(federated_private_room);
             auto const dm_decision = merovingian::rooms::room_creation_encryption_policy(direct_message);
 
             THEN("all required-encryption requests fail closed")
@@ -121,11 +122,7 @@ SCENARIO("Encrypted event log summaries never include encrypted payload content"
         {
             auto const loggable = merovingian::rooms::encrypted_event_payload_is_loggable(payload);
             auto const summary = merovingian::rooms::make_encrypted_event_log_summary(
-                "m.room.encrypted",
-                "!room:example.org",
-                "@alice:example.org",
-                payload
-            );
+                "m.room.encrypted", "!room:example.org", "@alice:example.org", payload);
             auto const summary_text = merovingian::rooms::encrypted_event_log_summary_text(summary);
 
             THEN("only redacted metadata is exposed")

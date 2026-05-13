@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/federation/runtime_federation.hpp>
+#include "merovingian/federation/runtime_federation.hpp"
 
 #include <string>
 #include <utility>
@@ -10,18 +10,19 @@ namespace merovingian::federation
 namespace
 {
 
-[[nodiscard]] auto contains_server(std::vector<std::string> const& servers, std::string_view server_name) noexcept -> bool
-{
-    for (auto const& server : servers)
+    [[nodiscard]] auto contains_server(std::vector<std::string> const& servers, std::string_view server_name) noexcept
+        -> bool
     {
-        if (server == server_name)
+        for (auto const& server : servers)
         {
-            return true;
+            if (server == server_name)
+            {
+                return true;
+            }
         }
-    }
 
-    return false;
-}
+        return false;
+    }
 
 } // namespace
 
@@ -45,12 +46,12 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
 
 auto federation_summary(RuntimeFederationConfig const& config) -> std::string
 {
-    return "Federation runtime config: enabled=" + std::string{config.enabled ? "true" : "false"}
-        + " default_policy=" + config.default_policy
-        + " allowed_servers=" + std::to_string(config.allowed_servers.size())
-        + " denied_servers=" + std::to_string(config.denied_servers.size())
-        + " max_transaction_bytes=" + std::to_string(config.max_transaction_bytes)
-        + " remote_timeout_seconds=" + std::to_string(config.remote_timeout_seconds);
+    return "Federation runtime config: enabled=" + std::string{config.enabled ? "true" : "false"} +
+           " default_policy=" + config.default_policy +
+           " allowed_servers=" + std::to_string(config.allowed_servers.size()) +
+           " denied_servers=" + std::to_string(config.denied_servers.size()) +
+           " max_transaction_bytes=" + std::to_string(config.max_transaction_bytes) +
+           " remote_timeout_seconds=" + std::to_string(config.remote_timeout_seconds);
 }
 
 auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)

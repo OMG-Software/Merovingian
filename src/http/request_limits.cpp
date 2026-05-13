@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/http/request_limits.hpp>
+#include "merovingian/http/request_limits.hpp"
 
 #include <string>
 
@@ -9,27 +9,27 @@ namespace merovingian::http
 namespace
 {
 
-[[nodiscard]] auto is_tchar(char value) noexcept -> bool
-{
-    return (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || value == '!' || value == '#'
-        || value == '$' || value == '%' || value == '&' || value == '\'' || value == '*' || value == '+'
-        || value == '-' || value == '.' || value == '^' || value == '_' || value == '`' || value == '|'
-        || value == '~';
-}
-
-[[nodiscard]] auto contains_control_or_space(std::string_view value) noexcept -> bool
-{
-    for (auto const character : value)
+    [[nodiscard]] auto is_tchar(char value) noexcept -> bool
     {
-        auto const byte = static_cast<unsigned char>(character);
-        if (byte <= 0x20U || byte == 0x7FU)
-        {
-            return true;
-        }
+        return (value >= 'A' && value <= 'Z') || (value >= '0' && value <= '9') || value == '!' || value == '#' ||
+               value == '$' || value == '%' || value == '&' || value == '\'' || value == '*' || value == '+' ||
+               value == '-' || value == '.' || value == '^' || value == '_' || value == '`' || value == '|' ||
+               value == '~';
     }
 
-    return false;
-}
+    [[nodiscard]] auto contains_control_or_space(std::string_view value) noexcept -> bool
+    {
+        for (auto const character : value)
+        {
+            auto const byte = static_cast<unsigned char>(character);
+            if (byte <= 0x20U || byte == 0x7FU)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
 } // namespace
 
@@ -88,11 +88,8 @@ auto request_target_is_valid(std::string_view target) noexcept -> bool
     return !target.empty() && !contains_control_or_space(target);
 }
 
-auto request_line_is_within_limit(
-    std::string_view method,
-    std::string_view target,
-    RequestLimits const& limits
-) noexcept -> bool
+auto request_line_is_within_limit(std::string_view method, std::string_view target,
+                                  RequestLimits const& limits) noexcept -> bool
 {
     if (!method_token_is_valid(method) || !request_target_is_valid(target))
     {
@@ -105,10 +102,10 @@ auto request_line_is_within_limit(
 
 auto request_limits_summary(RequestLimits const& limits) -> std::string
 {
-    return "HTTP request limits: max_start_line_bytes=" + std::to_string(limits.max_start_line_bytes)
-        + " max_header_bytes=" + std::to_string(limits.max_header_bytes)
-        + " max_header_count=" + std::to_string(limits.max_header_count)
-        + " max_body_bytes=" + std::to_string(limits.max_body_bytes);
+    return "HTTP request limits: max_start_line_bytes=" + std::to_string(limits.max_start_line_bytes) +
+           " max_header_bytes=" + std::to_string(limits.max_header_bytes) +
+           " max_header_count=" + std::to_string(limits.max_header_count) +
+           " max_body_bytes=" + std::to_string(limits.max_body_bytes);
 }
 
 } // namespace merovingian::http

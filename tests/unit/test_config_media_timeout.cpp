@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/config.hpp>
-#include <merovingian/config/config_parser.hpp>
-#include <merovingian/config/reload_plan.hpp>
+#include "merovingian/config/config.hpp"
+#include "merovingian/config/config_parser.hpp"
+#include "merovingian/config/reload_plan.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -16,7 +16,8 @@ SCENARIO("Media remote fetch timeout has a bounded secure default", "[config][me
 
         WHEN("the media remote fetch timeout is parsed")
         {
-            auto const parsed = merovingian::config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
+            auto const parsed =
+                merovingian::config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
 
             THEN("the timeout is bounded and valid")
             {

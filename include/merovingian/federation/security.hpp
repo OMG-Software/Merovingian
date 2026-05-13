@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/events/event.hpp>
-#include <merovingian/http/rate_limit.hpp>
+#include "merovingian/events/event.hpp"
+#include "merovingian/http/rate_limit.hpp"
 
 #include <cstdint>
 #include <string>
@@ -61,10 +61,9 @@ struct RemoteTrustDecision final
 [[nodiscard]] auto federation_discovery_policy(RemoteServerRecord const& remote) -> FederationDiscoveryDecision;
 [[nodiscard]] auto verify_federation_request_signature(FederationRequestSignature const& signature)
     -> FederationVerificationDecision;
-[[nodiscard]] auto verify_federation_event_signatures(
-    std::vector<events::EventSignature> const& signatures,
-    std::string_view expected_server
-) -> FederationVerificationDecision;
+[[nodiscard]] auto verify_federation_event_signatures(std::vector<events::EventSignature> const& signatures,
+                                                      std::string_view expected_server)
+    -> FederationVerificationDecision;
 [[nodiscard]] auto federation_remote_rate_limit() noexcept -> http::RateLimitPolicy;
 [[nodiscard]] auto remote_trust_policy(RemoteTrustState state) -> RemoteTrustDecision;
 [[nodiscard]] auto federation_security_boundary_notes() -> std::vector<std::string>;

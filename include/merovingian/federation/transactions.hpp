@@ -59,10 +59,8 @@ struct FederationEdu final
 [[nodiscard]] auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char const*;
 [[nodiscard]] auto federation_routes() -> std::vector<FederationRoute>;
 [[nodiscard]] auto match_federation_route(std::string_view method, std::string_view target) -> FederationRouteMatch;
-[[nodiscard]] auto validate_federation_transaction(
-    FederationTransaction const& transaction,
-    std::size_t max_transaction_bytes
-) -> FederationTransactionDecision;
+[[nodiscard]] auto validate_federation_transaction(FederationTransaction const& transaction,
+                                                   std::size_t max_transaction_bytes) -> FederationTransactionDecision;
 [[nodiscard]] auto edu_is_allowed(FederationEdu const& edu) -> FederationTransactionDecision;
 [[nodiscard]] auto federation_route_audit_event(FederationRoute const& route, std::string_view origin) -> std::string;
 

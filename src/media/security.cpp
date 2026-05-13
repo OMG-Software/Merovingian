@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/media/security.hpp>
+#include "merovingian/media/security.hpp"
 
 #include <algorithm>
 #include <string>
@@ -10,33 +10,35 @@ namespace merovingian::media
 namespace
 {
 
-[[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
-{
-    return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
-}
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
+    {
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
 
-[[nodiscard]] auto matrix_id_is_valid(std::string_view id) noexcept -> bool
-{
-    return id.size() >= 3U && id.front() == '@' && id.find(':') != std::string_view::npos;
-}
+    [[nodiscard]] auto matrix_id_is_valid(std::string_view id) noexcept -> bool
+    {
+        return id.size() >= 3U && id.front() == '@' && id.find(':') != std::string_view::npos;
+    }
 
-[[nodiscard]] auto media_id_is_valid(std::string_view media_id) noexcept -> bool
-{
-    return !media_id.empty() && media_id.find('/') == std::string_view::npos && media_id.find("..") == std::string_view::npos;
-}
+    [[nodiscard]] auto media_id_is_valid(std::string_view media_id) noexcept -> bool
+    {
+        return !media_id.empty() && media_id.find('/') == std::string_view::npos &&
+               media_id.find("..") == std::string_view::npos;
+    }
 
-[[nodiscard]] auto address_is_private_or_loopback(std::string_view address) noexcept -> bool
-{
-    return address == "localhost" || address == "::1" || starts_with(address, "127.")
-        || starts_with(address, "10.") || starts_with(address, "192.168.") || starts_with(address, "169.254.")
-        || starts_with(address, "fc") || starts_with(address, "fd")
-        || (starts_with(address, "172.") && address.size() >= 6U && address[4] >= '1' && address[4] <= '3');
-}
+    [[nodiscard]] auto address_is_private_or_loopback(std::string_view address) noexcept -> bool
+    {
+        return address == "localhost" || address == "::1" || starts_with(address, "127.") ||
+               starts_with(address, "10.") || starts_with(address, "192.168.") || starts_with(address, "169.254.") ||
+               starts_with(address, "fc") || starts_with(address, "fd") ||
+               (starts_with(address, "172.") && address.size() >= 6U && address[4] >= '1' && address[4] <= '3');
+    }
 
-[[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool
-{
-    return !server_name.empty() && server_name.find('.') != std::string_view::npos && server_name.find(' ') == std::string_view::npos;
-}
+    [[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool
+    {
+        return !server_name.empty() && server_name.find('.') != std::string_view::npos &&
+               server_name.find(' ') == std::string_view::npos;
+    }
 
 } // namespace
 
@@ -85,14 +87,16 @@ auto evaluate_media_upload(MediaUploadPolicy const& policy, MediaUploadRequest c
         return {MediaDisposition::quarantine, "declared MIME type does not match content"};
     }
     auto const mime_type = request.sniffed_mime_type.empty() ? std::string_view{request.declared_mime_type}
-                                                            : std::string_view{request.sniffed_mime_type};
+                                                             : std::string_view{request.sniffed_mime_type};
     if (!media_mime_type_is_allowed(policy, mime_type))
     {
-        return {policy.quarantine_unknown_mime ? MediaDisposition::quarantine : MediaDisposition::reject, "media MIME type is not allowed"};
+        return {policy.quarantine_unknown_mime ? MediaDisposition::quarantine : MediaDisposition::reject,
+                "media MIME type is not allowed"};
     }
     if (!request.scanner_clean)
     {
-        return {policy.quarantine_scanner_failures ? MediaDisposition::quarantine : MediaDisposition::reject, "media scanner did not clear upload"};
+        return {policy.quarantine_scanner_failures ? MediaDisposition::quarantine : MediaDisposition::reject,
+                "media scanner did not clear upload"};
     }
     if (request.content_hash.empty())
     {
@@ -136,8 +140,8 @@ auto remote_media_fetch_policy(RemoteMediaFetchRequest const& request) -> MediaP
 
 auto sandboxed_worker_plan_is_hardened(SandboxedMediaWorkerPlan const& plan) noexcept -> bool
 {
-    return plan.dedicated_worker && plan.network_disabled && plan.read_only_root && plan.private_tmp
-        && plan.seccomp_required && plan.decode_timeout_seconds > 0U && plan.memory_limit_bytes > 0U;
+    return plan.dedicated_worker && plan.network_disabled && plan.read_only_root && plan.private_tmp &&
+           plan.seccomp_required && plan.decode_timeout_seconds > 0U && plan.memory_limit_bytes > 0U;
 }
 
 auto evaluate_decoder_safety(DecoderSafetyPolicy const& policy, DecoderSafetyRequest const& request)
@@ -176,11 +180,8 @@ auto media_deduplication_key_is_valid(MediaDeduplicationKey const& key) noexcept
     return !key.hash_algorithm.empty() && !key.digest.empty() && key.byte_size > 0U;
 }
 
-auto make_media_deduplication_key(
-    std::string_view hash_algorithm,
-    std::string_view digest,
-    std::uint64_t byte_size
-) -> MediaDeduplicationKey
+auto make_media_deduplication_key(std::string_view hash_algorithm, std::string_view digest, std::uint64_t byte_size)
+    -> MediaDeduplicationKey
 {
     return {std::string{hash_algorithm}, std::string{digest}, byte_size};
 }
@@ -206,10 +207,14 @@ auto admin_quarantine_policy(AdminQuarantineRequest const& request) -> MediaPoli
 auto media_security_boundary_notes() -> std::vector<std::string>
 {
     return {
-        "Remote media boundary: isolate remote fetches from local upload storage and reject private or loopback resolved addresses.",
-        "Decoder boundary: decode media only in a sandboxed worker with no network, read-only root, private temporary storage, time limits, and memory limits.",
-        "Expansion boundary: reject unsafe decoder choices, excessive output size, excessive pixels, too many animation frames, or suspicious decoded-output expansion ratios.",
-        "Quarantine boundary: unknown MIME, mismatched MIME, scanner failures, missing hashes, and administrator actions use explicit quarantine decisions.",
+        "Remote media boundary: isolate remote fetches from local upload storage and reject private or loopback "
+        "resolved addresses.",
+        "Decoder boundary: decode media only in a sandboxed worker with no network, read-only root, private temporary "
+        "storage, time limits, and memory limits.",
+        "Expansion boundary: reject unsafe decoder choices, excessive output size, excessive pixels, too many "
+        "animation frames, or suspicious decoded-output expansion ratios.",
+        "Quarantine boundary: unknown MIME, mismatched MIME, scanner failures, missing hashes, and administrator "
+        "actions use explicit quarantine decisions.",
     };
 }
 

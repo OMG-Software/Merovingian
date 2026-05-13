@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <cstdint>
-#include <string>
+#include "merovingian/config/config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/config.hpp>
+
+#include <cstdint>
+#include <string>
 
 SCENARIO("Config provides secure server and listener defaults", "[config]")
 {

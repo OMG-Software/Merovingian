@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "local_services.hpp"
+#include "merovingian/auth/identity.hpp"
+#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
 #include <array>
@@ -11,9 +14,6 @@
 #include <string_view>
 #include <vector>
 
-#include <merovingian/auth/identity.hpp>
-#include <merovingian/homeserver/vertical_slice.hpp>
-#include <merovingian/trust_safety/policy_engine.hpp>
 #include <sodium.h>
 
 namespace merovingian::homeserver
@@ -305,6 +305,7 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
                 user_id = session.user_id;
                 device_id = session.device_id;
             }
+            session.revoked = true;
             revoked_any = true;
         }
     }

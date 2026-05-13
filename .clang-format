@@ -73,8 +73,8 @@ BreakBeforeBraces: Custom
 BreakBeforeInheritanceComma: false
 BreakInheritanceList: BeforeColon
 BreakBeforeTernaryOperators: true
-BreakConstructorInitializersBeforeComma: false
-BreakConstructorInitializers: BeforeColon
+BreakConstructorInitializersBeforeComma: true
+BreakConstructorInitializers: BeforeComma
 BreakAfterJavaFieldAnnotations: false
 BreakStringLiterals: true
 ColumnLimit:     120
@@ -106,15 +106,12 @@ IncludeCategories:
   # Local/project headers in quotes
   - Regex: '^"'
     Priority: 1
-
   # Third-party angle includes, e.g. <fmt/...>, <gtest/...>
-  - Regex: '^<(fmt|gtest|boost|spdlog|isl|json)/'
+  - Regex: '^<(catch2|fmt|json|sqlite)/'
     Priority: 2
-
   # STL/system angle includes
   - Regex: '^<[[:alnum:]_]+>'
     Priority: 3
-
   # Fallback
   - Regex: '.*'
     Priority: 4

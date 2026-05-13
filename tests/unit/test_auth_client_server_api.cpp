@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/auth/client_server_api.hpp>
-#include <merovingian/database/statement.hpp>
+#include "merovingian/auth/client_server_api.hpp"
+#include "merovingian/database/statement.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -19,9 +19,12 @@ SCENARIO("Client-server auth route scaffold covers Milestone 9 endpoints", "[aut
             auto const registration = merovingian::auth::match_client_auth_route("POST", "/_matrix/client/v3/register");
             auto const refresh = merovingian::auth::match_client_auth_route("POST", "/_matrix/client/v3/refresh");
             auto const list_devices = merovingian::auth::match_client_auth_route("GET", "/_matrix/client/v3/devices");
-            auto const get_device = merovingian::auth::match_client_auth_route("GET", "/_matrix/client/v3/devices/DEVICE123");
-            auto const update_device = merovingian::auth::match_client_auth_route("PUT", "/_matrix/client/v3/devices/DEVICE123");
-            auto const delete_device = merovingian::auth::match_client_auth_route("DELETE", "/_matrix/client/v3/devices/DEVICE123");
+            auto const get_device =
+                merovingian::auth::match_client_auth_route("GET", "/_matrix/client/v3/devices/DEVICE123");
+            auto const update_device =
+                merovingian::auth::match_client_auth_route("PUT", "/_matrix/client/v3/devices/DEVICE123");
+            auto const delete_device =
+                merovingian::auth::match_client_auth_route("DELETE", "/_matrix/client/v3/devices/DEVICE123");
 
             THEN("login, logout, registration, refresh, and device management routes exist")
             {
@@ -41,7 +44,8 @@ SCENARIO("Client-server auth route scaffold covers Milestone 9 endpoints", "[aut
     }
 }
 
-SCENARIO("Client-server auth route scaffold attaches token requirements and rate-limit hooks", "[auth][client-api][rate-limit]")
+SCENARIO("Client-server auth route scaffold attaches token requirements and rate-limit hooks",
+         "[auth][client-api][rate-limit]")
 {
     GIVEN("public and token-protected client auth routes")
     {
@@ -78,14 +82,8 @@ SCENARIO("Client-server auth boundary plan persists only token hashes", "[auth][
 
         WHEN("the boundary plan is built")
         {
-            auto const plan = merovingian::auth::make_client_auth_boundary_plan(
-                login.route,
-                "@alice:example.org",
-                "DEVICE123",
-                token_hash,
-                true,
-                ""
-            );
+            auto const plan = merovingian::auth::make_client_auth_boundary_plan(login.route, "@alice:example.org",
+                                                                                "DEVICE123", token_hash, true, "");
 
             THEN("crypto hashing is required and database parameters never contain the plaintext token")
             {
@@ -103,7 +101,8 @@ SCENARIO("Client-server auth boundary plan persists only token hashes", "[auth][
                     for (auto const& parameter : statement.parameters)
                     {
                         REQUIRE(parameter.value != plaintext_token);
-                        found_sensitive_hash = found_sensitive_hash || (parameter.sensitive && parameter.value == token_hash.value);
+                        found_sensitive_hash =
+                            found_sensitive_hash || (parameter.sensitive && parameter.value == token_hash.value);
                     }
                 }
                 REQUIRE(found_sensitive_hash);
@@ -112,41 +111,25 @@ SCENARIO("Client-server auth boundary plan persists only token hashes", "[auth][
     }
 }
 
-SCENARIO("Client-server auth boundary plan covers device logout and global logout database actions", "[auth][client-api][database]")
+SCENARIO("Client-server auth boundary plan covers device logout and global logout database actions",
+         "[auth][client-api][database]")
 {
     GIVEN("logout routes and a token hash placeholder")
     {
         auto const token_hash = merovingian::auth::TokenHash{"external-kdf", "abcdefghijklmnopqrstuvwxyz0123456789"};
         auto const logout = merovingian::auth::match_client_auth_route("POST", "/_matrix/client/v3/logout");
         auto const logout_all = merovingian::auth::match_client_auth_route("POST", "/_matrix/client/v3/logout/all");
-        auto const delete_device = merovingian::auth::match_client_auth_route("DELETE", "/_matrix/client/v3/devices/DEVICE123");
+        auto const delete_device =
+            merovingian::auth::match_client_auth_route("DELETE", "/_matrix/client/v3/devices/DEVICE123");
 
         WHEN("database statements are planned")
         {
             auto const logout_plan = merovingian::auth::make_client_auth_boundary_plan(
-                logout.route,
-                "@alice:example.org",
-                "DEVICE123",
-                token_hash,
-                true,
-                ""
-            );
+                logout.route, "@alice:example.org", "DEVICE123", token_hash, true, "");
             auto const logout_all_plan = merovingian::auth::make_client_auth_boundary_plan(
-                logout_all.route,
-                "@alice:example.org",
-                "DEVICE123",
-                token_hash,
-                true,
-                ""
-            );
+                logout_all.route, "@alice:example.org", "DEVICE123", token_hash, true, "");
             auto const delete_device_plan = merovingian::auth::make_client_auth_boundary_plan(
-                delete_device.route,
-                "@alice:example.org",
-                "DEVICE123",
-                token_hash,
-                true,
-                ""
-            );
+                delete_device.route, "@alice:example.org", "DEVICE123", token_hash, true, "");
 
             THEN("device-specific and global invalidation statements are represented")
             {
@@ -171,13 +154,7 @@ SCENARIO("Client-server auth boundary plan emits audit events for route decision
         WHEN("the boundary plan is built")
         {
             auto const plan = merovingian::auth::make_client_auth_boundary_plan(
-                route.route,
-                "@alice:example.org",
-                "DEVICE123",
-                token_hash,
-                false,
-                "device deleted"
-            );
+                route.route, "@alice:example.org", "DEVICE123", token_hash, false, "device deleted");
             auto const summary = merovingian::auth::client_auth_audit_summary(plan.audit_event);
 
             THEN("the audit event records the boundary decision")

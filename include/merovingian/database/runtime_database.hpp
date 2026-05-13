@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/config/config.hpp"
+
 #include <cstdint>
 #include <string>
-
-#include <merovingian/config/config.hpp>
 
 namespace merovingian::database
 {

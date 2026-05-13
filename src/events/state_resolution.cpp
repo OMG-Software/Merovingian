@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/events/state_resolution.hpp>
+#include "merovingian/events/state_resolution.hpp"
 
 #include <string>
 
@@ -9,19 +9,19 @@ namespace merovingian::events
 namespace
 {
 
-[[nodiscard]] auto resolved_event(std::vector<StateEventReference> const& state, StateKey const& key) noexcept
-    -> StateEventReference const*
-{
-    for (auto const& event : state)
+    [[nodiscard]] auto resolved_event(std::vector<StateEventReference> const& state, StateKey const& key) noexcept
+        -> StateEventReference const*
     {
-        if (state_key_matches(event.key, key))
+        for (auto const& event : state)
         {
-            return &event;
+            if (state_key_matches(event.key, key))
+            {
+                return &event;
+            }
         }
-    }
 
-    return nullptr;
-}
+        return nullptr;
+    }
 
 } // namespace
 
@@ -87,9 +87,8 @@ auto resolve_state(StateResolutionRequest const& request) -> StateResolutionResu
 
 auto state_resolution_summary(StateResolutionResult const& result) -> std::string
 {
-    return "state resolution: resolved=" + std::string{result.resolved ? "true" : "false"}
-        + " events=" + std::to_string(result.resolved_state.size())
-        + " reason=" + result.reason;
+    return "state resolution: resolved=" + std::string{result.resolved ? "true" : "false"} +
+           " events=" + std::to_string(result.resolved_state.size()) + " reason=" + result.reason;
 }
 
 } // namespace merovingian::events

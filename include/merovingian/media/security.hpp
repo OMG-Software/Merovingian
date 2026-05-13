@@ -105,22 +105,15 @@ struct AdminQuarantineRequest final
 [[nodiscard]] auto media_disposition_name(MediaDisposition disposition) noexcept -> char const*;
 [[nodiscard]] auto media_mime_type_is_allowed(MediaUploadPolicy const& policy, std::string_view mime_type) noexcept
     -> bool;
-[[nodiscard]] auto evaluate_media_upload(
-    MediaUploadPolicy const& policy,
-    MediaUploadRequest const& request
-) -> MediaPolicyDecision;
+[[nodiscard]] auto evaluate_media_upload(MediaUploadPolicy const& policy, MediaUploadRequest const& request)
+    -> MediaPolicyDecision;
 [[nodiscard]] auto remote_media_fetch_policy(RemoteMediaFetchRequest const& request) -> MediaPolicyDecision;
 [[nodiscard]] auto sandboxed_worker_plan_is_hardened(SandboxedMediaWorkerPlan const& plan) noexcept -> bool;
-[[nodiscard]] auto evaluate_decoder_safety(
-    DecoderSafetyPolicy const& policy,
-    DecoderSafetyRequest const& request
-) -> MediaPolicyDecision;
+[[nodiscard]] auto evaluate_decoder_safety(DecoderSafetyPolicy const& policy, DecoderSafetyRequest const& request)
+    -> MediaPolicyDecision;
 [[nodiscard]] auto media_deduplication_key_is_valid(MediaDeduplicationKey const& key) noexcept -> bool;
-[[nodiscard]] auto make_media_deduplication_key(
-    std::string_view hash_algorithm,
-    std::string_view digest,
-    std::uint64_t byte_size
-) -> MediaDeduplicationKey;
+[[nodiscard]] auto make_media_deduplication_key(std::string_view hash_algorithm, std::string_view digest,
+                                                std::uint64_t byte_size) -> MediaDeduplicationKey;
 [[nodiscard]] auto admin_quarantine_policy(AdminQuarantineRequest const& request) -> MediaPolicyDecision;
 [[nodiscard]] auto media_security_boundary_notes() -> std::vector<std::string>;
 

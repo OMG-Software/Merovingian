@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/media/security.hpp>
+#include "merovingian/media/security.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -14,17 +14,15 @@ namespace
 [[nodiscard]] auto default_upload_policy() -> merovingian::media::MediaUploadPolicy
 {
     return {
-        1024U,
-        {"image/png", "image/jpeg", "text/plain"},
-        true,
-        true,
-        true,
+        1024U, {"image/png", "image/jpeg", "text/plain"},
+         true, true, true,
     };
 }
 
 } // namespace
 
-SCENARIO("Media upload policy enforces size, MIME, sniffing, scanner, quarantine, and hash requirements", "[media][security][upload]")
+SCENARIO("Media upload policy enforces size, MIME, sniffing, scanner, quarantine, and hash requirements",
+         "[media][security][upload]")
 {
     GIVEN("a media upload policy and representative upload requests")
     {

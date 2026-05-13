@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/config/config_parser.hpp"
+
 #include <limits>
 #include <string>
 #include <utility>
-
-#include <merovingian/config/config_parser.hpp>
 
 namespace merovingian::config
 {

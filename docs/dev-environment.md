@@ -34,6 +34,19 @@ held to Merovingian's project warning-as-error policy.
 libpq is also included as a system dependency so PostgreSQL platform headers do
 not bypass third-party warning isolation.
 
+Project-owned headers should use quoted includes. Use the rewrite helper to
+convert angle-bracket Merovingian includes in source trees:
+
+```sh
+python3 scripts/rewrite_merovingian_includes.py include src tests
+```
+
+Check mode reports pending rewrites without modifying files:
+
+```sh
+python3 scripts/rewrite_merovingian_includes.py --check include src tests
+```
+
 ## Common Usage
 
 Preview the commands without installing packages:
@@ -91,9 +104,6 @@ powershell -ExecutionPolicy Bypass -File scripts\build-wsl.ps1 -Distro Ubuntu-24
 
 Both wrappers use Meson wrap fallback mode by default so the pinned Catch2
 subproject can be fetched when the system package is unavailable.
-The Linux wrapper checks for the required `libsodium`, `openssl`, and `sqlite3`
-pkg-config modules before configuring Meson so missing system development
-packages fail before a partial build starts.
 
 Meson launches repository shell-based source gates through `sh`, which keeps
 WSL builds on `/mnt/c` independent of Windows executable-bit metadata.

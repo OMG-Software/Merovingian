@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <string>
+#include "merovingian/database/runtime_database.hpp"
 
-#include <merovingian/database/runtime_database.hpp>
+#include <string>
 
 namespace merovingian::database
 {

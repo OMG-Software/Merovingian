@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/federation/inbound_request.hpp>
+#include "merovingian/federation/inbound_request.hpp"
 
-#include <merovingian/events/authorization.hpp>
-#include <merovingian/rooms/room_version_policy.hpp>
+#include "merovingian/events/authorization.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -16,116 +16,113 @@ namespace merovingian::federation
 namespace
 {
 
-auto constexpr clock_skew_seconds = std::uint64_t{300U};
+    auto constexpr clock_skew_seconds = std::uint64_t{300U};
 
-[[nodiscard]] auto stable_hash(std::string_view value) noexcept -> std::uint64_t
-{
-    auto hash = std::uint64_t{1469598103934665603ULL};
-    for (auto const character : value)
+    [[nodiscard]] auto stable_hash(std::string_view value) noexcept -> std::uint64_t
     {
-        hash ^= static_cast<unsigned char>(character);
-        hash *= std::uint64_t{1099511628211ULL};
-    }
-    return hash;
-}
-
-[[nodiscard]] auto split_fields(std::string_view input, char separator) -> std::vector<std::string>
-{
-    auto fields = std::vector<std::string>{};
-    while (!input.empty())
-    {
-        auto const position = input.find(separator);
-        auto const field = input.substr(0U, position);
-        fields.emplace_back(field);
-        if (position == std::string_view::npos)
+        auto hash = std::uint64_t{1469598103934665603ULL};
+        for (auto const character : value)
         {
-            break;
+            hash ^= static_cast<unsigned char>(character);
+            hash *= std::uint64_t{1099511628211ULL};
         }
-        input = input.substr(position + 1U);
+        return hash;
     }
-    return fields;
-}
 
-[[nodiscard]] auto find_remote(FederationRuntimeState& runtime, std::string_view server_name) -> FederationRemoteRuntime*
-{
-    auto const iterator = std::ranges::find_if(runtime.remotes, [server_name](FederationRemoteRuntime const& remote) {
-        return remote.server_name == server_name;
-    });
-    return iterator == runtime.remotes.end() ? nullptr : &(*iterator);
-}
-
-[[nodiscard]] auto find_remote(FederationRuntimeState const& runtime, std::string_view server_name) -> FederationRemoteRuntime const*
-{
-    auto const iterator = std::ranges::find_if(runtime.remotes, [server_name](FederationRemoteRuntime const& remote) {
-        return remote.server_name == server_name;
-    });
-    return iterator == runtime.remotes.end() ? nullptr : &(*iterator);
-}
-
-[[nodiscard]] auto make_decision(bool accepted, std::uint16_t status, std::string reason) -> FederationDecision
-{
-    return {accepted, status, std::move(reason)};
-}
-
-[[nodiscard]] auto sender_domain(std::string_view sender) noexcept -> std::string_view
-{
-    auto const colon = sender.rfind(':');
-    if (colon == std::string_view::npos || colon + 1U >= sender.size())
+    [[nodiscard]] auto split_fields(std::string_view input, char separator) -> std::vector<std::string>
     {
-        return {};
+        auto fields = std::vector<std::string>{};
+        while (!input.empty())
+        {
+            auto const position = input.find(separator);
+            auto const field = input.substr(0U, position);
+            fields.emplace_back(field);
+            if (position == std::string_view::npos)
+            {
+                break;
+            }
+            input = input.substr(position + 1U);
+        }
+        return fields;
     }
-    return sender.substr(colon + 1U);
-}
 
-[[nodiscard]] auto transaction_id_from_send_target(std::string_view target) -> std::string
-{
-    auto constexpr prefix = std::string_view{"/_matrix/federation/v1/send/"};
-    if (target.size() <= prefix.size() || target.substr(0U, prefix.size()) != prefix)
+    [[nodiscard]] auto find_remote(FederationRuntimeState& runtime, std::string_view server_name)
+        -> FederationRemoteRuntime*
     {
-        return {};
+        auto const iterator =
+            std::ranges::find_if(runtime.remotes, [server_name](FederationRemoteRuntime const& remote) {
+                return remote.server_name == server_name;
+            });
+        return iterator == runtime.remotes.end() ? nullptr : &(*iterator);
     }
-    auto const transaction_id = target.substr(prefix.size());
-    return transaction_id.find('/') == std::string_view::npos ? std::string{transaction_id} : std::string{};
-}
 
-[[nodiscard]] auto transaction_already_accepted(
-    FederationRuntimeState const& runtime,
-    std::string_view origin,
-    std::string_view transaction_id
-) noexcept -> bool
-{
-    return std::ranges::any_of(runtime.accepted_transactions, [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
-        return accepted.origin == origin && accepted.transaction_id == transaction_id;
-    });
-}
-
-auto audit_federation(FederationRuntimeState& runtime, std::string_view event_type, std::string_view origin, std::string_view target, std::string_view reason) -> void
-{
-    runtime.audit_events.push_back(observability::make_audit_event(
-        observability::AuditCategory::policy,
-        event_type,
-        origin,
-        target,
-        reason,
-        "federation"
-    ));
-}
-
-[[nodiscard]] auto pdu_is_authorized(FederationPdu const& pdu) -> bool
-{
-    auto const* room_version = rooms::find_room_version_policy("12");
-    if (room_version == nullptr)
+    [[nodiscard]] auto find_remote(FederationRuntimeState const& runtime, std::string_view server_name)
+        -> FederationRemoteRuntime const*
     {
-        return false;
+        auto const iterator =
+            std::ranges::find_if(runtime.remotes, [server_name](FederationRemoteRuntime const& remote) {
+                return remote.server_name == server_name;
+            });
+        return iterator == runtime.remotes.end() ? nullptr : &(*iterator);
     }
-    auto request = events::EventAuthorizationRequest{};
-    request.room_version = "12";
-    request.event_type = pdu.event_type;
-    request.sender = pdu.sender;
-    request.power_level = {50, 0};
-    auto const decision = events::authorize_event(*room_version, request);
-    return decision.allowed;
-}
+
+    [[nodiscard]] auto make_decision(bool accepted, std::uint16_t status, std::string reason) -> FederationDecision
+    {
+        return {accepted, status, std::move(reason)};
+    }
+
+    [[nodiscard]] auto sender_domain(std::string_view sender) noexcept -> std::string_view
+    {
+        auto const colon = sender.rfind(':');
+        if (colon == std::string_view::npos || colon + 1U >= sender.size())
+        {
+            return {};
+        }
+        return sender.substr(colon + 1U);
+    }
+
+    [[nodiscard]] auto transaction_id_from_send_target(std::string_view target) -> std::string
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/federation/v1/send/"};
+        if (target.size() <= prefix.size() || target.substr(0U, prefix.size()) != prefix)
+        {
+            return {};
+        }
+        auto const transaction_id = target.substr(prefix.size());
+        return transaction_id.find('/') == std::string_view::npos ? std::string{transaction_id} : std::string{};
+    }
+
+    [[nodiscard]] auto transaction_already_accepted(FederationRuntimeState const& runtime, std::string_view origin,
+                                                    std::string_view transaction_id) noexcept -> bool
+    {
+        return std::ranges::any_of(runtime.accepted_transactions,
+                                   [origin, transaction_id](FederationAcceptedTransaction const& accepted) {
+                                       return accepted.origin == origin && accepted.transaction_id == transaction_id;
+                                   });
+    }
+
+    auto audit_federation(FederationRuntimeState& runtime, std::string_view event_type, std::string_view origin,
+                          std::string_view target, std::string_view reason) -> void
+    {
+        runtime.audit_events.push_back(observability::make_audit_event(observability::AuditCategory::policy, event_type,
+                                                                       origin, target, reason, "federation"));
+    }
+
+    [[nodiscard]] auto pdu_is_authorized(FederationPdu const& pdu) -> bool
+    {
+        auto const* room_version = rooms::find_room_version_policy("12");
+        if (room_version == nullptr)
+        {
+            return false;
+        }
+        auto request = events::EventAuthorizationRequest{};
+        request.room_version = "12";
+        request.event_type = pdu.event_type;
+        request.sender = pdu.sender;
+        request.power_level = {50, 0};
+        auto const decision = events::authorize_event(*room_version, request);
+        return decision.allowed;
+    }
 
 } // namespace
 
@@ -141,29 +138,22 @@ auto load_server_signing_key(std::string_view server_name, std::string_view key_
 
 auto signing_key_summary(FederationSigningKey const& key) -> std::string
 {
-    return "server=" + key.server_name + " key_id=" + key.key_id + " loaded=" + std::string{key.loaded ? "true" : "false"};
+    return "server=" + key.server_name + " key_id=" + key.key_id +
+           " loaded=" + std::string{key.loaded ? "true" : "false"};
 }
 
-auto make_federation_signature(
-    std::string_view origin,
-    std::string_view key_id,
-    std::string_view verify_token,
-    std::string_view method,
-    std::string_view target,
-    std::uint64_t origin_server_ts,
-    std::string_view body
-) -> std::string
+auto make_federation_signature(std::string_view origin, std::string_view key_id, std::string_view verify_token,
+                               std::string_view method, std::string_view target, std::uint64_t origin_server_ts,
+                               std::string_view body) -> std::string
 {
-    auto const material = std::string{origin} + "|" + std::string{key_id} + "|" + std::string{verify_token} + "|"
-        + std::string{method} + "|" + std::string{target} + "|" + std::to_string(origin_server_ts) + "|" + std::string{body};
+    auto const material = std::string{origin} + "|" + std::string{key_id} + "|" + std::string{verify_token} + "|" +
+                          std::string{method} + "|" + std::string{target} + "|" + std::to_string(origin_server_ts) +
+                          "|" + std::string{body};
     return "sig:v1:" + std::to_string(stable_hash(material));
 }
 
-auto verify_signed_federation_request(
-    SignedFederationRequest const& request,
-    FederationKeyRecord const& key,
-    std::uint64_t max_clock_skew_seconds
-) -> FederationDecision
+auto verify_signed_federation_request(SignedFederationRequest const& request, FederationKeyRecord const& key,
+                                      std::uint64_t max_clock_skew_seconds) -> FederationDecision
 {
     if (request.origin != key.server_name || request.key_id != key.key_id)
     {
@@ -179,20 +169,14 @@ auto verify_signed_federation_request(
     {
         return make_decision(false, 401U, "request timestamp outside allowed bounds");
     }
-    auto const expected = make_federation_signature(
-        request.origin,
-        request.key_id,
-        key.verify_token,
-        request.method,
-        request.target,
-        request.origin_server_ts,
-        request.body
-    );
+    auto const expected = make_federation_signature(request.origin, request.key_id, key.verify_token, request.method,
+                                                    request.target, request.origin_server_ts, request.body);
     if (request.signature != expected)
     {
         return make_decision(false, 401U, "request signature verification failed");
     }
-    auto const boundary = verify_federation_request_signature({request.origin, request.key_id, request.signature, request.canonical_json_verified});
+    auto const boundary = verify_federation_request_signature(
+        {request.origin, request.key_id, request.signature, request.canonical_json_verified});
     if (!boundary.accepted)
     {
         return make_decision(false, 401U, boundary.reason);
@@ -253,10 +237,8 @@ auto parse_federation_pdu(std::string_view encoded) -> FederationPdu
     return {fields[0], fields[1], fields[2], fields[3], {{fields[4], fields[5], fields[6]}}};
 }
 
-auto handle_inbound_federation_request(
-    FederationRuntimeState& runtime,
-    SignedFederationRequest const& request
-) -> FederationResponse
+auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+    -> FederationResponse
 {
     auto const route_match = match_federation_route(request.method, request.target);
     if (!route_match.matched)
@@ -298,7 +280,8 @@ auto handle_inbound_federation_request(
     if (route_match.route.endpoint != FederationEndpoint::transaction)
     {
         remote->trust.consecutive_failures = 0U;
-        audit_federation(runtime, "federation.accepted", request.origin, request.target, federation_route_audit_event(route_match.route, request.origin));
+        audit_federation(runtime, "federation.accepted", request.origin, request.target,
+                         federation_route_audit_event(route_match.route, request.origin));
         return {200U, "accepted endpoint=" + std::string{federation_endpoint_name(route_match.route.endpoint)}};
     }
 
@@ -314,7 +297,8 @@ auto handle_inbound_federation_request(
             transaction.pdus.push_back(encoded_pdu);
         }
     }
-    auto const transaction_decision = validate_federation_transaction(transaction, runtime.config.max_transaction_bytes);
+    auto const transaction_decision =
+        validate_federation_transaction(transaction, runtime.config.max_transaction_bytes);
     if (!transaction_decision.accepted)
     {
         ++remote->trust.consecutive_failures;
@@ -324,7 +308,8 @@ auto handle_inbound_federation_request(
     if (transaction_already_accepted(runtime, request.origin, transaction.transaction_id))
     {
         remote->trust.consecutive_failures = 0U;
-        audit_federation(runtime, "federation.duplicate", request.origin, request.target, "transaction already accepted");
+        audit_federation(runtime, "federation.duplicate", request.origin, request.target,
+                         "transaction already accepted");
         return {200U, "duplicate transaction accepted"};
     }
     for (auto const& encoded_pdu : transaction.pdus)
@@ -339,22 +324,25 @@ auto handle_inbound_federation_request(
         }
     }
     remote->trust.consecutive_failures = 0U;
-    runtime.accepted_transactions.push_back({request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
-    audit_federation(runtime, "federation.accepted", request.origin, request.target, federation_route_audit_event(route_match.route, request.origin));
+    runtime.accepted_transactions.push_back(
+        {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
+    audit_federation(runtime, "federation.accepted", request.origin, request.target,
+                     federation_route_audit_event(route_match.route, request.origin));
     return {200U, "accepted pdus=" + std::to_string(transaction.pdus.size())};
 }
 
 auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string
 {
-    return "Federation runtime remotes=" + std::to_string(runtime.remotes.size())
-        + " accepted_transactions=" + std::to_string(runtime.accepted_transactions.size())
-        + " audit_events=" + std::to_string(runtime.audit_events.size());
+    return "Federation runtime remotes=" + std::to_string(runtime.remotes.size()) +
+           " accepted_transactions=" + std::to_string(runtime.accepted_transactions.size()) +
+           " audit_events=" + std::to_string(runtime.audit_events.size());
 }
 
 auto federation_audit_is_safe(FederationRuntimeState const& runtime) noexcept -> bool
 {
     return std::ranges::all_of(runtime.audit_events, [](observability::AuditLogEvent const& event) {
-        return event.reason_code.find("sig:v1:") == std::string::npos && event.reason_code.find("verify_token") == std::string::npos;
+        return event.reason_code.find("sig:v1:") == std::string::npos &&
+               event.reason_code.find("verify_token") == std::string::npos;
     });
 }
 

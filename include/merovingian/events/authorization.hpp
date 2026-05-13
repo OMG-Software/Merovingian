@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/rooms/room_version_policy.hpp>
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <cstdint>
 #include <string>
@@ -85,10 +85,8 @@ struct AuthChain final
 [[nodiscard]] auto membership_name(MembershipState membership) noexcept -> char const*;
 [[nodiscard]] auto power_level_allows(PowerLevelPolicy policy) noexcept -> bool;
 [[nodiscard]] auto membership_policy_allows(MembershipPolicy policy) -> EventAuthorizationDecision;
-[[nodiscard]] auto authorize_event(
-    rooms::RoomVersionPolicy const& policy,
-    EventAuthorizationRequest const& request
-) -> EventAuthorizationDecision;
+[[nodiscard]] auto authorize_event(rooms::RoomVersionPolicy const& policy, EventAuthorizationRequest const& request)
+    -> EventAuthorizationDecision;
 [[nodiscard]] auto select_auth_events(EventAuthorizationRequest const& request) -> AuthEventSelection;
 [[nodiscard]] auto auth_event_kind_name(AuthEventKind kind) noexcept -> char const*;
 [[nodiscard]] auto auth_chain_contains(AuthChain const& chain, std::string_view event_id) noexcept -> bool;

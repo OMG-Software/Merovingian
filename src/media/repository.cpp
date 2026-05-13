@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/media/repository.hpp>
+#include "merovingian/media/repository.hpp"
 
-#include <merovingian/media/security.hpp>
+#include "merovingian/media/security.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,120 +20,112 @@ namespace merovingian::media
 namespace
 {
 
-auto constexpr media_digest_bytes = std::size_t{crypto_generichash_BYTES};
+    auto constexpr media_digest_bytes = std::size_t{crypto_generichash_BYTES};
 
-[[nodiscard]] auto sodium_is_ready() noexcept -> bool
-{
-    static auto const ready = sodium_init() >= 0;
-    return ready;
-}
-[[nodiscard]] auto media_id_is_safe(std::string_view media_id) noexcept -> bool
-{
-    return !media_id.empty() && media_id.find('/') == std::string_view::npos &&
-           media_id.find("..") == std::string_view::npos &&
-           media_id.find(' ') == std::string_view::npos;
-}
-
-[[nodiscard]] auto to_hex(unsigned char const* bytes, std::size_t size) -> std::string
-{
-    auto output = std::string((size * 2U) + 1U, '\0');
-    static_cast<void>(sodium_bin2hex(output.data(), output.size(), bytes, size));
-    output.pop_back();
-    return output;
-}
-
-[[nodiscard]] auto upload_policy(RuntimeMediaConfig const& config) -> MediaUploadPolicy
-{
-    return {config.max_upload_bytes, config.allowed_mime_types, true,
-            config.quarantine_unknown_mime, true};
-}
-
-[[nodiscard]] auto canonical_content_type(LocalMediaUploadRequest const& request) -> std::string
-{
-    return request.sniffed_mime_type.empty() ? request.declared_mime_type
-                                             : request.sniffed_mime_type;
-}
-
-[[nodiscard]] auto find_live_blob(LocalMediaRepository& repository, std::string_view hash_algorithm,
-                                  std::string_view digest, std::uint64_t size_bytes) noexcept
-    -> LocalMediaBlob*
-{
-    auto const iterator =
-        std::ranges::find_if(repository.blobs,
-                             [hash_algorithm, digest, size_bytes](LocalMediaBlob const& blob)
-                             {
-                                 return blob.ref_count > 0U &&
-                                        blob.hash_algorithm == hash_algorithm &&
-                                        blob.digest == digest && blob.size_bytes == size_bytes;
-                             });
-    return iterator == repository.blobs.end() ? nullptr : &(*iterator);
-}
-
-[[nodiscard]] auto find_blob(LocalMediaRepository const& repository,
-                             std::string_view storage_id) noexcept -> LocalMediaBlob const*
-{
-    auto const iterator =
-        std::ranges::find_if(repository.blobs, [storage_id](LocalMediaBlob const& blob)
-                             { return blob.storage_id == storage_id && blob.ref_count > 0U; });
-    return iterator == repository.blobs.end() ? nullptr : &(*iterator);
-}
-
-[[nodiscard]] auto find_record(LocalMediaRepository& repository, std::string_view media_id) noexcept
-    -> LocalMediaRecord*
-{
-    auto const iterator =
-        std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& record)
-                             { return record.media_id == media_id; });
-    return iterator == repository.records.end() ? nullptr : &(*iterator);
-}
-
-auto refresh_storage_metrics(LocalMediaRepository& repository) -> void
-{
-    auto stored_blobs = std::uint64_t{0U};
-    auto stored_bytes = std::uint64_t{0U};
-    for (auto const& blob : repository.blobs)
+    [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
-        if (blob.ref_count == 0U)
+        static auto const ready = sodium_init() >= 0;
+        return ready;
+    }
+    [[nodiscard]] auto media_id_is_safe(std::string_view media_id) noexcept -> bool
+    {
+        return !media_id.empty() && media_id.find('/') == std::string_view::npos &&
+               media_id.find("..") == std::string_view::npos && media_id.find(' ') == std::string_view::npos;
+    }
+
+    [[nodiscard]] auto to_hex(unsigned char const* bytes, std::size_t size) -> std::string
+    {
+        auto output = std::string((size * 2U) + 1U, '\0');
+        static_cast<void>(sodium_bin2hex(output.data(), output.size(), bytes, size));
+        output.pop_back();
+        return output;
+    }
+
+    [[nodiscard]] auto upload_policy(RuntimeMediaConfig const& config) -> MediaUploadPolicy
+    {
+        return {config.max_upload_bytes, config.allowed_mime_types, true, config.quarantine_unknown_mime, true};
+    }
+
+    [[nodiscard]] auto canonical_content_type(LocalMediaUploadRequest const& request) -> std::string
+    {
+        return request.sniffed_mime_type.empty() ? request.declared_mime_type : request.sniffed_mime_type;
+    }
+
+    [[nodiscard]] auto find_live_blob(LocalMediaRepository& repository, std::string_view hash_algorithm,
+                                      std::string_view digest, std::uint64_t size_bytes) noexcept -> LocalMediaBlob*
+    {
+        auto const iterator =
+            std::ranges::find_if(repository.blobs, [hash_algorithm, digest, size_bytes](LocalMediaBlob const& blob) {
+                return blob.ref_count > 0U && blob.hash_algorithm == hash_algorithm && blob.digest == digest &&
+                       blob.size_bytes == size_bytes;
+            });
+        return iterator == repository.blobs.end() ? nullptr : &(*iterator);
+    }
+
+    [[nodiscard]] auto find_blob(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
+        -> LocalMediaBlob const*
+    {
+        auto const iterator = std::ranges::find_if(repository.blobs, [storage_id](LocalMediaBlob const& blob) {
+            return blob.storage_id == storage_id && blob.ref_count > 0U;
+        });
+        return iterator == repository.blobs.end() ? nullptr : &(*iterator);
+    }
+
+    [[nodiscard]] auto find_record(LocalMediaRepository& repository, std::string_view media_id) noexcept
+        -> LocalMediaRecord*
+    {
+        auto const iterator = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& record) {
+            return record.media_id == media_id;
+        });
+        return iterator == repository.records.end() ? nullptr : &(*iterator);
+    }
+
+    auto refresh_storage_metrics(LocalMediaRepository& repository) -> void
+    {
+        auto stored_blobs = std::uint64_t{0U};
+        auto stored_bytes = std::uint64_t{0U};
+        for (auto const& blob : repository.blobs)
         {
-            continue;
+            if (blob.ref_count == 0U)
+            {
+                continue;
+            }
+            ++stored_blobs;
+            stored_bytes += blob.size_bytes;
         }
-        ++stored_blobs;
-        stored_bytes += blob.size_bytes;
+        repository.metrics.stored_blobs = stored_blobs;
+        repository.metrics.stored_bytes = stored_bytes;
     }
-    repository.metrics.stored_blobs = stored_blobs;
-    repository.metrics.stored_bytes = stored_bytes;
-}
 
-[[nodiscard]] auto make_media_id(LocalMediaRepository& repository, std::string_view digest)
-    -> std::string
-{
-    auto const sequence = repository.next_media_sequence++;
-    auto const prefix = digest.substr(0U, std::min<std::size_t>(12U, digest.size()));
-    return "m" + std::to_string(sequence) + "_" + std::string{prefix};
-}
-
-[[nodiscard]] auto make_storage_id(std::string_view digest, std::uint64_t size_bytes) -> std::string
-{
-    return "blob_" + std::string{digest} + "_" + std::to_string(size_bytes);
-}
-
-[[nodiscard]] auto upload_rejection_status(std::string_view reason) noexcept -> std::uint16_t
-{
-    if (reason == "media upload exceeds size limit")
+    [[nodiscard]] auto make_media_id(LocalMediaRepository& repository, std::string_view digest) -> std::string
     {
-        return 413U;
+        auto const sequence = repository.next_media_sequence++;
+        auto const prefix = digest.substr(0U, std::min<std::size_t>(12U, digest.size()));
+        return "m" + std::to_string(sequence) + "_" + std::string{prefix};
     }
-    if (reason == "media MIME type is not allowed")
-    {
-        return 415U;
-    }
-    return 400U;
-}
 
-[[nodiscard]] auto make_metric(std::string name, std::uint64_t value) -> observability::MetricSample
-{
-    return {std::move(name), static_cast<std::int64_t>(value), true};
-}
+    [[nodiscard]] auto make_storage_id(std::string_view digest, std::uint64_t size_bytes) -> std::string
+    {
+        return "blob_" + std::string{digest} + "_" + std::to_string(size_bytes);
+    }
+
+    [[nodiscard]] auto upload_rejection_status(std::string_view reason) noexcept -> std::uint16_t
+    {
+        if (reason == "media upload exceeds size limit")
+        {
+            return 413U;
+        }
+        if (reason == "media MIME type is not allowed")
+        {
+            return 415U;
+        }
+        return 400U;
+    }
+
+    [[nodiscard]] auto make_metric(std::string name, std::uint64_t value) -> observability::MetricSample
+    {
+        return {std::move(name), static_cast<std::int64_t>(value), true};
+    }
 
 } // namespace
 
@@ -173,8 +165,7 @@ auto calculate_media_digest(std::string_view bytes) -> std::string
     {
         media_bytes.push_back(static_cast<unsigned char>(byte));
     }
-    if (crypto_generichash(digest.data(), digest.size(), media_bytes.data(), media_bytes.size(),
-                           nullptr, 0U) != 0)
+    if (crypto_generichash(digest.data(), digest.size(), media_bytes.data(), media_bytes.size(), nullptr, 0U) != 0)
     {
         return {};
     }
@@ -186,12 +177,10 @@ auto media_repository_summary(LocalMediaRepository const& repository) -> std::st
     return "Media repository: records=" + std::to_string(repository.records.size()) +
            " blobs=" + std::to_string(repository.metrics.stored_blobs) +
            " stored_bytes=" + std::to_string(repository.metrics.stored_bytes) +
-           " remote_fetch_enabled=" +
-           std::string{repository.config.remote_fetch_enabled ? "true" : "false"};
+           " remote_fetch_enabled=" + std::string{repository.config.remote_fetch_enabled ? "true" : "false"};
 }
 
-auto media_repository_metrics(LocalMediaRepository const& repository)
-    -> std::vector<observability::MetricSample>
+auto media_repository_metrics(LocalMediaRepository const& repository) -> std::vector<observability::MetricSample>
 {
     return {
         make_metric("media_uploads_accepted_total", repository.metrics.uploads_accepted),
@@ -203,19 +192,18 @@ auto media_repository_metrics(LocalMediaRepository const& repository)
         make_metric("media_admin_quarantines_total", repository.metrics.admin_quarantines),
         make_metric("media_admin_releases_total", repository.metrics.admin_releases),
         make_metric("media_admin_removals_total", repository.metrics.admin_removals),
-        make_metric("media_remote_fetch_rejections_total",
-                    repository.metrics.remote_fetch_rejections),
+        make_metric("media_remote_fetch_rejections_total", repository.metrics.remote_fetch_rejections),
         make_metric("media_stored_blobs", repository.metrics.stored_blobs),
         make_metric("media_stored_bytes", repository.metrics.stored_bytes),
     };
 }
 
-auto find_local_media_record(LocalMediaRepository const& repository,
-                             std::string_view media_id) noexcept -> LocalMediaRecord const*
+auto find_local_media_record(LocalMediaRepository const& repository, std::string_view media_id) noexcept
+    -> LocalMediaRecord const*
 {
-    auto const iterator =
-        std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& record)
-                             { return record.media_id == media_id; });
+    auto const iterator = std::ranges::find_if(repository.records, [media_id](LocalMediaRecord const& record) {
+        return record.media_id == media_id;
+    });
     return iterator == repository.records.end() ? nullptr : &(*iterator);
 }
 
@@ -241,9 +229,9 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
                 "media digest calculation failed"};
     }
     auto const scanner_clean = repository.config.enable_av_scanner ? request.scanner_clean : true;
-    auto const decision = evaluate_media_upload(
-        upload_policy(repository.config),
-        {size_bytes, request.declared_mime_type, request.sniffed_mime_type, digest, scanner_clean});
+    auto const decision =
+        evaluate_media_upload(upload_policy(repository.config), {size_bytes, request.declared_mime_type,
+                                                                 request.sniffed_mime_type, digest, scanner_clean});
 
     if (decision.disposition == MediaDisposition::reject)
     {
@@ -290,9 +278,8 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     record.hash_algorithm = "blake2b";
     record.digest = digest;
     record.storage_id = blob->storage_id;
-    record.state = decision.disposition == MediaDisposition::quarantine
-                       ? LocalMediaState::quarantined
-                       : LocalMediaState::available;
+    record.state = decision.disposition == MediaDisposition::quarantine ? LocalMediaState::quarantined
+                                                                        : LocalMediaState::available;
     record.quarantine_reason = decision.reason;
     auto const media_id = record.media_id;
     repository.records.push_back(std::move(record));
@@ -306,8 +293,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
 
     return {
         true,
-        static_cast<std::uint16_t>(decision.disposition == MediaDisposition::quarantine ? 202U
-                                                                                        : 200U),
+        static_cast<std::uint16_t>(decision.disposition == MediaDisposition::quarantine ? 202U : 200U),
         media_id,
         "mxc://" + std::string{server_name} + "/" + media_id,
         content_type,
@@ -320,8 +306,8 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     };
 }
 
-auto download_local_media(LocalMediaRepository& repository, std::string_view server_name,
-                          std::string_view media_id) -> LocalMediaDownloadResult
+auto download_local_media(LocalMediaRepository& repository, std::string_view server_name, std::string_view media_id)
+    -> LocalMediaDownloadResult
 {
     (void)server_name;
     if (!media_id_is_safe(media_id))
@@ -353,8 +339,8 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
     return {true, 200U, record->content_type, blob->bytes, {}};
 }
 
-auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
-                            std::string_view reason) -> LocalMediaAdminResult
+auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id, std::string_view reason)
+    -> LocalMediaAdminResult
 {
     if (!media_id_is_safe(media_id))
     {
@@ -362,8 +348,7 @@ auto quarantine_local_media(LocalMediaRepository& repository, std::string_view m
     }
     if (reason.empty())
     {
-        return {false, 400U, std::string{media_id}, LocalMediaState::available,
-                "quarantine reason is required"};
+        return {false, 400U, std::string{media_id}, LocalMediaState::available, "quarantine reason is required"};
     }
     auto* record = find_record(repository, media_id);
     if (record == nullptr || record->state == LocalMediaState::removed)
@@ -377,8 +362,7 @@ auto quarantine_local_media(LocalMediaRepository& repository, std::string_view m
     return {true, 200U, record->media_id, record->state, "quarantined"};
 }
 
-auto release_local_media(LocalMediaRepository& repository, std::string_view media_id)
-    -> LocalMediaAdminResult
+auto release_local_media(LocalMediaRepository& repository, std::string_view media_id) -> LocalMediaAdminResult
 {
     if (!media_id_is_safe(media_id))
     {
@@ -396,8 +380,8 @@ auto release_local_media(LocalMediaRepository& repository, std::string_view medi
     return {true, 200U, record->media_id, record->state, "released"};
 }
 
-auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id,
-                        std::string_view reason) -> LocalMediaAdminResult
+auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id, std::string_view reason)
+    -> LocalMediaAdminResult
 {
     if (!media_id_is_safe(media_id))
     {
@@ -405,8 +389,7 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
     }
     if (reason.empty())
     {
-        return {false, 400U, std::string{media_id}, LocalMediaState::available,
-                "removal reason is required"};
+        return {false, 400U, std::string{media_id}, LocalMediaState::available, "removal reason is required"};
     }
     auto* record = find_record(repository, media_id);
     if (record == nullptr || record->state == LocalMediaState::removed)
@@ -417,9 +400,9 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
     auto const storage_id = record->storage_id;
     record->state = LocalMediaState::removed;
     record->quarantine_reason = std::string{reason};
-    auto const iterator =
-        std::ranges::find_if(repository.blobs, [&storage_id](LocalMediaBlob const& blob)
-                             { return blob.storage_id == storage_id; });
+    auto const iterator = std::ranges::find_if(repository.blobs, [&storage_id](LocalMediaBlob const& blob) {
+        return blob.storage_id == storage_id;
+    });
     if (iterator != repository.blobs.end() && iterator->ref_count > 0U)
     {
         --iterator->ref_count;
@@ -434,8 +417,7 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
     return {true, 200U, record->media_id, record->state, "removed"};
 }
 
-auto fetch_remote_media_disabled(LocalMediaRepository& repository,
-                                 RemoteMediaDownloadRequest const& request)
+auto fetch_remote_media_disabled(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
     -> RemoteMediaDownloadResult
 {
     if (!repository.config.remote_fetch_enabled)
@@ -444,9 +426,9 @@ auto fetch_remote_media_disabled(LocalMediaRepository& repository,
         return {false, 502U, "remote media fetch disabled"};
     }
 
-    auto const decision = remote_media_fetch_policy(
-        {request.origin_server, request.media_id, request.resolved_host, request.resolved_addresses,
-         true, repository.config.private_address_fetches_blocked});
+    auto const decision = remote_media_fetch_policy({request.origin_server, request.media_id, request.resolved_host,
+                                                     request.resolved_addresses, true,
+                                                     repository.config.private_address_fetches_blocked});
     ++repository.metrics.remote_fetch_rejections;
     if (decision.disposition == MediaDisposition::reject)
     {

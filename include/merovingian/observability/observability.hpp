@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/database/statement.hpp>
-#include <merovingian/http/rate_limit.hpp>
-#include <merovingian/platform/hardening_self_check.hpp>
+#include "merovingian/database/statement.hpp"
+#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/platform/hardening_self_check.hpp"
 
 #include <cstdint>
 #include <string>
@@ -130,14 +130,9 @@ struct ObservabilitySnapshot final
 [[nodiscard]] auto admin_surface_is_safe(AdminControlSurface const& surface) noexcept -> bool;
 [[nodiscard]] auto admin_routes() -> std::vector<AdminRoute>;
 [[nodiscard]] auto match_admin_route(std::string_view method, std::string_view target) -> AdminRouteMatch;
-[[nodiscard]] auto make_audit_event(
-    AuditCategory category,
-    std::string_view event_type,
-    std::string_view actor,
-    std::string_view target,
-    std::string_view reason_code,
-    std::string_view request_id
-) -> AuditLogEvent;
+[[nodiscard]] auto make_audit_event(AuditCategory category, std::string_view event_type, std::string_view actor,
+                                    std::string_view target, std::string_view reason_code, std::string_view request_id)
+    -> AuditLogEvent;
 [[nodiscard]] auto audit_log_insert_statement(AuditLogEvent const& event) -> database::PreparedStatement;
 [[nodiscard]] auto audit_event_summary(AuditLogEvent const& event) -> std::string;
 [[nodiscard]] auto redact_log_value(StructuredLogField const& field) -> std::string;
@@ -147,11 +142,8 @@ struct ObservabilitySnapshot final
 [[nodiscard]] auto health_snapshot_summary(HealthCheckSnapshot const& snapshot) -> std::string;
 [[nodiscard]] auto hardening_observability_summary(platform::HardeningSelfCheck const& check)
     -> std::vector<std::string>;
-[[nodiscard]] auto make_observability_snapshot(
-    HealthCheckSnapshot health,
-    std::vector<MetricSample> metrics,
-    platform::HardeningSelfCheck const& hardening
-) -> ObservabilitySnapshot;
+[[nodiscard]] auto make_observability_snapshot(HealthCheckSnapshot health, std::vector<MetricSample> metrics,
+                                               platform::HardeningSelfCheck const& hardening) -> ObservabilitySnapshot;
 [[nodiscard]] auto observability_snapshot_is_safe(ObservabilitySnapshot const& snapshot) noexcept -> bool;
 
 } // namespace merovingian::observability

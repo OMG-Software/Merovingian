@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/config/reload_plan.hpp"
+
 #include <string>
 #include <utility>
-
-#include <merovingian/config/reload_plan.hpp>
 
 namespace merovingian::config
 {

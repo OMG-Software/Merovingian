@@ -1,36 +1,37 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/observability/observability.hpp>
-#include <merovingian/platform/hardening_self_check.hpp>
+#include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/hardening_self_check.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
 #include <vector>
 
-SCENARIO("Integrated observability flow emits safe admin audit health and metrics summaries", "[observability][integration]")
+SCENARIO("Integrated observability flow emits safe admin audit health and metrics summaries",
+         "[observability][integration]")
 {
     GIVEN("an admin action, audit event, structured log, metrics, health, and hardening checks")
     {
-        auto const admin_route = merovingian::observability::match_admin_route("POST", "/_merovingian/admin/accounts/@alice:example.org");
+        auto const admin_route =
+            merovingian::observability::match_admin_route("POST", "/_merovingian/admin/accounts/@alice:example.org");
         auto const audit = merovingian::observability::make_audit_event(
-            merovingian::observability::AuditCategory::admin,
-            "admin.account_action",
-            "@admin:example.org",
-            "@alice:example.org",
-            "manual_review",
-            "req-42"
-        );
+            merovingian::observability::AuditCategory::admin, "admin.account_action", "@admin:example.org",
+            "@alice:example.org", "manual_review", "req-42");
         auto log_event = merovingian::observability::StructuredLogEvent{};
         log_event.logger = "admin";
         log_event.level = "info";
         log_event.fields = {
-            {"request_id", "req-42", false},
-            {"refresh_token", "super-secret", true},
+            {"request_id",    "req-42",       false},
+            {"refresh_token", "super-secret", true },
         };
         auto health = merovingian::observability::HealthCheckSnapshot{};
-        health.components = {{"admin", merovingian::observability::HealthStatus::ok, "ready"}};
-        auto metrics = std::vector<merovingian::observability::MetricSample>{{"admin_requests_total", 1, true}};
+        health.components = {
+            {"admin", merovingian::observability::HealthStatus::ok, "ready"}
+        };
+        auto metrics = std::vector<merovingian::observability::MetricSample>{
+            {"admin_requests_total", 1, true}
+        };
         auto const hardening = merovingian::platform::HardeningSelfCheck{
             {{"seccomp", merovingian::platform::HardeningStatus::unknown}},
         };
@@ -56,18 +57,19 @@ SCENARIO("Integrated observability flow emits safe admin audit health and metric
     }
 }
 
-SCENARIO("Integrated observability flow marks degraded health and rejects unsafe metrics", "[observability][integration]")
+SCENARIO("Integrated observability flow marks degraded health and rejects unsafe metrics",
+         "[observability][integration]")
 {
     GIVEN("a degraded component and unsafe metric")
     {
         auto health = merovingian::observability::HealthCheckSnapshot{};
         health.components = {
-            {"database", merovingian::observability::HealthStatus::ok, "reachable"},
-            {"policy", merovingian::observability::HealthStatus::degraded, "backoff"},
+            {"database", merovingian::observability::HealthStatus::ok,       "reachable"},
+            {"policy",   merovingian::observability::HealthStatus::degraded, "backoff"  },
         };
         auto metrics = std::vector<merovingian::observability::MetricSample>{
-            {"events_total", 10, true},
-            {"event_content_debug", 1, false},
+            {"events_total",        10, true },
+            {"event_content_debug", 1,  false},
         };
         auto const hardening = merovingian::platform::HardeningSelfCheck{};
 

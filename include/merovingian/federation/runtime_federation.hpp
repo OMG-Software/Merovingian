@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/config/config.hpp>
+#include "merovingian/config/config.hpp"
 
 #include <cstdint>
 #include <string>
@@ -32,9 +32,7 @@ struct FederationServerPolicyDecision final
 
 [[nodiscard]] auto make_runtime_federation_config(config::Config const& config) -> RuntimeFederationConfig;
 [[nodiscard]] auto federation_summary(RuntimeFederationConfig const& config) -> std::string;
-[[nodiscard]] auto federation_server_policy(
-    RuntimeFederationConfig const& config,
-    std::string_view server_name
-) -> FederationServerPolicyDecision;
+[[nodiscard]] auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)
+    -> FederationServerPolicyDecision;
 
 } // namespace merovingian::federation

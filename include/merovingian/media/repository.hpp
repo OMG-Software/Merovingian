@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/media/runtime_media.hpp>
-#include <merovingian/observability/observability.hpp>
+#include "merovingian/media/runtime_media.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <cstdint>
 #include <string>
@@ -128,38 +128,21 @@ struct RemoteMediaDownloadResult final
 [[nodiscard]] auto make_local_media_repository(RuntimeMediaConfig config) -> LocalMediaRepository;
 [[nodiscard]] auto calculate_media_digest(std::string_view bytes) -> std::string;
 [[nodiscard]] auto media_repository_summary(LocalMediaRepository const& repository) -> std::string;
-[[nodiscard]] auto media_repository_metrics(LocalMediaRepository const& repository) -> std::vector<observability::MetricSample>;
-[[nodiscard]] auto find_local_media_record(
-    LocalMediaRepository const& repository,
-    std::string_view media_id
-) noexcept -> LocalMediaRecord const*;
-[[nodiscard]] auto upload_local_media(
-    LocalMediaRepository& repository,
-    std::string_view server_name,
-    LocalMediaUploadRequest const& request
-) -> LocalMediaUploadResult;
-[[nodiscard]] auto download_local_media(
-    LocalMediaRepository& repository,
-    std::string_view server_name,
-    std::string_view media_id
-) -> LocalMediaDownloadResult;
-[[nodiscard]] auto quarantine_local_media(
-    LocalMediaRepository& repository,
-    std::string_view media_id,
-    std::string_view reason
-) -> LocalMediaAdminResult;
-[[nodiscard]] auto release_local_media(
-    LocalMediaRepository& repository,
-    std::string_view media_id
-) -> LocalMediaAdminResult;
-[[nodiscard]] auto remove_local_media(
-    LocalMediaRepository& repository,
-    std::string_view media_id,
-    std::string_view reason
-) -> LocalMediaAdminResult;
-[[nodiscard]] auto fetch_remote_media_disabled(
-    LocalMediaRepository& repository,
-    RemoteMediaDownloadRequest const& request
-) -> RemoteMediaDownloadResult;
+[[nodiscard]] auto media_repository_metrics(LocalMediaRepository const& repository)
+    -> std::vector<observability::MetricSample>;
+[[nodiscard]] auto find_local_media_record(LocalMediaRepository const& repository, std::string_view media_id) noexcept
+    -> LocalMediaRecord const*;
+[[nodiscard]] auto upload_local_media(LocalMediaRepository& repository, std::string_view server_name,
+                                      LocalMediaUploadRequest const& request) -> LocalMediaUploadResult;
+[[nodiscard]] auto download_local_media(LocalMediaRepository& repository, std::string_view server_name,
+                                        std::string_view media_id) -> LocalMediaDownloadResult;
+[[nodiscard]] auto quarantine_local_media(LocalMediaRepository& repository, std::string_view media_id,
+                                          std::string_view reason) -> LocalMediaAdminResult;
+[[nodiscard]] auto release_local_media(LocalMediaRepository& repository, std::string_view media_id)
+    -> LocalMediaAdminResult;
+[[nodiscard]] auto remove_local_media(LocalMediaRepository& repository, std::string_view media_id,
+                                      std::string_view reason) -> LocalMediaAdminResult;
+[[nodiscard]] auto fetch_remote_media_disabled(LocalMediaRepository& repository,
+                                               RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult;
 
 } // namespace merovingian::media

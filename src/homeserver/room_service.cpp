@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "local_services.hpp"
+#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -9,7 +11,6 @@
 #include <utility>
 
 #include <merovingian/homeserver/vertical_slice.hpp>
-#include <merovingian/trust_safety/policy_engine.hpp>
 
 namespace merovingian::homeserver
 {

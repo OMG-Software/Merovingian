@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/events/event.hpp>
+#include "merovingian/events/event.hpp"
 
 #include <string_view>
 #include <variant>
@@ -10,62 +10,62 @@ namespace merovingian::events
 namespace
 {
 
-[[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-    -> canonicaljson::Value const*
-{
-    for (auto const& member : object)
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
-        if (member.key == key)
+        for (auto const& member : object)
         {
-            return member.value.get();
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
         }
-    }
 
-    return nullptr;
-}
-
-[[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-    -> std::string const*
-{
-    auto const* value = object_member(object, key);
-    if (value == nullptr)
-    {
         return nullptr;
     }
-    return std::get_if<std::string>(&value->storage());
-}
 
-[[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
-    -> std::int64_t const*
-{
-    auto const* value = object_member(object, key);
-    if (value == nullptr)
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
-        return nullptr;
-    }
-    return std::get_if<std::int64_t>(&value->storage());
-}
-
-[[nodiscard]] auto contains_no_control_or_space(std::string_view value) noexcept -> bool
-{
-    for (auto const character : value)
-    {
-        auto const byte = static_cast<unsigned char>(character);
-        if (byte <= 0x20U || byte == 0x7FU)
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
         {
-            return false;
+            return nullptr;
         }
+        return std::get_if<std::string>(&value->storage());
     }
 
-    return true;
-}
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<std::int64_t>(&value->storage());
+    }
+
+    [[nodiscard]] auto contains_no_control_or_space(std::string_view value) noexcept -> bool
+    {
+        for (auto const character : value)
+        {
+            auto const byte = static_cast<unsigned char>(character);
+            if (byte <= 0x20U || byte == 0x7FU)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
 
 } // namespace
 
 auto matrix_id_is_valid(std::string_view id, char sigil) noexcept -> bool
 {
-    return id.size() >= 3U && id.front() == sigil && id.find(':') != std::string_view::npos
-        && contains_no_control_or_space(id);
+    return id.size() >= 3U && id.front() == sigil && id.find(':') != std::string_view::npos &&
+           contains_no_control_or_space(id);
 }
 
 auto event_type_is_valid(std::string_view type) noexcept -> bool

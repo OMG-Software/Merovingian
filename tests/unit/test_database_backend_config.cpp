@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <string>
-#include <string_view>
+#include "merovingian/config/config.hpp"
+#include "merovingian/config/config_parser.hpp"
+#include "merovingian/database/runtime_database.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/config.hpp>
-#include <merovingian/config/config_parser.hpp>
-#include <merovingian/database/runtime_database.hpp>
+
+#include <string>
 
 SCENARIO("Database config defaults to PostgreSQL", "[config][database]")
 {

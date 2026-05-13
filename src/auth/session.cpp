@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/auth/session.hpp>
+#include "merovingian/auth/session.hpp"
 
 #include <string>
 
@@ -41,10 +41,10 @@ auto client_auth_endpoint_requires_access_token(ClientAuthEndpoint endpoint) noe
 
 auto client_auth_endpoint_mutates_session(ClientAuthEndpoint endpoint) noexcept -> bool
 {
-    return endpoint == ClientAuthEndpoint::login || endpoint == ClientAuthEndpoint::logout
-        || endpoint == ClientAuthEndpoint::logout_all || endpoint == ClientAuthEndpoint::register_account
-        || endpoint == ClientAuthEndpoint::refresh_token || endpoint == ClientAuthEndpoint::update_device
-        || endpoint == ClientAuthEndpoint::delete_device;
+    return endpoint == ClientAuthEndpoint::login || endpoint == ClientAuthEndpoint::logout ||
+           endpoint == ClientAuthEndpoint::logout_all || endpoint == ClientAuthEndpoint::register_account ||
+           endpoint == ClientAuthEndpoint::refresh_token || endpoint == ClientAuthEndpoint::update_device ||
+           endpoint == ClientAuthEndpoint::delete_device;
 }
 
 auto registration_policy(RegistrationPolicy policy) -> RegistrationPolicyDecision
@@ -94,13 +94,8 @@ auto session_is_active(SessionRecord const& session, std::chrono::system_clock::
     return {true, {}};
 }
 
-auto make_client_auth_audit_event(
-    ClientAuthEndpoint endpoint,
-    std::string_view user_id,
-    std::string_view device_id,
-    bool allowed,
-    std::string_view reason
-) -> ClientAuthAuditEvent
+auto make_client_auth_audit_event(ClientAuthEndpoint endpoint, std::string_view user_id, std::string_view device_id,
+                                  bool allowed, std::string_view reason) -> ClientAuthAuditEvent
 {
     return {
         std::string{"client_auth."} + client_auth_endpoint_name(endpoint),

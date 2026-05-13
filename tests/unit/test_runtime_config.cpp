@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/runtime_config.hpp>
+#include "merovingian/config/runtime_config.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -123,7 +123,8 @@ SCENARIO("Runtime config apply result names are stable", "[config][runtime][relo
         {
             auto const applied_name = std::string{merovingian::config::runtime_config_apply_result_name(applied)};
             auto const unchanged_name = std::string{merovingian::config::runtime_config_apply_result_name(unchanged)};
-            auto const restart_required_name = std::string{merovingian::config::runtime_config_apply_result_name(restart_required)};
+            auto const restart_required_name =
+                std::string{merovingian::config::runtime_config_apply_result_name(restart_required)};
 
             THEN("the diagnostic names are stable")
             {

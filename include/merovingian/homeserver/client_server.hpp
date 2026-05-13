@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/homeserver/vertical_slice.hpp"
+
 #include <cstddef>
 #include <cstdint>
-#include <merovingian/homeserver/vertical_slice.hpp>
 #include <string>
 #include <string_view>
 #include <vector>

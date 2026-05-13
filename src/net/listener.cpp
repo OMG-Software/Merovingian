@@ -1,13 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <utility>
+#include "merovingian/net/listener.hpp"
 
-#include <merovingian/net/listener.hpp>
+#include <utility>
 
 namespace merovingian::net
 {
 
-RuntimeListeners::RuntimeListeners(std::vector<ListenerPlan> plans) : m_plans{std::move(plans)}
+RuntimeListeners::RuntimeListeners(std::vector<ListenerPlan> plans)
+    : m_plans{std::move(plans)}
 {
 }
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/platform/runtime_hardening.hpp>
+#include "merovingian/platform/runtime_hardening.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -15,12 +15,18 @@ SCENARIO("Runtime hardening exposes Linux BSD and portable profile names", "[pla
         {
             THEN("platforms, modes, and actions are named")
             {
-                REQUIRE(std::string{merovingian::platform::hardening_platform_name(merovingian::platform::HardeningPlatform::linux)} == "linux");
-                REQUIRE(std::string{merovingian::platform::hardening_platform_name(merovingian::platform::HardeningPlatform::bsd)} == "bsd");
-                REQUIRE(std::string{merovingian::platform::hardening_platform_name(merovingian::platform::HardeningPlatform::portable)} == "portable");
-                REQUIRE(std::string{merovingian::platform::hardening_mode_name(merovingian::platform::HardeningMode::required)} == "required");
-                REQUIRE(std::string{merovingian::platform::hardening_action_name(merovingian::platform::HardeningAction::syscall_filter)} == "syscall_filter");
-                REQUIRE(std::string{merovingian::platform::hardening_action_name(merovingian::platform::HardeningAction::capability_bounding)} == "capability_bounding");
+                REQUIRE(std::string{merovingian::platform::hardening_platform_name(
+                            merovingian::platform::HardeningPlatform::linux)} == "linux");
+                REQUIRE(std::string{merovingian::platform::hardening_platform_name(
+                            merovingian::platform::HardeningPlatform::bsd)} == "bsd");
+                REQUIRE(std::string{merovingian::platform::hardening_platform_name(
+                            merovingian::platform::HardeningPlatform::portable)} == "portable");
+                REQUIRE(std::string{merovingian::platform::hardening_mode_name(
+                            merovingian::platform::HardeningMode::required)} == "required");
+                REQUIRE(std::string{merovingian::platform::hardening_action_name(
+                            merovingian::platform::HardeningAction::syscall_filter)} == "syscall_filter");
+                REQUIRE(std::string{merovingian::platform::hardening_action_name(
+                            merovingian::platform::HardeningAction::capability_bounding)} == "capability_bounding");
             }
         }
     }
@@ -74,8 +80,10 @@ SCENARIO("Runtime hardening primitives fail closed when unsafe", "[platform][har
 
         WHEN("profiles are evaluated")
         {
-            auto const privilege_decision = merovingian::platform::evaluate_runtime_hardening_profile(missing_privilege_drop);
-            auto const filesystem_decision = merovingian::platform::evaluate_runtime_hardening_profile(unsafe_filesystem);
+            auto const privilege_decision =
+                merovingian::platform::evaluate_runtime_hardening_profile(missing_privilege_drop);
+            auto const filesystem_decision =
+                merovingian::platform::evaluate_runtime_hardening_profile(unsafe_filesystem);
             auto const resource_decision = merovingian::platform::evaluate_runtime_hardening_profile(unsafe_resources);
             auto const memory_decision = merovingian::platform::evaluate_runtime_hardening_profile(unsafe_memory);
             auto const random_decision = merovingian::platform::evaluate_runtime_hardening_profile(unsafe_random);
@@ -118,11 +126,15 @@ SCENARIO("Filesystem hardening rejects protected non-normalized and relative wri
 
         WHEN("profiles are evaluated")
         {
-            auto const protected_etc_decision = merovingian::platform::evaluate_runtime_hardening_profile(protected_etc);
-            auto const protected_usr_decision = merovingian::platform::evaluate_runtime_hardening_profile(protected_usr);
+            auto const protected_etc_decision =
+                merovingian::platform::evaluate_runtime_hardening_profile(protected_etc);
+            auto const protected_usr_decision =
+                merovingian::platform::evaluate_runtime_hardening_profile(protected_usr);
             auto const relative_decision = merovingian::platform::evaluate_runtime_hardening_profile(relative);
-            auto const non_normalized_decision = merovingian::platform::evaluate_runtime_hardening_profile(non_normalized);
-            auto const trailing_slash_decision = merovingian::platform::evaluate_runtime_hardening_profile(trailing_slash);
+            auto const non_normalized_decision =
+                merovingian::platform::evaluate_runtime_hardening_profile(non_normalized);
+            auto const trailing_slash_decision =
+                merovingian::platform::evaluate_runtime_hardening_profile(trailing_slash);
 
             THEN("all unsafe writable paths are rejected")
             {
@@ -239,8 +251,10 @@ SCENARIO("Required hardening CI gates fail closed when unavailable", "[platform]
     GIVEN("required and optional hardening gates")
     {
         auto gates = std::vector<merovingian::platform::HardeningGate>{
-            {"seccomp", merovingian::platform::HardeningAction::syscall_filter, merovingian::platform::HardeningMode::required, true},
-            {"landlock", merovingian::platform::HardeningAction::sandbox_profile, merovingian::platform::HardeningMode::optional, false},
+            {"seccomp",  merovingian::platform::HardeningAction::syscall_filter,
+             merovingian::platform::HardeningMode::required, true },
+            {"landlock", merovingian::platform::HardeningAction::sandbox_profile,
+             merovingian::platform::HardeningMode::optional, false},
         };
         auto missing_required = gates;
         missing_required[0].available = false;

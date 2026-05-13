@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/serializer.hpp>
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 
 #include <cstddef>
 #include <cstdint>

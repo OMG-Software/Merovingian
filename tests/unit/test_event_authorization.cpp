@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/events/authorization.hpp>
-#include <merovingian/rooms/room_version_policy.hpp>
+#include "merovingian/events/authorization.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -57,7 +57,8 @@ SCENARIO("Event authorization rejects insufficient power levels", "[events][auth
     }
 }
 
-SCENARIO("Membership policy primitives cover joins, invites, removals, and restricted targets", "[events][auth][membership]")
+SCENARIO("Membership policy primitives cover joins, invites, removals, and restricted targets",
+         "[events][auth][membership]")
 {
     GIVEN("membership policy decisions")
     {
@@ -88,7 +89,8 @@ SCENARIO("Membership policy primitives cover joins, invites, removals, and restr
         {
             auto const self_join_decision = merovingian::events::membership_policy_allows(self_join);
             auto const invite_decision = merovingian::events::membership_policy_allows(invite);
-            auto const unauthorized_remove_decision = merovingian::events::membership_policy_allows(unauthorized_remove);
+            auto const unauthorized_remove_decision =
+                merovingian::events::membership_policy_allows(unauthorized_remove);
             auto const authorized_remove_decision = merovingian::events::membership_policy_allows(authorized_remove);
             auto const restricted_decision = merovingian::events::membership_policy_allows(restricted);
 
@@ -133,7 +135,8 @@ SCENARIO("Auth event selection registers required auth events for membership eve
                 REQUIRE(normal_selection.required[3].kind == merovingian::events::AuthEventKind::member);
                 REQUIRE(normal_selection.required[3].state_key == "@bob:example.org");
                 REQUIRE(third_party_selection.required.size() == 5U);
-                REQUIRE(third_party_selection.required[4].kind == merovingian::events::AuthEventKind::third_party_invite);
+                REQUIRE(third_party_selection.required[4].kind ==
+                        merovingian::events::AuthEventKind::third_party_invite);
             }
         }
     }

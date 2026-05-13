@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <string>
+#include "merovingian/config/config_parser.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/config_parser.hpp>
+
+#include <string>
 
 SCENARIO("Key-value config parser preserves secure defaults for empty input", "[config][parser]")
 {

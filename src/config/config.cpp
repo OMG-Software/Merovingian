@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/config/config.hpp"
+
 #include <limits>
 #include <utility>
-
-#include <merovingian/config/config.hpp>
 
 namespace merovingian::config
 {
@@ -34,8 +34,10 @@ namespace
 } // namespace
 
 Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security)
-    : m_server{std::move(server)}, m_listeners{std::move(listeners)}, m_database{std::move(database)},
-      m_security{std::move(security)}
+    : m_server{std::move(server)}
+    , m_listeners{std::move(listeners)}
+    , m_database{std::move(database)}
+    , m_security{std::move(security)}
 {
 }
 

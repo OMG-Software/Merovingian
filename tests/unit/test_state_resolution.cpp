@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/events/state_resolution.hpp>
+#include "merovingian/events/state_resolution.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -15,9 +15,9 @@ SCENARIO("State groups expose state events by type and state key", "[events][sta
         auto const group = merovingian::events::StateGroup{
             "group-1",
             {
-                {create_key, "$create", "@server:example.org"},
-                {power_key, "$power", "@alice:example.org"},
-            },
+              {create_key, "$create", "@server:example.org"},
+              {power_key, "$power", "@alice:example.org"},
+              },
         };
 
         WHEN("state lookups are performed")
@@ -49,7 +49,9 @@ SCENARIO("State resolution merges non-conflicting state groups", "[events][state
             "group-2",
             {{create_key, "$create", "@server:example.org"}, {power_key, "$power", "@alice:example.org"}},
         };
-        auto const request = merovingian::events::StateResolutionRequest{"12", {first, second}};
+        auto const request = merovingian::events::StateResolutionRequest{
+            "12", {first, second}
+        };
 
         WHEN("state is resolved")
         {
@@ -78,7 +80,9 @@ SCENARIO("State resolution reports conflicts for later full resolution", "[event
             "group-2",
             {{power_key, "$power-b", "@bob:example.org"}},
         };
-        auto const request = merovingian::events::StateResolutionRequest{"12", {first, second}};
+        auto const request = merovingian::events::StateResolutionRequest{
+            "12", {first, second}
+        };
 
         WHEN("state is resolved")
         {

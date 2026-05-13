@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/canonicaljson/value.hpp>
+#include "merovingian/canonicaljson/value.hpp"
 
 #include <cstdint>
 #include <string>

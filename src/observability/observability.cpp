@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/observability/observability.hpp>
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <string>
@@ -12,45 +12,48 @@ namespace merovingian::observability
 namespace
 {
 
-[[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
-{
-    return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
-}
-
-[[nodiscard]] auto exact_or_child(std::string_view target, std::string_view exact, std::string_view prefix) noexcept -> bool
-{
-    return target == exact || (target.size() > prefix.size() && starts_with(target, prefix));
-}
-
-[[nodiscard]] auto public_value(std::string_view value) -> database::BoundValue
-{
-    return {std::string{value}, false};
-}
-
-[[nodiscard]] auto route(std::string method, std::string path_template, AdminOperation operation) -> AdminRoute
-{
-    return {std::move(method), std::move(path_template), operation, true, {30U, 60U}};
-}
-
-[[nodiscard]] auto status_rank(HealthStatus status) noexcept -> std::uint8_t
-{
-    switch (status)
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
-    case HealthStatus::ok:
-        return 0U;
-    case HealthStatus::degraded:
-        return 1U;
-    case HealthStatus::failed:
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
+
+    [[nodiscard]] auto exact_or_child(std::string_view target, std::string_view exact, std::string_view prefix) noexcept
+        -> bool
+    {
+        return target == exact || (target.size() > prefix.size() && starts_with(target, prefix));
+    }
+
+    [[nodiscard]] auto public_value(std::string_view value) -> database::BoundValue
+    {
+        return {std::string{value}, false};
+    }
+
+    [[nodiscard]] auto route(std::string method, std::string path_template, AdminOperation operation) -> AdminRoute
+    {
+        return {
+            std::move(method), std::move(path_template), operation, true, {30U, 60U}
+        };
+    }
+
+    [[nodiscard]] auto status_rank(HealthStatus status) noexcept -> std::uint8_t
+    {
+        switch (status)
+        {
+        case HealthStatus::ok:
+            return 0U;
+        case HealthStatus::degraded:
+            return 1U;
+        case HealthStatus::failed:
+            return 2U;
+        }
+
         return 2U;
     }
 
-    return 2U;
-}
-
-[[nodiscard]] auto worst_status(HealthStatus left, HealthStatus right) noexcept -> HealthStatus
-{
-    return status_rank(left) >= status_rank(right) ? left : right;
-}
+    [[nodiscard]] auto worst_status(HealthStatus left, HealthStatus right) noexcept -> HealthStatus
+    {
+        return status_rank(left) >= status_rank(right) ? left : right;
+    }
 
 } // namespace
 
@@ -134,8 +137,8 @@ auto admin_surface_is_safe(AdminControlSurface const& surface) noexcept -> bool
     }
     if (surface.surface == AdminSurface::local_socket)
     {
-        return surface.bind_address.empty() || starts_with(surface.bind_address, "/run/")
-            || starts_with(surface.bind_address, "/var/run/");
+        return surface.bind_address.empty() || starts_with(surface.bind_address, "/run/") ||
+               starts_with(surface.bind_address, "/var/run/");
     }
     return surface.bind_address == "127.0.0.1" || surface.bind_address == "::1";
 }
@@ -164,8 +167,8 @@ auto match_admin_route(std::string_view method, std::string_view target) -> Admi
         {
             return {true, candidate, {}};
         }
-        if (candidate.operation == AdminOperation::account_action
-            && exact_or_child(target, "/_merovingian/admin/accounts/{userId}", "/_merovingian/admin/accounts/"))
+        if (candidate.operation == AdminOperation::account_action &&
+            exact_or_child(target, "/_merovingian/admin/accounts/{userId}", "/_merovingian/admin/accounts/"))
         {
             return {true, candidate, {}};
         }
@@ -176,8 +179,8 @@ auto match_admin_route(std::string_view method, std::string_view target) -> Admi
             {
                 auto const suffix = target.substr(prefix.size());
                 auto const separator = suffix.find('/');
-                if (separator != std::string_view::npos && separator > 0U && separator + 1U < suffix.size()
-                    && suffix.find('/', separator + 1U) == std::string_view::npos)
+                if (separator != std::string_view::npos && separator > 0U && separator + 1U < suffix.size() &&
+                    suffix.find('/', separator + 1U) == std::string_view::npos)
                 {
                     return {true, candidate, {}};
                 }
@@ -188,38 +191,40 @@ auto match_admin_route(std::string_view method, std::string_view target) -> Admi
     return {false, {}, "admin route not found"};
 }
 
-auto make_audit_event(
-    AuditCategory category,
-    std::string_view event_type,
-    std::string_view actor,
-    std::string_view target,
-    std::string_view reason_code,
-    std::string_view request_id
-) -> AuditLogEvent
+auto make_audit_event(AuditCategory category, std::string_view event_type, std::string_view actor,
+                      std::string_view target, std::string_view reason_code, std::string_view request_id)
+    -> AuditLogEvent
 {
-    return {category, std::string{event_type}, std::string{actor}, std::string{target}, std::string{reason_code}, std::string{request_id}, true};
+    return {category,
+            std::string{event_type},
+            std::string{actor},
+            std::string{target},
+            std::string{reason_code},
+            std::string{request_id},
+            true};
 }
 
 auto audit_log_insert_statement(AuditLogEvent const& event) -> database::PreparedStatement
 {
     return {
         "observability_append_audit_event",
-        "INSERT INTO audit_log (category, event_type, actor, target, reason_code, request_id) VALUES ($1, $2, $3, $4, $5, $6)",
+        "INSERT INTO audit_log (category, event_type, actor, target, reason_code, request_id) VALUES ($1, $2, $3, $4, "
+        "$5, $6)",
         {
-            public_value(audit_category_name(event.category)),
-            public_value(event.event_type),
-            public_value(event.actor),
-            public_value(event.target),
-            public_value(event.reason_code),
-            public_value(event.request_id),
-        },
+          public_value(audit_category_name(event.category)),
+          public_value(event.event_type),
+          public_value(event.actor),
+          public_value(event.target),
+          public_value(event.reason_code),
+          public_value(event.request_id),
+          },
     };
 }
 
 auto audit_event_summary(AuditLogEvent const& event) -> std::string
 {
-    return "audit category=" + std::string{audit_category_name(event.category)} + " type=" + event.event_type
-        + " actor=" + event.actor + " target=" + event.target + " reason=" + event.reason_code;
+    return "audit category=" + std::string{audit_category_name(event.category)} + " type=" + event.event_type +
+           " actor=" + event.actor + " target=" + event.target + " reason=" + event.reason_code;
 }
 
 auto redact_log_value(StructuredLogField const& field) -> std::string
@@ -241,7 +246,8 @@ auto logging_boundary_notes() -> std::vector<std::string>
 {
     return {
         "Structured logs include request identifiers, actor identifiers, route names, and result codes.",
-        "Structured logs must not include access tokens, refresh tokens, device keys, signing keys, event content, media bytes, or plaintext passwords.",
+        "Structured logs must not include access tokens, refresh tokens, device keys, signing keys, event content, "
+        "media bytes, or plaintext passwords.",
         "Sensitive structured fields are rendered as <redacted> before they leave the logging boundary.",
     };
 }
@@ -274,11 +280,8 @@ auto hardening_observability_summary(platform::HardeningSelfCheck const& check) 
     return summaries;
 }
 
-auto make_observability_snapshot(
-    HealthCheckSnapshot health,
-    std::vector<MetricSample> metrics,
-    platform::HardeningSelfCheck const& hardening
-) -> ObservabilitySnapshot
+auto make_observability_snapshot(HealthCheckSnapshot health, std::vector<MetricSample> metrics,
+                                 platform::HardeningSelfCheck const& hardening) -> ObservabilitySnapshot
 {
     auto status = health.status;
     for (auto const& component : health.components)
@@ -291,8 +294,8 @@ auto make_observability_snapshot(
 
 auto observability_snapshot_is_safe(ObservabilitySnapshot const& snapshot) noexcept -> bool
 {
-    return metrics_are_safe(snapshot.metrics)
-        && std::ranges::all_of(snapshot.hardening_summaries, [](std::string const& summary) {
+    return metrics_are_safe(snapshot.metrics) &&
+           std::ranges::all_of(snapshot.hardening_summaries, [](std::string const& summary) {
                return !summary.empty();
            });
 }

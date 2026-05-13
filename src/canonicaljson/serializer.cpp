@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/serializer.hpp>
+#include "merovingian/canonicaljson/serializer.hpp"
+
+#include "merovingian/canonicaljson/parser.hpp"
 
 #include <algorithm>
 #include <array>
@@ -14,182 +15,182 @@ namespace merovingian::canonicaljson
 namespace
 {
 
-struct SerializedMember final
-{
-    std::string key{};
-    std::string value{};
-};
-
-[[nodiscard]] auto hex_digit(unsigned char value) noexcept -> char
-{
-    constexpr auto digits = std::array<char, 16U>{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
-    return digits[value & 0x0FU];
-}
-
-auto append_control_escape(std::string& output, unsigned char value) -> void
-{
-    output += "\\u00";
-    output.push_back(hex_digit(static_cast<unsigned char>(value >> 4U)));
-    output.push_back(hex_digit(value));
-}
-
-auto append_escaped_string(std::string& output, std::string_view value) -> void
-{
-    output.push_back('"');
-    for (auto const character : value)
+    struct SerializedMember final
     {
-        auto const byte = static_cast<unsigned char>(character);
-        switch (character)
+        std::string key{};
+        std::string value{};
+    };
+
+    [[nodiscard]] auto hex_digit(unsigned char value) noexcept -> char
+    {
+        constexpr auto digits =
+            std::array<char, 16U>{'0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f'};
+        return digits[value & 0x0FU];
+    }
+
+    auto append_control_escape(std::string& output, unsigned char value) -> void
+    {
+        output += "\\u00";
+        output.push_back(hex_digit(static_cast<unsigned char>(value >> 4U)));
+        output.push_back(hex_digit(value));
+    }
+
+    auto append_escaped_string(std::string& output, std::string_view value) -> void
+    {
+        output.push_back('"');
+        for (auto const character : value)
         {
-        case '"':
-            output += "\\\"";
-            break;
-        case '\\':
-            output += "\\\\";
-            break;
-        case '\b':
-            output += "\\b";
-            break;
-        case '\f':
-            output += "\\f";
-            break;
-        case '\n':
-            output += "\\n";
-            break;
-        case '\r':
-            output += "\\r";
-            break;
-        case '\t':
-            output += "\\t";
-            break;
-        default:
-            if (byte < 0x20U)
+            auto const byte = static_cast<unsigned char>(character);
+            switch (character)
             {
-                append_control_escape(output, byte);
+            case '"':
+                output += "\\\"";
+                break;
+            case '\\':
+                output += "\\\\";
+                break;
+            case '\b':
+                output += "\\b";
+                break;
+            case '\f':
+                output += "\\f";
+                break;
+            case '\n':
+                output += "\\n";
+                break;
+            case '\r':
+                output += "\\r";
+                break;
+            case '\t':
+                output += "\\t";
+                break;
+            default:
+                if (byte < 0x20U)
+                {
+                    append_control_escape(output, byte);
+                }
+                else
+                {
+                    output.push_back(character);
+                }
+                break;
             }
-            else
+        }
+        output.push_back('"');
+    }
+
+    [[nodiscard]] auto serialize_value(Value const& value) -> SerializeResult;
+
+    // JSON arrays recurse through nested values; value tree depth is parser-bounded.
+    // NOLINTNEXTLINE(misc-no-recursion)
+    [[nodiscard]] auto serialize_array(Array const& array) -> SerializeResult
+    {
+        auto output = std::string{"["};
+        auto first = true;
+        for (auto const& item : array)
+        {
+            auto item_result = serialize_value(item);
+            if (item_result.error != CanonicalJsonError::none)
             {
-                output.push_back(character);
+                return {{}, item_result.error};
             }
-            break;
+
+            if (!first)
+            {
+                output.push_back(',');
+            }
+            first = false;
+            output += item_result.output;
         }
-    }
-    output.push_back('"');
-}
-
-[[nodiscard]] auto serialize_value(Value const& value) -> SerializeResult;
-
-// JSON arrays recurse through nested values; value tree depth is parser-bounded.
-// NOLINTNEXTLINE(misc-no-recursion)
-[[nodiscard]] auto serialize_array(Array const& array) -> SerializeResult
-{
-    auto output = std::string{"["};
-    auto first = true;
-    for (auto const& item : array)
-    {
-        auto item_result = serialize_value(item);
-        if (item_result.error != CanonicalJsonError::none)
-        {
-            return {{}, item_result.error};
-        }
-
-        if (!first)
-        {
-            output.push_back(',');
-        }
-        first = false;
-        output += item_result.output;
-    }
-    output.push_back(']');
-    return {std::move(output), CanonicalJsonError::none};
-}
-
-// JSON objects recurse through nested values; value tree depth is parser-bounded.
-// NOLINTNEXTLINE(misc-no-recursion)
-[[nodiscard]] auto serialize_object(Object const& object) -> SerializeResult
-{
-    if (object_has_duplicate_keys(object))
-    {
-        return {{}, CanonicalJsonError::duplicate_object_key};
-    }
-
-    auto members = std::vector<SerializedMember>{};
-    members.reserve(object.size());
-    for (auto const& member : object)
-    {
-        if (member.value == nullptr || !string_is_valid_for_json(member.key))
-        {
-            return {{}, CanonicalJsonError::invalid_string};
-        }
-        auto value_result = serialize_value(*member.value);
-        if (value_result.error != CanonicalJsonError::none)
-        {
-            return {{}, value_result.error};
-        }
-        members.push_back({member.key, std::move(value_result.output)});
-    }
-
-    std::sort(
-        members.begin(),
-        members.end(),
-        [](SerializedMember const& lhs, SerializedMember const& rhs) noexcept { return lhs.key < rhs.key; }
-    );
-
-    auto output = std::string{"{"};
-    auto first = true;
-    for (auto const& member : members)
-    {
-        if (!first)
-        {
-            output.push_back(',');
-        }
-        first = false;
-        append_escaped_string(output, member.key);
-        output.push_back(':');
-        output += member.value;
-    }
-    output.push_back('}');
-    return {std::move(output), CanonicalJsonError::none};
-}
-
-// Canonical JSON values can be trees; recursion is bounded for parsed inputs.
-// NOLINTNEXTLINE(misc-no-recursion)
-[[nodiscard]] auto serialize_value(Value const& value) -> SerializeResult
-{
-    auto const& storage = value.storage();
-    if (std::holds_alternative<std::nullptr_t>(storage))
-    {
-        return {"null", CanonicalJsonError::none};
-    }
-    if (auto const* boolean = std::get_if<bool>(&storage); boolean != nullptr)
-    {
-        return {*boolean ? "true" : "false", CanonicalJsonError::none};
-    }
-    if (auto const* integer = std::get_if<std::int64_t>(&storage); integer != nullptr)
-    {
-        return {std::to_string(*integer), CanonicalJsonError::none};
-    }
-    if (auto const* string = std::get_if<std::string>(&storage); string != nullptr)
-    {
-        if (!string_is_valid_for_json(*string))
-        {
-            return {{}, CanonicalJsonError::invalid_string};
-        }
-        auto output = std::string{};
-        append_escaped_string(output, *string);
+        output.push_back(']');
         return {std::move(output), CanonicalJsonError::none};
     }
-    if (auto const* array = std::get_if<Array>(&storage); array != nullptr)
+
+    // JSON objects recurse through nested values; value tree depth is parser-bounded.
+    // NOLINTNEXTLINE(misc-no-recursion)
+    [[nodiscard]] auto serialize_object(Object const& object) -> SerializeResult
     {
-        return serialize_array(*array);
-    }
-    if (auto const* object = std::get_if<Object>(&storage); object != nullptr)
-    {
-        return serialize_object(*object);
+        if (object_has_duplicate_keys(object))
+        {
+            return {{}, CanonicalJsonError::duplicate_object_key};
+        }
+
+        auto members = std::vector<SerializedMember>{};
+        members.reserve(object.size());
+        for (auto const& member : object)
+        {
+            if (member.value == nullptr || !string_is_valid_for_json(member.key))
+            {
+                return {{}, CanonicalJsonError::invalid_string};
+            }
+            auto value_result = serialize_value(*member.value);
+            if (value_result.error != CanonicalJsonError::none)
+            {
+                return {{}, value_result.error};
+            }
+            members.push_back({member.key, std::move(value_result.output)});
+        }
+
+        std::sort(members.begin(), members.end(),
+                  [](SerializedMember const& lhs, SerializedMember const& rhs) noexcept {
+                      return lhs.key < rhs.key;
+                  });
+
+        auto output = std::string{"{"};
+        auto first = true;
+        for (auto const& member : members)
+        {
+            if (!first)
+            {
+                output.push_back(',');
+            }
+            first = false;
+            append_escaped_string(output, member.key);
+            output.push_back(':');
+            output += member.value;
+        }
+        output.push_back('}');
+        return {std::move(output), CanonicalJsonError::none};
     }
 
-    return {{}, CanonicalJsonError::invalid_string};
-}
+    // Canonical JSON values can be trees; recursion is bounded for parsed inputs.
+    // NOLINTNEXTLINE(misc-no-recursion)
+    [[nodiscard]] auto serialize_value(Value const& value) -> SerializeResult
+    {
+        auto const& storage = value.storage();
+        if (std::holds_alternative<std::nullptr_t>(storage))
+        {
+            return {"null", CanonicalJsonError::none};
+        }
+        if (auto const* boolean = std::get_if<bool>(&storage); boolean != nullptr)
+        {
+            return {*boolean ? "true" : "false", CanonicalJsonError::none};
+        }
+        if (auto const* integer = std::get_if<std::int64_t>(&storage); integer != nullptr)
+        {
+            return {std::to_string(*integer), CanonicalJsonError::none};
+        }
+        if (auto const* string = std::get_if<std::string>(&storage); string != nullptr)
+        {
+            if (!string_is_valid_for_json(*string))
+            {
+                return {{}, CanonicalJsonError::invalid_string};
+            }
+            auto output = std::string{};
+            append_escaped_string(output, *string);
+            return {std::move(output), CanonicalJsonError::none};
+        }
+        if (auto const* array = std::get_if<Array>(&storage); array != nullptr)
+        {
+            return serialize_array(*array);
+        }
+        if (auto const* object = std::get_if<Object>(&storage); object != nullptr)
+        {
+            return serialize_object(*object);
+        }
+
+        return {{}, CanonicalJsonError::invalid_string};
+    }
 
 } // namespace
 

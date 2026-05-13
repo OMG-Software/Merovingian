@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/crypto/random.hpp>
+#include "merovingian/crypto/random.hpp"
 
 namespace merovingian::crypto
 {

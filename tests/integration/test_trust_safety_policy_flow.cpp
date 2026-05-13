@@ -1,16 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/trust_safety/policy_engine.hpp>
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
 
-SCENARIO("Integrated trust and safety flow blocks restricted accounts and records reports", "[trust-safety][integration]")
+SCENARIO("Integrated trust and safety flow blocks restricted accounts and records reports",
+         "[trust-safety][integration]")
 {
     GIVEN("a locked account, an invite request, and a valid report")
     {
-        auto const reason = merovingian::trust_safety::enforcement_reason("account_review", "account restricted", "account locked by admin review");
+        auto const reason = merovingian::trust_safety::enforcement_reason("account_review", "account restricted",
+                                                                          "account locked by admin review");
         auto account_record = merovingian::trust_safety::AccountEnforcementRecord{};
         account_record.user_id = "@alice:example.org";
         account_record.locked = true;
@@ -30,12 +32,13 @@ SCENARIO("Integrated trust and safety flow blocks restricted accounts and record
 
         WHEN("account, invite, and report policy decisions are evaluated")
         {
-            auto const account_decision = merovingian::trust_safety::evaluate_account_policy({"@alice:example.org", account_record});
-            auto const invite_decision = account_decision.allowed
-                ? merovingian::trust_safety::evaluate_invite_policy(invite)
-                : account_decision;
+            auto const account_decision =
+                merovingian::trust_safety::evaluate_account_policy({"@alice:example.org", account_record});
+            auto const invite_decision =
+                account_decision.allowed ? merovingian::trust_safety::evaluate_invite_policy(invite) : account_decision;
             auto const report_decision = merovingian::trust_safety::validate_safety_report(report);
-            auto const audit = merovingian::trust_safety::make_safety_audit_event("@bob:example.org", "@alice:example.org", account_decision);
+            auto const audit = merovingian::trust_safety::make_safety_audit_event(
+                "@bob:example.org", "@alice:example.org", account_decision);
 
             THEN("the restricted account blocks the invite while reporting and audit surfaces remain available")
             {
@@ -50,11 +53,13 @@ SCENARIO("Integrated trust and safety flow blocks restricted accounts and record
     }
 }
 
-SCENARIO("Integrated trust and safety flow holds federation, media, and room targets for review", "[trust-safety][integration]")
+SCENARIO("Integrated trust and safety flow holds federation, media, and room targets for review",
+         "[trust-safety][integration]")
 {
     GIVEN("active review records for federation, media, and room targets")
     {
-        auto const reason = merovingian::trust_safety::enforcement_reason("manual_review", "target held for review", "administrator requested review");
+        auto const reason = merovingian::trust_safety::enforcement_reason("manual_review", "target held for review",
+                                                                          "administrator requested review");
         auto federation = merovingian::trust_safety::ReviewRecord{};
         federation.target = merovingian::trust_safety::ReviewTarget::federation_server;
         federation.target_id = "matrix.example.org";

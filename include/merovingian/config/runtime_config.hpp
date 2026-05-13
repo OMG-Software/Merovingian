@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/config/config.hpp>
-#include <merovingian/config/reload_plan.hpp>
+#include "merovingian/config/config.hpp"
+#include "merovingian/config/reload_plan.hpp"
 
 namespace merovingian::config
 {

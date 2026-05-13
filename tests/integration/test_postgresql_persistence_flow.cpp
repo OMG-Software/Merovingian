@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <catch2/catch_test_macros.hpp>
+
 #include <cstdlib>
 #include <string_view>
 
-#include <catch2/catch_test_macros.hpp>
 #include <merovingian/database/postgresql_store.hpp>
 
 namespace
