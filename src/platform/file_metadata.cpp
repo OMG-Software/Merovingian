@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/platform/file_metadata.hpp>
+#include "merovingian/platform/file_metadata.hpp"
 
 #include <cerrno>
 #include <cstring>

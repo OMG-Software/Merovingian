@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/database/statement.hpp>
-#include <merovingian/http/rate_limit.hpp>
-#include <merovingian/platform/hardening_self_check.hpp>
+#include "merovingian/database/statement.hpp"
+#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/platform/hardening_self_check.hpp"
 
 #include <cstdint>
 #include <string>

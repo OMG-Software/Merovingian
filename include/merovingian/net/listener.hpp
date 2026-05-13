@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-#include <merovingian/config/config.hpp>
+#include "merovingian/config/config.hpp"
 
 namespace merovingian::net
 {

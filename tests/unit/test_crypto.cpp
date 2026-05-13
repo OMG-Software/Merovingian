@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/crypto/constant_time.hpp>
-#include <merovingian/crypto/ed25519.hpp>
-#include <merovingian/crypto/random.hpp>
-#include <merovingian/crypto/signing_service.hpp>
+#include "merovingian/crypto/constant_time.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/random.hpp"
+#include "merovingian/crypto/signing_service.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

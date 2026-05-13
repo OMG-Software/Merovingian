@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/media/runtime_media.hpp>
-#include <merovingian/observability/observability.hpp>
+#include "merovingian/media/runtime_media.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <cstdint>
 #include <string>

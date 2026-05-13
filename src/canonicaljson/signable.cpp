@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/canonicaljson/signable.hpp>
+#include "merovingian/canonicaljson/signable.hpp"
 
 namespace merovingian::canonicaljson
 {

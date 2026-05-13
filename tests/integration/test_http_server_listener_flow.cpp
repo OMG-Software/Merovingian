@@ -14,13 +14,13 @@
 
 #include <arpa/inet.h>
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/config.hpp>
-#include <merovingian/core/socket_handle.hpp>
-#include <merovingian/homeserver/client_server.hpp>
-#include <merovingian/homeserver/http_server.hpp>
-#include <merovingian/homeserver/tls.hpp>
-#include <merovingian/net/shutdown_signal.hpp>
-#include <merovingian/net/tcp_acceptor.hpp>
+#include "merovingian/config/config.hpp"
+#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/net/shutdown_signal.hpp"
+#include "merovingian/net/tcp_acceptor.hpp"
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>

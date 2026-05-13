@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/platform/hardening_self_check.hpp>
+#include "merovingian/platform/hardening_self_check.hpp"
 
 #include <utility>
 

@@ -3,7 +3,7 @@
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/config_parser.hpp>
+#include "merovingian/config/config_parser.hpp"
 
 SCENARIO("Key-value config parser preserves secure defaults for empty input", "[config][parser]")
 {

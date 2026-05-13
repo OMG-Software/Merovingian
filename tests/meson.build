@@ -1,5 +1,6 @@
 if get_option('build_tests')
   shell = find_program('sh')
+  python = find_program('python3', 'python')
   catch2_dep = dependency(
     'catch2',
     required: false,
@@ -16,6 +17,12 @@ if get_option('build_tests')
     'catch2-bdd-tests',
     shell,
     args: [meson.project_source_root() / 'scripts' / 'check-catch2-bdd-tests.sh', meson.project_source_root()],
+  )
+
+  test(
+    'rewrite-merovingian-includes',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_rewrite_merovingian_includes.py'],
   )
 
   unit_tests = executable(

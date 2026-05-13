@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/net/shutdown_signal.hpp>
+#include "merovingian/net/shutdown_signal.hpp"
 
 #include <fcntl.h>
 #include <signal.h>

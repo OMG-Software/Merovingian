@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/canonicaljson/serializer.hpp>
-#include <merovingian/canonicaljson/value.hpp>
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 
 namespace merovingian::canonicaljson
 {

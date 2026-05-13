@@ -3,7 +3,7 @@
 #include <limits>
 #include <utility>
 
-#include <merovingian/config/config.hpp>
+#include "merovingian/config/config.hpp"
 
 namespace merovingian::config
 {

@@ -10,8 +10,8 @@
 #include <utility>
 #include <vector>
 
-#include <merovingian/database/persistent_store.hpp>
-#include <merovingian/database/schema.hpp>
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/schema.hpp"
 #include <sqlite3.h>
 
 namespace merovingian::database

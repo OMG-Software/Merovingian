@@ -8,11 +8,11 @@
 #include <string_view>
 #include <utility>
 
-#include <merovingian/database/schema.hpp>
-#include <merovingian/federation/runtime_federation.hpp>
-#include <merovingian/homeserver/vertical_slice.hpp>
-#include <merovingian/media/runtime_media.hpp>
-#include <merovingian/platform/hardening_self_check.hpp>
+#include "merovingian/database/schema.hpp"
+#include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/media/runtime_media.hpp"
+#include "merovingian/platform/hardening_self_check.hpp"
 
 namespace merovingian::homeserver
 {

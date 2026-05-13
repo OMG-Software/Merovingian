@@ -3,7 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <merovingian/homeserver/vertical_slice.hpp>
+#include "merovingian/homeserver/vertical_slice.hpp"
 #include <string>
 #include <string_view>
 #include <vector>

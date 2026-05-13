@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/federation/inbound_request.hpp>
+#include "merovingian/federation/inbound_request.hpp"
 
-#include <merovingian/events/authorization.hpp>
-#include <merovingian/rooms/room_version_policy.hpp>
+#include "merovingian/events/authorization.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
 #include <cstdint>

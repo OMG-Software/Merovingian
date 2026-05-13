@@ -8,8 +8,8 @@
 #include <string_view>
 #include <utility>
 
-#include <merovingian/homeserver/vertical_slice.hpp>
-#include <merovingian/trust_safety/policy_engine.hpp>
+#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 namespace merovingian::homeserver
 {

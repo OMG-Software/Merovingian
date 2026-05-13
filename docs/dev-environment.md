@@ -32,6 +32,19 @@ CI, because it relies on strict shell options and portable grep behavior.
 OpenSSL is included as a system dependency in Meson so platform headers are not
 held to Merovingian's project warning-as-error policy.
 
+Project-owned headers should use quoted includes. Use the rewrite helper to
+convert angle-bracket Merovingian includes in source trees:
+
+```sh
+python3 scripts/rewrite_merovingian_includes.py include src tests
+```
+
+Check mode reports pending rewrites without modifying files:
+
+```sh
+python3 scripts/rewrite_merovingian_includes.py --check include src tests
+```
+
 ## Common Usage
 
 Preview the commands without installing packages:

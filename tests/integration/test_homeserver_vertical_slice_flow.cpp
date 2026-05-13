@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/config.hpp>
-#include <merovingian/homeserver/vertical_slice.hpp>
+#include "merovingian/config/config.hpp"
+#include "merovingian/homeserver/vertical_slice.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

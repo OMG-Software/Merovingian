@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/canonicaljson/value.hpp>
+#include "merovingian/canonicaljson/value.hpp"
 
 #include <memory>
 #include <utility>

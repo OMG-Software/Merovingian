@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/federation/transactions.hpp>
+#include "merovingian/federation/transactions.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

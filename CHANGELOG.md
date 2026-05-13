@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.22
+
+- Added a Python tooling script that rewrites project-owned
+  `#include <merovingian/...>` statements to quoted includes, with check and
+  dry-run modes for review and CI use.
+- Added behavioral coverage for the include rewrite script, including ignored
+  workspace directories.
+
 ## 0.1.21
 
 - Marked the OpenSSL dependency include path as a system include so FreeBSD

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/media/repository.hpp>
+#include "merovingian/media/repository.hpp"
 
-#include <merovingian/media/security.hpp>
+#include "merovingian/media/security.hpp"
 
 #include <algorithm>
 #include <array>

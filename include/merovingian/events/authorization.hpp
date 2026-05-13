@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/rooms/room_version_policy.hpp>
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <cstdint>
 #include <string>

@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/auth/session.hpp>
-#include <merovingian/auth/token.hpp>
-#include <merovingian/database/statement.hpp>
-#include <merovingian/http/rate_limit.hpp>
+#include "merovingian/auth/session.hpp"
+#include "merovingian/auth/token.hpp"
+#include "merovingian/database/statement.hpp"
+#include "merovingian/http/rate_limit.hpp"
 
 #include <cstddef>
 #include <string>

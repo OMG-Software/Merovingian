@@ -5,11 +5,11 @@
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/config.hpp>
-#include <merovingian/database/migration.hpp>
-#include <merovingian/database/schema.hpp>
-#include <merovingian/homeserver/client_server.hpp>
-#include <merovingian/homeserver/vertical_slice.hpp>
+#include "merovingian/config/config.hpp"
+#include "merovingian/database/migration.hpp"
+#include "merovingian/database/schema.hpp"
+#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/vertical_slice.hpp"
 
 namespace
 {

@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/serializer.hpp>
-#include <merovingian/events/event.hpp>
-#include <merovingian/events/event_id.hpp>
-#include <merovingian/events/event_signer.hpp>
-#include <merovingian/events/redaction.hpp>
-#include <merovingian/rooms/room_version_policy.hpp>
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/events/event.hpp"
+#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/event_signer.hpp"
+#include "merovingian/events/redaction.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/crypto/ed25519.hpp>
+#include "merovingian/crypto/ed25519.hpp"
 
 #include <algorithm>
 

@@ -2,7 +2,7 @@
 
 #include "local_services.hpp"
 
-#include <merovingian/database/persistent_store.hpp>
+#include "merovingian/database/persistent_store.hpp"
 
 #include <string>
 #include <string_view>

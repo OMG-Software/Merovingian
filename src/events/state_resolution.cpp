@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/events/state_resolution.hpp>
+#include "merovingian/events/state_resolution.hpp"
 
 #include <string>
 

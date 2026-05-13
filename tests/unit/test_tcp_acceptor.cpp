@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/net/tcp_acceptor.hpp>
+#include "merovingian/net/tcp_acceptor.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

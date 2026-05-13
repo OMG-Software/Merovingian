@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/auth/client_server_api.hpp>
+#include "merovingian/auth/client_server_api.hpp"
 
 #include <string>
 #include <utility>

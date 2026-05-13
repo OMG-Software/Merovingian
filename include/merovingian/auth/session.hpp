@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/auth/identity.hpp>
-#include <merovingian/auth/token.hpp>
+#include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/token.hpp"
 
 #include <chrono>
 #include <string>

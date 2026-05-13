@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/database/statement.hpp>
-#include <merovingian/observability/observability.hpp>
-#include <merovingian/platform/hardening_self_check.hpp>
+#include "merovingian/database/statement.hpp"
+#include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/hardening_self_check.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

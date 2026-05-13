@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/serializer.hpp>
-#include <merovingian/canonicaljson/signable.hpp>
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/signable.hpp"
 #include <string>
 
 SCENARIO("Canonical JSON parser accepts and canonicalizes Matrix-style objects", "[canonicaljson][parser]")

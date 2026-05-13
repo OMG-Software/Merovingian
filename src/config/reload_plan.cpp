@@ -3,7 +3,7 @@
 #include <string>
 #include <utility>
 
-#include <merovingian/config/reload_plan.hpp>
+#include "merovingian/config/reload_plan.hpp"
 
 namespace merovingian::config
 {

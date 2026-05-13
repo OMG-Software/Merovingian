@@ -5,7 +5,7 @@
 #include <string_view>
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/reload_policy.hpp>
+#include "merovingian/config/reload_policy.hpp"
 
 SCENARIO("Runtime-facing config keys are reloadable", "[config][reload]")
 {

@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/config/config.hpp>
-#include <merovingian/database/persistent_store.hpp>
-#include <merovingian/federation/inbound_request.hpp>
-#include <merovingian/media/repository.hpp>
-#include <merovingian/net/listener.hpp>
-#include <merovingian/observability/observability.hpp>
-#include <merovingian/platform/hardening_self_check.hpp>
+#include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/media/repository.hpp"
+#include "merovingian/net/listener.hpp"
+#include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/hardening_self_check.hpp"
 
 #include <cstdint>
 #include <optional>

@@ -4,7 +4,7 @@
 #include <optional>
 #include <utility>
 
-#include <merovingian/database/persistent_store.hpp>
+#include "merovingian/database/persistent_store.hpp"
 
 namespace merovingian::database
 {

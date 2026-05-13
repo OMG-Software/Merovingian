@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/events/event_id.hpp>
-#include <merovingian/canonicaljson/serializer.hpp>
+#include "merovingian/events/event_id.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 
 #include <cstdint>
 #include <string>

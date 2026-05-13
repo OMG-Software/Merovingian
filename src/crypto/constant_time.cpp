@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/crypto/constant_time.hpp>
+#include "merovingian/crypto/constant_time.hpp"
 
 #include <algorithm>
 #include <cstddef>

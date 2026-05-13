@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/net/tcp_acceptor.hpp>
+#include "merovingian/net/tcp_acceptor.hpp"
 
-#include <merovingian/core/file_descriptor.hpp>
+#include "merovingian/core/file_descriptor.hpp"
 
 #include <arpa/inet.h>
 #include <netdb.h>

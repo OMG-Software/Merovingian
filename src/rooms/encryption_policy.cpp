@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/rooms/encryption_policy.hpp>
+#include "merovingian/rooms/encryption_policy.hpp"
 
 #include <string>
 

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/database/connection.hpp>
-#include <merovingian/database/migration.hpp>
-#include <merovingian/database/persistent_store.hpp>
-#include <merovingian/database/schema.hpp>
-#include <merovingian/database/statement.hpp>
+#include "merovingian/database/connection.hpp"
+#include "merovingian/database/migration.hpp"
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/schema.hpp"
+#include "merovingian/database/statement.hpp"
 #include <string>
 #include <vector>
 

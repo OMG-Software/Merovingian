@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/config/config.hpp>
-#include <merovingian/media/runtime_media.hpp>
+#include "merovingian/config/config.hpp"
+#include "merovingian/media/runtime_media.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

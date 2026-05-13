@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/federation/runtime_federation.hpp>
+#include "merovingian/federation/runtime_federation.hpp"
 
 #include <string>
 #include <utility>

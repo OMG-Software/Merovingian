@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/http/request.hpp>
-#include <merovingian/http/request_limits.hpp>
+#include "merovingian/http/request.hpp"
+#include "merovingian/http/request_limits.hpp"
 
 #include <limits>
 #include <string>

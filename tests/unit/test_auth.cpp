@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/auth/identity.hpp>
-#include <merovingian/auth/token.hpp>
+#include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/token.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

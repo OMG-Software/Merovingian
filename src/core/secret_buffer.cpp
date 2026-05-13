@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/core/secret_buffer.hpp>
+#include "merovingian/core/secret_buffer.hpp"
 
 #include <algorithm>
 

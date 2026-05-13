@@ -4,7 +4,7 @@
 #include <string>
 #include <utility>
 
-#include <merovingian/config/config_parser.hpp>
+#include "merovingian/config/config_parser.hpp"
 
 namespace merovingian::config
 {

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/rooms/room_version_policy.hpp>
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <array>
 #include <vector>

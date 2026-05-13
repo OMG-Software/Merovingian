@@ -6,11 +6,11 @@
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/config.hpp>
-#include <merovingian/database/migration.hpp>
-#include <merovingian/database/persistent_store.hpp>
-#include <merovingian/database/schema.hpp>
-#include <merovingian/homeserver/vertical_slice.hpp>
+#include "merovingian/config/config.hpp"
+#include "merovingian/database/migration.hpp"
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/schema.hpp"
+#include "merovingian/homeserver/vertical_slice.hpp"
 #include <sqlite3.h>
 
 namespace

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/auth/token.hpp>
+#include "merovingian/auth/token.hpp"
 
 #include <algorithm>
 #include <cstddef>

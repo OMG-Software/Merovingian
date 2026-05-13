@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/config/config.hpp>
+#include "merovingian/config/config.hpp"
 
 #include <cstddef>
 #include <cstdint>

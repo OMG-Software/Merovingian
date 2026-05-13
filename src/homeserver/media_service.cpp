@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/homeserver/vertical_slice.hpp>
+#include "merovingian/homeserver/vertical_slice.hpp"
 
 #include "local_services.hpp"
 
-#include <merovingian/database/persistent_store.hpp>
-#include <merovingian/media/repository.hpp>
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/media/repository.hpp"
 
 #include <string>
 #include <string_view>

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/events/event_signer.hpp>
+#include "merovingian/events/event_signer.hpp"
 
 #include <string>
 #include <string_view>

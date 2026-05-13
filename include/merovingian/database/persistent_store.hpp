@@ -8,8 +8,8 @@
 #include <string_view>
 #include <vector>
 
-#include <merovingian/database/migration.hpp>
-#include <merovingian/database/statement.hpp>
+#include "merovingian/database/migration.hpp"
+#include "merovingian/database/statement.hpp"
 
 namespace merovingian::database
 {

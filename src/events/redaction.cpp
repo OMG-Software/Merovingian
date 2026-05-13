@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/events/redaction.hpp>
+#include "merovingian/events/redaction.hpp"
 
 #include <string_view>
 #include <variant>

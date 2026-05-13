@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/crypto/ed25519.hpp>
+#include "merovingian/crypto/ed25519.hpp"
 
 #include <string>
 #include <string_view>

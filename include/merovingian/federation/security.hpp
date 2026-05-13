@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/events/event.hpp>
-#include <merovingian/http/rate_limit.hpp>
+#include "merovingian/events/event.hpp"
+#include "merovingian/http/rate_limit.hpp"
 
 #include <cstdint>
 #include <string>

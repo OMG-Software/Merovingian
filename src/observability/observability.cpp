@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/observability/observability.hpp>
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <string>

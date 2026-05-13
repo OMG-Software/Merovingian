@@ -12,7 +12,7 @@
 #include <system_error>
 #include <utility>
 
-#include <merovingian/canonicaljson/parser.hpp>
+#include "merovingian/canonicaljson/parser.hpp"
 
 namespace merovingian::canonicaljson
 {

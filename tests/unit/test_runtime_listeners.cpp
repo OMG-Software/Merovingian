@@ -3,8 +3,8 @@
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/config.hpp>
-#include <merovingian/net/listener.hpp>
+#include "merovingian/config/config.hpp"
+#include "merovingian/net/listener.hpp"
 
 SCENARIO("Runtime listener planning includes client and federation listeners by default", "[net][listener]")
 {

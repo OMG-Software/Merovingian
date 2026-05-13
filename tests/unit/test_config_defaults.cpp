@@ -4,7 +4,7 @@
 #include <string>
 
 #include <catch2/catch_test_macros.hpp>
-#include <merovingian/config/config.hpp>
+#include "merovingian/config/config.hpp"
 
 SCENARIO("Config provides secure server and listener defaults", "[config]")
 {
