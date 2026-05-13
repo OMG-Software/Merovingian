@@ -4,10 +4,12 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <fstream>
 #include <string>
 #include <string_view>
 #include <utility>
 
+#include <merovingian/database/postgresql_store.hpp>
 #include <merovingian/database/schema.hpp>
 #include <merovingian/federation/runtime_federation.hpp>
 #include <merovingian/homeserver/vertical_slice.hpp>
@@ -16,6 +18,22 @@
 
 namespace merovingian::homeserver
 {
+namespace
+{
+
+    [[nodiscard]] auto read_database_uri_file(std::string const& path) -> std::string
+    {
+        auto input = std::ifstream{path};
+        if (!input.is_open())
+        {
+            return {};
+        }
+        auto value = std::string{};
+        std::getline(input, value);
+        return value;
+    }
+
+} // namespace
 
 auto bootstrap_local_database(config::Config const& config) -> LocalDatabase
 {
@@ -74,9 +92,17 @@ auto hydrate_local_database(LocalDatabase& database) -> void
 auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state) -> LocalDatabase
 {
     auto database = LocalDatabase{};
-    auto opened = config.database().backend == config::DatabaseBackend::sqlite
-                      ? database::open_sqlite_persistent_store(config.database().sqlite_path)
-                      : database::open_persistent_store(std::move(existing_state));
+    auto opened = database::PersistentStoreOpenResult{};
+    if (config.database().backend == config::DatabaseBackend::sqlite)
+    {
+        opened = database::open_sqlite_persistent_store(config.database().sqlite_path);
+    }
+    else
+    {
+        auto const conninfo = read_database_uri_file(config.database().uri_file);
+        opened = conninfo.empty() ? database::open_persistent_store(std::move(existing_state))
+                                  : database::open_postgresql_persistent_store(conninfo);
+    }
     if (!opened.ok)
     {
         return database;
@@ -108,6 +134,10 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     if (!config::is_valid(config))
     {
         return {false, "configuration is invalid", {}};
+    }
+    if (config.database().role != config::DatabaseRole::runtime)
+    {
+        return {false, "runtime requires database.role=runtime", {}};
     }
 
     auto runtime = HomeserverRuntime{};

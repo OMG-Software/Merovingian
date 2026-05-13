@@ -34,7 +34,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.1.21"};
+constexpr auto version = std::string_view{"0.1.23"};
 
 struct BootstrapConfigResult final
 {
@@ -67,7 +67,8 @@ struct BootstrapConfigResult final
                             finding.field.starts_with("line ") || finding.message == "unknown configuration key" ||
                             finding.message == "duplicate configuration key" ||
                             finding.message == "expected boolean value" ||
-                            finding.message == "expected unsigned integer value";
+                            finding.message == "expected unsigned integer value" ||
+                            finding.message == "expected database role runtime or migration";
     }
 
     return {

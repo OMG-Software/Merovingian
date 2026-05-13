@@ -1,9 +1,37 @@
 # Changelog
 
+## 0.1.23
+
+- Resolved the PostgreSQL persistence branch merge with the SQLite transaction
+  hardening already on `main`.
+- Marked `libpq` headers as system includes and installed PostgreSQL client
+  development packages in CI workflows.
+- Made the database executor base movable so the RAII PostgreSQL connection can
+  be returned by value without deleting its move operations.
+
+## 0.1.22
+
+- Wired PostgreSQL persistent-store bootstrap and row hydration behind the
+  `libpq` boundary when a PostgreSQL URI file is explicitly configured.
+- Added write-through PostgreSQL transaction execution for persistent-store
+  mutations.
+- Added physical SQL migration file loading and an offline
+  `merovingian-db-migrate` planning scaffold.
+- Added database runtime/migration role separation through `database.role`.
+- Added explicit PostgreSQL integration-test gating through
+  `MEROVINGIAN_TEST_POSTGRESQL_URI`.
+
 ## 0.1.21
 
 - Marked the OpenSSL dependency include path as a system include so FreeBSD
   CI does not fail project warning-as-error gates on OpenSSL header macros.
+- Added a reviewed `libpq` dependency boundary for PostgreSQL support.
+- Added PostgreSQL connection-string policy and redacted connection summaries
+  so password material is not exposed in diagnostics.
+- Added RAII wrappers for PostgreSQL connections and command results using
+  `PQfinish` and `PQclear`.
+- Added parameterized PostgreSQL statement execution through `PQexecParams`
+  behind the existing prepared-statement validation boundary.
 
 ## 0.1.20
 

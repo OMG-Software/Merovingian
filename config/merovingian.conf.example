@@ -16,6 +16,7 @@ listeners.federation.tls_certificate_file=
 listeners.federation.tls_private_key_file=
 
 database.uri_file=/etc/merovingian/db-uri
+database.role=runtime
 database.pool_size=16
 
 security.registration.enabled=false

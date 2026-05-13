@@ -229,6 +229,7 @@ Reload action: no changes
 | --- | --- |
 | `server.name` | Restart required |
 | `database.uri_file` | Restart required |
+| `database.role` | Restart required |
 | `listeners.*.tls_certificate_file` | Restart required |
 | `listeners.*.tls_private_key_file` | Restart required |
 | `database.pool_size` | Reloadable |

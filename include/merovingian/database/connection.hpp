@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/database/statement.hpp>
-
 #include <string>
 #include <vector>
+
+#include <merovingian/database/statement.hpp>
 
 namespace merovingian::database
 {
@@ -22,8 +22,8 @@ public:
     DatabaseExecutor() = default;
     DatabaseExecutor(DatabaseExecutor const& other) = delete;
     auto operator=(DatabaseExecutor const& other) -> DatabaseExecutor& = delete;
-    DatabaseExecutor(DatabaseExecutor&& other) noexcept = delete;
-    auto operator=(DatabaseExecutor&& other) noexcept -> DatabaseExecutor& = delete;
+    DatabaseExecutor(DatabaseExecutor&& other) noexcept = default;
+    auto operator=(DatabaseExecutor&& other) noexcept -> DatabaseExecutor& = default;
     virtual ~DatabaseExecutor() = default;
 
     [[nodiscard]] virtual auto execute(PreparedStatement const& statement) -> QueryResult = 0;
