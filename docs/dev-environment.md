@@ -29,6 +29,8 @@ groups and timeouts. Headers are analyzed transitively through the Meson compile
 database instead of being invoked as standalone clang-tidy inputs.
 The unsafe source gate is a Bash script and must be run with `bash`, matching
 CI, because it relies on strict shell options and portable grep behavior.
+OpenSSL is included as a system dependency in Meson so platform headers are not
+held to Merovingian's project warning-as-error policy.
 
 ## Common Usage
 

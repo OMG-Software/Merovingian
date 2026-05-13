@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.21
+
+- Marked the OpenSSL dependency include path as a system include so FreeBSD
+  CI does not fail project warning-as-error gates on OpenSSL header macros.
+
 ## 0.1.20
 
 - Added persistent-store transaction helpers so login device/token writes, room
