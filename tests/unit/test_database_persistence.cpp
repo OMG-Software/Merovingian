@@ -2,13 +2,19 @@
 
 #include "merovingian/database/connection.hpp"
 #include "merovingian/database/migration.hpp"
+#include "merovingian/database/migration_files.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/database/statement.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace
