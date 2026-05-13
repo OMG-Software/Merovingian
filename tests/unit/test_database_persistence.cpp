@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 #include <catch2/catch_test_macros.hpp>
@@ -147,6 +148,23 @@ SCENARIO("Database executor validates statements before execution", "[database]"
                 REQUIRE(invalid_result.error == "invalid statement name");
                 REQUIRE(executor.executed_statement_names().size() == 1U);
                 REQUIRE(executor.executed_statement_names().front() == "select_user");
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL executor connection supports RAII moves", "[database][postgresql]")
+{
+    GIVEN("the PostgreSQL connection owns libpq state through an executor base")
+    {
+        WHEN("the connection type is returned by value from factory results")
+        {
+            THEN("the executor base permits moving while still rejecting copies")
+            {
+                STATIC_REQUIRE(std::is_move_constructible_v<merovingian::database::PostgresqlConnection>);
+                STATIC_REQUIRE(std::is_move_assignable_v<merovingian::database::PostgresqlConnection>);
+                STATIC_REQUIRE_FALSE(std::is_copy_constructible_v<merovingian::database::PostgresqlConnection>);
+                STATIC_REQUIRE_FALSE(std::is_copy_assignable_v<merovingian::database::PostgresqlConnection>);
             }
         }
     }

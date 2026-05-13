@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.23
+
+- Resolved the PostgreSQL persistence branch merge with the SQLite transaction
+  hardening already on `main`.
+- Marked `libpq` headers as system includes and installed PostgreSQL client
+  development packages in CI workflows.
+- Made the database executor base movable so the RAII PostgreSQL connection can
+  be returned by value without deleting its move operations.
+
 ## 0.1.22
 
 - Wired PostgreSQL persistent-store bootstrap and row hydration behind the
@@ -14,6 +23,8 @@
 
 ## 0.1.21
 
+- Marked the OpenSSL dependency include path as a system include so FreeBSD
+  CI does not fail project warning-as-error gates on OpenSSL header macros.
 - Added a reviewed `libpq` dependency boundary for PostgreSQL support.
 - Added PostgreSQL connection-string policy and redacted connection summaries
   so password material is not exposed in diagnostics.
@@ -24,15 +35,14 @@
 
 ## 0.1.20
 
-- Added transaction-aware persistent-store commits with SQLite rollback support
-  so multi-statement database writes either reach durable storage together or
-  leave no partial rows behind.
-- Added atomic persistence helpers for login device/token writes, room creation
-  membership writes, and event/current-state writes.
-- Wired the client-server runtime to use the atomic persistence helpers for
-  login, room creation, and state-event sending.
-- Added BDD coverage for SQLite transaction rollback and multi-row persistence
-  helper visibility.
+- Added persistent-store transaction helpers so login device/token writes, room
+  creation membership writes, and event/current-state writes commit atomically.
+- Added SQLite backend transaction rollback coverage for failed statement
+  groups.
+- Changed SQLite startup hydration to fail closed when row queries cannot be
+  prepared or stepped to completion.
+- Set a busy timeout on SQLite connections and removed the FreeBSD
+  warning-as-error failure caused by the `SQLITE_TRANSIENT` macro cast.
 
 ## 0.1.19
 

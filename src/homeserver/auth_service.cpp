@@ -248,7 +248,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     if (!database::store_device_and_access_token(runtime.database.persistent_store, std::move(device),
                                                  {user->user_id, std::string{device_id}, *token_hash, false}))
     {
-        return make_operation_result(false, {}, "token persistence failed", 500U);
+        return make_operation_result(false, {}, "login persistence failed", 500U);
     }
     ++runtime.database.next_session_id;
     runtime.database.sessions.push_back({user->user_id, std::string{device_id}, *token_hash, false});

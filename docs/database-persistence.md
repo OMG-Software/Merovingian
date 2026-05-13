@@ -25,6 +25,10 @@ remaining work before PostgreSQL-backed production operation.
 - Write-through SQLite persistence behind the existing store mutation helpers.
 - Transaction-aware persistent-store commits with SQLite rollback support.
 - Atomic helpers for multi-row login, room creation, and state-event writes.
+- SQLite hydration fails closed when a row query cannot be prepared or stepped
+  to completion.
+- SQLite connections use a non-zero busy timeout for short-lived lock
+  contention.
 - `libpq` dependency review and a PostgreSQL RAII connection/result wrapper.
 - PostgreSQL current-schema bootstrap, row hydration, and write-through
   transaction execution when a URI file is explicitly configured.
@@ -59,6 +63,8 @@ The boundary provides these guarantees:
 - Auth and room mutations fail the request when required persistent writes fail.
 - Device/token, room/membership, and event/current-state mutations are committed
   atomically before in-memory runtime state is updated.
+- Multi-row runtime mutations commit through one backend transaction so partial
+  login, room, or state-event writes are rolled back.
 - PostgreSQL connection strings are accepted only in explicit URI or libpq
   key/value form, and password material is redacted from summaries.
 - Runtime startup requires `database.role=runtime`; offline migration planning

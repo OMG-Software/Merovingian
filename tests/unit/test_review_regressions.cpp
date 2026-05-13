@@ -1,15 +1,50 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <chrono>
+#include <filesystem>
+#include <string>
+#include <vector>
+
 #include <catch2/catch_test_macros.hpp>
 #include <merovingian/config/config.hpp>
 #include <merovingian/database/migration.hpp>
 #include <merovingian/database/persistent_store.hpp>
 #include <merovingian/database/schema.hpp>
 #include <merovingian/homeserver/vertical_slice.hpp>
-#include <string>
+#include <sqlite3.h>
 
 namespace
 {
+
+class TestSqliteConnection final
+{
+public:
+    explicit TestSqliteConnection(std::filesystem::path const& path)
+    {
+        static_cast<void>(sqlite3_open(path.string().c_str(), &connection_));
+    }
+
+    TestSqliteConnection(TestSqliteConnection const& other) = delete;
+    auto operator=(TestSqliteConnection const& other) -> TestSqliteConnection& = delete;
+    TestSqliteConnection(TestSqliteConnection&& other) noexcept = delete;
+    auto operator=(TestSqliteConnection&& other) noexcept -> TestSqliteConnection& = delete;
+
+    ~TestSqliteConnection()
+    {
+        sqlite3_close(connection_);
+    }
+
+    [[nodiscard]] auto execute(std::string const& sql) const -> bool
+    {
+        auto* error = static_cast<char*>(nullptr);
+        auto const ok = sqlite3_exec(connection_, sql.c_str(), nullptr, nullptr, &error) == SQLITE_OK;
+        sqlite3_free(error);
+        return ok;
+    }
+
+private:
+    sqlite3* connection_{nullptr};
+};
 
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
@@ -21,6 +56,13 @@ namespace
         merovingian::config::DatabaseConfig{},
         security,
     };
+}
+
+[[nodiscard]] auto unique_sqlite_path(std::string const& suffix) -> std::filesystem::path
+{
+    auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
+    return std::filesystem::temp_directory_path() /
+           ("merovingian-review-" + suffix + "-" + std::to_string(now) + ".sqlite3");
 }
 
 } // namespace
@@ -168,6 +210,146 @@ SCENARIO("Persistent store rejects duplicate token hashes before recording inser
                 REQUIRE(store.prepared_statements.front().name == "insert_access_token");
             }
         }
+    }
+}
+
+SCENARIO("Persistent store commits login device and token rows atomically",
+         "[database][persistence][transaction][review]")
+{
+    GIVEN("an opened persistent store")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        WHEN("a login transaction is attempted with an invalid token hash")
+        {
+            auto const rejected = merovingian::database::store_device_and_access_token(
+                store, merovingian::database::PersistentDevice{"@alice:example.org", "DEVICE1", "Alice laptop"},
+                {"@alice:example.org", "DEVICE1", "plaintext", false});
+
+            THEN("neither durable side effect is recorded")
+            {
+                REQUIRE_FALSE(rejected);
+                REQUIRE(store.devices.empty());
+                REQUIRE(store.access_tokens.empty());
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+
+        WHEN("a login transaction has a new device and hashed token")
+        {
+            auto const stored = merovingian::database::store_device_and_access_token(
+                store, merovingian::database::PersistentDevice{"@alice:example.org", "DEVICE1", "Alice laptop"},
+                {"@alice:example.org", "DEVICE1", "token-hash:v2:abc", false});
+
+            THEN("the device and access token become visible together")
+            {
+                REQUIRE(stored);
+                REQUIRE(store.devices.size() == 1U);
+                REQUIRE(store.access_tokens.size() == 1U);
+                REQUIRE(store.prepared_statements.size() == 2U);
+                REQUIRE(store.prepared_statements[0].name == "insert_device");
+                REQUIRE(store.prepared_statements[1].name == "insert_access_token");
+            }
+        }
+    }
+}
+
+SCENARIO("Persistent store commits room and state-event rows atomically",
+         "[database][persistence][transaction][review]")
+{
+    GIVEN("an opened persistent store")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        WHEN("a room and state event are stored through transaction helpers")
+        {
+            auto const room_stored = merovingian::database::store_room_with_membership(
+                store, {"!room1:example.org", "@alice:example.org"}, {"!room1:example.org", "@alice:example.org"});
+            auto const event_stored = merovingian::database::store_event_with_state(
+                store,
+                {"$event1:example.org", "!room1:example.org", "@alice:example.org",
+                 R"({"type":"m.room.member","state_key":"@alice:example.org"})"},
+                merovingian::database::PersistentStateEvent{"!room1:example.org", "m.room.member", "@alice:example.org",
+                                                            "$event1:example.org"});
+
+            THEN("the related rows and replay statements are all-or-nothing")
+            {
+                REQUIRE(room_stored);
+                REQUIRE(event_stored);
+                REQUIRE(store.rooms.size() == 1U);
+                REQUIRE(store.memberships.size() == 1U);
+                REQUIRE(store.events.size() == 1U);
+                REQUIRE(store.state.size() == 1U);
+                REQUIRE(store.prepared_statements.size() == 4U);
+            }
+        }
+    }
+}
+
+SCENARIO("SQLite persistent transactions roll back failed statement groups",
+         "[database][sqlite][persistence][transaction][review]")
+{
+    GIVEN("a SQLite store and a transaction with a duplicate room insert")
+    {
+        auto const sqlite_path = unique_sqlite_path("rollback");
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        auto const statements = std::vector<merovingian::database::PreparedStatement>{
+            {"insert_room",
+             "INSERT INTO rooms VALUES ($1, $2)", {{"!room1:example.org", false}, {"@alice:example.org", false}}},
+            {"insert_room_duplicate",
+             "INSERT INTO rooms VALUES ($1, $2)", {{"!room1:example.org", false}, {"@bob:example.org", false}}  },
+        };
+
+        WHEN("the transaction is committed")
+        {
+            auto const committed = merovingian::database::commit_persistent_transaction(store, statements);
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("the first insert is rolled back with the failing insert")
+            {
+                REQUIRE_FALSE(committed);
+                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(reopened.store.rooms.empty());
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+SCENARIO("SQLite hydration fails closed when a row reader cannot be prepared",
+         "[database][sqlite][persistence][review]")
+{
+    GIVEN("a SQLite store whose users table no longer matches the expected row shape")
+    {
+        auto const sqlite_path = unique_sqlite_path("hydrate");
+        std::filesystem::remove(sqlite_path);
+        auto initialized = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(initialized.ok);
+        auto connection = TestSqliteConnection{sqlite_path};
+        REQUIRE(connection.execute("ALTER TABLE users RENAME TO users_bad"));
+        REQUIRE(connection.execute("CREATE TABLE users (user_id TEXT PRIMARY KEY)"));
+
+        WHEN("the persistent store is opened again")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+
+            THEN("startup rejects the partially readable database")
+            {
+                REQUIRE_FALSE(reopened.ok);
+                REQUIRE(reopened.reason == "unable to hydrate SQLite rows");
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
     }
 }
 
