@@ -1,7 +1,8 @@
-# Database persistence and migration scaffold
+# Database persistence
 
-This capability note describes the project-owned database persistence boundary
-needed before adding concrete PostgreSQL/libpq and SQLite integration.
+This capability note describes the project-owned database persistence boundary,
+the SQLite runtime backend, and the remaining work before PostgreSQL-backed
+production operation.
 
 ## Included now
 
@@ -16,12 +17,29 @@ needed before adding concrete PostgreSQL/libpq and SQLite integration.
 - Contiguous upgrade and explicit downgrade migration-plan validation.
 - Initial schema table inventory covering the Matrix storage areas from the project plan.
 - Media metadata schema migration from version `1` to version `2`.
+- SQLite RAII wrappers around database connections and prepared statements.
+- SQLite current-schema bootstrap for new database files.
+- SQLite row hydration for users, devices, access tokens, rooms, memberships,
+  events, current state, media metadata, remote media metadata, audit events,
+  and admin actions.
+- SQLite hydration fails closed when a row query cannot be prepared or stepped
+  to completion.
+- SQLite connections use a non-zero busy timeout for short-lived lock
+  contention.
+- Write-through SQLite persistence behind the existing store mutation helpers.
+- Transaction helpers for multi-row login, room creation, and event/state
+  persistence.
+- Runtime hydration for users, sessions, rooms, memberships, events, and client
+  device listings.
 - Unit coverage for statement validation, executor gating, redaction, migration planning, and schema inventory.
+- Integration coverage proving SQLite users, sessions, rooms, and events survive
+  a homeserver runtime restart.
 
 ## Security posture
 
-The database module deliberately does not add libpq or SQLite execution yet. The
-current boundary keeps dependency-specific types out of the homeserver.
+The homeserver runtime can now use SQLite for local persisted state when
+`database.backend=sqlite` is configured. Dependency-specific SQLite types remain
+inside the database module and do not leak into homeserver services.
 
 The boundary provides these guarantees:
 
@@ -32,6 +50,12 @@ The boundary provides these guarantees:
 - Migration plans are contiguous and direction-aware.
 - Core table inventory is explicit and test-covered.
 - Media rows include hash algorithm, digest, quarantine state, and removal state before runtime media writes are accepted.
+- Fresh SQLite database files are created with the current schema and recorded
+  migration metadata.
+- Existing SQLite database files are validated before runtime state is hydrated.
+- Multi-row runtime mutations commit through one backend transaction so partial
+  login, room, or state-event writes are rolled back.
+- Auth and room mutations fail the request when required persistent writes fail.
 
 ## Deliberately not included
 
@@ -39,11 +63,13 @@ These remain deferred:
 
 - libpq dependency integration.
 - Live PostgreSQL connection management.
-- Real query execution.
-- Transaction handling.
+- PostgreSQL query execution.
 - Runtime/migration role separation.
 - Physical SQL migration files.
-- Live PostgreSQL-backed users, devices, tokens, rooms, events, media, federation, policy, or audit storage.
+- PostgreSQL-backed users, devices, tokens, rooms, events, media, federation,
+  policy, or audit storage.
+- SQLite-backed federation queues, policy rules, account data, push rules,
+  E2EE keys, and full media repository blob metadata hydration.
 - Integration tests against a running PostgreSQL instance.
 
 ## Next starting points
@@ -51,5 +77,6 @@ These remain deferred:
 1. Add dependency review documentation for libpq.
 2. Add RAII wrappers around PostgreSQL connections and results.
 3. Add migration-file loading and offline migrator tool scaffolding.
-4. Add SQL migration integration tests with a temporary database.
-5. Add persistence repositories for users, devices, access-token hashes, and audit events.
+4. Add SQL migration integration tests with temporary SQLite and PostgreSQL databases.
+5. Add persistence repositories for federation queues, policy rules, account
+   data, push rules, E2EE keys, and complete media blob metadata.

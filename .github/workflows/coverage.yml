@@ -32,6 +32,8 @@ jobs:
             catch2 \
             clang \
             gcovr \
+            libssl-dev \
+            libsqlite3-dev \
             libsodium-dev \
             llvm \
             pkg-config

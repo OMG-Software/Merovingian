@@ -103,18 +103,21 @@ IfMacros:
   - KJ_IF_MAYBE
 IncludeBlocks:   Regroup
 IncludeCategories:
-  - Regex:           '^"(llvm|llvm-c|clang|clang-c)/'
-    Priority:        2
-    SortPriority:    0
-    CaseSensitive:   false
-  - Regex:           '^(<|"(gtest|gmock|isl|json)/)'
-    Priority:        3
-    SortPriority:    0
-    CaseSensitive:   false
-  - Regex:           '.*'
-    Priority:        1
-    SortPriority:    0
-    CaseSensitive:   false
+  # Local/project headers in quotes
+  - Regex: '^"'
+    Priority: 1
+
+  # Third-party angle includes, e.g. <fmt/...>, <gtest/...>
+  - Regex: '^<(fmt|gtest|boost|spdlog|isl|json)/'
+    Priority: 2
+
+  # STL/system angle includes
+  - Regex: '^<[[:alnum:]_]+>'
+    Priority: 3
+
+  # Fallback
+  - Regex: '.*'
+    Priority: 4
 IncludeIsMainRegex: '(Test)?$'
 IncludeIsMainSourceRegex: ''
 IndentAccessModifiers: false

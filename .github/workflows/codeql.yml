@@ -32,6 +32,8 @@ jobs:
           sudo apt-get install -y \
             clang \
             catch2 \
+            libssl-dev \
+            libsqlite3-dev \
             libsodium-dev \
             pkg-config
           python -m pip install --upgrade pip

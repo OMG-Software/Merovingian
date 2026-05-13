@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/homeserver/vertical_slice.hpp>
-
 #include "local_services.hpp"
 
-#include <merovingian/database/schema.hpp>
-#include <merovingian/federation/runtime_federation.hpp>
-#include <merovingian/media/runtime_media.hpp>
-#include <merovingian/platform/hardening_self_check.hpp>
-
 #include <algorithm>
+#include <cstddef>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include <merovingian/database/schema.hpp>
+#include <merovingian/federation/runtime_federation.hpp>
+#include <merovingian/homeserver/vertical_slice.hpp>
+#include <merovingian/media/runtime_media.hpp>
+#include <merovingian/platform/hardening_self_check.hpp>
 
 namespace merovingian::homeserver
 {
@@ -22,10 +22,61 @@ auto bootstrap_local_database(config::Config const& config) -> LocalDatabase
     return bootstrap_local_database(config, {});
 }
 
-auto bootstrap_local_database(config::Config const&, database::SchemaState existing_state) -> LocalDatabase
+auto hydrate_local_database(LocalDatabase& database) -> void
+{
+    database.users.reserve(database.persistent_store.users.size());
+    for (auto const& user : database.persistent_store.users)
+    {
+        database.users.push_back({user.user_id, user.password_hash, user.locked, user.suspended, user.admin});
+    }
+
+    database.sessions.reserve(database.persistent_store.access_tokens.size());
+    for (auto const& token : database.persistent_store.access_tokens)
+    {
+        database.sessions.push_back({token.user_id, token.device_id, token.token_hash, token.revoked});
+    }
+
+    database.rooms.reserve(database.persistent_store.rooms.size());
+    for (auto const& room : database.persistent_store.rooms)
+    {
+        database.rooms.push_back({room.room_id, room.creator_user_id, {}, {}});
+    }
+
+    for (auto const& membership : database.persistent_store.memberships)
+    {
+        auto room = std::ranges::find_if(database.rooms, [&membership](LocalRoom const& candidate) {
+            return candidate.room_id == membership.room_id;
+        });
+        if (room != database.rooms.end() &&
+            !std::ranges::any_of(room->members, [&membership](std::string const& user_id) {
+                return user_id == membership.user_id;
+            }))
+        {
+            room->members.push_back(membership.user_id);
+        }
+    }
+
+    for (auto const& event : database.persistent_store.events)
+    {
+        auto room = std::ranges::find_if(database.rooms, [&event](LocalRoom const& candidate) {
+            return candidate.room_id == event.room_id;
+        });
+        if (room != database.rooms.end())
+        {
+            room->events.push_back(event.json);
+        }
+    }
+
+    database.next_session_id = static_cast<std::uint64_t>(database.sessions.size()) + 1U;
+    database.next_event_id = static_cast<std::uint64_t>(database.persistent_store.events.size()) + 1U;
+}
+
+auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state) -> LocalDatabase
 {
     auto database = LocalDatabase{};
-    auto opened = database::open_persistent_store(std::move(existing_state));
+    auto opened = config.database().backend == config::DatabaseBackend::sqlite
+                      ? database::open_sqlite_persistent_store(config.database().sqlite_path)
+                      : database::open_persistent_store(std::move(existing_state));
     if (!opened.ok)
     {
         return database;
@@ -36,12 +87,15 @@ auto bootstrap_local_database(config::Config const&, database::SchemaState exist
     database.schema_validated = database::validate_persistent_store(database.persistent_store).valid;
     database.schema_version = database.persistent_store.schema.version;
     database.tables = database.persistent_store.schema.tables;
+    hydrate_local_database(database);
     return database;
 }
 
 auto database_has_table(LocalDatabase const& database, std::string_view table_name) noexcept -> bool
 {
-    return std::ranges::any_of(database.tables, [table_name](std::string const& table) { return table == table_name; });
+    return std::ranges::any_of(database.tables, [table_name](std::string const& table) {
+        return table == table_name;
+    });
 }
 
 auto start_runtime(config::Config const& config) -> RuntimeStartResult
@@ -65,12 +119,13 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     }
 
     runtime.database = bootstrap_local_database(config, std::move(existing_state));
-    if (!runtime.database.opened || !runtime.database.schema_validated || !database_has_table(runtime.database, "users")
-        || !database_has_table(runtime.database, "devices") || !database_has_table(runtime.database, "access_tokens")
-        || !database_has_table(runtime.database, "rooms") || !database_has_table(runtime.database, "membership")
-        || !database_has_table(runtime.database, "events") || !database_has_table(runtime.database, "current_state")
-        || !database_has_table(runtime.database, "media") || !database_has_table(runtime.database, "remote_media")
-        || !database_has_table(runtime.database, "audit_log") || !database_has_table(runtime.database, "admin_actions"))
+    if (!runtime.database.opened || !runtime.database.schema_validated ||
+        !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "devices") ||
+        !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") ||
+        !database_has_table(runtime.database, "membership") || !database_has_table(runtime.database, "events") ||
+        !database_has_table(runtime.database, "current_state") || !database_has_table(runtime.database, "media") ||
+        !database_has_table(runtime.database, "remote_media") || !database_has_table(runtime.database, "audit_log") ||
+        !database_has_table(runtime.database, "admin_actions"))
     {
         return {false, "database schema validation failed", {}};
     }
@@ -78,7 +133,8 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     runtime.hardening = platform::run_startup_hardening_self_check();
-    append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver", "startup");
+    append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver",
+                       "startup");
     runtime.started = true;
     return {true, {}, std::move(runtime)};
 }
@@ -86,16 +142,25 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
 auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthCheckSnapshot
 {
     auto snapshot = observability::HealthCheckSnapshot{};
-    auto const federation_detail = runtime.federation.config.enabled ? federation::federation_runtime_summary(runtime.federation)
-                                                                    : std::string{"federation disabled by configuration"};
+    auto const federation_detail = runtime.federation.config.enabled
+                                       ? federation::federation_runtime_summary(runtime.federation)
+                                       : std::string{"federation disabled by configuration"};
     auto const media_detail = media::media_repository_summary(runtime.media_repository);
     snapshot.components = {
-        {"runtime", runtime.started ? observability::HealthStatus::ok : observability::HealthStatus::failed, "started"},
-        {"listeners", runtime.listeners.empty() ? observability::HealthStatus::failed : observability::HealthStatus::ok, "configured"},
-        {"database", runtime.database.schema_validated ? observability::HealthStatus::ok : observability::HealthStatus::failed, "schema_validated"},
-        {"federation", observability::HealthStatus::ok, federation_detail},
-        {"media", runtime.media_repository.config.max_upload_bytes > 0U ? observability::HealthStatus::ok : observability::HealthStatus::failed, media_detail},
-        {"hardening", runtime.hardening.count() > 0U ? observability::HealthStatus::ok : observability::HealthStatus::degraded, "self_check"},
+        {"runtime",    runtime.started ? observability::HealthStatus::ok : observability::HealthStatus::failed,           "started"        },
+        {"listeners",  runtime.listeners.empty() ? observability::HealthStatus::failed : observability::HealthStatus::ok,
+         "configured"                                                                                                                      },
+        {"database",
+         runtime.database.schema_validated ? observability::HealthStatus::ok : observability::HealthStatus::failed,
+         "schema_validated"                                                                                                                },
+        {"federation", observability::HealthStatus::ok,                                                                   federation_detail},
+        {"media",
+         runtime.media_repository.config.max_upload_bytes > 0U ? observability::HealthStatus::ok
+                                                               : observability::HealthStatus::failed,
+         media_detail                                                                                                                      },
+        {"hardening",
+         runtime.hardening.count() > 0U ? observability::HealthStatus::ok : observability::HealthStatus::degraded,
+         "self_check"                                                                                                                      },
     };
 
     for (auto const& component : snapshot.components)

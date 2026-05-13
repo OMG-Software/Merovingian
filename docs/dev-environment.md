@@ -27,6 +27,10 @@ include a project-owned adapter rather than `yyjson.h` directly.
 CI runs clang-tidy on changed C++ translation units with parallel per-file log
 groups and timeouts. Headers are analyzed transitively through the Meson compile
 database instead of being invoked as standalone clang-tidy inputs.
+The unsafe source gate is a Bash script and must be run with `bash`, matching
+CI, because it relies on strict shell options and portable grep behavior.
+OpenSSL is included as a system dependency in Meson so platform headers are not
+held to Merovingian's project warning-as-error policy.
 
 ## Common Usage
 
@@ -85,6 +89,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build-wsl.ps1 -Distro Ubuntu-24
 
 Both wrappers use Meson wrap fallback mode by default so the pinned Catch2
 subproject can be fetched when the system package is unavailable.
+The Linux wrapper checks for the required `libsodium`, `openssl`, and `sqlite3`
+pkg-config modules before configuring Meson so missing system development
+packages fail before a partial build starts.
 
 Meson launches repository shell-based source gates through `sh`, which keeps
 WSL builds on `/mnt/c` independent of Windows executable-bit metadata.

@@ -25,8 +25,9 @@ documents are historical notes only.
 - Passwords must be stored with LibSodium Argon2id password hashes.
 - Federation request and event verification must use Matrix canonical JSON and
   real Ed25519 verification.
-- SQLite or PostgreSQL persistence must be used for runtime data, with migration
-  tests against real temporary databases.
+- SQLite persistence must keep runtime users, tokens, rooms, and events alive
+  across restart. PostgreSQL, transaction coverage, and migration tests against
+  real temporary databases remain required before release.
 - Runtime hardening checks must fail closed when required production controls are
   unavailable.
 - Conformance, fuzz, sanitizer, static-analysis, and packaging checks must pass

@@ -4,16 +4,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/value.hpp>
-#include <merovingian/homeserver/client_server.hpp>
-#include <merovingian/http/request.hpp>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <merovingian/canonicaljson/parser.hpp>
+#include <merovingian/canonicaljson/value.hpp>
+#include <merovingian/homeserver/client_server.hpp>
+#include <merovingian/http/request.hpp>
 
 namespace merovingian::homeserver
 {
@@ -436,6 +437,11 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
     }
     auto rt = ClientServerRuntime{};
     rt.homeserver = std::move(started.runtime);
+    rt.devices.reserve(rt.homeserver.database.persistent_store.devices.size());
+    for (auto const& device : rt.homeserver.database.persistent_store.devices)
+    {
+        rt.devices.push_back({device.user_id, device.device_id, device.display_name});
+    }
     return {true, {}, std::move(rt)};
 }
 
