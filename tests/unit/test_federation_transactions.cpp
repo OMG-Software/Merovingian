@@ -6,18 +6,25 @@
 
 #include <string>
 
-SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites, backfill, and EDUs", "[federation][transactions][routes]")
+SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites, backfill, and EDUs",
+         "[federation][transactions][routes]")
 {
     GIVEN("federation methods and targets")
     {
         WHEN("routes are matched")
         {
-            auto const transaction = merovingian::federation::match_federation_route("PUT", "/_matrix/federation/v1/send/txn123");
-            auto const send_join = merovingian::federation::match_federation_route("PUT", "/_matrix/federation/v2/send_join/!room:event/$event");
-            auto const send_leave = merovingian::federation::match_federation_route("PUT", "/_matrix/federation/v2/send_leave/!room:event/$event");
-            auto const invite = merovingian::federation::match_federation_route("PUT", "/_matrix/federation/v2/invite/!room:event/$event");
-            auto const backfill = merovingian::federation::match_federation_route("GET", "/_matrix/federation/v1/backfill/!room:event");
-            auto const edu = merovingian::federation::match_federation_route("PUT", "/_matrix/federation/v1/send_edu/m.typing/txn123");
+            auto const transaction =
+                merovingian::federation::match_federation_route("PUT", "/_matrix/federation/v1/send/txn123");
+            auto const send_join = merovingian::federation::match_federation_route(
+                "PUT", "/_matrix/federation/v2/send_join/!room:event/$event");
+            auto const send_leave = merovingian::federation::match_federation_route(
+                "PUT", "/_matrix/federation/v2/send_leave/!room:event/$event");
+            auto const invite = merovingian::federation::match_federation_route(
+                "PUT", "/_matrix/federation/v2/invite/!room:event/$event");
+            auto const backfill =
+                merovingian::federation::match_federation_route("GET", "/_matrix/federation/v1/backfill/!room:event");
+            auto const edu = merovingian::federation::match_federation_route(
+                "PUT", "/_matrix/federation/v1/send_edu/m.typing/txn123");
 
             THEN("all Milestone 12 federation endpoints are represented")
             {
@@ -38,7 +45,8 @@ SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites,
     }
 }
 
-SCENARIO("Federation transaction validation accepts bounded transactions and rejects malformed ones", "[federation][transactions]")
+SCENARIO("Federation transaction validation accepts bounded transactions and rejects malformed ones",
+         "[federation][transactions]")
 {
     GIVEN("valid, oversized, empty, and anonymous transactions")
     {
@@ -109,7 +117,8 @@ SCENARIO("Federation routes expose audit event names", "[federation][transaction
 {
     GIVEN("a send_join route")
     {
-        auto const route = merovingian::federation::match_federation_route("PUT", "/_matrix/federation/v2/send_join/!room:event/$event");
+        auto const route = merovingian::federation::match_federation_route(
+            "PUT", "/_matrix/federation/v2/send_join/!room:event/$event");
 
         WHEN("an audit event name is generated")
         {

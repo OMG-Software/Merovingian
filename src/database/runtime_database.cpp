@@ -20,8 +20,9 @@ auto make_runtime_database_config(config::Config const& config) -> RuntimeDataba
 
 auto database_summary(RuntimeDatabaseConfig const& config) -> std::string
 {
-    auto summary = config.backend == config::DatabaseBackend::postgresql ? std::string{"Database URI source file configured"}
-                                                                         : std::string{"Database SQLite path configured"};
+    auto summary = config.backend == config::DatabaseBackend::postgresql
+                       ? std::string{"Database URI source file configured"}
+                       : std::string{"Database SQLite path configured"};
     summary += "; pool_size=" + std::to_string(config.pool_size);
     summary += "; backend=" + std::string{config::database_backend_name(config.backend)};
     if (!config.warning.empty())

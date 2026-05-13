@@ -10,119 +10,121 @@ namespace merovingian::auth
 namespace
 {
 
-[[nodiscard]] auto is_ascii_digit(char value) noexcept -> bool
-{
-    return value >= '0' && value <= '9';
-}
-
-[[nodiscard]] auto is_ascii_lower(char value) noexcept -> bool
-{
-    return value >= 'a' && value <= 'z';
-}
-
-[[nodiscard]] auto is_ascii_upper(char value) noexcept -> bool
-{
-    return value >= 'A' && value <= 'Z';
-}
-
-[[nodiscard]] auto is_ascii_alnum(char value) noexcept -> bool
-{
-    return is_ascii_lower(value) || is_ascii_upper(value) || is_ascii_digit(value);
-}
-
-[[nodiscard]] auto is_printable_ascii_without_space(char value) noexcept -> bool
-{
-    auto const byte = static_cast<unsigned char>(value);
-    return byte > 0x20U && byte < 0x7FU;
-}
-
-[[nodiscard]] auto is_localpart_character(char value) noexcept -> bool
-{
-    return is_ascii_lower(value) || is_ascii_digit(value) || value == '.' || value == '_' || value == '-'
-        || value == '=' || value == '/' || value == '+';
-}
-
-[[nodiscard]] auto port_is_valid(std::string_view port) noexcept -> bool
-{
-    if (port.empty() || port.size() > 5U || !std::ranges::all_of(port, is_ascii_digit))
+    [[nodiscard]] auto is_ascii_digit(char value) noexcept -> bool
     {
-        return false;
+        return value >= '0' && value <= '9';
     }
 
-    auto parsed_port = std::uint32_t{0};
-    for (auto const digit : port)
+    [[nodiscard]] auto is_ascii_lower(char value) noexcept -> bool
     {
-        parsed_port = (parsed_port * 10U) + static_cast<std::uint32_t>(digit - '0');
+        return value >= 'a' && value <= 'z';
     }
 
-    return parsed_port <= 65535U;
-}
-
-[[nodiscard]] auto hostname_is_valid(std::string_view hostname) noexcept -> bool
-{
-    if (hostname.empty() || hostname.front() == '.' || hostname.back() == '.')
+    [[nodiscard]] auto is_ascii_upper(char value) noexcept -> bool
     {
-        return false;
+        return value >= 'A' && value <= 'Z';
     }
 
-    auto label_start = std::size_t{0};
-    while (label_start < hostname.size())
+    [[nodiscard]] auto is_ascii_alnum(char value) noexcept -> bool
     {
-        auto const label_end = hostname.find('.', label_start);
-        auto const end = label_end == std::string_view::npos ? hostname.size() : label_end;
-        auto const label = hostname.substr(label_start, end - label_start);
-        if (label.empty() || label.size() > 63U || label.front() == '-' || label.back() == '-')
-        {
-            return false;
-        }
-        if (!std::ranges::all_of(label, [](char const value) { return is_ascii_alnum(value) || value == '-'; }))
+        return is_ascii_lower(value) || is_ascii_upper(value) || is_ascii_digit(value);
+    }
+
+    [[nodiscard]] auto is_printable_ascii_without_space(char value) noexcept -> bool
+    {
+        auto const byte = static_cast<unsigned char>(value);
+        return byte > 0x20U && byte < 0x7FU;
+    }
+
+    [[nodiscard]] auto is_localpart_character(char value) noexcept -> bool
+    {
+        return is_ascii_lower(value) || is_ascii_digit(value) || value == '.' || value == '_' || value == '-' ||
+               value == '=' || value == '/' || value == '+';
+    }
+
+    [[nodiscard]] auto port_is_valid(std::string_view port) noexcept -> bool
+    {
+        if (port.empty() || port.size() > 5U || !std::ranges::all_of(port, is_ascii_digit))
         {
             return false;
         }
 
-        if (label_end == std::string_view::npos)
+        auto parsed_port = std::uint32_t{0};
+        for (auto const digit : port)
         {
-            break;
+            parsed_port = (parsed_port * 10U) + static_cast<std::uint32_t>(digit - '0');
         }
-        label_start = label_end + 1U;
+
+        return parsed_port <= 65535U;
     }
 
-    return true;
-}
+    [[nodiscard]] auto hostname_is_valid(std::string_view hostname) noexcept -> bool
+    {
+        if (hostname.empty() || hostname.front() == '.' || hostname.back() == '.')
+        {
+            return false;
+        }
 
-[[nodiscard]] auto bracketed_ipv6_literal_is_valid(std::string_view literal) noexcept -> bool
-{
-    if (literal.size() < 4U || literal.front() != '[')
-    {
-        return false;
-    }
+        auto label_start = std::size_t{0};
+        while (label_start < hostname.size())
+        {
+            auto const label_end = hostname.find('.', label_start);
+            auto const end = label_end == std::string_view::npos ? hostname.size() : label_end;
+            auto const label = hostname.substr(label_start, end - label_start);
+            if (label.empty() || label.size() > 63U || label.front() == '-' || label.back() == '-')
+            {
+                return false;
+            }
+            if (!std::ranges::all_of(label, [](char const value) {
+                    return is_ascii_alnum(value) || value == '-';
+                }))
+            {
+                return false;
+            }
 
-    auto const close = literal.find(']');
-    if (close == std::string_view::npos || close == 1U)
-    {
-        return false;
-    }
+            if (label_end == std::string_view::npos)
+            {
+                break;
+            }
+            label_start = label_end + 1U;
+        }
 
-    auto const address = literal.substr(1U, close - 1U);
-    auto const suffix = literal.substr(close + 1U);
-    if (address.find(':') == std::string_view::npos)
-    {
-        return false;
-    }
-    if (!std::ranges::all_of(address, [](char const value) {
-            return is_ascii_digit(value) || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F')
-                || value == ':' || value == '.';
-        }))
-    {
-        return false;
-    }
-    if (suffix.empty())
-    {
         return true;
     }
 
-    return suffix.front() == ':' && port_is_valid(suffix.substr(1U));
-}
+    [[nodiscard]] auto bracketed_ipv6_literal_is_valid(std::string_view literal) noexcept -> bool
+    {
+        if (literal.size() < 4U || literal.front() != '[')
+        {
+            return false;
+        }
+
+        auto const close = literal.find(']');
+        if (close == std::string_view::npos || close == 1U)
+        {
+            return false;
+        }
+
+        auto const address = literal.substr(1U, close - 1U);
+        auto const suffix = literal.substr(close + 1U);
+        if (address.find(':') == std::string_view::npos)
+        {
+            return false;
+        }
+        if (!std::ranges::all_of(address, [](char const value) {
+                return is_ascii_digit(value) || (value >= 'a' && value <= 'f') || (value >= 'A' && value <= 'F') ||
+                       value == ':' || value == '.';
+            }))
+        {
+            return false;
+        }
+        if (suffix.empty())
+        {
+            return true;
+        }
+
+        return suffix.front() == ':' && port_is_valid(suffix.substr(1U));
+    }
 
 } // namespace
 
@@ -173,8 +175,8 @@ auto user_id_is_valid(std::string_view user_id) noexcept -> bool
 
 auto device_id_is_valid(std::string_view device_id) noexcept -> bool
 {
-    return !device_id.empty() && device_id.size() <= 255U
-        && std::ranges::all_of(device_id, is_printable_ascii_without_space);
+    return !device_id.empty() && device_id.size() <= 255U &&
+           std::ranges::all_of(device_id, is_printable_ascii_without_space);
 }
 
 auto password_is_acceptable(std::string_view password) noexcept -> bool

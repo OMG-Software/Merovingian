@@ -16,7 +16,8 @@ SCENARIO("Media remote fetch timeout has a bounded secure default", "[config][me
 
         WHEN("the media remote fetch timeout is parsed")
         {
-            auto const parsed = merovingian::config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
+            auto const parsed =
+                merovingian::config::parse_duration_seconds(config.security().media.remote_fetch_timeout);
 
             THEN("the timeout is bounded and valid")
             {

@@ -22,8 +22,8 @@ public:
     Error() = default;
 
     Error(ErrorCode code, std::string message)
-        : m_code{code},
-          m_message{std::move(message)}
+        : m_code{code}
+        , m_message{std::move(message)}
     {
     }
 

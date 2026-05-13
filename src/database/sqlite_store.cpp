@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/database/schema.hpp"
+
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -10,8 +13,6 @@
 #include <utility>
 #include <vector>
 
-#include "merovingian/database/persistent_store.hpp"
-#include "merovingian/database/schema.hpp"
 #include <sqlite3.h>
 
 namespace merovingian::database
@@ -44,7 +45,8 @@ namespace
     class SqliteTransaction final
     {
     public:
-        explicit SqliteTransaction(sqlite3& connection) : connection_{connection}
+        explicit SqliteTransaction(sqlite3& connection)
+            : connection_{connection}
         {
             active_ = execute_sql(connection_, "BEGIN IMMEDIATE");
         }

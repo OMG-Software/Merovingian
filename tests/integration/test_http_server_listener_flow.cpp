@@ -1,5 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/config/config.hpp"
+#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/net/shutdown_signal.hpp"
+#include "merovingian/net/tcp_acceptor.hpp"
+
+#include <catch2/catch_test_macros.hpp>
+
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -13,14 +23,6 @@
 #include <utility>
 
 #include <arpa/inet.h>
-#include <catch2/catch_test_macros.hpp>
-#include "merovingian/config/config.hpp"
-#include "merovingian/core/socket_handle.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/tls.hpp"
-#include "merovingian/net/shutdown_signal.hpp"
-#include "merovingian/net/tcp_acceptor.hpp"
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
@@ -144,8 +146,9 @@ struct TlsTestCertificate final
     auto operator=(TlsTestCertificate const&) -> TlsTestCertificate& = delete;
 
     TlsTestCertificate(TlsTestCertificate&& other) noexcept
-        : directory{std::move(other.directory)}, certificate_file{std::move(other.certificate_file)},
-          private_key_file{std::move(other.private_key_file)}
+        : directory{std::move(other.directory)}
+        , certificate_file{std::move(other.certificate_file)}
+        , private_key_file{std::move(other.private_key_file)}
     {
         other.directory.clear();
     }

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/migration.hpp"
+#include "merovingian/database/statement.hpp"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
-
-#include "merovingian/database/migration.hpp"
-#include "merovingian/database/statement.hpp"
 
 namespace merovingian::database
 {

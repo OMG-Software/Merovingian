@@ -7,16 +7,12 @@ namespace merovingian::crypto
 
 auto signing_key_record_is_usable(SigningKeyRecord const& key) noexcept -> bool
 {
-    return key.active && !key.server_name.empty() && ed25519_key_id_is_valid(key.key_id)
-        && ed25519_public_key_shape_is_valid(key.public_key);
+    return key.active && !key.server_name.empty() && ed25519_key_id_is_valid(key.key_id) &&
+           ed25519_public_key_shape_is_valid(key.public_key);
 }
 
-auto sign_for_server(
-    SigningKeyStore& key_store,
-    Ed25519Provider& provider,
-    std::string_view server_name,
-    std::string_view message
-) -> ServerSignatureResult
+auto sign_for_server(SigningKeyStore& key_store, Ed25519Provider& provider, std::string_view server_name,
+                     std::string_view message) -> ServerSignatureResult
 {
     if (server_name.empty())
     {

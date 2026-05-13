@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/homeserver/client_server.hpp"
+
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/http/request.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -10,11 +16,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/homeserver/client_server.hpp"
-#include "merovingian/http/request.hpp"
 
 namespace merovingian::homeserver
 {

@@ -90,35 +90,25 @@ struct FederationResponse final
     std::string body{};
 };
 
-[[nodiscard]] auto load_server_signing_key(
-    std::string_view server_name,
-    std::string_view key_id,
-    std::string_view key_material
-) -> FederationSigningKey;
+[[nodiscard]] auto load_server_signing_key(std::string_view server_name, std::string_view key_id,
+                                           std::string_view key_material) -> FederationSigningKey;
 [[nodiscard]] auto signing_key_summary(FederationSigningKey const& key) -> std::string;
-[[nodiscard]] auto make_federation_signature(
-    std::string_view origin,
-    std::string_view key_id,
-    std::string_view verify_token,
-    std::string_view method,
-    std::string_view target,
-    std::uint64_t origin_server_ts,
-    std::string_view body
-) -> std::string;
-[[nodiscard]] auto verify_signed_federation_request(
-    SignedFederationRequest const& request,
-    FederationKeyRecord const& key,
-    std::uint64_t max_clock_skew_seconds
-) -> FederationDecision;
+[[nodiscard]] auto make_federation_signature(std::string_view origin, std::string_view key_id,
+                                             std::string_view verify_token, std::string_view method,
+                                             std::string_view target, std::uint64_t origin_server_ts,
+                                             std::string_view body) -> std::string;
+[[nodiscard]] auto verify_signed_federation_request(SignedFederationRequest const& request,
+                                                    FederationKeyRecord const& key,
+                                                    std::uint64_t max_clock_skew_seconds) -> FederationDecision;
 [[nodiscard]] auto make_federation_runtime_state(RuntimeFederationConfig config) -> FederationRuntimeState;
 auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remote) -> void;
-[[nodiscard]] auto federation_remote_is_known(FederationRuntimeState const& runtime, std::string_view server_name) noexcept -> bool;
-[[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin) -> FederationDecision;
+[[nodiscard]] auto federation_remote_is_known(FederationRuntimeState const& runtime,
+                                              std::string_view server_name) noexcept -> bool;
+[[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin)
+    -> FederationDecision;
 [[nodiscard]] auto parse_federation_pdu(std::string_view encoded) -> FederationPdu;
-[[nodiscard]] auto handle_inbound_federation_request(
-    FederationRuntimeState& runtime,
-    SignedFederationRequest const& request
-) -> FederationResponse;
+[[nodiscard]] auto handle_inbound_federation_request(FederationRuntimeState& runtime,
+                                                     SignedFederationRequest const& request) -> FederationResponse;
 [[nodiscard]] auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string;
 [[nodiscard]] auto federation_audit_is_safe(FederationRuntimeState const& runtime) noexcept -> bool;
 

@@ -97,7 +97,8 @@ SCENARIO("Runtime federation server policy denies listed servers before default 
     }
 }
 
-SCENARIO("Runtime federation server policy restricts deny-by-default federation to allowed servers", "[federation][runtime]")
+SCENARIO("Runtime federation server policy restricts deny-by-default federation to allowed servers",
+         "[federation][runtime]")
 {
     GIVEN("a deny-by-default runtime federation config with one allowed server")
     {
@@ -110,8 +111,10 @@ SCENARIO("Runtime federation server policy restricts deny-by-default federation 
         WHEN("server policy is evaluated")
         {
             auto const allowed = merovingian::federation::federation_server_policy(runtime_federation, "matrix.org");
-            auto const denied_by_default = merovingian::federation::federation_server_policy(runtime_federation, "example.net");
-            auto const denied_explicitly = merovingian::federation::federation_server_policy(runtime_federation, "bad.example");
+            auto const denied_by_default =
+                merovingian::federation::federation_server_policy(runtime_federation, "example.net");
+            auto const denied_explicitly =
+                merovingian::federation::federation_server_policy(runtime_federation, "bad.example");
 
             THEN("only explicitly allowed and not denied servers can federate")
             {
@@ -125,7 +128,8 @@ SCENARIO("Runtime federation server policy restricts deny-by-default federation 
     }
 }
 
-SCENARIO("Runtime federation server policy blocks all remote servers when federation is disabled", "[federation][runtime]")
+SCENARIO("Runtime federation server policy blocks all remote servers when federation is disabled",
+         "[federation][runtime]")
 {
     GIVEN("a disabled runtime federation config")
     {

@@ -31,8 +31,9 @@ auto room_creation_encryption_policy(RoomCreationEncryptionRequest request) -> R
         return {false, true, true, false, "private rooms must be encrypted"};
     }
 
-    auto const encryption_enabled = request.encryption == RoomEncryptionRequest::encrypted
-        || (request.encryption == RoomEncryptionRequest::unspecified && encryption_enabled_by_default);
+    auto const encryption_enabled =
+        request.encryption == RoomEncryptionRequest::encrypted ||
+        (request.encryption == RoomEncryptionRequest::unspecified && encryption_enabled_by_default);
 
     return {true, encryption_required, encryption_enabled_by_default, encryption_enabled, {}};
 }
@@ -42,12 +43,8 @@ auto encrypted_event_payload_is_loggable(std::string_view payload) noexcept -> b
     return payload.empty();
 }
 
-auto make_encrypted_event_log_summary(
-    std::string_view event_type,
-    std::string_view room_id,
-    std::string_view sender,
-    std::string_view encrypted_payload
-) -> EncryptedEventLogSummary
+auto make_encrypted_event_log_summary(std::string_view event_type, std::string_view room_id, std::string_view sender,
+                                      std::string_view encrypted_payload) -> EncryptedEventLogSummary
 {
     auto payload = std::string{"[encrypted-payload:redacted]"};
     if (encrypted_payload.empty())
@@ -60,8 +57,8 @@ auto make_encrypted_event_log_summary(
 
 auto encrypted_event_log_summary_text(EncryptedEventLogSummary const& summary) -> std::string
 {
-    return "encrypted event type=" + summary.event_type + " room_id=" + summary.room_id + " sender=" + summary.sender
-        + " payload=" + summary.payload;
+    return "encrypted event type=" + summary.event_type + " room_id=" + summary.room_id + " sender=" + summary.sender +
+           " payload=" + summary.payload;
 }
 
 } // namespace merovingian::rooms

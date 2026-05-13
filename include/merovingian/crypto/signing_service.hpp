@@ -46,11 +46,7 @@ struct ServerSignatureResult final
 };
 
 [[nodiscard]] auto signing_key_record_is_usable(SigningKeyRecord const& key) noexcept -> bool;
-[[nodiscard]] auto sign_for_server(
-    SigningKeyStore& key_store,
-    Ed25519Provider& provider,
-    std::string_view server_name,
-    std::string_view message
-) -> ServerSignatureResult;
+[[nodiscard]] auto sign_for_server(SigningKeyStore& key_store, Ed25519Provider& provider, std::string_view server_name,
+                                   std::string_view message) -> ServerSignatureResult;
 
 } // namespace merovingian::crypto

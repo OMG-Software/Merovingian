@@ -45,11 +45,8 @@ public:
     virtual ~Ed25519Provider() = default;
 
     [[nodiscard]] virtual auto sign(Ed25519SecretKeyHandle const& key, std::string_view message) -> SignatureResult = 0;
-    [[nodiscard]] virtual auto verify(
-        Ed25519PublicKey const& public_key,
-        std::string_view message,
-        Ed25519Signature const& signature
-    ) -> VerificationResult = 0;
+    [[nodiscard]] virtual auto verify(Ed25519PublicKey const& public_key, std::string_view message,
+                                      Ed25519Signature const& signature) -> VerificationResult = 0;
 };
 
 [[nodiscard]] auto ed25519_public_key_shape_is_valid(Ed25519PublicKey const& public_key) noexcept -> bool;

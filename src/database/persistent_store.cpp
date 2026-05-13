@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/database/persistent_store.hpp"
+
 #include <algorithm>
 #include <optional>
 #include <utility>
-
-#include "merovingian/database/persistent_store.hpp"
 
 namespace merovingian::database
 {

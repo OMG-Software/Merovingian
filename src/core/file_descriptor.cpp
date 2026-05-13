@@ -2,9 +2,9 @@
 
 #include "merovingian/core/file_descriptor.hpp"
 
-#include <unistd.h>
-
 #include <utility>
+
+#include <unistd.h>
 
 namespace merovingian::core
 {

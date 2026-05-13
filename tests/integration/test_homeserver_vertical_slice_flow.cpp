@@ -24,7 +24,8 @@ namespace
 
 } // namespace
 
-SCENARIO("Integrated homeserver vertical slice boots and exercises local auth room audit and logout", "[homeserver][vertical][integration]")
+SCENARIO("Integrated homeserver vertical slice boots and exercises local auth room audit and logout",
+         "[homeserver][vertical][integration]")
 {
     GIVEN("local homeserver config with registration enabled")
     {
@@ -45,7 +46,8 @@ SCENARIO("Integrated homeserver vertical slice boots and exercises local auth ro
     }
 }
 
-SCENARIO("Integrated homeserver vertical slice rejects invalid runtime config before serving", "[homeserver][vertical][integration]")
+SCENARIO("Integrated homeserver vertical slice rejects invalid runtime config before serving",
+         "[homeserver][vertical][integration]")
 {
     GIVEN("an invalid listener config")
     {

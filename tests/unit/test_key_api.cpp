@@ -16,11 +16,16 @@ SCENARIO("Key API route scaffold covers device key and backup endpoints", "[auth
             auto const upload = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/upload");
             auto const query = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/query");
             auto const claim = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/claim");
-            auto const cross_signing = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/device_signing/upload");
-            auto const signatures = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/signatures/upload");
-            auto const backup_version = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/room_keys/version");
-            auto const room_key_backup = merovingian::auth::match_key_api_route("PUT", "/_matrix/client/v3/room_keys/keys/!room:example.org/session");
-            auto const device_list_update = merovingian::auth::match_key_api_route("PUT", "/_matrix/client/v3/devices/DEVICE123");
+            auto const cross_signing =
+                merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/device_signing/upload");
+            auto const signatures =
+                merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/signatures/upload");
+            auto const backup_version =
+                merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/room_keys/version");
+            auto const room_key_backup = merovingian::auth::match_key_api_route(
+                "PUT", "/_matrix/client/v3/room_keys/keys/!room:example.org/session");
+            auto const device_list_update =
+                merovingian::auth::match_key_api_route("PUT", "/_matrix/client/v3/devices/DEVICE123");
 
             THEN("one-time, fallback, cross-signing, signatures, backup, and device-list routes exist")
             {
@@ -48,7 +53,8 @@ SCENARIO("Key API routes require access tokens and explicit rate limits", "[auth
         {
             auto const upload = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/upload");
             auto const claim = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/claim");
-            auto const backup = merovingian::auth::match_key_api_route("PUT", "/_matrix/client/v3/room_keys/keys/!room:example.org/session");
+            auto const backup = merovingian::auth::match_key_api_route(
+                "PUT", "/_matrix/client/v3/room_keys/keys/!room:example.org/session");
 
             THEN("all key routes are token-protected and rate-limited")
             {
@@ -72,7 +78,8 @@ SCENARIO("Key API database scaffold covers one-time keys and fallback keys", "[a
 
         WHEN("the boundary plan is built")
         {
-            auto const plan = merovingian::auth::make_key_api_boundary_plan(upload.route, "@alice:example.org", "DEVICE123");
+            auto const plan =
+                merovingian::auth::make_key_api_boundary_plan(upload.route, "@alice:example.org", "DEVICE123");
 
             THEN("one-time and fallback key storage statements are represented as sensitive payloads")
             {
@@ -94,15 +101,21 @@ SCENARIO("Key API database scaffold covers cross-signing and key backups", "[aut
 {
     GIVEN("cross-signing and backup routes")
     {
-        auto const cross_signing = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/device_signing/upload");
-        auto const backup_version = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/room_keys/version");
-        auto const room_key_backup = merovingian::auth::match_key_api_route("PUT", "/_matrix/client/v3/room_keys/keys/!room:example.org/session");
+        auto const cross_signing =
+            merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/device_signing/upload");
+        auto const backup_version =
+            merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/room_keys/version");
+        auto const room_key_backup = merovingian::auth::match_key_api_route(
+            "PUT", "/_matrix/client/v3/room_keys/keys/!room:example.org/session");
 
         WHEN("the boundary plans are built")
         {
-            auto const cross_signing_plan = merovingian::auth::make_key_api_boundary_plan(cross_signing.route, "@alice:example.org", "DEVICE123");
-            auto const backup_version_plan = merovingian::auth::make_key_api_boundary_plan(backup_version.route, "@alice:example.org", "DEVICE123");
-            auto const room_key_backup_plan = merovingian::auth::make_key_api_boundary_plan(room_key_backup.route, "@alice:example.org", "DEVICE123");
+            auto const cross_signing_plan =
+                merovingian::auth::make_key_api_boundary_plan(cross_signing.route, "@alice:example.org", "DEVICE123");
+            auto const backup_version_plan =
+                merovingian::auth::make_key_api_boundary_plan(backup_version.route, "@alice:example.org", "DEVICE123");
+            auto const room_key_backup_plan =
+                merovingian::auth::make_key_api_boundary_plan(room_key_backup.route, "@alice:example.org", "DEVICE123");
 
             THEN("server-blind key material is represented as sensitive database payloads")
             {

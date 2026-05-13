@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/http/request.hpp"
+
 #include "merovingian/http/request_limits.hpp"
 
 #include <limits>
@@ -12,116 +13,116 @@ namespace merovingian::http
 namespace
 {
 
-[[nodiscard]] auto is_tchar(char value) noexcept -> bool
-{
-    return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9')
-        || value == '!' || value == '#' || value == '$' || value == '%' || value == '&' || value == '\''
-        || value == '*' || value == '+' || value == '-' || value == '.' || value == '^' || value == '_'
-        || value == '`' || value == '|' || value == '~';
-}
-
-[[nodiscard]] auto is_optional_whitespace(char value) noexcept -> bool
-{
-    return value == ' ' || value == '\t';
-}
-
-[[nodiscard]] auto trim_optional_whitespace(std::string_view value) noexcept -> std::string_view
-{
-    auto begin = std::size_t{0U};
-    auto end = value.size();
-    while (begin < end && is_optional_whitespace(value[begin]))
+    [[nodiscard]] auto is_tchar(char value) noexcept -> bool
     {
-        ++begin;
-    }
-    while (end > begin && is_optional_whitespace(value[end - 1U]))
-    {
-        --end;
+        return (value >= 'A' && value <= 'Z') || (value >= 'a' && value <= 'z') || (value >= '0' && value <= '9') ||
+               value == '!' || value == '#' || value == '$' || value == '%' || value == '&' || value == '\'' ||
+               value == '*' || value == '+' || value == '-' || value == '.' || value == '^' || value == '_' ||
+               value == '`' || value == '|' || value == '~';
     }
 
-    return value.substr(begin, end - begin);
-}
-
-[[nodiscard]] auto equals_ascii_case_insensitive(std::string_view lhs, std::string_view rhs) noexcept -> bool
-{
-    if (lhs.size() != rhs.size())
+    [[nodiscard]] auto is_optional_whitespace(char value) noexcept -> bool
     {
-        return false;
+        return value == ' ' || value == '\t';
     }
 
-    for (auto index = std::size_t{0U}; index < lhs.size(); ++index)
+    [[nodiscard]] auto trim_optional_whitespace(std::string_view value) noexcept -> std::string_view
     {
-        auto left = lhs[index];
-        auto right = rhs[index];
-        if (left >= 'A' && left <= 'Z')
+        auto begin = std::size_t{0U};
+        auto end = value.size();
+        while (begin < end && is_optional_whitespace(value[begin]))
         {
-            left = static_cast<char>(left - 'A' + 'a');
+            ++begin;
         }
-        if (right >= 'A' && right <= 'Z')
+        while (end > begin && is_optional_whitespace(value[end - 1U]))
         {
-            right = static_cast<char>(right - 'A' + 'a');
+            --end;
         }
-        if (left != right)
-        {
-            return false;
-        }
+
+        return value.substr(begin, end - begin);
     }
 
-    return true;
-}
-
-[[nodiscard]] auto parse_u64_decimal(std::string_view value, std::uint64_t& output) noexcept -> bool
-{
-    if (value.empty())
+    [[nodiscard]] auto equals_ascii_case_insensitive(std::string_view lhs, std::string_view rhs) noexcept -> bool
     {
-        return false;
-    }
-
-    auto parsed = std::uint64_t{0U};
-    for (auto const character : value)
-    {
-        if (character < '0' || character > '9')
+        if (lhs.size() != rhs.size())
         {
             return false;
         }
 
-        auto const digit = static_cast<std::uint64_t>(character - '0');
-        if (parsed > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U)
+        for (auto index = std::size_t{0U}; index < lhs.size(); ++index)
+        {
+            auto left = lhs[index];
+            auto right = rhs[index];
+            if (left >= 'A' && left <= 'Z')
+            {
+                left = static_cast<char>(left - 'A' + 'a');
+            }
+            if (right >= 'A' && right <= 'Z')
+            {
+                right = static_cast<char>(right - 'A' + 'a');
+            }
+            if (left != right)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    [[nodiscard]] auto parse_u64_decimal(std::string_view value, std::uint64_t& output) noexcept -> bool
+    {
+        if (value.empty())
         {
             return false;
         }
-        parsed = (parsed * 10U) + digit;
-    }
 
-    output = parsed;
-    return true;
-}
-
-auto append_header_or_error(RequestHead& request, Header header, RequestErrorCode& error) -> void
-{
-    if (equals_ascii_case_insensitive(header.name, "content-length"))
-    {
         auto parsed = std::uint64_t{0U};
-        if (!parse_u64_decimal(trim_optional_whitespace(header.value), parsed))
+        for (auto const character : value)
         {
-            error = RequestErrorCode::invalid_content_length;
-            return;
+            if (character < '0' || character > '9')
+            {
+                return false;
+            }
+
+            auto const digit = static_cast<std::uint64_t>(character - '0');
+            if (parsed > (std::numeric_limits<std::uint64_t>::max() - digit) / 10U)
+            {
+                return false;
+            }
+            parsed = (parsed * 10U) + digit;
         }
-        if (request.has_content_length && request.content_length != parsed)
-        {
-            error = RequestErrorCode::duplicate_content_length;
-            return;
-        }
-        request.has_content_length = true;
-        request.content_length = parsed;
-    }
-    else if (equals_ascii_case_insensitive(header.name, "transfer-encoding"))
-    {
-        error = RequestErrorCode::unsupported_transfer_encoding;
-        return;
+
+        output = parsed;
+        return true;
     }
 
-    request.headers.push_back(std::move(header));
-}
+    auto append_header_or_error(RequestHead& request, Header header, RequestErrorCode& error) -> void
+    {
+        if (equals_ascii_case_insensitive(header.name, "content-length"))
+        {
+            auto parsed = std::uint64_t{0U};
+            if (!parse_u64_decimal(trim_optional_whitespace(header.value), parsed))
+            {
+                error = RequestErrorCode::invalid_content_length;
+                return;
+            }
+            if (request.has_content_length && request.content_length != parsed)
+            {
+                error = RequestErrorCode::duplicate_content_length;
+                return;
+            }
+            request.has_content_length = true;
+            request.content_length = parsed;
+        }
+        else if (equals_ascii_case_insensitive(header.name, "transfer-encoding"))
+        {
+            error = RequestErrorCode::unsupported_transfer_encoding;
+            return;
+        }
+
+        request.headers.push_back(std::move(header));
+    }
 
 } // namespace
 
@@ -231,8 +232,10 @@ auto parse_request_head(std::string_view input) -> RequestParseResult
 
     auto const request_line = input.substr(0U, request_line_end);
     auto const first_space = request_line.find(' ');
-    auto const second_space = first_space == std::string_view::npos ? std::string_view::npos : request_line.find(' ', first_space + 1U);
-    if (first_space == std::string_view::npos || second_space == std::string_view::npos || second_space + 1U >= request_line.size())
+    auto const second_space =
+        first_space == std::string_view::npos ? std::string_view::npos : request_line.find(' ', first_space + 1U);
+    if (first_space == std::string_view::npos || second_space == std::string_view::npos ||
+        second_space + 1U >= request_line.size())
     {
         result.error = RequestErrorCode::malformed_request_line;
         return result;

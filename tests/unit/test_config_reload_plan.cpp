@@ -25,7 +25,8 @@ SCENARIO("Reload plan is empty for identical configs", "[config][reload]")
                 REQUIRE(plan.reloadable_change_count() == 0U);
                 REQUIRE(plan.restart_required_change_count() == 0U);
                 REQUIRE(plan.changes().empty());
-                REQUIRE(merovingian::config::reload_plan_summary(plan) == "Reload plan: changes=0 reloadable=0 restart_required=0");
+                REQUIRE(merovingian::config::reload_plan_summary(plan) ==
+                        "Reload plan: changes=0 reloadable=0 restart_required=0");
             }
         }
     }
@@ -74,7 +75,8 @@ SCENARIO("Reload plan marks runtime policy changes as reloadable", "[config][rel
                 REQUIRE(plan.changes()[1].policy == merovingian::config::ReloadPolicy::reloadable);
                 REQUIRE(plan.changes()[2].policy == merovingian::config::ReloadPolicy::reloadable);
                 REQUIRE(plan.changes()[3].policy == merovingian::config::ReloadPolicy::reloadable);
-                REQUIRE(merovingian::config::reload_plan_summary(plan) == "Reload plan: changes=4 reloadable=4 restart_required=0");
+                REQUIRE(merovingian::config::reload_plan_summary(plan) ==
+                        "Reload plan: changes=4 reloadable=4 restart_required=0");
             }
         }
     }
@@ -117,7 +119,8 @@ SCENARIO("Reload plan flags restart-required identity and secret source changes"
                 REQUIRE(plan.restart_required_change_count() == 2U);
                 REQUIRE(plan.changes()[0].policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(plan.changes()[1].policy == merovingian::config::ReloadPolicy::restart_required);
-                REQUIRE(merovingian::config::reload_plan_summary(plan) == "Reload plan: changes=2 reloadable=0 restart_required=2");
+                REQUIRE(merovingian::config::reload_plan_summary(plan) ==
+                        "Reload plan: changes=2 reloadable=0 restart_required=2");
             }
         }
     }

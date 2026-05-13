@@ -13,7 +13,8 @@ namespace merovingian::media
 struct RuntimeMediaConfig final
 {
     std::uint64_t max_upload_bytes{0U};
-    std::vector<std::string> allowed_mime_types{"image/png", "image/jpeg", "image/gif", "text/plain", "application/pdf"};
+    std::vector<std::string> allowed_mime_types{"image/png", "image/jpeg", "image/gif", "text/plain",
+                                                "application/pdf"};
     bool quarantine_unknown_mime{true};
     bool enable_av_scanner{true};
     bool private_address_fetches_blocked{true};

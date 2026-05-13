@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/homeserver/http_server.hpp"
+
+#include "merovingian/core/socket_handle.hpp"
+#include "merovingian/homeserver/tls.hpp"
+#include "merovingian/http/request.hpp"
+#include "merovingian/http/request_limits.hpp"
+
 #include <array>
 #include <cerrno>
 #include <cstddef>
@@ -10,11 +17,6 @@
 #include <string_view>
 #include <utility>
 
-#include "merovingian/core/socket_handle.hpp"
-#include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/tls.hpp"
-#include "merovingian/http/request.hpp"
-#include "merovingian/http/request_limits.hpp"
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -50,7 +52,8 @@ namespace
     class PlainConnectionStream final : public ConnectionStream
     {
     public:
-        explicit PlainConnectionStream(int file_descriptor) noexcept : m_fd{file_descriptor}
+        explicit PlainConnectionStream(int file_descriptor) noexcept
+            : m_fd{file_descriptor}
         {
         }
 
@@ -77,7 +80,8 @@ namespace
     class TlsConnectionStream final : public ConnectionStream
     {
     public:
-        explicit TlsConnectionStream(TlsConnection& connection) noexcept : m_connection{connection}
+        explicit TlsConnectionStream(TlsConnection& connection) noexcept
+            : m_connection{connection}
         {
         }
 

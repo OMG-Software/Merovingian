@@ -16,8 +16,8 @@ auto token_secret_has_required_entropy(std::string_view token_secret) noexcept -
 
 auto token_hash_is_persistable(TokenHash const& token_hash) noexcept -> bool
 {
-    return !token_hash.algorithm.empty() && !token_hash.value.empty()
-        && token_hash.value.size() >= 32U && token_hash.value.size() <= 4096U;
+    return !token_hash.algorithm.empty() && !token_hash.value.empty() && token_hash.value.size() >= 32U &&
+           token_hash.value.size() <= 4096U;
 }
 
 auto token_is_active(AccessTokenRecord const& token, std::chrono::system_clock::time_point now) -> TokenPolicyDecision

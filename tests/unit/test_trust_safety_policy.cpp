@@ -15,14 +15,22 @@ SCENARIO("Trust and safety policy engine exposes all policy surfaces", "[trust-s
         {
             THEN("invite, federation, media, registration, room, and account surfaces exist")
             {
-                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(merovingian::trust_safety::PolicySurface::invite)} == "invite");
-                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(merovingian::trust_safety::PolicySurface::federation)} == "federation");
-                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(merovingian::trust_safety::PolicySurface::media)} == "media");
-                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(merovingian::trust_safety::PolicySurface::registration)} == "registration");
-                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(merovingian::trust_safety::PolicySurface::room)} == "room");
-                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(merovingian::trust_safety::PolicySurface::account)} == "account");
-                REQUIRE(std::string{merovingian::trust_safety::policy_action_name(merovingian::trust_safety::PolicyAction::suspend_account)} == "suspend_account");
-                REQUIRE(std::string{merovingian::trust_safety::policy_action_name(merovingian::trust_safety::PolicyAction::quarantine)} == "quarantine");
+                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(
+                            merovingian::trust_safety::PolicySurface::invite)} == "invite");
+                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(
+                            merovingian::trust_safety::PolicySurface::federation)} == "federation");
+                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(
+                            merovingian::trust_safety::PolicySurface::media)} == "media");
+                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(
+                            merovingian::trust_safety::PolicySurface::registration)} == "registration");
+                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(
+                            merovingian::trust_safety::PolicySurface::room)} == "room");
+                REQUIRE(std::string{merovingian::trust_safety::policy_surface_name(
+                            merovingian::trust_safety::PolicySurface::account)} == "account");
+                REQUIRE(std::string{merovingian::trust_safety::policy_action_name(
+                            merovingian::trust_safety::PolicyAction::suspend_account)} == "suspend_account");
+                REQUIRE(std::string{merovingian::trust_safety::policy_action_name(
+                            merovingian::trust_safety::PolicyAction::quarantine)} == "quarantine");
             }
         }
     }
@@ -43,7 +51,8 @@ SCENARIO("Policy server hooks fail closed when unavailable", "[trust-safety][pol
         {
             auto const disabled_decision = merovingian::trust_safety::policy_server_hook_allows(disabled);
             auto const unreachable_decision = merovingian::trust_safety::policy_server_hook_allows(unreachable);
-            auto const optional_decision = merovingian::trust_safety::policy_server_hook_allows(unreachable_but_optional);
+            auto const optional_decision =
+                merovingian::trust_safety::policy_server_hook_allows(unreachable_but_optional);
 
             THEN("required hooks fail closed and optional hooks pass")
             {
@@ -80,7 +89,8 @@ SCENARIO("Invite and registration policies block local denials and malformed inp
             auto const invite_allowed = merovingian::trust_safety::evaluate_invite_policy(invite);
             auto const invite_blocked = merovingian::trust_safety::evaluate_invite_policy(blocked_invite);
             auto const registration_allowed = merovingian::trust_safety::evaluate_registration_policy(registration);
-            auto const registration_blocked = merovingian::trust_safety::evaluate_registration_policy(disabled_registration);
+            auto const registration_blocked =
+                merovingian::trust_safety::evaluate_registration_policy(disabled_registration);
 
             THEN("safe inputs pass and blocked inputs fail closed")
             {
@@ -99,7 +109,8 @@ SCENARIO("Account suspension and locking integrate with account enforcement reco
 {
     GIVEN("account enforcement records")
     {
-        auto const reason = merovingian::trust_safety::enforcement_reason("manual_review", "account restricted", "admin reviewed account");
+        auto const reason = merovingian::trust_safety::enforcement_reason("manual_review", "account restricted",
+                                                                          "admin reviewed account");
         auto suspended = merovingian::trust_safety::AccountEnforcementRecord{};
         suspended.user_id = "@alice:example.org";
         suspended.suspended = true;
@@ -110,8 +121,10 @@ SCENARIO("Account suspension and locking integrate with account enforcement reco
 
         WHEN("account policy and statements are generated")
         {
-            auto const suspended_decision = merovingian::trust_safety::evaluate_account_policy({"@alice:example.org", suspended});
-            auto const locked_decision = merovingian::trust_safety::evaluate_account_policy({"@alice:example.org", locked});
+            auto const suspended_decision =
+                merovingian::trust_safety::evaluate_account_policy({"@alice:example.org", suspended});
+            auto const locked_decision =
+                merovingian::trust_safety::evaluate_account_policy({"@alice:example.org", locked});
             auto const statements = merovingian::trust_safety::account_enforcement_statements(suspended);
 
             THEN("account state fails closed and can be persisted through prepared statements")
@@ -176,11 +189,16 @@ SCENARIO("Reporting API scaffold validates reports and exposes admin routes", "[
 
         WHEN("routes are matched and reports validated")
         {
-            auto const report_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event");
-            auto const unrelated_room_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/rooms/!room:example.org/leave");
-            auto const malformed_report_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/rooms/!room:example.org/report/");
-            auto const nested_report_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event/extra");
-            auto const admin_route = merovingian::trust_safety::match_reporting_api_route("GET", "/_matrix/client/v3/admin/safety/reports");
+            auto const report_route = merovingian::trust_safety::match_reporting_api_route(
+                "POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event");
+            auto const unrelated_room_route = merovingian::trust_safety::match_reporting_api_route(
+                "POST", "/_matrix/client/v3/rooms/!room:example.org/leave");
+            auto const malformed_report_route = merovingian::trust_safety::match_reporting_api_route(
+                "POST", "/_matrix/client/v3/rooms/!room:example.org/report/");
+            auto const nested_report_route = merovingian::trust_safety::match_reporting_api_route(
+                "POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event/extra");
+            auto const admin_route =
+                merovingian::trust_safety::match_reporting_api_route("GET", "/_matrix/client/v3/admin/safety/reports");
             auto const valid_decision = merovingian::trust_safety::validate_safety_report(valid_report);
             auto const invalid_decision = merovingian::trust_safety::validate_safety_report(invalid_report);
 
@@ -208,10 +226,14 @@ SCENARIO("Admin review route scaffold requires target type and target id path se
     {
         WHEN("routes are matched")
         {
-            auto const valid_route = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/admin/safety/review/media/media123");
-            auto const missing_both = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/admin/safety/review/");
-            auto const missing_id = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/admin/safety/review/media");
-            auto const extra_segment = merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/admin/safety/review/media/media123/extra");
+            auto const valid_route = merovingian::trust_safety::match_reporting_api_route(
+                "POST", "/_matrix/client/v3/admin/safety/review/media/media123");
+            auto const missing_both =
+                merovingian::trust_safety::match_reporting_api_route("POST", "/_matrix/client/v3/admin/safety/review/");
+            auto const missing_id = merovingian::trust_safety::match_reporting_api_route(
+                "POST", "/_matrix/client/v3/admin/safety/review/media");
+            auto const extra_segment = merovingian::trust_safety::match_reporting_api_route(
+                "POST", "/_matrix/client/v3/admin/safety/review/media/media123/extra");
 
             THEN("only complete admin review routes are matched")
             {
@@ -236,7 +258,8 @@ SCENARIO("Safety audit events expose admin-visible enforcement reasons", "[trust
         WHEN("an audit event is generated")
         {
             auto const decision = merovingian::trust_safety::evaluate_media_policy(media);
-            auto const event = merovingian::trust_safety::make_safety_audit_event("@admin:example.org", "media123", decision);
+            auto const event =
+                merovingian::trust_safety::make_safety_audit_event("@admin:example.org", "media123", decision);
             auto const summary = merovingian::trust_safety::safety_audit_summary(event);
 
             THEN("the audit event includes surface, action, actor, entity, and reason")

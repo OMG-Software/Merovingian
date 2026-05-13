@@ -50,12 +50,9 @@ struct EncryptedEventLogSummary final
 [[nodiscard]] auto room_creation_encryption_policy(RoomCreationEncryptionRequest request)
     -> RoomCreationEncryptionDecision;
 [[nodiscard]] auto encrypted_event_payload_is_loggable(std::string_view payload) noexcept -> bool;
-[[nodiscard]] auto make_encrypted_event_log_summary(
-    std::string_view event_type,
-    std::string_view room_id,
-    std::string_view sender,
-    std::string_view encrypted_payload
-) -> EncryptedEventLogSummary;
+[[nodiscard]] auto make_encrypted_event_log_summary(std::string_view event_type, std::string_view room_id,
+                                                    std::string_view sender, std::string_view encrypted_payload)
+    -> EncryptedEventLogSummary;
 [[nodiscard]] auto encrypted_event_log_summary_text(EncryptedEventLogSummary const& summary) -> std::string;
 
 } // namespace merovingian::rooms

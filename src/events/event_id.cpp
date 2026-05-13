@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/events/event_id.hpp"
+
 #include "merovingian/canonicaljson/serializer.hpp"
 
 #include <cstdint>
@@ -12,33 +13,33 @@ namespace merovingian::events
 namespace
 {
 
-[[nodiscard]] auto fnv1a64(std::string_view input) noexcept -> std::uint64_t
-{
-    auto hash = std::uint64_t{14695981039346656037ULL};
-    for (auto const character : input)
+    [[nodiscard]] auto fnv1a64(std::string_view input) noexcept -> std::uint64_t
     {
-        hash ^= static_cast<unsigned char>(character);
-        hash *= 1099511628211ULL;
+        auto hash = std::uint64_t{14695981039346656037ULL};
+        for (auto const character : input)
+        {
+            hash ^= static_cast<unsigned char>(character);
+            hash *= 1099511628211ULL;
+        }
+        return hash;
     }
-    return hash;
-}
 
-[[nodiscard]] auto hex_digit(std::uint8_t value) noexcept -> char
-{
-    constexpr auto digits = "0123456789abcdef";
-    return digits[value & 0x0FU];
-}
-
-[[nodiscard]] auto to_hex(std::uint64_t value) -> std::string
-{
-    auto output = std::string(16U, '0');
-    for (auto index = std::size_t{0U}; index < output.size(); ++index)
+    [[nodiscard]] auto hex_digit(std::uint8_t value) noexcept -> char
     {
-        auto const shift = static_cast<unsigned int>((output.size() - index - 1U) * 4U);
-        output[index] = hex_digit(static_cast<std::uint8_t>((value >> shift) & 0x0FU));
+        constexpr auto digits = "0123456789abcdef";
+        return digits[value & 0x0FU];
     }
-    return output;
-}
+
+    [[nodiscard]] auto to_hex(std::uint64_t value) -> std::string
+    {
+        auto output = std::string(16U, '0');
+        for (auto index = std::size_t{0U}; index < output.size(); ++index)
+        {
+            auto const shift = static_cast<unsigned int>((output.size() - index - 1U) * 4U);
+            output[index] = hex_digit(static_cast<std::uint8_t>((value >> shift) & 0x0FU));
+        }
+        return output;
+    }
 
 } // namespace
 
@@ -51,9 +52,9 @@ auto event_id_is_valid(std::string_view event_id) noexcept -> bool
 
     for (auto const character : event_id.substr(1U))
     {
-        auto const valid = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z')
-            || (character >= '0' && character <= '9') || character == '_' || character == '-' || character == ':'
-            || character == '.';
+        auto const valid = (character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+                           (character >= '0' && character <= '9') || character == '_' || character == '-' ||
+                           character == ':' || character == '.';
         if (!valid)
         {
             return false;

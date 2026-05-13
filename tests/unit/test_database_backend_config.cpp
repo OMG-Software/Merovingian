@@ -38,16 +38,20 @@ SCENARIO("Database backend helpers parse SQLite and expose performance warnings"
             auto const postgresql = merovingian::config::parse_database_backend("postgresql");
             auto const sqlite = merovingian::config::parse_database_backend("sqlite");
             auto const unknown = merovingian::config::parse_database_backend("mysql");
-            auto const sqlite_warning = merovingian::config::database_backend_performance_warning(merovingian::config::DatabaseBackend::sqlite);
-            auto const postgresql_warning = merovingian::config::database_backend_performance_warning(merovingian::config::DatabaseBackend::postgresql);
+            auto const sqlite_warning =
+                merovingian::config::database_backend_performance_warning(merovingian::config::DatabaseBackend::sqlite);
+            auto const postgresql_warning = merovingian::config::database_backend_performance_warning(
+                merovingian::config::DatabaseBackend::postgresql);
 
             THEN("SQLite is opt-in and carries a small-installation warning")
             {
                 REQUIRE(postgresql == merovingian::config::DatabaseBackend::postgresql);
                 REQUIRE(sqlite == merovingian::config::DatabaseBackend::sqlite);
                 REQUIRE_FALSE(unknown.has_value());
-                REQUIRE(merovingian::config::database_backend_name(merovingian::config::DatabaseBackend::postgresql) == "postgresql");
-                REQUIRE(merovingian::config::database_backend_name(merovingian::config::DatabaseBackend::sqlite) == "sqlite");
+                REQUIRE(merovingian::config::database_backend_name(merovingian::config::DatabaseBackend::postgresql) ==
+                        "postgresql");
+                REQUIRE(merovingian::config::database_backend_name(merovingian::config::DatabaseBackend::sqlite) ==
+                        "sqlite");
                 REQUIRE(sqlite_warning.find("small installations") != std::string_view::npos);
                 REQUIRE(postgresql_warning.empty());
             }
@@ -59,11 +63,9 @@ SCENARIO("Key-value config parser applies SQLite database settings", "[config][p
 {
     GIVEN("config input selecting SQLite")
     {
-        auto const input = std::string{
-            "database.backend=sqlite\n"
-            "database.sqlite_path=/var/lib/merovingian/small.sqlite3\n"
-            "database.pool_size=1\n"
-        };
+        auto const input = std::string{"database.backend=sqlite\n"
+                                       "database.sqlite_path=/var/lib/merovingian/small.sqlite3\n"
+                                       "database.pool_size=1\n"};
 
         WHEN("the config is parsed")
         {

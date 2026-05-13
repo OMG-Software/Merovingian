@@ -168,11 +168,8 @@ struct SafetyAuditEvent final
 [[nodiscard]] auto policy_surface_name(PolicySurface surface) noexcept -> char const*;
 [[nodiscard]] auto policy_action_name(PolicyAction action) noexcept -> char const*;
 [[nodiscard]] auto review_target_name(ReviewTarget target) noexcept -> char const*;
-[[nodiscard]] auto enforcement_reason(
-    std::string_view code,
-    std::string_view public_summary,
-    std::string_view admin_detail
-) -> EnforcementReason;
+[[nodiscard]] auto enforcement_reason(std::string_view code, std::string_view public_summary,
+                                      std::string_view admin_detail) -> EnforcementReason;
 [[nodiscard]] auto policy_server_hook_allows(PolicyServerHook const& hook) -> PolicyDecision;
 [[nodiscard]] auto evaluate_invite_policy(InvitePolicyRequest const& request) -> PolicyDecision;
 [[nodiscard]] auto evaluate_registration_policy(RegistrationPolicyRequest const& request) -> PolicyDecision;
@@ -187,11 +184,8 @@ struct SafetyAuditEvent final
 [[nodiscard]] auto match_reporting_api_route(std::string_view method, std::string_view target)
     -> ReportingApiRouteMatch;
 [[nodiscard]] auto validate_safety_report(SafetyReportRequest const& request) -> PolicyDecision;
-[[nodiscard]] auto make_safety_audit_event(
-    std::string_view actor,
-    std::string_view entity,
-    PolicyDecision const& decision
-) -> SafetyAuditEvent;
+[[nodiscard]] auto make_safety_audit_event(std::string_view actor, std::string_view entity,
+                                           PolicyDecision const& decision) -> SafetyAuditEvent;
 [[nodiscard]] auto safety_audit_summary(SafetyAuditEvent const& event) -> std::string;
 
 } // namespace merovingian::trust_safety

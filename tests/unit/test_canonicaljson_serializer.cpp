@@ -76,7 +76,9 @@ SCENARIO("Canonical JSON rejects programmatic invalid UTF-8 strings", "[canonica
 {
     GIVEN("a string value containing invalid UTF-8")
     {
-        auto const value = merovingian::canonicaljson::Value{std::string{"\xC0\x80", 2U}};
+        auto const value = merovingian::canonicaljson::Value{
+            std::string{"\xC0\x80", 2U}
+        };
 
         WHEN("it is serialized canonically")
         {
@@ -101,9 +103,8 @@ SCENARIO("Canonical JSON serializes arrays without whitespace", "[canonicaljson]
 
         WHEN("it is serialized canonically")
         {
-            auto const result = merovingian::canonicaljson::serialize_canonical(
-                merovingian::canonicaljson::Value{std::move(array)}
-            );
+            auto const result =
+                merovingian::canonicaljson::serialize_canonical(merovingian::canonicaljson::Value{std::move(array)});
 
             THEN("no insignificant whitespace is emitted")
             {
@@ -119,15 +120,17 @@ SCENARIO("Canonical JSON sorts object keys lexicographically", "[canonicaljson]"
     GIVEN("an object with unsorted keys")
     {
         auto object = merovingian::canonicaljson::Object{};
-        object.push_back(merovingian::canonicaljson::make_member("z", merovingian::canonicaljson::Value{std::int64_t{3}}));
-        object.push_back(merovingian::canonicaljson::make_member("a", merovingian::canonicaljson::Value{std::int64_t{1}}));
-        object.push_back(merovingian::canonicaljson::make_member("m", merovingian::canonicaljson::Value{std::int64_t{2}}));
+        object.push_back(
+            merovingian::canonicaljson::make_member("z", merovingian::canonicaljson::Value{std::int64_t{3}}));
+        object.push_back(
+            merovingian::canonicaljson::make_member("a", merovingian::canonicaljson::Value{std::int64_t{1}}));
+        object.push_back(
+            merovingian::canonicaljson::make_member("m", merovingian::canonicaljson::Value{std::int64_t{2}}));
 
         WHEN("it is serialized canonically")
         {
-            auto const result = merovingian::canonicaljson::serialize_canonical(
-                merovingian::canonicaljson::Value{std::move(object)}
-            );
+            auto const result =
+                merovingian::canonicaljson::serialize_canonical(merovingian::canonicaljson::Value{std::move(object)});
 
             THEN("object keys are sorted lexicographically")
             {
@@ -143,14 +146,15 @@ SCENARIO("Canonical JSON rejects duplicate object keys", "[canonicaljson]")
     GIVEN("an object with duplicate keys")
     {
         auto object = merovingian::canonicaljson::Object{};
-        object.push_back(merovingian::canonicaljson::make_member("a", merovingian::canonicaljson::Value{std::int64_t{1}}));
-        object.push_back(merovingian::canonicaljson::make_member("a", merovingian::canonicaljson::Value{std::int64_t{2}}));
+        object.push_back(
+            merovingian::canonicaljson::make_member("a", merovingian::canonicaljson::Value{std::int64_t{1}}));
+        object.push_back(
+            merovingian::canonicaljson::make_member("a", merovingian::canonicaljson::Value{std::int64_t{2}}));
 
         WHEN("it is serialized canonically")
         {
-            auto const result = merovingian::canonicaljson::serialize_canonical(
-                merovingian::canonicaljson::Value{std::move(object)}
-            );
+            auto const result =
+                merovingian::canonicaljson::serialize_canonical(merovingian::canonicaljson::Value{std::move(object)});
 
             THEN("serialization rejects the duplicate key")
             {
@@ -172,8 +176,10 @@ SCENARIO("Canonical JSON error names are stable", "[canonicaljson]")
         WHEN("their names are requested")
         {
             auto const no_error_name = std::string{merovingian::canonicaljson::canonical_json_error_name(no_error)};
-            auto const duplicate_key_name = std::string{merovingian::canonicaljson::canonical_json_error_name(duplicate_key)};
-            auto const invalid_string_name = std::string{merovingian::canonicaljson::canonical_json_error_name(invalid_string)};
+            auto const duplicate_key_name =
+                std::string{merovingian::canonicaljson::canonical_json_error_name(duplicate_key)};
+            auto const invalid_string_name =
+                std::string{merovingian::canonicaljson::canonical_json_error_name(invalid_string)};
 
             THEN("the diagnostic names are stable")
             {

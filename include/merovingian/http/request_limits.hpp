@@ -28,11 +28,8 @@ struct RequestLimitFinding final
 [[nodiscard]] auto request_limits_are_valid(RequestLimits const& limits) -> bool;
 [[nodiscard]] auto method_token_is_valid(std::string_view method) noexcept -> bool;
 [[nodiscard]] auto request_target_is_valid(std::string_view target) noexcept -> bool;
-[[nodiscard]] auto request_line_is_within_limit(
-    std::string_view method,
-    std::string_view target,
-    RequestLimits const& limits
-) noexcept -> bool;
+[[nodiscard]] auto request_line_is_within_limit(std::string_view method, std::string_view target,
+                                                RequestLimits const& limits) noexcept -> bool;
 [[nodiscard]] auto request_limits_summary(RequestLimits const& limits) -> std::string;
 
 } // namespace merovingian::http

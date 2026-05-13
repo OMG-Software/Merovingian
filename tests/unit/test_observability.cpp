@@ -38,7 +38,8 @@ SCENARIO("Admin control surfaces default to local-only safe exposure", "[observa
     }
 }
 
-SCENARIO("Admin routes expose health, metrics, audit, account, review, and shutdown operations", "[observability][admin]")
+SCENARIO("Admin routes expose health, metrics, audit, account, review, and shutdown operations",
+         "[observability][admin]")
 {
     GIVEN("admin route targets")
     {
@@ -47,10 +48,13 @@ SCENARIO("Admin routes expose health, metrics, audit, account, review, and shutd
             auto const health = merovingian::observability::match_admin_route("GET", "/_merovingian/admin/health");
             auto const metrics = merovingian::observability::match_admin_route("GET", "/_merovingian/admin/metrics");
             auto const audit = merovingian::observability::match_admin_route("GET", "/_merovingian/admin/audit");
-            auto const account = merovingian::observability::match_admin_route("POST", "/_merovingian/admin/accounts/@alice:example.org");
-            auto const review = merovingian::observability::match_admin_route("POST", "/_merovingian/admin/review/media/media123");
+            auto const account = merovingian::observability::match_admin_route(
+                "POST", "/_merovingian/admin/accounts/@alice:example.org");
+            auto const review =
+                merovingian::observability::match_admin_route("POST", "/_merovingian/admin/review/media/media123");
             auto const shutdown = merovingian::observability::match_admin_route("POST", "/_merovingian/admin/shutdown");
-            auto const incomplete_review = merovingian::observability::match_admin_route("POST", "/_merovingian/admin/review/media");
+            auto const incomplete_review =
+                merovingian::observability::match_admin_route("POST", "/_merovingian/admin/review/media");
 
             THEN("valid admin routes match and malformed dynamic routes fail closed")
             {
@@ -72,45 +76,20 @@ SCENARIO("Append-only audit log event model covers required audit categories", "
     GIVEN("audit events")
     {
         auto const auth_event = merovingian::observability::make_audit_event(
-            merovingian::observability::AuditCategory::auth,
-            "login.denied",
-            "@alice:example.org",
-            "@alice:example.org",
-            "bad_credentials",
-            "req-1"
-        );
+            merovingian::observability::AuditCategory::auth, "login.denied", "@alice:example.org", "@alice:example.org",
+            "bad_credentials", "req-1");
         auto const key_event = merovingian::observability::make_audit_event(
-            merovingian::observability::AuditCategory::key_lifecycle,
-            "keys.uploaded",
-            "@alice:example.org",
-            "DEVICE",
-            "ok",
-            "req-2"
-        );
+            merovingian::observability::AuditCategory::key_lifecycle, "keys.uploaded", "@alice:example.org", "DEVICE",
+            "ok", "req-2");
         auto const policy_event = merovingian::observability::make_audit_event(
-            merovingian::observability::AuditCategory::policy,
-            "policy.denied",
-            "@admin:example.org",
-            "media123",
-            "media_blocked",
-            "req-3"
-        );
+            merovingian::observability::AuditCategory::policy, "policy.denied", "@admin:example.org", "media123",
+            "media_blocked", "req-3");
         auto const moderation_event = merovingian::observability::make_audit_event(
-            merovingian::observability::AuditCategory::moderation,
-            "review.held",
-            "@admin:example.org",
-            "!room:example.org",
-            "manual_review",
-            "req-4"
-        );
+            merovingian::observability::AuditCategory::moderation, "review.held", "@admin:example.org",
+            "!room:example.org", "manual_review", "req-4");
         auto const admin_event = merovingian::observability::make_audit_event(
-            merovingian::observability::AuditCategory::admin,
-            "admin.shutdown_requested",
-            "@admin:example.org",
-            "server",
-            "operator_request",
-            "req-5"
-        );
+            merovingian::observability::AuditCategory::admin, "admin.shutdown_requested", "@admin:example.org",
+            "server", "operator_request", "req-5");
 
         WHEN("audit statements are produced")
         {
@@ -141,9 +120,9 @@ SCENARIO("Structured log summaries redact sensitive values and document boundari
         event.logger = "auth";
         event.level = "info";
         event.fields = {
-            {"request_id", "req-1", false},
-            {"access_token", "secret-token", true},
-            {"event_content", "plaintext body", true},
+            {"request_id",    "req-1",          false},
+            {"access_token",  "secret-token",   true },
+            {"event_content", "plaintext body", true },
         };
 
         WHEN("a log summary is rendered")
@@ -170,14 +149,14 @@ SCENARIO("Metrics and health-check summaries avoid secrets and event contents", 
     GIVEN("safe metrics and health components")
     {
         auto metrics = std::vector<merovingian::observability::MetricSample>{
-            {"http_requests_total", 10, true},
-            {"audit_events_appended_total", 2, true},
+            {"http_requests_total",         10, true},
+            {"audit_events_appended_total", 2,  true},
         };
         auto unsafe_metrics = metrics;
         unsafe_metrics.push_back({"access_token_value", 1, false});
         auto health = merovingian::observability::HealthCheckSnapshot{};
         health.components = {
-            {"database", merovingian::observability::HealthStatus::ok, "reachable"},
+            {"database",   merovingian::observability::HealthStatus::ok,       "reachable"     },
             {"federation", merovingian::observability::HealthStatus::degraded, "backoff active"},
         };
 
@@ -202,13 +181,17 @@ SCENARIO("Startup hardening self-check output is represented in observability sn
     {
         auto const hardening = merovingian::platform::HardeningSelfCheck{
             {
-                {"stack-protector", merovingian::platform::HardeningStatus::enabled},
-                {"relro", merovingian::platform::HardeningStatus::disabled},
-            },
+             {"stack-protector", merovingian::platform::HardeningStatus::enabled},
+             {"relro", merovingian::platform::HardeningStatus::disabled},
+             },
         };
         auto health = merovingian::observability::HealthCheckSnapshot{};
-        health.components = {{"runtime", merovingian::observability::HealthStatus::ok, "started"}};
-        auto metrics = std::vector<merovingian::observability::MetricSample>{{"process_start_time_seconds", 1, true}};
+        health.components = {
+            {"runtime", merovingian::observability::HealthStatus::ok, "started"}
+        };
+        auto metrics = std::vector<merovingian::observability::MetricSample>{
+            {"process_start_time_seconds", 1, true}
+        };
 
         WHEN("an observability snapshot is created")
         {

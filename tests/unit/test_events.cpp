@@ -39,8 +39,8 @@ SCENARIO("Event envelope parser validates core Matrix fields", "[events]")
     GIVEN("an event JSON object with required Matrix fields")
     {
         auto const parsed = merovingian::canonicaljson::parse_lossless(
-            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_server_ts\":1,\"content\":{}}"
-        );
+            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_"
+            "server_ts\":1,\"content\":{}}");
 
         WHEN("the event envelope is parsed")
         {
@@ -62,8 +62,9 @@ SCENARIO("Event signing payload excludes unsigned and signatures", "[events][sig
     GIVEN("an event containing unsigned data and signatures")
     {
         auto const parsed = merovingian::canonicaljson::parse_lossless(
-            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_server_ts\":1,\"unsigned\":{\"age\":1},\"signatures\":{\"example.org\":{\"ed25519:a\":\"sig\"}},\"content\":{}}"
-        );
+            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_"
+            "server_ts\":1,\"unsigned\":{\"age\":1},\"signatures\":{\"example.org\":{\"ed25519:a\":\"sig\"}},"
+            "\"content\":{}}");
 
         WHEN("the signing payload is created")
         {
@@ -85,13 +86,14 @@ SCENARIO("Event signature scaffold attaches and detects signatures", "[events][s
     GIVEN("an unsigned event and signing key ID")
     {
         auto const parsed = merovingian::canonicaljson::parse_lossless(
-            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_server_ts\":1,\"content\":{}}"
-        );
+            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_"
+            "server_ts\":1,\"content\":{}}");
         auto const key_id = merovingian::events::SigningKeyId{"example.org", "ed25519:auto"};
 
         WHEN("a signature is attached and the event is reparsed")
         {
-            auto const signed_json = merovingian::events::attach_event_signature(parsed.value, key_id, "signature-bytes");
+            auto const signed_json =
+                merovingian::events::attach_event_signature(parsed.value, key_id, "signature-bytes");
             auto const reparsed = merovingian::canonicaljson::parse_lossless(signed_json.output);
             auto const verified = merovingian::events::verify_event_signature_presence(reparsed.value, key_id);
 
@@ -110,14 +112,15 @@ SCENARIO("Event signature scaffold preserves existing signatures", "[events][sig
     GIVEN("an event with an existing signature and a new signing key")
     {
         auto const parsed = merovingian::canonicaljson::parse_lossless(
-            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_server_ts\":1,\"content\":{},\"signatures\":{\"old.example.org\":{\"ed25519:old\":\"old-signature\"}}}"
-        );
+            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_"
+            "server_ts\":1,\"content\":{},\"signatures\":{\"old.example.org\":{\"ed25519:old\":\"old-signature\"}}}");
         auto const old_key_id = merovingian::events::SigningKeyId{"old.example.org", "ed25519:old"};
         auto const new_key_id = merovingian::events::SigningKeyId{"example.org", "ed25519:new"};
 
         WHEN("the new signature is attached")
         {
-            auto const signed_json = merovingian::events::attach_event_signature(parsed.value, new_key_id, "new-signature");
+            auto const signed_json =
+                merovingian::events::attach_event_signature(parsed.value, new_key_id, "new-signature");
             auto const reparsed = merovingian::canonicaljson::parse_lossless(signed_json.output);
             auto const old_signature = merovingian::events::verify_event_signature_presence(reparsed.value, old_key_id);
             auto const new_signature = merovingian::events::verify_event_signature_presence(reparsed.value, new_key_id);
@@ -137,8 +140,8 @@ SCENARIO("Event redaction keeps only allowed keys", "[events][redaction]")
     GIVEN("an event with allowed and disallowed top-level keys")
     {
         auto const parsed = merovingian::canonicaljson::parse_lossless(
-            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_server_ts\":1,\"content\":{\"body\":\"secret\"},\"extra\":\"drop\"}"
-        );
+            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_"
+            "server_ts\":1,\"content\":{\"body\":\"secret\"},\"extra\":\"drop\"}");
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
 
@@ -162,8 +165,9 @@ SCENARIO("Event redaction uses room-version-specific top-level keys", "[events][
     GIVEN("an event and two room-version policies")
     {
         auto const parsed = merovingian::canonicaljson::parse_lossless(
-            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_server_ts\":1,\"content\":{},\"origin\":\"example.org\",\"prev_state\":[],\"membership\":\"join\",\"unsigned\":{}}"
-        );
+            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.message\",\"sender\":\"@alice:example.org\",\"origin_"
+            "server_ts\":1,\"content\":{},\"origin\":\"example.org\",\"prev_state\":[],\"membership\":\"join\","
+            "\"unsigned\":{}}");
         auto const* room_v10 = merovingian::rooms::find_room_version_policy("10");
         auto const* room_v12 = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(room_v10 != nullptr);

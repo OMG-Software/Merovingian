@@ -12,83 +12,83 @@ namespace merovingian::platform
 namespace
 {
 
-[[nodiscard]] auto reject(std::string reason) -> HardeningPlanDecision
-{
-    return {false, true, std::move(reason)};
-}
-
-[[nodiscard]] auto accept() -> HardeningPlanDecision
-{
-    return {true, false, {}};
-}
-
-[[nodiscard]] auto accept_optional(std::string reason) -> HardeningPlanDecision
-{
-    return {true, false, "optional hardening unavailable: " + std::move(reason)};
-}
-
-[[nodiscard]] auto reject_if_required(HardeningMode mode, std::string reason) -> HardeningPlanDecision
-{
-    if (mode == HardeningMode::required)
+    [[nodiscard]] auto reject(std::string reason) -> HardeningPlanDecision
     {
-        return reject(std::move(reason));
+        return {false, true, std::move(reason)};
     }
 
-    return accept_optional(std::move(reason));
-}
+    [[nodiscard]] auto accept() -> HardeningPlanDecision
+    {
+        return {true, false, {}};
+    }
 
-[[nodiscard]] auto path_is_absolute_normalized(std::string_view path) noexcept -> bool
-{
-    if (path.empty() || path.front() != '/')
+    [[nodiscard]] auto accept_optional(std::string reason) -> HardeningPlanDecision
     {
-        return false;
+        return {true, false, "optional hardening unavailable: " + std::move(reason)};
     }
-    if (path.size() > 1U && path.back() == '/')
+
+    [[nodiscard]] auto reject_if_required(HardeningMode mode, std::string reason) -> HardeningPlanDecision
     {
-        return false;
+        if (mode == HardeningMode::required)
+        {
+            return reject(std::move(reason));
+        }
+
+        return accept_optional(std::move(reason));
     }
-    if (path == "/")
+
+    [[nodiscard]] auto path_is_absolute_normalized(std::string_view path) noexcept -> bool
     {
+        if (path.empty() || path.front() != '/')
+        {
+            return false;
+        }
+        if (path.size() > 1U && path.back() == '/')
+        {
+            return false;
+        }
+        if (path == "/")
+        {
+            return true;
+        }
+
+        auto segment_start = std::size_t{1U};
+        while (segment_start < path.size())
+        {
+            auto segment_end = path.find('/', segment_start);
+            if (segment_end == std::string_view::npos)
+            {
+                segment_end = path.size();
+            }
+            if (segment_end == segment_start)
+            {
+                return false;
+            }
+
+            auto const segment = path.substr(segment_start, segment_end - segment_start);
+            if (segment == "." || segment == "..")
+            {
+                return false;
+            }
+
+            segment_start = segment_end + 1U;
+        }
+
         return true;
     }
 
-    auto segment_start = std::size_t{1U};
-    while (segment_start < path.size())
+    [[nodiscard]] auto is_path_or_child_of(std::string_view path, std::string_view protected_path) noexcept -> bool
     {
-        auto segment_end = path.find('/', segment_start);
-        if (segment_end == std::string_view::npos)
-        {
-            segment_end = path.size();
-        }
-        if (segment_end == segment_start)
-        {
-            return false;
-        }
-
-        auto const segment = path.substr(segment_start, segment_end - segment_start);
-        if (segment == "." || segment == "..")
-        {
-            return false;
-        }
-
-        segment_start = segment_end + 1U;
+        return path == protected_path ||
+               (path.size() > protected_path.size() && path.substr(0U, protected_path.size()) == protected_path &&
+                path[protected_path.size()] == '/');
     }
 
-    return true;
-}
-
-[[nodiscard]] auto is_path_or_child_of(std::string_view path, std::string_view protected_path) noexcept -> bool
-{
-    return path == protected_path
-        || (path.size() > protected_path.size() && path.substr(0U, protected_path.size()) == protected_path
-            && path[protected_path.size()] == '/');
-}
-
-[[nodiscard]] auto writable_path_is_safe(std::string_view path) noexcept -> bool
-{
-    return path_is_absolute_normalized(path) && path != "/" && !is_path_or_child_of(path, "/etc")
-        && !is_path_or_child_of(path, "/usr");
-}
+    [[nodiscard]] auto writable_path_is_safe(std::string_view path) noexcept -> bool
+    {
+        return path_is_absolute_normalized(path) && path != "/" && !is_path_or_child_of(path, "/etc") &&
+               !is_path_or_child_of(path, "/usr");
+    }
 
 } // namespace
 
@@ -183,16 +183,16 @@ auto privilege_drop_plan_is_safe(PrivilegeDropPlan const& plan) noexcept -> bool
 
 auto filesystem_plan_is_safe(FilesystemRestrictionPlan const& plan) noexcept -> bool
 {
-    return plan.deny_home && plan.deny_proc_write && plan.private_tmp && !plan.writable_paths.empty()
-        && std::ranges::all_of(plan.writable_paths, [](std::string const& path) {
+    return plan.deny_home && plan.deny_proc_write && plan.private_tmp && !plan.writable_paths.empty() &&
+           std::ranges::all_of(plan.writable_paths, [](std::string const& path) {
                return writable_path_is_safe(path);
            });
 }
 
 auto resource_limit_plan_is_safe(ResourceLimitPlan const& plan) noexcept -> bool
 {
-    return plan.max_open_files > 0U && plan.max_processes > 0U && plan.max_address_space_bytes > 0U
-        && plan.max_core_bytes == 0U;
+    return plan.max_open_files > 0U && plan.max_processes > 0U && plan.max_address_space_bytes > 0U &&
+           plan.max_core_bytes == 0U;
 }
 
 auto memory_locking_plan_is_safe(MemoryLockingPlan const& plan) noexcept -> bool
@@ -212,15 +212,15 @@ auto signal_handling_plan_is_safe(SignalHandlingPlan const& plan) noexcept -> bo
 
 auto linux_hardening_plan_is_documented(LinuxHardeningPlan const& plan) noexcept -> bool
 {
-    return plan.seccomp_filter_required && plan.no_new_privs_required && plan.capability_bounding_required
-        && plan.landlock_documented && plan.apparmor_documented && plan.selinux_documented
-        && plan.systemd_sandboxing_documented;
+    return plan.seccomp_filter_required && plan.no_new_privs_required && plan.capability_bounding_required &&
+           plan.landlock_documented && plan.apparmor_documented && plan.selinux_documented &&
+           plan.systemd_sandboxing_documented;
 }
 
 auto bsd_hardening_plan_is_documented(BsdHardeningPlan const& plan) noexcept -> bool
 {
-    return plan.pledge_documented && plan.unveil_documented && plan.capsicum_documented && plan.jail_documented
-        && plan.chroot_documented && plan.setrlimit_documented;
+    return plan.pledge_documented && plan.unveil_documented && plan.capsicum_documented && plan.jail_documented &&
+           plan.chroot_documented && plan.setrlimit_documented;
 }
 
 auto evaluate_runtime_hardening_profile(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision
@@ -281,9 +281,12 @@ auto evaluate_hardening_gates(std::vector<HardeningGate> const& gates) -> Harden
 auto linux_deployment_profile_notes() -> std::vector<std::string>
 {
     return {
-        "Linux profile: enable seccomp filters, no_new_privs, capability bounding, and resource limits before serving traffic.",
-        "Linux profile: document Landlock, AppArmor, and SELinux policy expectations for deployments that support them.",
-        "Linux profile: systemd units should use sandboxing directives such as PrivateTmp, ProtectSystem, ProtectHome, NoNewPrivileges, RestrictAddressFamilies, and CapabilityBoundingSet.",
+        "Linux profile: enable seccomp filters, no_new_privs, capability bounding, and resource limits before serving "
+        "traffic.",
+        "Linux profile: document Landlock, AppArmor, and SELinux policy expectations for deployments that support "
+        "them.",
+        "Linux profile: systemd units should use sandboxing directives such as PrivateTmp, ProtectSystem, ProtectHome, "
+        "NoNewPrivileges, RestrictAddressFamilies, and CapabilityBoundingSet.",
     };
 }
 
@@ -292,7 +295,8 @@ auto bsd_deployment_profile_notes() -> std::vector<std::string>
     return {
         "BSD profile: document pledge and unveil restrictions where available.",
         "BSD profile: document Capsicum, jails, and chroot deployment boundaries where available.",
-        "BSD profile: setrlimit gates should bound file descriptors, processes, address space, and core dump generation.",
+        "BSD profile: setrlimit gates should bound file descriptors, processes, address space, and core dump "
+        "generation.",
     };
 }
 
@@ -300,7 +304,8 @@ auto runtime_hardening_ci_gate_notes() -> std::vector<std::string>
 {
     return {
         "CI gate: unit tests validate hardening profile fail-closed behavior across Linux, BSD, and portable plans.",
-        "CI gate: BSD build verifies that platform hardening scaffolds remain portable where OS APIs are documented but not linked.",
+        "CI gate: BSD build verifies that platform hardening scaffolds remain portable where OS APIs are documented "
+        "but not linked.",
         "CI gate: static analysis and unsafe source gates protect hardening code paths from accidental unsafe API use.",
     };
 }

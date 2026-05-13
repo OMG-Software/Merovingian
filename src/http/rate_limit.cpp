@@ -9,10 +9,10 @@ namespace merovingian::http
 namespace
 {
 
-[[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
-{
-    return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
-}
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
+    {
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
 
 } // namespace
 
@@ -38,7 +38,8 @@ auto request_is_rate_limited(RateLimitState state, RateLimitPolicy policy) noexc
 
 auto endpoint_default_rate_limit(std::string_view method, std::string_view target) noexcept -> RateLimitPolicy
 {
-    if (method == "POST" && (starts_with(target, "/_matrix/client/v3/login") || starts_with(target, "/_matrix/client/v3/register")))
+    if (method == "POST" &&
+        (starts_with(target, "/_matrix/client/v3/login") || starts_with(target, "/_matrix/client/v3/register")))
     {
         return {5U, 60U};
     }
@@ -63,8 +64,8 @@ auto endpoint_default_rate_limit(std::string_view method, std::string_view targe
 
 auto rate_limit_summary(RateLimitPolicy const& policy) -> std::string
 {
-    return "HTTP rate limit: max_requests=" + std::to_string(policy.max_requests)
-        + " window_seconds=" + std::to_string(policy.window_seconds);
+    return "HTTP rate limit: max_requests=" + std::to_string(policy.max_requests) +
+           " window_seconds=" + std::to_string(policy.window_seconds);
 }
 
 } // namespace merovingian::http

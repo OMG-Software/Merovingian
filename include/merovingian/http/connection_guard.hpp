@@ -21,10 +21,7 @@ struct RequestProgress final
 };
 
 [[nodiscard]] auto slowloris_policy_is_valid(SlowlorisPolicy const& policy) noexcept -> bool;
-[[nodiscard]] auto request_progress_is_too_slow(
-    RequestProgress progress,
-    SlowlorisPolicy policy
-) noexcept -> bool;
+[[nodiscard]] auto request_progress_is_too_slow(RequestProgress progress, SlowlorisPolicy policy) noexcept -> bool;
 [[nodiscard]] auto slowloris_policy_summary(SlowlorisPolicy const& policy) -> std::string;
 
 } // namespace merovingian::http

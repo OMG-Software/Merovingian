@@ -15,9 +15,7 @@ struct RedactionResult final
     std::string error{};
 };
 
-[[nodiscard]] auto redact_event(
-    canonicaljson::Value const& event,
-    rooms::RoomVersionPolicy const& policy
-) -> RedactionResult;
+[[nodiscard]] auto redact_event(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
+    -> RedactionResult;
 
 } // namespace merovingian::events

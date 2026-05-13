@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/homeserver/tls.hpp"
+
 #include <cerrno>
 #include <chrono>
 #include <cstring>
@@ -7,7 +9,6 @@
 #include <utility>
 
 #include <fcntl.h>
-#include "merovingian/homeserver/tls.hpp"
 #include <openssl/err.h>
 #include <openssl/ssl.h>
 #include <poll.h>
@@ -61,7 +62,8 @@ namespace
 
 } // namespace
 
-TlsServerContext::TlsServerContext(ssl_ctx_st& context) noexcept : m_context{&context}
+TlsServerContext::TlsServerContext(ssl_ctx_st& context) noexcept
+    : m_context{&context}
 {
 }
 
@@ -96,7 +98,8 @@ auto TlsServerContextResult::ok() const noexcept -> bool
 }
 
 TlsConnection::TlsConnection(ssl_st& connection, int file_descriptor) noexcept
-    : m_connection{&connection}, m_fd{file_descriptor}
+    : m_connection{&connection}
+    , m_fd{file_descriptor}
 {
 }
 
@@ -106,7 +109,8 @@ TlsConnection::~TlsConnection()
 }
 
 TlsConnection::TlsConnection(TlsConnection&& other) noexcept
-    : m_connection{std::exchange(other.m_connection, nullptr)}, m_fd{std::exchange(other.m_fd, -1)}
+    : m_connection{std::exchange(other.m_connection, nullptr)}
+    , m_fd{std::exchange(other.m_fd, -1)}
 {
 }
 

@@ -166,16 +166,15 @@ private:
     static constexpr std::size_t low_severity_flush_interval = 100U;
 
     SingleLog()
-        : m_console_writer{&SingleLog::console_writer, this},
-          m_file_writer{&SingleLog::file_writer, this}
+        : m_console_writer{&SingleLog::console_writer, this}
+        , m_file_writer{&SingleLog::file_writer, this}
     {
     }
 
     static auto current_date_time() -> std::string
     {
         auto const now = std::chrono::system_clock::now();
-        auto const milliseconds =
-            std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+        auto const milliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
         auto const time_now = std::chrono::system_clock::to_time_t(now);
 
         auto local = tm{};
@@ -194,27 +193,17 @@ private:
             return {};
         }
 
-        static_cast<void>(std::snprintf(
-            result.data(),
-            result.size(),
-            "%s.%03d %s",
-            date.data(),
-            static_cast<int>(milliseconds.count()),
-            zone.data()
-        ));
+        static_cast<void>(std::snprintf(result.data(), result.size(), "%s.%03d %s", date.data(),
+                                        static_cast<int>(milliseconds.count()), zone.data()));
 
         return std::string{result.data()};
     }
 
-    static auto make_log_line(
-        std::string const& level,
-        std::string const& module,
-        std::string const& message
-    ) -> std::string
+    static auto make_log_line(std::string const& level, std::string const& module, std::string const& message)
+        -> std::string
     {
         auto stream = std::ostringstream{};
-        stream << current_date_time() << "  <" << level << ">  " << module << ":  " << message
-               << '\n';
+        stream << current_date_time() << "  <" << level << ">  " << module << ":  " << message << '\n';
         return stream.str();
     }
 
@@ -249,8 +238,7 @@ private:
             auto entry = LogEntry{};
             {
                 auto lock = std::unique_lock<std::mutex>{m_console_queue_lock};
-                m_console_cv.wait(lock, [this]
-                {
+                m_console_cv.wait(lock, [this] {
                     return m_console_exit || !m_console_queue.empty();
                 });
                 if (m_console_exit && m_console_queue.empty())
@@ -278,8 +266,7 @@ private:
             auto entry = LogEntry{};
             {
                 auto lock = std::unique_lock<std::mutex>{m_file_queue_lock};
-                m_file_cv.wait(lock, [this]
-                {
+                m_file_cv.wait(lock, [this] {
                     return m_file_exit || !m_file_queue.empty();
                 });
                 if (m_file_exit && m_file_queue.empty())
@@ -367,20 +354,18 @@ auto string_format(std::string const& format, Args&&... args) -> std::string
     }
 
     auto buffer = std::vector<char>(static_cast<std::size_t>(required) + 1U);
-    static_cast<void>(std::snprintf(
-        buffer.data(),
-        buffer.size(),
-        format.c_str(),
-        std::forward<Args>(args)...
-    ));
+    static_cast<void>(std::snprintf(buffer.data(), buffer.size(), format.c_str(), std::forward<Args>(args)...));
 
     return std::string{buffer.data(), static_cast<std::size_t>(required)};
 }
 
 } // namespace merovingian::observability
 
-#define LOG_FUNCTION_TRACE                                                                        \
-    auto merovingian_function_trace_guard = ::merovingian::observability::FunctionTrace{__func__}
+#define LOG_FUNCTION_TRACE                                                                                             \
+    auto merovingian_function_trace_guard = ::merovingian::observability::FunctionTrace                                \
+    {                                                                                                                  \
+        __func__                                                                                                       \
+    }
 
 #define LOG_TRACE(message) ::merovingian::observability::SingleLog::instance().trace(__func__, message)
 
@@ -388,56 +373,38 @@ auto string_format(std::string const& format, Args&&... args) -> std::string
 
 #define LOG_INFO(message) ::merovingian::observability::SingleLog::instance().info(__func__, message)
 
-#define LOG_NOTICE(message)                                                                       \
-    ::merovingian::observability::SingleLog::instance().notice(__func__, message)
+#define LOG_NOTICE(message) ::merovingian::observability::SingleLog::instance().notice(__func__, message)
 
-#define LOG_WARNING(message)                                                                      \
-    ::merovingian::observability::SingleLog::instance().warning(__func__, message)
+#define LOG_WARNING(message) ::merovingian::observability::SingleLog::instance().warning(__func__, message)
 
-#define LOG_ERROR(message)                                                                        \
-    ::merovingian::observability::SingleLog::instance().error(__func__, message)
+#define LOG_ERROR(message) ::merovingian::observability::SingleLog::instance().error(__func__, message)
 
-#define LOG_CRITICAL(message)                                                                     \
-    ::merovingian::observability::SingleLog::instance().critical(__func__, message)
+#define LOG_CRITICAL(message) ::merovingian::observability::SingleLog::instance().critical(__func__, message)
 
-#define LOGF_TRACE(format, ...)                                                                   \
-    ::merovingian::observability::SingleLog::instance().trace(                                    \
-        __func__,                                                                                 \
-        ::merovingian::observability::string_format(format, __VA_ARGS__)                          \
-    )
+#define LOGF_TRACE(format, ...)                                                                                        \
+    ::merovingian::observability::SingleLog::instance().trace(                                                         \
+        __func__, ::merovingian::observability::string_format(format, __VA_ARGS__))
 
-#define LOGF_DEBUG(format, ...)                                                                   \
-    ::merovingian::observability::SingleLog::instance().debug(                                    \
-        __func__,                                                                                 \
-        ::merovingian::observability::string_format(format, __VA_ARGS__)                          \
-    )
+#define LOGF_DEBUG(format, ...)                                                                                        \
+    ::merovingian::observability::SingleLog::instance().debug(                                                         \
+        __func__, ::merovingian::observability::string_format(format, __VA_ARGS__))
 
-#define LOGF_INFO(format, ...)                                                                    \
-    ::merovingian::observability::SingleLog::instance().info(                                     \
-        __func__,                                                                                 \
-        ::merovingian::observability::string_format(format, __VA_ARGS__)                          \
-    )
+#define LOGF_INFO(format, ...)                                                                                         \
+    ::merovingian::observability::SingleLog::instance().info(                                                          \
+        __func__, ::merovingian::observability::string_format(format, __VA_ARGS__))
 
-#define LOGF_NOTICE(format, ...)                                                                  \
-    ::merovingian::observability::SingleLog::instance().notice(                                   \
-        __func__,                                                                                 \
-        ::merovingian::observability::string_format(format, __VA_ARGS__)                          \
-    )
+#define LOGF_NOTICE(format, ...)                                                                                       \
+    ::merovingian::observability::SingleLog::instance().notice(                                                        \
+        __func__, ::merovingian::observability::string_format(format, __VA_ARGS__))
 
-#define LOGF_WARNING(format, ...)                                                                 \
-    ::merovingian::observability::SingleLog::instance().warning(                                  \
-        __func__,                                                                                 \
-        ::merovingian::observability::string_format(format, __VA_ARGS__)                          \
-    )
+#define LOGF_WARNING(format, ...)                                                                                      \
+    ::merovingian::observability::SingleLog::instance().warning(                                                       \
+        __func__, ::merovingian::observability::string_format(format, __VA_ARGS__))
 
-#define LOGF_ERROR(format, ...)                                                                   \
-    ::merovingian::observability::SingleLog::instance().error(                                    \
-        __func__,                                                                                 \
-        ::merovingian::observability::string_format(format, __VA_ARGS__)                          \
-    )
+#define LOGF_ERROR(format, ...)                                                                                        \
+    ::merovingian::observability::SingleLog::instance().error(                                                         \
+        __func__, ::merovingian::observability::string_format(format, __VA_ARGS__))
 
-#define LOGF_CRITICAL(format, ...)                                                                \
-    ::merovingian::observability::SingleLog::instance().critical(                                 \
-        __func__,                                                                                 \
-        ::merovingian::observability::string_format(format, __VA_ARGS__)                          \
-    )
+#define LOGF_CRITICAL(format, ...)                                                                                     \
+    ::merovingian::observability::SingleLog::instance().critical(                                                      \
+        __func__, ::merovingian::observability::string_format(format, __VA_ARGS__))

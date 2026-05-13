@@ -9,32 +9,32 @@ namespace merovingian::platform
 namespace
 {
 
-[[nodiscard]] auto compile_time_stack_protector_status() noexcept -> HardeningStatus
-{
+    [[nodiscard]] auto compile_time_stack_protector_status() noexcept -> HardeningStatus
+    {
 #if defined(__SSP__) || defined(__SSP_STRONG__) || defined(__SSP_ALL__)
-    return HardeningStatus::enabled;
+        return HardeningStatus::enabled;
 #else
-    return HardeningStatus::unknown;
+        return HardeningStatus::unknown;
 #endif
-}
+    }
 
-[[nodiscard]] auto compile_time_fortify_status() noexcept -> HardeningStatus
-{
+    [[nodiscard]] auto compile_time_fortify_status() noexcept -> HardeningStatus
+    {
 #if defined(_FORTIFY_SOURCE) && _FORTIFY_SOURCE > 0
-    return HardeningStatus::enabled;
+        return HardeningStatus::enabled;
 #else
-    return HardeningStatus::unknown;
+        return HardeningStatus::unknown;
 #endif
-}
+    }
 
-[[nodiscard]] auto compile_time_pie_status() noexcept -> HardeningStatus
-{
+    [[nodiscard]] auto compile_time_pie_status() noexcept -> HardeningStatus
+    {
 #if defined(__PIE__) || defined(__pie__)
-    return HardeningStatus::enabled;
+        return HardeningStatus::enabled;
 #else
-    return HardeningStatus::unknown;
+        return HardeningStatus::unknown;
 #endif
-}
+    }
 
 } // namespace
 

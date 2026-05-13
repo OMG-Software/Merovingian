@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/parser.hpp"
+
 #include "yyjson_adapter.h"
 
 #include <algorithm>
@@ -11,8 +13,6 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
-
-#include "merovingian/canonicaljson/parser.hpp"
 
 namespace merovingian::canonicaljson
 {

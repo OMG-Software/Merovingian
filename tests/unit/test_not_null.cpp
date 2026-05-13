@@ -14,7 +14,9 @@ SCENARIO("not_null rejects nullptr", "[core][not_null]")
 
         WHEN("a not_null wrapper is constructed")
         {
-            auto make_not_null = [&value]() { return merovingian::core::not_null<int*>{value}; };
+            auto make_not_null = [&value]() {
+                return merovingian::core::not_null<int*>{value};
+            };
 
             THEN("construction throws invalid_argument")
             {

@@ -7,16 +7,21 @@
 #include <string>
 #include <vector>
 
-SCENARIO("Integrated runtime hardening flow accepts a complete Linux deployment profile", "[platform][hardening][integration]")
+SCENARIO("Integrated runtime hardening flow accepts a complete Linux deployment profile",
+         "[platform][hardening][integration]")
 {
     GIVEN("a default Linux hardening profile and required gates")
     {
         auto const profile = merovingian::platform::default_linux_hardening_profile();
         auto const gates = std::vector<merovingian::platform::HardeningGate>{
-            {"privilege-drop", merovingian::platform::HardeningAction::privilege_drop, merovingian::platform::HardeningMode::required, true},
-            {"seccomp", merovingian::platform::HardeningAction::syscall_filter, merovingian::platform::HardeningMode::required, true},
-            {"capability-bounding", merovingian::platform::HardeningAction::capability_bounding, merovingian::platform::HardeningMode::required, true},
-            {"systemd-sandbox", merovingian::platform::HardeningAction::sandbox_profile, merovingian::platform::HardeningMode::optional, false},
+            {"privilege-drop",      merovingian::platform::HardeningAction::privilege_drop,
+             merovingian::platform::HardeningMode::required, true },
+            {"seccomp",             merovingian::platform::HardeningAction::syscall_filter,
+             merovingian::platform::HardeningMode::required, true },
+            {"capability-bounding", merovingian::platform::HardeningAction::capability_bounding,
+             merovingian::platform::HardeningMode::required, true },
+            {"systemd-sandbox",     merovingian::platform::HardeningAction::sandbox_profile,
+             merovingian::platform::HardeningMode::optional, false},
         };
 
         WHEN("profile and gates are evaluated")
@@ -35,13 +40,15 @@ SCENARIO("Integrated runtime hardening flow accepts a complete Linux deployment 
     }
 }
 
-SCENARIO("Integrated runtime hardening flow rejects incomplete required deployment gates", "[platform][hardening][integration]")
+SCENARIO("Integrated runtime hardening flow rejects incomplete required deployment gates",
+         "[platform][hardening][integration]")
 {
     GIVEN("a profile with a missing required syscall filter gate")
     {
         auto const profile = merovingian::platform::default_linux_hardening_profile();
         auto const gates = std::vector<merovingian::platform::HardeningGate>{
-            {"seccomp", merovingian::platform::HardeningAction::syscall_filter, merovingian::platform::HardeningMode::required, false},
+            {"seccomp", merovingian::platform::HardeningAction::syscall_filter,
+             merovingian::platform::HardeningMode::required, false},
         };
 
         WHEN("profile and gates are evaluated")

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/homeserver/vertical_slice.hpp"
-
 #include "local_services.hpp"
+#include "merovingian/homeserver/vertical_slice.hpp"
 
 #include <string>
 
@@ -11,10 +10,10 @@ namespace merovingian::homeserver
 namespace
 {
 
-[[nodiscard]] auto demo_secret() -> std::string
-{
-    return std::string{"LocalDemo"} + std::string{"Pass"} + std::string{"1!"};
-}
+    [[nodiscard]] auto demo_secret() -> std::string
+    {
+        return std::string{"LocalDemo"} + std::string{"Pass"} + std::string{"1!"};
+    }
 
 } // namespace
 

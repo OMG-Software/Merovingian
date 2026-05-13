@@ -4,6 +4,10 @@
 
 #include "merovingian/core/file_descriptor.hpp"
 
+#include <cerrno>
+#include <cstring>
+#include <string>
+
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -11,39 +15,35 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <cerrno>
-#include <cstring>
-#include <string>
-
 namespace merovingian::net
 {
 namespace
 {
 
-constexpr auto listen_backlog = 128;
+    constexpr auto listen_backlog = 128;
 
-[[nodiscard]] auto error_message(int code) -> std::string
-{
-    auto const* text = std::strerror(code);
-    return text == nullptr ? std::string{"unknown error"} : std::string{text};
-}
+    [[nodiscard]] auto error_message(int code) -> std::string
+    {
+        auto const* text = std::strerror(code);
+        return text == nullptr ? std::string{"unknown error"} : std::string{text};
+    }
 
-[[nodiscard]] auto extract_port(sockaddr_storage const& storage) noexcept -> std::uint16_t
-{
-    if (storage.ss_family == AF_INET)
+    [[nodiscard]] auto extract_port(sockaddr_storage const& storage) noexcept -> std::uint16_t
     {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        auto const& v4 = reinterpret_cast<sockaddr_in const&>(storage);
-        return ntohs(v4.sin_port);
+        if (storage.ss_family == AF_INET)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            auto const& v4 = reinterpret_cast<sockaddr_in const&>(storage);
+            return ntohs(v4.sin_port);
+        }
+        if (storage.ss_family == AF_INET6)
+        {
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+            auto const& v6 = reinterpret_cast<sockaddr_in6 const&>(storage);
+            return ntohs(v6.sin6_port);
+        }
+        return 0U;
     }
-    if (storage.ss_family == AF_INET6)
-    {
-        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-        auto const& v6 = reinterpret_cast<sockaddr_in6 const&>(storage);
-        return ntohs(v6.sin6_port);
-    }
-    return 0U;
-}
 
 } // namespace
 
@@ -92,7 +92,8 @@ auto TcpAcceptor::bind(std::string_view host, std::uint16_t port) -> TcpBindResu
         {
             auto const v6_only = 1;
             // Restrict v6 binds to v6 to avoid silently shadowing a separate v4 bind.
-            static_cast<void>(::setsockopt(handle.native_handle(), IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only)));
+            static_cast<void>(
+                ::setsockopt(handle.native_handle(), IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only)));
         }
 
         if (::bind(handle.native_handle(), candidate->ai_addr, candidate->ai_addrlen) != 0)

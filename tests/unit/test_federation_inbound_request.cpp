@@ -37,12 +37,8 @@ namespace
     return remote;
 }
 
-[[nodiscard]] auto signed_request(
-    std::string const& origin,
-    std::string const& key_id,
-    std::string const& verify_token,
-    std::string const& body
-) -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_request(std::string const& origin, std::string const& key_id, std::string const& verify_token,
+                                  std::string const& body) -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
@@ -53,21 +49,16 @@ namespace
     request.now_ts = 1000U;
     request.canonical_json_verified = true;
     request.body = body;
-    request.signature = merovingian::federation::make_federation_signature(
-        request.origin,
-        request.key_id,
-        verify_token,
-        request.method,
-        request.target,
-        request.origin_server_ts,
-        request.body
-    );
+    request.signature =
+        merovingian::federation::make_federation_signature(request.origin, request.key_id, verify_token, request.method,
+                                                           request.target, request.origin_server_ts, request.body);
     return request;
 }
 
 [[nodiscard]] auto pdu_for(std::string const& origin) -> std::string
 {
-    return "$event1:example.org,!room1:example.org,m.room.message,@alice:" + origin + ',' + origin + ",ed25519:auto,signature";
+    return "$event1:example.org,!room1:example.org,m.room.message,@alice:" + origin + ',' + origin +
+           ",ed25519:auto,signature";
 }
 
 } // namespace
@@ -78,7 +69,8 @@ SCENARIO("Federation signing key summaries never disclose verification material"
     {
         WHEN("the signing boundary is created and summarized")
         {
-            auto const key = merovingian::federation::load_server_signing_key("matrix.example.org", "ed25519:auto", "local-signing-material");
+            auto const key = merovingian::federation::load_server_signing_key("matrix.example.org", "ed25519:auto",
+                                                                              "local-signing-material");
             auto const summary = merovingian::federation::signing_key_summary(key);
 
             THEN("the key is usable and the summary is redacted")
@@ -95,7 +87,8 @@ SCENARIO("Federation signing key summaries never disclose verification material"
     }
 }
 
-SCENARIO("Signed federation request verification rejects stale bad mismatched and uncanonical requests", "[federation][inbound][security]")
+SCENARIO("Signed federation request verification rejects stale bad mismatched and uncanonical requests",
+         "[federation][inbound][security]")
 {
     GIVEN("a key record and signed request")
     {
@@ -117,9 +110,12 @@ SCENARIO("Signed federation request verification rejects stale bad mismatched an
         {
             auto const accepted = merovingian::federation::verify_signed_federation_request(valid, key, 300U);
             auto const rejected_stale = merovingian::federation::verify_signed_federation_request(stale, key, 300U);
-            auto const rejected_mismatch = merovingian::federation::verify_signed_federation_request(mismatched, key, 300U);
-            auto const rejected_bad_signature = merovingian::federation::verify_signed_federation_request(bad_signature, key, 300U);
-            auto const rejected_uncanonical = merovingian::federation::verify_signed_federation_request(uncanonical, key, 300U);
+            auto const rejected_mismatch =
+                merovingian::federation::verify_signed_federation_request(mismatched, key, 300U);
+            auto const rejected_bad_signature =
+                merovingian::federation::verify_signed_federation_request(bad_signature, key, 300U);
+            auto const rejected_uncanonical =
+                merovingian::federation::verify_signed_federation_request(uncanonical, key, 300U);
 
             THEN("only the fresh matching canonical signature is accepted")
             {
@@ -179,7 +175,8 @@ SCENARIO("Inbound federation handles non-transaction endpoints without PDU valid
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
         auto request = signed_request(origin, key_id, token, "invite-body-without-pdus");
         request.target = "/_matrix/federation/v1/invite/!room1:example.org/$event1:example.org";
-        request.signature = merovingian::federation::make_federation_signature(origin, key_id, token, request.method, request.target, request.origin_server_ts, request.body);
+        request.signature = merovingian::federation::make_federation_signature(
+            origin, key_id, token, request.method, request.target, request.origin_server_ts, request.body);
 
         WHEN("the request is handled")
         {
@@ -206,8 +203,12 @@ SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", 
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
         auto extra_segment = signed_request(origin, key_id, token, pdu_for(origin));
         extra_segment.target = "/_matrix/federation/v1/send/txn123/extra";
-        extra_segment.signature = merovingian::federation::make_federation_signature(origin, key_id, token, extra_segment.method, extra_segment.target, extra_segment.origin_server_ts, extra_segment.body);
-        auto missing_signature = signed_request(origin, key_id, token, "$event1:example.org,!room1:example.org,m.room.message,@alice:matrix.example.org,matrix.example.org,ed25519:auto");
+        extra_segment.signature = merovingian::federation::make_federation_signature(
+            origin, key_id, token, extra_segment.method, extra_segment.target, extra_segment.origin_server_ts,
+            extra_segment.body);
+        auto missing_signature = signed_request(origin, key_id, token,
+                                                "$event1:example.org,!room1:example.org,m.room.message,@alice:matrix."
+                                                "example.org,matrix.example.org,ed25519:auto");
 
         WHEN("the requests are handled")
         {
@@ -225,7 +226,8 @@ SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", 
     }
 }
 
-SCENARIO("Inbound federation fails closed for unknown private denied and quarantined remotes", "[federation][inbound][security]")
+SCENARIO("Inbound federation fails closed for unknown private denied and quarantined remotes",
+         "[federation][inbound][security]")
 {
     GIVEN("validly signed requests with failing remote controls")
     {
@@ -253,10 +255,14 @@ SCENARIO("Inbound federation fails closed for unknown private denied and quarant
 
         WHEN("each request is handled")
         {
-            auto const unknown_response = merovingian::federation::handle_inbound_federation_request(unknown_runtime, request);
-            auto const private_response = merovingian::federation::handle_inbound_federation_request(private_runtime, request);
-            auto const denied_response = merovingian::federation::handle_inbound_federation_request(denied_runtime, request);
-            auto const quarantined_response = merovingian::federation::handle_inbound_federation_request(quarantined_runtime, request);
+            auto const unknown_response =
+                merovingian::federation::handle_inbound_federation_request(unknown_runtime, request);
+            auto const private_response =
+                merovingian::federation::handle_inbound_federation_request(private_runtime, request);
+            auto const denied_response =
+                merovingian::federation::handle_inbound_federation_request(denied_runtime, request);
+            auto const quarantined_response =
+                merovingian::federation::handle_inbound_federation_request(quarantined_runtime, request);
 
             THEN("all failing controls reject the request")
             {
@@ -305,7 +311,8 @@ SCENARIO("Inbound federation applies backoff and increments failure count", "[fe
     }
 }
 
-SCENARIO("Federation PDU authorization rejects sender origin and event signature mismatches", "[federation][inbound][pdu]")
+SCENARIO("Federation PDU authorization rejects sender origin and event signature mismatches",
+         "[federation][inbound][pdu]")
 {
     GIVEN("PDUs with mismatched origin and signatures")
     {
@@ -320,9 +327,12 @@ SCENARIO("Federation PDU authorization rejects sender origin and event signature
         WHEN("PDUs are authorized")
         {
             auto const accepted = merovingian::federation::authorize_federation_pdu(valid, "matrix.example.org");
-            auto const rejected_sender = merovingian::federation::authorize_federation_pdu(bad_sender, "matrix.example.org");
-            auto const rejected_spoofed_sender = merovingian::federation::authorize_federation_pdu(spoofed_sender, "matrix.example.org");
-            auto const rejected_signature = merovingian::federation::authorize_federation_pdu(bad_signature, "matrix.example.org");
+            auto const rejected_sender =
+                merovingian::federation::authorize_federation_pdu(bad_sender, "matrix.example.org");
+            auto const rejected_spoofed_sender =
+                merovingian::federation::authorize_federation_pdu(spoofed_sender, "matrix.example.org");
+            auto const rejected_signature =
+                merovingian::federation::authorize_federation_pdu(bad_signature, "matrix.example.org");
 
             THEN("origin and signature mismatches fail closed")
             {

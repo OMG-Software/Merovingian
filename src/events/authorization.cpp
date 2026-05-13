@@ -10,28 +10,28 @@ namespace merovingian::events
 namespace
 {
 
-[[nodiscard]] auto auth_rule_name(rooms::AuthRules rules) noexcept -> char const*
-{
-    switch (rules)
+    [[nodiscard]] auto auth_rule_name(rooms::AuthRules rules) noexcept -> char const*
     {
-    case rooms::AuthRules::room_v1:
-        return "room_v1";
-    case rooms::AuthRules::room_v6_plus:
-        return "room_v6_plus";
+        switch (rules)
+        {
+        case rooms::AuthRules::room_v1:
+            return "room_v1";
+        case rooms::AuthRules::room_v6_plus:
+            return "room_v6_plus";
+        }
+
+        return "unknown";
     }
 
-    return "unknown";
-}
+    [[nodiscard]] auto requires_power_levels(std::string_view event_type) noexcept -> bool
+    {
+        return event_type != "m.room.create";
+    }
 
-[[nodiscard]] auto requires_power_levels(std::string_view event_type) noexcept -> bool
-{
-    return event_type != "m.room.create";
-}
-
-[[nodiscard]] auto requires_membership(std::string_view event_type) noexcept -> bool
-{
-    return event_type == "m.room.member";
-}
+    [[nodiscard]] auto requires_membership(std::string_view event_type) noexcept -> bool
+    {
+        return event_type == "m.room.member";
+    }
 
 } // namespace
 
@@ -146,7 +146,8 @@ auto select_auth_events(EventAuthorizationRequest const& request) -> AuthEventSe
     }
     if (request.membership.third_party_invite)
     {
-        selection.required.push_back({AuthEventKind::third_party_invite, "m.room.third_party_invite", request.state_key});
+        selection.required.push_back(
+            {AuthEventKind::third_party_invite, "m.room.third_party_invite", request.state_key});
     }
 
     return selection;

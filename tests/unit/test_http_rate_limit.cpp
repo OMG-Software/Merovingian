@@ -68,7 +68,8 @@ SCENARIO("HTTP endpoint defaults protect sensitive Matrix endpoints", "[http][ra
             auto const login = merovingian::http::endpoint_default_rate_limit(post, "/_matrix/client/v3/login");
             auto const keys = merovingian::http::endpoint_default_rate_limit(post, "/_matrix/client/v3/keys/upload");
             auto const media = merovingian::http::endpoint_default_rate_limit(get, "/_matrix/media/v3/download/a/b");
-            auto const federation = merovingian::http::endpoint_default_rate_limit(put, "/_matrix/federation/v1/send/1");
+            auto const federation =
+                merovingian::http::endpoint_default_rate_limit(put, "/_matrix/federation/v1/send/1");
             auto const generic = merovingian::http::endpoint_default_rate_limit(get, "/_matrix/client/v3/sync");
 
             THEN("sensitive endpoints receive stricter limits")

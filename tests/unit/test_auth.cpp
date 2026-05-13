@@ -49,7 +49,8 @@ SCENARIO("Auth server-name validator rejects malformed host and port shapes", "[
         WHEN("server names are validated")
         {
             auto const valid_hostname_result = merovingian::auth::server_name_is_valid(valid_hostname);
-            auto const valid_hostname_with_port_result = merovingian::auth::server_name_is_valid(valid_hostname_with_port);
+            auto const valid_hostname_with_port_result =
+                merovingian::auth::server_name_is_valid(valid_hostname_with_port);
             auto const valid_ipv6_with_port_result = merovingian::auth::server_name_is_valid(valid_ipv6_with_port);
             auto const missing_hostname_result = merovingian::auth::server_name_is_valid(missing_hostname);
             auto const missing_port_result = merovingian::auth::server_name_is_valid(missing_port);
@@ -100,7 +101,8 @@ SCENARIO("Auth login policy blocks locked and suspended accounts", "[auth]")
     {
         auto active = merovingian::auth::UserIdentity{"@alice:example.org"};
         auto locked = merovingian::auth::UserIdentity{"@bob:example.org", merovingian::auth::AccountState::locked};
-        auto suspended = merovingian::auth::UserIdentity{"@carol:example.org", merovingian::auth::AccountState::suspended};
+        auto suspended =
+            merovingian::auth::UserIdentity{"@carol:example.org", merovingian::auth::AccountState::suspended};
 
         WHEN("login policy is evaluated")
         {
@@ -186,7 +188,8 @@ SCENARIO("Auth token helpers avoid plaintext token disclosure", "[auth][tokens]"
         {
             auto const redacted = merovingian::auth::redacted_token_for_log(token_secret);
             auto const matching = merovingian::auth::constant_time_equal(token_secret, token_secret);
-            auto const different = merovingian::auth::constant_time_equal(token_secret, "different-token-secret-000000000000");
+            auto const different =
+                merovingian::auth::constant_time_equal(token_secret, "different-token-secret-000000000000");
 
             THEN("logs contain only metadata and comparison remains exact")
             {

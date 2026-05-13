@@ -1,17 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <cerrno>
-#include <cstdint>
-#include <fstream>
-#include <iostream>
-#include <mutex>
-#include <optional>
-#include <string>
-#include <string_view>
-#include <thread>
-#include <utility>
-#include <vector>
-
 #include "merovingian/bootstrap/exit_code.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/config/config_parser.hpp"
@@ -29,6 +17,19 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+
+#include <cerrno>
+#include <cstdint>
+#include <fstream>
+#include <iostream>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
+
 #include <poll.h>
 
 namespace

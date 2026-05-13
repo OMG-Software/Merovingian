@@ -145,8 +145,7 @@ struct HardeningGate final
 [[nodiscard]] auto signal_handling_plan_is_safe(SignalHandlingPlan const& plan) noexcept -> bool;
 [[nodiscard]] auto linux_hardening_plan_is_documented(LinuxHardeningPlan const& plan) noexcept -> bool;
 [[nodiscard]] auto bsd_hardening_plan_is_documented(BsdHardeningPlan const& plan) noexcept -> bool;
-[[nodiscard]] auto evaluate_runtime_hardening_profile(RuntimeHardeningProfile const& profile)
-    -> HardeningPlanDecision;
+[[nodiscard]] auto evaluate_runtime_hardening_profile(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision;
 [[nodiscard]] auto evaluate_hardening_gates(std::vector<HardeningGate> const& gates) -> HardeningPlanDecision;
 [[nodiscard]] auto linux_deployment_profile_notes() -> std::vector<std::string>;
 [[nodiscard]] auto bsd_deployment_profile_notes() -> std::vector<std::string>;

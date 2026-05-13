@@ -10,33 +10,33 @@ namespace merovingian::canonicaljson
 namespace
 {
 
-// Canonical JSON values are trees; object cloning recursively deep-copies children.
-// NOLINTNEXTLINE(misc-no-recursion)
-[[nodiscard]] auto clone_object(Object const& object) -> Object
-{
-    auto cloned = Object{};
-    cloned.reserve(object.size());
-    for (auto const& member : object)
+    // Canonical JSON values are trees; object cloning recursively deep-copies children.
+    // NOLINTNEXTLINE(misc-no-recursion)
+    [[nodiscard]] auto clone_object(Object const& object) -> Object
     {
-        cloned.push_back(make_member(member.key, *member.value));
-    }
+        auto cloned = Object{};
+        cloned.reserve(object.size());
+        for (auto const& member : object)
+        {
+            cloned.push_back(make_member(member.key, *member.value));
+        }
 
-    return cloned;
-}
+        return cloned;
+    }
 
 } // namespace
 
 ObjectMember::ObjectMember(std::string key_value, std::unique_ptr<Value> owned_value)
-    : key{std::move(key_value)},
-      value{std::move(owned_value)}
+    : key{std::move(key_value)}
+    , value{std::move(owned_value)}
 {
 }
 
 // Object members own child values, so copying intentionally deep-copies the child tree.
 // NOLINTNEXTLINE(misc-no-recursion)
 ObjectMember::ObjectMember(ObjectMember const& other)
-    : key{other.key},
-      value{other.value == nullptr ? nullptr : std::make_unique<Value>(*other.value)}
+    : key{other.key}
+    , value{other.value == nullptr ? nullptr : std::make_unique<Value>(*other.value)}
 {
 }
 

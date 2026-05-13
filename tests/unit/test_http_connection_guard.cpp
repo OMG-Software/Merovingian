@@ -38,7 +38,8 @@ SCENARIO("HTTP slowloris guard allows grace period and rejects slow progress", "
             auto const grace_period_too_slow = merovingian::http::request_progress_is_too_slow({0U, 5U}, policy);
             auto const under_rate_too_slow = merovingian::http::request_progress_is_too_slow({63U, 6U}, policy);
             auto const at_rate_too_slow = merovingian::http::request_progress_is_too_slow({64U, 6U}, policy);
-            auto const deadline_exceeded_too_slow = merovingian::http::request_progress_is_too_slow({4096U, 31U}, policy);
+            auto const deadline_exceeded_too_slow =
+                merovingian::http::request_progress_is_too_slow({4096U, 31U}, policy);
 
             THEN("only slow or deadline-exceeded progress is rejected")
             {

@@ -10,7 +10,8 @@ SCENARIO("HTTP request head parser accepts bounded simple requests", "[http][req
 {
     GIVEN("a simple bounded HTTP request head")
     {
-        auto constexpr input = "GET /_matrix/client/v3/login HTTP/1.1\r\nHost: example.org\r\nContent-Length: 0\r\n\r\n";
+        auto constexpr input =
+            "GET /_matrix/client/v3/login HTTP/1.1\r\nHost: example.org\r\nContent-Length: 0\r\n\r\n";
 
         WHEN("the request head is parsed")
         {

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/federation/security.hpp"
 #include "merovingian/federation/transactions.hpp"
+
+#include "merovingian/federation/security.hpp"
 
 #include <string>
 #include <utility>
@@ -12,34 +13,37 @@ namespace merovingian::federation
 namespace
 {
 
-[[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
-{
-    return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
-}
-
-[[nodiscard]] auto dynamic_suffix_has_segments(std::string_view target, std::string_view prefix, std::size_t expected_segments) noexcept -> bool
-{
-    if (target.size() <= prefix.size() || !starts_with(target, prefix))
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
-        return false;
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
     }
-    auto const suffix = target.substr(prefix.size());
-    auto segments = std::size_t{1U};
-    for (auto const character : suffix)
+
+    [[nodiscard]] auto dynamic_suffix_has_segments(std::string_view target, std::string_view prefix,
+                                                   std::size_t expected_segments) noexcept -> bool
     {
-        if (character == '/')
+        if (target.size() <= prefix.size() || !starts_with(target, prefix))
         {
-            ++segments;
+            return false;
         }
+        auto const suffix = target.substr(prefix.size());
+        auto segments = std::size_t{1U};
+        for (auto const character : suffix)
+        {
+            if (character == '/')
+            {
+                ++segments;
+            }
+        }
+        return segments == expected_segments && suffix.find("//") == std::string_view::npos && suffix.front() != '/' &&
+               suffix.back() != '/';
     }
-    return segments == expected_segments && suffix.find("//") == std::string_view::npos && suffix.front() != '/' && suffix.back() != '/';
-}
 
-[[nodiscard]] auto route(std::string method, std::string path_template, FederationEndpoint endpoint) -> FederationRoute
-{
-    auto const requires_event_signatures = endpoint != FederationEndpoint::edu;
-    return {std::move(method), std::move(path_template), endpoint, true, requires_event_signatures};
-}
+    [[nodiscard]] auto route(std::string method, std::string path_template, FederationEndpoint endpoint)
+        -> FederationRoute
+    {
+        auto const requires_event_signatures = endpoint != FederationEndpoint::edu;
+        return {std::move(method), std::move(path_template), endpoint, true, requires_event_signatures};
+    }
 
 } // namespace
 
@@ -89,38 +93,41 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::transaction && candidate.path_template == "/_matrix/federation/v1/send/{txnId}"
-            && dynamic_suffix_has_segments(target, "/_matrix/federation/v1/send/", 1U))
+        if (candidate.endpoint == FederationEndpoint::transaction &&
+            candidate.path_template == "/_matrix/federation/v1/send/{txnId}" &&
+            dynamic_suffix_has_segments(target, "/_matrix/federation/v1/send/", 1U))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::send_join
-            && dynamic_suffix_has_segments(target, "/_matrix/federation/v2/send_join/", 2U))
+        if (candidate.endpoint == FederationEndpoint::send_join &&
+            dynamic_suffix_has_segments(target, "/_matrix/federation/v2/send_join/", 2U))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::send_leave
-            && dynamic_suffix_has_segments(target, "/_matrix/federation/v2/send_leave/", 2U))
+        if (candidate.endpoint == FederationEndpoint::send_leave &&
+            dynamic_suffix_has_segments(target, "/_matrix/federation/v2/send_leave/", 2U))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::invite && candidate.path_template == "/_matrix/federation/v2/invite/{roomId}/{eventId}"
-            && dynamic_suffix_has_segments(target, "/_matrix/federation/v2/invite/", 2U))
+        if (candidate.endpoint == FederationEndpoint::invite &&
+            candidate.path_template == "/_matrix/federation/v2/invite/{roomId}/{eventId}" &&
+            dynamic_suffix_has_segments(target, "/_matrix/federation/v2/invite/", 2U))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::invite && candidate.path_template == "/_matrix/federation/v1/invite/{roomId}/{eventId}"
-            && dynamic_suffix_has_segments(target, "/_matrix/federation/v1/invite/", 2U))
+        if (candidate.endpoint == FederationEndpoint::invite &&
+            candidate.path_template == "/_matrix/federation/v1/invite/{roomId}/{eventId}" &&
+            dynamic_suffix_has_segments(target, "/_matrix/federation/v1/invite/", 2U))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::backfill
-            && dynamic_suffix_has_segments(target, "/_matrix/federation/v1/backfill/", 1U))
+        if (candidate.endpoint == FederationEndpoint::backfill &&
+            dynamic_suffix_has_segments(target, "/_matrix/federation/v1/backfill/", 1U))
         {
             return {true, candidate, {}};
         }
-        if (candidate.endpoint == FederationEndpoint::edu
-            && dynamic_suffix_has_segments(target, "/_matrix/federation/v1/send_edu/", 2U))
+        if (candidate.endpoint == FederationEndpoint::edu &&
+            dynamic_suffix_has_segments(target, "/_matrix/federation/v1/send_edu/", 2U))
         {
             return {true, candidate, {}};
         }
@@ -129,10 +136,8 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
     return {false, {}, "federation route not found"};
 }
 
-auto validate_federation_transaction(
-    FederationTransaction const& transaction,
-    std::size_t max_transaction_bytes
-) -> FederationTransactionDecision
+auto validate_federation_transaction(FederationTransaction const& transaction, std::size_t max_transaction_bytes)
+    -> FederationTransactionDecision
 {
     if (!server_name_is_valid(transaction.origin))
     {

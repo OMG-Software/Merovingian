@@ -7,7 +7,8 @@
 
 #include <string>
 
-SCENARIO("Federation discovery accepts public TLS remotes and rejects SSRF targets", "[federation][security][discovery]")
+SCENARIO("Federation discovery accepts public TLS remotes and rejects SSRF targets",
+         "[federation][security][discovery]")
 {
     GIVEN("public and private remote discovery records")
     {
@@ -78,10 +79,14 @@ SCENARIO("Federation request and event signature hooks fail closed", "[federatio
 
         WHEN("signature hooks are evaluated")
         {
-            auto const valid_request_decision = merovingian::federation::verify_federation_request_signature(valid_request);
-            auto const invalid_request_decision = merovingian::federation::verify_federation_request_signature(invalid_request);
-            auto const valid_event_decision = merovingian::federation::verify_federation_event_signatures(event_signatures, "matrix.example.org");
-            auto const invalid_event_decision = merovingian::federation::verify_federation_event_signatures(event_signatures, "elsewhere.example.org");
+            auto const valid_request_decision =
+                merovingian::federation::verify_federation_request_signature(valid_request);
+            auto const invalid_request_decision =
+                merovingian::federation::verify_federation_request_signature(invalid_request);
+            auto const valid_event_decision =
+                merovingian::federation::verify_federation_event_signatures(event_signatures, "matrix.example.org");
+            auto const invalid_event_decision =
+                merovingian::federation::verify_federation_event_signatures(event_signatures, "elsewhere.example.org");
 
             THEN("only verified request and expected-server event signatures are accepted")
             {
@@ -96,7 +101,8 @@ SCENARIO("Federation request and event signature hooks fail closed", "[federatio
     }
 }
 
-SCENARIO("Remote trust controls cover rate limit, backoff, circuit breaker, reputation, and quarantine", "[federation][security][trust]")
+SCENARIO("Remote trust controls cover rate limit, backoff, circuit breaker, reputation, and quarantine",
+         "[federation][security][trust]")
 {
     GIVEN("remote trust states")
     {

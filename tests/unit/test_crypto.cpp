@@ -17,7 +17,10 @@ namespace
 class FixedSigningKeyStore final : public merovingian::crypto::SigningKeyStore
 {
 public:
-    explicit FixedSigningKeyStore(merovingian::crypto::SigningKeyRecord key) : m_key{std::move(key)} {}
+    explicit FixedSigningKeyStore(merovingian::crypto::SigningKeyRecord key)
+        : m_key{std::move(key)}
+    {
+    }
 
     [[nodiscard]] auto active_key_for_server(std::string_view server_name)
         -> merovingian::crypto::SigningKeyLookupResult override
@@ -52,13 +55,12 @@ public:
         return {merovingian::crypto::Ed25519Signature{std::string(64U, 's')}, {}};
     }
 
-    [[nodiscard]] auto verify(
-        merovingian::crypto::Ed25519PublicKey const& public_key,
-        std::string_view message,
-        merovingian::crypto::Ed25519Signature const& signature
-    ) -> merovingian::crypto::VerificationResult override
+    [[nodiscard]] auto verify(merovingian::crypto::Ed25519PublicKey const& public_key, std::string_view message,
+                              merovingian::crypto::Ed25519Signature const& signature)
+        -> merovingian::crypto::VerificationResult override
     {
-        auto const valid = public_key.bytes.size() == 32U && !message.empty() && signature.bytes == std::string(64U, 's');
+        auto const valid =
+            public_key.bytes.size() == 32U && !message.empty() && signature.bytes == std::string(64U, 's');
         return {valid, valid ? std::string{} : std::string{"signature verification failed"}};
     }
 };
@@ -120,10 +122,13 @@ SCENARIO("Crypto Ed25519 boundary validates key and signature shapes", "[crypto]
 
         WHEN("the shapes are validated")
         {
-            auto const valid_public_key_result = merovingian::crypto::ed25519_public_key_shape_is_valid(valid_public_key);
-            auto const invalid_public_key_result = merovingian::crypto::ed25519_public_key_shape_is_valid(invalid_public_key);
+            auto const valid_public_key_result =
+                merovingian::crypto::ed25519_public_key_shape_is_valid(valid_public_key);
+            auto const invalid_public_key_result =
+                merovingian::crypto::ed25519_public_key_shape_is_valid(invalid_public_key);
             auto const valid_signature_result = merovingian::crypto::ed25519_signature_shape_is_valid(valid_signature);
-            auto const invalid_signature_result = merovingian::crypto::ed25519_signature_shape_is_valid(invalid_signature);
+            auto const invalid_signature_result =
+                merovingian::crypto::ed25519_signature_shape_is_valid(invalid_signature);
             auto const valid_key_id_result = merovingian::crypto::ed25519_key_id_is_valid("ed25519:auto");
             auto const invalid_key_id_result = merovingian::crypto::ed25519_key_id_is_valid("rsa:auto");
 
@@ -144,12 +149,12 @@ SCENARIO("Crypto signing service signs with the active server key", "[crypto][si
 {
     GIVEN("an active signing key and provider")
     {
-        auto store = FixedSigningKeyStore{merovingian::crypto::SigningKeyRecord{
-            "example.org",
-            "ed25519:auto",
-            merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
-            true,
-        }};
+        auto store = FixedSigningKeyStore{
+            merovingian::crypto::SigningKeyRecord{
+                                                  "example.org", "ed25519:auto",
+                                                  merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                                                  true, }
+        };
         auto provider = FixedEd25519Provider{};
 
         WHEN("a server signature is requested")
@@ -171,12 +176,12 @@ SCENARIO("Crypto signing service fails closed for unusable keys", "[crypto][sign
 {
     GIVEN("an inactive signing key")
     {
-        auto store = FixedSigningKeyStore{merovingian::crypto::SigningKeyRecord{
-            "example.org",
-            "ed25519:auto",
-            merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
-            false,
-        }};
+        auto store = FixedSigningKeyStore{
+            merovingian::crypto::SigningKeyRecord{
+                                                  "example.org", "ed25519:auto",
+                                                  merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                                                  false, }
+        };
         auto provider = FixedEd25519Provider{};
 
         WHEN("a server signature is requested")

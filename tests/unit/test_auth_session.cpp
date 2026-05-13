@@ -32,23 +32,17 @@ SCENARIO("Client auth endpoint scaffold classifies public and token-protected ro
         WHEN("endpoint metadata is queried")
         {
             auto const login_requires_token = merovingian::auth::client_auth_endpoint_requires_access_token(
-                merovingian::auth::ClientAuthEndpoint::login
-            );
+                merovingian::auth::ClientAuthEndpoint::login);
             auto const register_requires_token = merovingian::auth::client_auth_endpoint_requires_access_token(
-                merovingian::auth::ClientAuthEndpoint::register_account
-            );
+                merovingian::auth::ClientAuthEndpoint::register_account);
             auto const logout_requires_token = merovingian::auth::client_auth_endpoint_requires_access_token(
-                merovingian::auth::ClientAuthEndpoint::logout
-            );
+                merovingian::auth::ClientAuthEndpoint::logout);
             auto const devices_requires_token = merovingian::auth::client_auth_endpoint_requires_access_token(
-                merovingian::auth::ClientAuthEndpoint::list_devices
-            );
-            auto const login_mutates = merovingian::auth::client_auth_endpoint_mutates_session(
-                merovingian::auth::ClientAuthEndpoint::login
-            );
+                merovingian::auth::ClientAuthEndpoint::list_devices);
+            auto const login_mutates =
+                merovingian::auth::client_auth_endpoint_mutates_session(merovingian::auth::ClientAuthEndpoint::login);
             auto const list_devices_mutates = merovingian::auth::client_auth_endpoint_mutates_session(
-                merovingian::auth::ClientAuthEndpoint::list_devices
-            );
+                merovingian::auth::ClientAuthEndpoint::list_devices);
 
             THEN("login and registration are public entry points and session-changing endpoints are marked")
             {
@@ -132,12 +126,8 @@ SCENARIO("Client auth audit summaries do not include plaintext access tokens", "
         WHEN("an audit event summary is generated")
         {
             auto const event = merovingian::auth::make_client_auth_audit_event(
-                merovingian::auth::ClientAuthEndpoint::login,
-                "@alice:example.org",
-                "DEVICE123",
-                false,
-                "account locked"
-            );
+                merovingian::auth::ClientAuthEndpoint::login, "@alice:example.org", "DEVICE123", false,
+                "account locked");
             auto const summary = merovingian::auth::client_auth_audit_summary(event);
 
             THEN("the summary contains boundary metadata without token material")
