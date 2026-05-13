@@ -25,6 +25,7 @@ jobs:
             clang \
             clang-tidy \
             catch2 \
+            libpq-dev \
             libssl-dev \
             libsqlite3-dev \
             libsodium-dev \

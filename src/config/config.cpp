@@ -97,6 +97,24 @@ auto database_backend_performance_warning(DatabaseBackend backend) noexcept -> s
                : std::string_view{};
 }
 
+auto database_role_name(DatabaseRole role) noexcept -> std::string_view
+{
+    return role == DatabaseRole::migration ? "migration" : "runtime";
+}
+
+auto parse_database_role(std::string_view value) noexcept -> std::optional<DatabaseRole>
+{
+    if (value == "runtime")
+    {
+        return DatabaseRole::runtime;
+    }
+    if (value == "migration")
+    {
+        return DatabaseRole::migration;
+    }
+    return std::nullopt;
+}
+
 auto parse_port(std::string_view value) noexcept -> std::uint32_t
 {
     if (value.empty())

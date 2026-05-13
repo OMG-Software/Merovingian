@@ -17,6 +17,7 @@ namespace merovingian::database
 enum class PersistentStoreBackend
 {
     memory,
+    postgresql,
     sqlite,
 };
 
@@ -113,6 +114,7 @@ struct PersistentStore final
 {
     bool open{false};
     PersistentStoreBackend backend{PersistentStoreBackend::memory};
+    std::string postgresql_conninfo{};
     std::string sqlite_path{};
     SchemaState schema{};
     std::vector<PersistentUser> users{};
@@ -170,6 +172,8 @@ namespace detail
         -> bool;
     [[nodiscard]] auto persist_transaction_to_backend(PersistentStore const& store,
                                                       std::vector<PreparedStatement> const& statements) -> bool;
+    [[nodiscard]] auto persist_transaction_to_postgresql(PersistentStore const& store,
+                                                         std::vector<PreparedStatement> const& statements) -> bool;
 
 } // namespace detail
 

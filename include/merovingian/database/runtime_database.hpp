@@ -15,6 +15,7 @@ struct RuntimeDatabaseConfig final
     std::string uri_file{};
     std::string sqlite_path{};
     std::uint32_t pool_size{0U};
+    config::DatabaseRole role{config::DatabaseRole::runtime};
     std::string warning{};
 };
 

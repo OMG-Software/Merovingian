@@ -101,6 +101,18 @@ namespace
         {
             database.uri_file = std::string{value};
         }
+        else if (key == "database.role")
+        {
+            auto const role = parse_database_role(value);
+            if (role.has_value())
+            {
+                database.role = *role;
+            }
+            else
+            {
+                add_parse_finding(findings, std::string{key}, "expected database role runtime or migration");
+            }
+        }
         else if (key == "database.sqlite_path")
         {
             database.sqlite_path = std::string{value};

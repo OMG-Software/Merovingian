@@ -416,6 +416,10 @@ namespace detail
         {
             return true;
         }
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return persist_transaction_to_postgresql(store, statements);
+        }
         if (store.sqlite_path.empty())
         {
             return false;

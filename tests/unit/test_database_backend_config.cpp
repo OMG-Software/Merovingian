@@ -24,6 +24,7 @@ SCENARIO("Database config defaults to PostgreSQL", "[config][database]")
                 REQUIRE(database.uri_file == "/etc/merovingian/db-uri");
                 REQUIRE(database.sqlite_path == "/var/lib/merovingian/merovingian.sqlite3");
                 REQUIRE(database.pool_size == 16U);
+                REQUIRE(database.role == merovingian::config::DatabaseRole::runtime);
             }
         }
     }
@@ -54,6 +55,52 @@ SCENARIO("Database backend helpers parse SQLite and expose performance warnings"
                         "sqlite");
                 REQUIRE(sqlite_warning.find("small installations") != std::string_view::npos);
                 REQUIRE(postgresql_warning.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Database role helpers separate runtime and migration privileges", "[config][database][role]")
+{
+    GIVEN("supported database role names")
+    {
+        WHEN("role names are parsed")
+        {
+            auto const runtime = merovingian::config::parse_database_role("runtime");
+            auto const migration = merovingian::config::parse_database_role("migration");
+            auto const unknown = merovingian::config::parse_database_role("admin");
+
+            THEN("runtime and migration roles are explicit")
+            {
+                REQUIRE(runtime == merovingian::config::DatabaseRole::runtime);
+                REQUIRE(migration == merovingian::config::DatabaseRole::migration);
+                REQUIRE_FALSE(unknown.has_value());
+                REQUIRE(merovingian::config::database_role_name(merovingian::config::DatabaseRole::runtime) ==
+                        "runtime");
+                REQUIRE(merovingian::config::database_role_name(merovingian::config::DatabaseRole::migration) ==
+                        "migration");
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser applies migration database role", "[config][parser][database][role]")
+{
+    GIVEN("config input selecting the migration role")
+    {
+        auto const input = std::string{"database.backend=postgresql\n"
+                                       "database.role=migration\n"
+                                       "database.uri_file=/run/secrets/merovingian-migrator-uri\n"};
+
+        WHEN("the config is parsed")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+
+            THEN("the role is retained for offline migration tooling")
+            {
+                REQUIRE(result.findings.empty());
+                REQUIRE(result.config.database().backend == merovingian::config::DatabaseBackend::postgresql);
+                REQUIRE(result.config.database().role == merovingian::config::DatabaseRole::migration);
             }
         }
     }

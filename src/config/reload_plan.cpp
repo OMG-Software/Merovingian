@@ -119,6 +119,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "database.uri_file");
     }
+    if (current.database().role != next.database().role)
+    {
+        add_change(plan, "database.role");
+    }
     if (current.database().pool_size != next.database().pool_size)
     {
         add_change(plan, "database.pool_size");
