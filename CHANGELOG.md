@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.20
+
+- Added persistent-store transaction helpers so login device/token writes, room
+  creation membership writes, and event/current-state writes commit atomically.
+- Added SQLite backend transaction rollback coverage for failed statement
+  groups.
+- Changed SQLite startup hydration to fail closed when row queries cannot be
+  prepared or stepped to completion.
+- Set a busy timeout on SQLite connections and removed the FreeBSD
+  warning-as-error failure caused by the `SQLITE_TRANSIENT` macro cast.
+
 ## 0.1.19
 
 - Added an SQLite-backed persistent store with RAII connection/statement

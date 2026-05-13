@@ -22,7 +22,13 @@ production operation.
 - SQLite row hydration for users, devices, access tokens, rooms, memberships,
   events, current state, media metadata, remote media metadata, audit events,
   and admin actions.
+- SQLite hydration fails closed when a row query cannot be prepared or stepped
+  to completion.
+- SQLite connections use a non-zero busy timeout for short-lived lock
+  contention.
 - Write-through SQLite persistence behind the existing store mutation helpers.
+- Transaction helpers for multi-row login, room creation, and event/state
+  persistence.
 - Runtime hydration for users, sessions, rooms, memberships, events, and client
   device listings.
 - Unit coverage for statement validation, executor gating, redaction, migration planning, and schema inventory.
@@ -47,6 +53,8 @@ The boundary provides these guarantees:
 - Fresh SQLite database files are created with the current schema and recorded
   migration metadata.
 - Existing SQLite database files are validated before runtime state is hydrated.
+- Multi-row runtime mutations commit through one backend transaction so partial
+  login, room, or state-event writes are rolled back.
 - Auth and room mutations fail the request when required persistent writes fail.
 
 ## Deliberately not included
@@ -56,7 +64,6 @@ These remain deferred:
 - libpq dependency integration.
 - Live PostgreSQL connection management.
 - PostgreSQL query execution.
-- Transaction handling.
 - Runtime/migration role separation.
 - Physical SQL migration files.
 - PostgreSQL-backed users, devices, tokens, rooms, events, media, federation,
@@ -67,8 +74,9 @@ These remain deferred:
 
 ## Next starting points
 
-1. Add transaction helpers so multi-row runtime mutations commit atomically.
-2. Add dependency review documentation for libpq.
-3. Add RAII wrappers around PostgreSQL connections and results.
-4. Add migration-file loading and offline migrator tool scaffolding.
-5. Add SQL migration integration tests with temporary SQLite and PostgreSQL databases.
+1. Add dependency review documentation for libpq.
+2. Add RAII wrappers around PostgreSQL connections and results.
+3. Add migration-file loading and offline migrator tool scaffolding.
+4. Add SQL migration integration tests with temporary SQLite and PostgreSQL databases.
+5. Add persistence repositories for federation queues, policy rules, account
+   data, push rules, E2EE keys, and complete media blob metadata.

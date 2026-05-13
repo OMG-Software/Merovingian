@@ -6,6 +6,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include <merovingian/homeserver/vertical_slice.hpp>
 #include <merovingian/trust_safety/policy_engine.hpp>
@@ -189,8 +190,8 @@ namespace
         return make_operation_result(false, {}, room_decision.reason.code);
     }
 
-    if (!database::store_room(runtime.database.persistent_store, {room_id, *user_id}) ||
-        !database::store_membership(runtime.database.persistent_store, {room_id, *user_id}))
+    if (!database::store_room_with_membership(runtime.database.persistent_store, {room_id, *user_id},
+                                              {room_id, *user_id}))
     {
         return make_operation_result(false, {}, "room persistence failed", 500U);
     }
@@ -253,18 +254,17 @@ namespace
     }
 
     auto const event_id = make_event_id(runtime);
-    if (!database::store_event(runtime.database.persistent_store,
-                               {event_id, std::string{room_id}, *user_id, std::string{event_json}}))
-    {
-        return make_operation_result(false, {}, "event persistence failed", 500U);
-    }
+    auto state = std::optional<database::PersistentStateEvent>{};
     if (auto const state_fields = state_fields_from_event(event_json); state_fields.has_value())
     {
-        if (!database::store_state(runtime.database.persistent_store,
-                                   {std::string{room_id}, state_fields->event_type, state_fields->state_key, event_id}))
-        {
-            return make_operation_result(false, {}, "state persistence failed", 500U);
-        }
+        state = database::PersistentStateEvent{std::string{room_id}, state_fields->event_type, state_fields->state_key,
+                                               event_id};
+    }
+    if (!database::store_event_with_state(runtime.database.persistent_store,
+                                          {event_id, std::string{room_id}, *user_id, std::string{event_json}},
+                                          std::move(state)))
+    {
+        return make_operation_result(false, {}, "event persistence failed", 500U);
     }
     room->events.push_back(std::string{event_json});
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", *user_id, room_id,

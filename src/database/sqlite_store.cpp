@@ -39,6 +39,56 @@ namespace
 
     using SqliteStatement = std::unique_ptr<sqlite3_stmt, SqliteStatementDeleter>;
 
+    [[nodiscard]] auto execute_sql(sqlite3& connection, std::string const& sql) -> bool;
+
+    class SqliteTransaction final
+    {
+    public:
+        explicit SqliteTransaction(sqlite3& connection) : connection_{connection}
+        {
+            active_ = execute_sql(connection_, "BEGIN IMMEDIATE");
+        }
+
+        SqliteTransaction(SqliteTransaction const& other) = delete;
+        auto operator=(SqliteTransaction const& other) -> SqliteTransaction& = delete;
+        SqliteTransaction(SqliteTransaction&& other) noexcept = delete;
+        auto operator=(SqliteTransaction&& other) noexcept -> SqliteTransaction& = delete;
+
+        ~SqliteTransaction()
+        {
+            if (active_)
+            {
+                static_cast<void>(execute_sql(connection_, "ROLLBACK"));
+            }
+        }
+
+        [[nodiscard]] auto active() const noexcept -> bool
+        {
+            return active_;
+        }
+
+        [[nodiscard]] auto commit() noexcept -> bool
+        {
+            if (!active_ || !execute_sql(connection_, "COMMIT"))
+            {
+                return false;
+            }
+            active_ = false;
+            return true;
+        }
+
+    private:
+        sqlite3& connection_;
+        bool active_{false};
+    };
+
+    [[nodiscard]] auto sqlite_transient_destructor() noexcept -> sqlite3_destructor_type
+    {
+        // SQLite documents -1 as the special destructor value that copies the bound data immediately.
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
+        return reinterpret_cast<sqlite3_destructor_type>(-1);
+    }
+
     [[nodiscard]] auto open_sqlite_connection(std::string const& path) -> std::optional<SqliteConnection>
     {
         try
@@ -57,6 +107,13 @@ namespace
         auto* raw = static_cast<sqlite3*>(nullptr);
         if (sqlite3_open_v2(path.c_str(), &raw, SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_FULLMUTEX,
                             nullptr) != SQLITE_OK)
+        {
+            sqlite3_close(raw);
+            return std::nullopt;
+        }
+
+        auto constexpr busy_timeout_ms = 5000;
+        if (sqlite3_busy_timeout(raw, busy_timeout_ms) != SQLITE_OK)
         {
             sqlite3_close(raw);
             return std::nullopt;
@@ -173,73 +230,83 @@ namespace
     }
 
     template <typename RowLoader>
-    auto load_rows(sqlite3& connection, std::string const& sql, RowLoader load_row) -> void
+    auto load_rows(sqlite3& connection, std::string const& sql, RowLoader load_row) -> bool
     {
         auto statement = prepare(connection, sql);
         if (!statement.has_value())
         {
-            return;
+            return false;
         }
-        while (sqlite3_step(statement->get()) == SQLITE_ROW)
+        auto step = int{SQLITE_ROW};
+        while ((step = sqlite3_step(statement->get())) == SQLITE_ROW)
         {
             load_row(*statement->get());
         }
+        return step == SQLITE_DONE;
     }
 
-    auto load_persistent_rows(sqlite3& connection, PersistentStore& store) -> void
+    auto load_persistent_rows(sqlite3& connection, PersistentStore& store) -> bool
     {
-        load_rows(connection, "SELECT user_id, password_hash, locked, suspended, admin FROM users",
-                  [&store](sqlite3_stmt& row) {
-                      store.users.push_back({column_text(row, 0), column_text(row, 1),
-                                             text_is_true(column_text(row, 2)), text_is_true(column_text(row, 3)),
-                                             text_is_true(column_text(row, 4))});
-                  });
-        load_rows(connection, "SELECT user_id, device_id, display_name FROM devices", [&store](sqlite3_stmt& row) {
-            store.devices.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
-        });
-        load_rows(connection, "SELECT user_id, device_id, token_hash, revoked FROM access_tokens",
-                  [&store](sqlite3_stmt& row) {
-                      store.access_tokens.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                     text_is_true(column_text(row, 3))});
-                  });
-        load_rows(connection, "SELECT room_id, creator_user_id FROM rooms", [&store](sqlite3_stmt& row) {
-            store.rooms.push_back({column_text(row, 0), column_text(row, 1)});
-        });
-        load_rows(connection, "SELECT room_id, user_id FROM membership", [&store](sqlite3_stmt& row) {
-            store.memberships.push_back({column_text(row, 0), column_text(row, 1)});
-        });
-        load_rows(connection, "SELECT event_id, room_id, sender_user_id, json FROM events",
-                  [&store](sqlite3_stmt& row) {
-                      store.events.push_back(
-                          {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
-                  });
-        load_rows(connection, "SELECT room_id, event_type, state_key, event_id FROM current_state",
-                  [&store](sqlite3_stmt& row) {
-                      store.state.push_back(
-                          {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
-                  });
-        load_rows(
-            connection,
-            "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, quarantined, removed "
-            "FROM media",
-            [&store](sqlite3_stmt& row) {
-                store.local_media.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                             parse_u64(column_text(row, 3)), column_text(row, 4), column_text(row, 5),
-                                             text_is_true(column_text(row, 6)), text_is_true(column_text(row, 7))});
-            });
-        load_rows(connection, "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM remote_media",
-                  [&store](sqlite3_stmt& row) {
-                      store.remote_media.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                    parse_u64(column_text(row, 3)), text_is_true(column_text(row, 4))});
-                  });
-        load_rows(connection, "SELECT category, event_type, actor, target, reason FROM audit_log",
-                  [&store](sqlite3_stmt& row) {
-                      store.audit_log.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                 column_text(row, 3), column_text(row, 4)});
-                  });
-        load_rows(connection, "SELECT admin_user_id, action, target FROM admin_actions", [&store](sqlite3_stmt& row) {
-            store.admin_actions.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
-        });
+        return load_rows(connection, "SELECT user_id, password_hash, locked, suspended, admin FROM users",
+                         [&store](sqlite3_stmt& row) {
+                             store.users.push_back(
+                                 {column_text(row, 0), column_text(row, 1), text_is_true(column_text(row, 2)),
+                                  text_is_true(column_text(row, 3)), text_is_true(column_text(row, 4))});
+                         }) &&
+               load_rows(connection, "SELECT user_id, device_id, display_name FROM devices",
+                         [&store](sqlite3_stmt& row) {
+                             store.devices.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, device_id, token_hash, revoked FROM access_tokens",
+                         [&store](sqlite3_stmt& row) {
+                             store.access_tokens.push_back({column_text(row, 0), column_text(row, 1),
+                                                            column_text(row, 2), text_is_true(column_text(row, 3))});
+                         }) &&
+               load_rows(connection, "SELECT room_id, creator_user_id FROM rooms",
+                         [&store](sqlite3_stmt& row) {
+                             store.rooms.push_back({column_text(row, 0), column_text(row, 1)});
+                         }) &&
+               load_rows(connection, "SELECT room_id, user_id FROM membership",
+                         [&store](sqlite3_stmt& row) {
+                             store.memberships.push_back({column_text(row, 0), column_text(row, 1)});
+                         }) &&
+               load_rows(connection, "SELECT event_id, room_id, sender_user_id, json FROM events",
+                         [&store](sqlite3_stmt& row) {
+                             store.events.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT room_id, event_type, state_key, event_id FROM current_state",
+                         [&store](sqlite3_stmt& row) {
+                             store.state.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(
+                   connection,
+                   "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, quarantined, "
+                   "removed FROM media",
+                   [&store](sqlite3_stmt& row) {
+                       store.local_media.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                    parse_u64(column_text(row, 3)), column_text(row, 4),
+                                                    column_text(row, 5), text_is_true(column_text(row, 6)),
+                                                    text_is_true(column_text(row, 7))});
+                   }) &&
+               load_rows(connection,
+                         "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM "
+                         "remote_media",
+                         [&store](sqlite3_stmt& row) {
+                             store.remote_media.push_back({column_text(row, 0), column_text(row, 1),
+                                                           column_text(row, 2), parse_u64(column_text(row, 3)),
+                                                           text_is_true(column_text(row, 4))});
+                         }) &&
+               load_rows(connection, "SELECT category, event_type, actor, target, reason FROM audit_log",
+                         [&store](sqlite3_stmt& row) {
+                             store.audit_log.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                        column_text(row, 3), column_text(row, 4)});
+                         }) &&
+               load_rows(
+                   connection, "SELECT admin_user_id, action, target FROM admin_actions", [&store](sqlite3_stmt& row) {
+                       store.admin_actions.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                   });
     }
 
     [[nodiscard]] auto bind_statement_parameters(sqlite3_stmt& statement, PreparedStatement const& prepared) -> bool
@@ -258,7 +325,8 @@ namespace
                 return false;
             }
             auto const value_size = static_cast<int>(value.size());
-            if (sqlite3_bind_text(&statement, bind_index, value.c_str(), value_size, SQLITE_TRANSIENT) != SQLITE_OK)
+            if (sqlite3_bind_text(&statement, bind_index, value.c_str(), value_size, sqlite_transient_destructor()) !=
+                SQLITE_OK)
             {
                 return false;
             }
@@ -274,6 +342,24 @@ namespace
             return false;
         }
         return bind_statement_parameters(*statement->get(), prepared) && sqlite3_step(statement->get()) == SQLITE_DONE;
+    }
+
+    [[nodiscard]] auto execute_transaction(sqlite3& connection, std::vector<PreparedStatement> const& statements)
+        -> bool
+    {
+        auto transaction = SqliteTransaction{connection};
+        if (!transaction.active())
+        {
+            return false;
+        }
+        for (auto const& statement : statements)
+        {
+            if (!execute_prepared(connection, statement))
+            {
+                return false;
+            }
+        }
+        return transaction.commit();
     }
 
 } // namespace
@@ -300,7 +386,10 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     store.backend = PersistentStoreBackend::sqlite;
     store.sqlite_path = path;
     store.schema = load_schema_state(sqlite);
-    load_persistent_rows(sqlite, store);
+    if (!load_persistent_rows(sqlite, store))
+    {
+        return {false, "unable to hydrate SQLite rows", {}};
+    }
 
     auto compatibility = validate_persistent_store(store);
     if (!compatibility.valid)
@@ -315,6 +404,12 @@ namespace detail
 
     auto persist_statement_to_backend(PersistentStore const& store, PreparedStatement const& statement) -> bool
     {
+        return persist_transaction_to_backend(store, {statement});
+    }
+
+    auto persist_transaction_to_backend(PersistentStore const& store, std::vector<PreparedStatement> const& statements)
+        -> bool
+    {
         if (store.backend == PersistentStoreBackend::memory)
         {
             return true;
@@ -324,7 +419,8 @@ namespace detail
             return false;
         }
         auto connection = open_sqlite_connection(store.sqlite_path);
-        return connection.has_value() && execute_prepared(**connection, statement);
+        return connection.has_value() && execute_sql(**connection, "PRAGMA foreign_keys = ON") &&
+               execute_transaction(**connection, statements);
     }
 
 } // namespace detail
