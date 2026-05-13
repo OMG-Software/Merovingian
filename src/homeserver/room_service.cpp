@@ -10,6 +10,8 @@
 #include <string_view>
 #include <utility>
 
+#include <merovingian/homeserver/vertical_slice.hpp>
+
 namespace merovingian::homeserver
 {
 namespace

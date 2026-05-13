@@ -107,7 +107,7 @@ IncludeCategories:
   - Regex: '^"'
     Priority: 1
   # Third-party angle includes, e.g. <fmt/...>, <gtest/...>
-  - Regex: '^<(catch2|fmt|json)/'
+  - Regex: '^<(catch2|fmt|json|sqlite)/'
     Priority: 2
   # STL/system angle includes
   - Regex: '^<[[:alnum:]_]+>'

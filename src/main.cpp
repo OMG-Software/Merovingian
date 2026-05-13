@@ -30,6 +30,23 @@
 #include <utility>
 #include <vector>
 
+#include <merovingian/bootstrap/exit_code.hpp>
+#include <merovingian/config/config.hpp>
+#include <merovingian/config/config_parser.hpp>
+#include <merovingian/config/reload_plan.hpp>
+#include <merovingian/config/reload_policy.hpp>
+#include <merovingian/database/runtime_database.hpp>
+#include <merovingian/federation/runtime_federation.hpp>
+#include <merovingian/homeserver/client_server.hpp>
+#include <merovingian/homeserver/http_server.hpp>
+#include <merovingian/homeserver/tls.hpp>
+#include <merovingian/media/runtime_media.hpp>
+#include <merovingian/net/listener.hpp>
+#include <merovingian/net/shutdown_signal.hpp>
+#include <merovingian/net/tcp_acceptor.hpp>
+#include <merovingian/observability/logger.hpp>
+#include <merovingian/platform/file_metadata.hpp>
+#include <merovingian/platform/hardening_self_check.hpp>
 #include <poll.h>
 
 namespace

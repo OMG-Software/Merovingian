@@ -17,6 +17,11 @@
 #include <variant>
 #include <vector>
 
+#include <merovingian/canonicaljson/parser.hpp>
+#include <merovingian/canonicaljson/value.hpp>
+#include <merovingian/homeserver/client_server.hpp>
+#include <merovingian/http/request.hpp>
+
 namespace merovingian::homeserver
 {
 namespace

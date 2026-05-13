@@ -305,6 +305,7 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
                 user_id = session.user_id;
                 device_id = session.device_id;
             }
+            session.revoked = true;
             revoked_any = true;
         }
     }
