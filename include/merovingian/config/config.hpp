@@ -37,11 +37,18 @@ enum class DatabaseBackend
     sqlite,
 };
 
+enum class DatabaseRole
+{
+    runtime,
+    migration,
+};
+
 struct DatabaseConfig final
 {
     std::string uri_file{"/etc/merovingian/db-uri"};
     std::uint32_t pool_size{16U};
     DatabaseBackend backend{DatabaseBackend::postgresql};
+    DatabaseRole role{DatabaseRole::runtime};
     std::string sqlite_path{"/var/lib/merovingian/merovingian.sqlite3"};
 };
 
@@ -143,6 +150,8 @@ struct DurationParseResult final
 [[nodiscard]] auto database_backend_name(DatabaseBackend backend) noexcept -> std::string_view;
 [[nodiscard]] auto parse_database_backend(std::string_view value) noexcept -> std::optional<DatabaseBackend>;
 [[nodiscard]] auto database_backend_performance_warning(DatabaseBackend backend) noexcept -> std::string_view;
+[[nodiscard]] auto database_role_name(DatabaseRole role) noexcept -> std::string_view;
+[[nodiscard]] auto parse_database_role(std::string_view value) noexcept -> std::optional<DatabaseRole>;
 [[nodiscard]] auto parse_port(std::string_view value) noexcept -> std::uint32_t;
 [[nodiscard]] auto listener_host(std::string_view bind) noexcept -> std::string_view;
 [[nodiscard]] auto is_loopback_host(std::string_view host) noexcept -> bool;

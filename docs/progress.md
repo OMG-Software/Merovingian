@@ -37,7 +37,7 @@ No capability is production-ready until it reaches `production-gated`.
 | Rooms, events, and sync | `integrated` | `yyjson`-backed strict canonical JSON parser boundary, deterministic serializer, event envelope, redaction, state-resolution scaffold, encrypted-room policy, local room flow | Replace event ID/signature scaffolds with Matrix room-version-correct algorithms, full auth rules, event DAG persistence, and spec fixtures. |
 | Federation | `integrated` | Route matching, inbound transaction scaffold, SSRF/TLS policy checks, trust-state logic | Implement real server discovery, TLS verification, canonical JSON signing, Ed25519 verification, joins/invites/backfill, and durable federation queues. |
 | Media repository | `integrated` | Local upload/download, MIME policy, quarantine/release/remove, LibSodium digest, metrics, audit | Add sandboxed processing worker, remote fetch, AV hook boundary, thumbnailing, decompression limits, and durable blob metadata. |
-| Database persistence | `integrated` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, runtime hydration, write-through users/devices/tokens/rooms/events/media/audit/admin rows, and restart-survival integration coverage | Add transaction handling, physical migration files, PostgreSQL/libpq backend, temporary PostgreSQL integration tests, and full persistence for federation queues, account data, E2EE keys, policy rules, and media blob metadata. |
+| Database persistence | `integrated` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, runtime hydration, write-through users/devices/tokens/rooms/events/media/audit/admin rows, SQLite transaction rollback, atomic runtime helpers for device/token, room/membership, and event/current-state writes, libpq dependency review, PostgreSQL RAII connection/result boundary, PostgreSQL schema bootstrap/hydration/write-through path, physical migration-file loading, offline migrator scaffold, database role separation, and restart-survival integration coverage | Add live PostgreSQL integration tests, enforce runtime/migration grants through separate PostgreSQL users, and full persistence for federation queues, account data, E2EE keys, policy rules, and media blob metadata. |
 | Observability and audit | `integrated` | Structured logging, health snapshots, metrics, redaction helpers, audit events | Add durable audit log, metrics export endpoint, log format contract, trace correlation, and operator docs. |
 | Trust and safety | `unit-covered` | Policy engine for registration, accounts, invites, federation, media, reports, and admin review routes | Wire reporting/admin endpoints into runtime, persist policy actions, add Matrix v1.18 fixtures, and integrate policy server transport. |
 | Runtime hardening | `scaffolded` | Systemd/OpenRC/rc.d packaging, hardening plan and self-check surfaces | Enforce fail-closed controls, implement seccomp/AppArmor/Landlock notes or profiles, OpenBSD pledge/unveil, FreeBSD Capsicum where practical. |
@@ -47,8 +47,7 @@ No capability is production-ready until it reaches `production-gated`.
 
 ## Immediate priority order
 
-1. Add transaction handling and PostgreSQL/libpq persistence behind the
-   SQLite-proven database boundary.
+1. Add PostgreSQL/libpq persistence behind the SQLite-proven database boundary.
 2. Replace federation and event signing scaffolds with Matrix canonical JSON
    and Ed25519 verification.
 3. Keep `docs/protocol-coverage.md` up to date with every endpoint change.

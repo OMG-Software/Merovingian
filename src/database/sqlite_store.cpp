@@ -39,6 +39,49 @@ namespace
 
     using SqliteStatement = std::unique_ptr<sqlite3_stmt, SqliteStatementDeleter>;
 
+    [[nodiscard]] auto execute_sql(sqlite3& connection, std::string const& sql) -> bool;
+
+    class SqliteTransaction final
+    {
+    public:
+        explicit SqliteTransaction(sqlite3& connection) : connection_{connection}
+        {
+            active_ = execute_sql(connection_, "BEGIN IMMEDIATE");
+        }
+
+        SqliteTransaction(SqliteTransaction const& other) = delete;
+        auto operator=(SqliteTransaction const& other) -> SqliteTransaction& = delete;
+        SqliteTransaction(SqliteTransaction&& other) noexcept = delete;
+        auto operator=(SqliteTransaction&& other) noexcept -> SqliteTransaction& = delete;
+
+        ~SqliteTransaction()
+        {
+            if (active_)
+            {
+                static_cast<void>(execute_sql(connection_, "ROLLBACK"));
+            }
+        }
+
+        [[nodiscard]] auto active() const noexcept -> bool
+        {
+            return active_;
+        }
+
+        [[nodiscard]] auto commit() noexcept -> bool
+        {
+            if (!active_ || !execute_sql(connection_, "COMMIT"))
+            {
+                return false;
+            }
+            active_ = false;
+            return true;
+        }
+
+    private:
+        sqlite3& connection_;
+        bool active_{false};
+    };
+
     [[nodiscard]] auto open_sqlite_connection(std::string const& path) -> std::optional<SqliteConnection>
     {
         try
@@ -276,6 +319,24 @@ namespace
         return bind_statement_parameters(*statement->get(), prepared) && sqlite3_step(statement->get()) == SQLITE_DONE;
     }
 
+    [[nodiscard]] auto execute_transaction(sqlite3& connection, std::vector<PreparedStatement> const& statements)
+        -> bool
+    {
+        auto transaction = SqliteTransaction{connection};
+        if (!transaction.active())
+        {
+            return false;
+        }
+        for (auto const& statement : statements)
+        {
+            if (!execute_prepared(connection, statement))
+            {
+                return false;
+            }
+        }
+        return transaction.commit();
+    }
+
 } // namespace
 
 auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult
@@ -315,16 +376,26 @@ namespace detail
 
     auto persist_statement_to_backend(PersistentStore const& store, PreparedStatement const& statement) -> bool
     {
+        return persist_transaction_to_backend(store, {statement});
+    }
+
+    auto persist_transaction_to_backend(PersistentStore const& store, std::vector<PreparedStatement> const& statements)
+    {
         if (store.backend == PersistentStoreBackend::memory)
         {
             return true;
+        }
+        if (store.backend == PersistentStoreBackend::postgresql)
+        {
+            return persist_transaction_to_postgresql(store, statements);
         }
         if (store.sqlite_path.empty())
         {
             return false;
         }
         auto connection = open_sqlite_connection(store.sqlite_path);
-        return connection.has_value() && execute_prepared(**connection, statement);
+        return connection.has_value() && execute_sql(**connection, "PRAGMA foreign_keys = ON") &&
+               execute_transaction(**connection, statements);
     }
 
 } // namespace detail

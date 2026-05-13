@@ -1,13 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <string>
+#include <vector>
+
 #include <catch2/catch_test_macros.hpp>
 #include <merovingian/database/connection.hpp>
 #include <merovingian/database/migration.hpp>
+#include <merovingian/database/migration_files.hpp>
 #include <merovingian/database/persistent_store.hpp>
+#include <merovingian/database/postgresql_store.hpp>
 #include <merovingian/database/schema.hpp>
 #include <merovingian/database/statement.hpp>
-#include <string>
-#include <vector>
 
 namespace
 {
@@ -34,6 +40,13 @@ private:
 [[nodiscard]] auto create_users_statement() -> merovingian::database::PreparedStatement
 {
     return {"create_users", "CREATE TABLE users (user_id TEXT PRIMARY KEY)", {}};
+}
+
+[[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path
+{
+    auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
+    return std::filesystem::temp_directory_path() /
+           ("merovingian-transaction-unit-" + std::to_string(now) + ".sqlite3");
 }
 
 } // namespace
@@ -373,6 +386,200 @@ SCENARIO("Persistent store records MVP homeserver data with hashed tokens only",
                 REQUIRE(store.audit_log.size() == 1U);
                 REQUIRE(store.admin_actions.size() == 1U);
                 REQUIRE(merovingian::database::sensitive_values_are_redacted(store));
+            }
+        }
+    }
+}
+
+SCENARIO("Persistent store transactions commit all rows or no rows", "[database][persistence][transaction]")
+{
+    GIVEN("a SQLite persistent store and a transaction whose second statement violates storage state")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        auto const statements = std::vector<merovingian::database::PreparedStatement>{
+            {"insert_room",
+             "INSERT INTO rooms VALUES ($1, $2)", {{"!txn-room:example.org", false}, {"@alice:example.org", false}}},
+            {"insert_room_duplicate",
+             "INSERT INTO rooms VALUES ($1, $2)", {{"!txn-room:example.org", false}, {"@bob:example.org", false}}  },
+        };
+
+        WHEN("the transaction is committed")
+        {
+            auto const committed = merovingian::database::commit_persistent_transaction(store, statements);
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("the successful first statement is rolled back with the failed statement")
+            {
+                REQUIRE_FALSE(committed);
+                REQUIRE(store.prepared_statements.empty());
+                REQUIRE(reopened.store.rooms.empty());
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+SCENARIO("Persistent store offers atomic helpers for multi-row runtime mutations",
+         "[database][persistence][transaction]")
+{
+    GIVEN("an opened persistent store")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        WHEN("a room membership and a state event are stored through transaction helpers")
+        {
+            auto const room_ok = merovingian::database::store_room_with_membership(
+                store, {"!room-txn:example.org", "@alice:example.org"},
+                {"!room-txn:example.org", "@alice:example.org"});
+            auto const event_ok = merovingian::database::store_event_with_state(
+                store,
+                {"$state-txn:example.org", "!room-txn:example.org", "@alice:example.org",
+                 R"({"type":"m.room.member","state_key":"@alice:example.org"})"},
+                merovingian::database::PersistentStateEvent{"!room-txn:example.org", "m.room.member",
+                                                            "@alice:example.org", "$state-txn:example.org"});
+
+            THEN("all related rows become visible together")
+            {
+                REQUIRE(room_ok);
+                REQUIRE(event_ok);
+                REQUIRE(store.rooms.size() == 1U);
+                REQUIRE(store.memberships.size() == 1U);
+                REQUIRE(store.events.size() == 1U);
+                REQUIRE(store.state.size() == 1U);
+                REQUIRE(store.prepared_statements.size() == 4U);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL connection policy rejects unsafe or ambiguous libpq inputs", "[database][postgresql]")
+{
+    GIVEN("empty and non-PostgreSQL connection strings")
+    {
+        WHEN("the connection strings are validated")
+        {
+            auto const empty = merovingian::database::validate_postgresql_conninfo("");
+            auto const sqlite_path = merovingian::database::validate_postgresql_conninfo("/tmp/merovingian.sqlite3");
+            auto const uri = merovingian::database::validate_postgresql_conninfo(
+                "postgresql://merovingian:secret@db.example.org/merovingian?sslmode=verify-full");
+
+            THEN("only explicit PostgreSQL libpq connection strings are accepted")
+            {
+                REQUIRE_FALSE(empty.allowed);
+                REQUIRE(empty.reason == "PostgreSQL connection info must not be empty");
+                REQUIRE_FALSE(sqlite_path.allowed);
+                REQUIRE(sqlite_path.reason == "PostgreSQL connection info must use a PostgreSQL URI or key/value form");
+                REQUIRE(uri.allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL connection summaries redact credentials before logging", "[database][postgresql]")
+{
+    GIVEN("URI and key-value libpq connection strings containing passwords")
+    {
+        WHEN("redacted summaries are produced")
+        {
+            auto const uri = merovingian::database::redact_postgresql_conninfo(
+                "postgresql://merovingian:secret@db.example.org/merovingian?sslmode=verify-full");
+            auto const key_value = merovingian::database::redact_postgresql_conninfo(
+                "host=db.example.org dbname=merovingian user=merovingian password=secret sslmode=verify-full");
+
+            THEN("the password material is not disclosed")
+            {
+                REQUIRE(uri.find("secret") == std::string::npos);
+                REQUIRE(uri.find("redacted") != std::string::npos);
+                REQUIRE(key_value.find("secret") == std::string::npos);
+                REQUIRE(key_value.find("password=redacted") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL schema bootstrap exposes current schema statements", "[database][postgresql][migration]")
+{
+    GIVEN("the current schema inventory")
+    {
+        WHEN("PostgreSQL bootstrap statements are created")
+        {
+            auto const statements = merovingian::database::postgresql_schema_bootstrap_statements();
+
+            THEN("the bootstrap can create every core table and record current migrations")
+            {
+                REQUIRE(statements.size() >= merovingian::database::initial_schema_tables().size() + 2U);
+                REQUIRE(statements.front().name == "postgresql_create_schema_migrations");
+                REQUIRE(statements.front().sql.find("CREATE TABLE IF NOT EXISTS schema_migrations") == 0U);
+                REQUIRE(statements.back().sql.find("ON CONFLICT") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Physical migration files load into validated migration plans", "[database][migration][files]")
+{
+    GIVEN("a temporary migration file with explicit statement names")
+    {
+        auto const directory = std::filesystem::temp_directory_path() / "merovingian-migration-file-test";
+        std::filesystem::create_directories(directory);
+        auto const file = directory / "003_policy_rules.sql";
+        {
+            auto output = std::ofstream{file};
+            output << "-- merovingian-migration version=3 name=policy_rules direction=upgrade\n";
+            output << "-- statement create_policy_rules_extra\n";
+            output << "CREATE TABLE policy_rules_extra (rule_id TEXT PRIMARY KEY)\n";
+        }
+
+        WHEN("the migration directory is loaded")
+        {
+            auto const loaded = merovingian::database::load_migration_files(directory.string());
+
+            THEN("the file becomes a validated migration step")
+            {
+                REQUIRE(loaded.ok);
+                REQUIRE(loaded.steps.size() == 1U);
+                REQUIRE(loaded.steps.front().version == 3U);
+                REQUIRE(loaded.steps.front().name == "policy_rules");
+                REQUIRE(loaded.steps.front().statements.size() == 1U);
+                REQUIRE(merovingian::database::migration_step_is_valid(loaded.steps.front()).valid);
+            }
+        }
+
+        std::filesystem::remove(file);
+        std::filesystem::remove(directory);
+    }
+}
+
+SCENARIO("Offline migrator plans require migration database role", "[database][migration][role]")
+{
+    GIVEN("runtime and migration database roles")
+    {
+        auto runtime_config = merovingian::config::DatabaseConfig{};
+        runtime_config.role = merovingian::config::DatabaseRole::runtime;
+        auto migration_config = merovingian::config::DatabaseConfig{};
+        migration_config.role = merovingian::config::DatabaseRole::migration;
+
+        WHEN("migrator plans are built")
+        {
+            auto const runtime_plan = merovingian::database::build_offline_migration_plan(runtime_config, 0U, 2U, {});
+            auto const migration_plan =
+                merovingian::database::build_offline_migration_plan(migration_config, 0U, 2U, {});
+
+            THEN("only the migration role may run schema changes")
+            {
+                REQUIRE_FALSE(runtime_plan.ok);
+                REQUIRE(runtime_plan.reason == "database migration requires database.role=migration");
+                REQUIRE(migration_plan.ok);
+                REQUIRE(migration_plan.plan.target_version == 2U);
             }
         }
     }

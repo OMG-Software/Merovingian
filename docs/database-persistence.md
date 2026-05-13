@@ -1,8 +1,8 @@
 # Database persistence
 
 This capability note describes the project-owned database persistence boundary,
-the SQLite runtime backend, and the remaining work before PostgreSQL-backed
-production operation.
+the SQLite runtime backend, the initial PostgreSQL/libpq boundary, and the
+remaining work before PostgreSQL-backed production operation.
 
 ## Included now
 
@@ -23,6 +23,15 @@ production operation.
   events, current state, media metadata, remote media metadata, audit events,
   and admin actions.
 - Write-through SQLite persistence behind the existing store mutation helpers.
+- Transaction-aware persistent-store commits with SQLite rollback support.
+- Atomic helpers for multi-row login, room creation, and state-event writes.
+- `libpq` dependency review and a PostgreSQL RAII connection/result wrapper.
+- PostgreSQL current-schema bootstrap, row hydration, and write-through
+  transaction execution when a URI file is explicitly configured.
+- Physical migration-file loading for SQL files with explicit metadata and
+  statement names.
+- Offline `merovingian-db-migrate` planning scaffold.
+- Database `runtime` and `migration` role separation.
 - Runtime hydration for users, sessions, rooms, memberships, events, and client
   device listings.
 - Unit coverage for statement validation, executor gating, redaction, migration planning, and schema inventory.
@@ -48,27 +57,29 @@ The boundary provides these guarantees:
   migration metadata.
 - Existing SQLite database files are validated before runtime state is hydrated.
 - Auth and room mutations fail the request when required persistent writes fail.
+- Device/token, room/membership, and event/current-state mutations are committed
+  atomically before in-memory runtime state is updated.
+- PostgreSQL connection strings are accepted only in explicit URI or libpq
+  key/value form, and password material is redacted from summaries.
+- Runtime startup requires `database.role=runtime`; offline migration planning
+  requires `database.role=migration`.
 
 ## Deliberately not included
 
 These remain deferred:
 
-- libpq dependency integration.
-- Live PostgreSQL connection management.
-- PostgreSQL query execution.
-- Transaction handling.
-- Runtime/migration role separation.
-- Physical SQL migration files.
-- PostgreSQL-backed users, devices, tokens, rooms, events, media, federation,
-  policy, or audit storage.
+- Full PostgreSQL integration tests against a running temporary server.
+- Runtime/migration role grants enforced by actual database users.
+- PostgreSQL-backed federation, policy, account data, push rules,
+  E2EE keys, and full media repository blob metadata hydration.
 - SQLite-backed federation queues, policy rules, account data, push rules,
   E2EE keys, and full media repository blob metadata hydration.
-- Integration tests against a running PostgreSQL instance.
 
 ## Next starting points
 
-1. Add transaction helpers so multi-row runtime mutations commit atomically.
-2. Add dependency review documentation for libpq.
-3. Add RAII wrappers around PostgreSQL connections and results.
-4. Add migration-file loading and offline migrator tool scaffolding.
-5. Add SQL migration integration tests with temporary SQLite and PostgreSQL databases.
+1. Add full SQL migration integration tests with temporary SQLite and
+   PostgreSQL databases.
+2. Enforce runtime/migration role grants with separate PostgreSQL users.
+3. Extend transaction helpers across federation queues, policy actions, and
+   media metadata once those rows are runtime-wired.
+4. Persist account data, push rules, E2EE keys, and media blob metadata.

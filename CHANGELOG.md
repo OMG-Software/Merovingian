@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.1.22
+
+- Wired PostgreSQL persistent-store bootstrap and row hydration behind the
+  `libpq` boundary when a PostgreSQL URI file is explicitly configured.
+- Added write-through PostgreSQL transaction execution for persistent-store
+  mutations.
+- Added physical SQL migration file loading and an offline
+  `merovingian-db-migrate` planning scaffold.
+- Added database runtime/migration role separation through `database.role`.
+- Added explicit PostgreSQL integration-test gating through
+  `MEROVINGIAN_TEST_POSTGRESQL_URI`.
+
+## 0.1.21
+
+- Added a reviewed `libpq` dependency boundary for PostgreSQL support.
+- Added PostgreSQL connection-string policy and redacted connection summaries
+  so password material is not exposed in diagnostics.
+- Added RAII wrappers for PostgreSQL connections and command results using
+  `PQfinish` and `PQclear`.
+- Added parameterized PostgreSQL statement execution through `PQexecParams`
+  behind the existing prepared-statement validation boundary.
+
+## 0.1.20
+
+- Added transaction-aware persistent-store commits with SQLite rollback support
+  so multi-statement database writes either reach durable storage together or
+  leave no partial rows behind.
+- Added atomic persistence helpers for login device/token writes, room creation
+  membership writes, and event/current-state writes.
+- Wired the client-server runtime to use the atomic persistence helpers for
+  login, room creation, and state-event sending.
+- Added BDD coverage for SQLite transaction rollback and multi-row persistence
+  helper visibility.
+
 ## 0.1.19
 
 - Added an SQLite-backed persistent store with RAII connection/statement

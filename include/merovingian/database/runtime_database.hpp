@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include <merovingian/config/config.hpp>
-
 #include <cstdint>
 #include <string>
+
+#include <merovingian/config/config.hpp>
 
 namespace merovingian::database
 {
@@ -15,6 +15,7 @@ struct RuntimeDatabaseConfig final
     std::string uri_file{};
     std::string sqlite_path{};
     std::uint32_t pool_size{0U};
+    config::DatabaseRole role{config::DatabaseRole::runtime};
     std::string warning{};
 };
 

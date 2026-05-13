@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -16,6 +17,7 @@ namespace merovingian::database
 enum class PersistentStoreBackend
 {
     memory,
+    postgresql,
     sqlite,
 };
 
@@ -112,6 +114,7 @@ struct PersistentStore final
 {
     bool open{false};
     PersistentStoreBackend backend{PersistentStoreBackend::memory};
+    std::string postgresql_conninfo{};
     std::string sqlite_path{};
     SchemaState schema{};
     std::vector<PersistentUser> users{};
@@ -138,14 +141,22 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto open_persistent_store(SchemaState existing_state = {}) -> PersistentStoreOpenResult;
 [[nodiscard]] auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult;
 [[nodiscard]] auto validate_persistent_store(PersistentStore const& store) -> MigrationValidationResult;
+[[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
+                                                 std::vector<PreparedStatement> const& statements) -> bool;
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
+[[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
+                                                 PersistentAccessToken token) -> bool;
 [[nodiscard]] auto revoke_access_token(PersistentStore& store, std::string_view token_hash) -> std::size_t;
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> bool;
+[[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
+                                              PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
+[[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
+                                          std::optional<PersistentStateEvent> state) -> bool;
 [[nodiscard]] auto store_local_media(PersistentStore& store, PersistentLocalMedia media) -> bool;
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool;
@@ -159,6 +170,10 @@ namespace detail
 
     [[nodiscard]] auto persist_statement_to_backend(PersistentStore const& store, PreparedStatement const& statement)
         -> bool;
+    [[nodiscard]] auto persist_transaction_to_backend(PersistentStore const& store,
+                                                      std::vector<PreparedStatement> const& statements) -> bool;
+    [[nodiscard]] auto persist_transaction_to_postgresql(PersistentStore const& store,
+                                                         std::vector<PreparedStatement> const& statements) -> bool;
 
 } // namespace detail
 

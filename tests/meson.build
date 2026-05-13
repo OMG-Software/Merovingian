@@ -69,7 +69,7 @@ if get_option('build_tests')
       'unit/test_trust_safety_policy.cpp',
     ),
     include_directories: inc,
-    dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, sqlite_dep],
+    dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep],
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, trust_safety_lib],
   )
 
@@ -86,11 +86,12 @@ if get_option('build_tests')
       'integration/test_media_repository_security.cpp',
       'integration/test_observability_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
+      'integration/test_postgresql_persistence_flow.cpp',
       'integration/test_runtime_hardening_flow.cpp',
       'integration/test_trust_safety_policy_flow.cpp',
     ),
     include_directories: inc,
-    dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, sqlite_dep],
+    dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep],
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, trust_safety_lib],
   )
 

@@ -1,0 +1,642 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <vector>
+
+#include <libpq-fe.h>
+#include <merovingian/database/postgresql_store.hpp>
+#include <merovingian/database/schema.hpp>
+
+namespace merovingian::database
+{
+namespace
+{
+
+    struct PostgresqlConnectionDeleter final
+    {
+        auto operator()(PGconn* connection) const noexcept -> void
+        {
+            PQfinish(connection);
+        }
+    };
+
+    struct PostgresqlResultDeleter final
+    {
+        auto operator()(PGresult* result) const noexcept -> void
+        {
+            PQclear(result);
+        }
+    };
+
+    using PostgresqlConnectionPtr = std::unique_ptr<PGconn, PostgresqlConnectionDeleter>;
+    using PostgresqlResultPtr = std::unique_ptr<PGresult, PostgresqlResultDeleter>;
+
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
+    {
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
+
+    [[nodiscard]] auto has_control_character(std::string_view value) noexcept -> bool
+    {
+        return std::ranges::any_of(value, [](char character) {
+            auto const byte = static_cast<unsigned char>(character);
+            return byte < 0x20U || byte == 0x7FU;
+        });
+    }
+
+    [[nodiscard]] auto looks_like_key_value_conninfo(std::string_view conninfo) noexcept -> bool
+    {
+        auto const equals = conninfo.find('=');
+        return equals != std::string_view::npos && equals > 0U;
+    }
+
+    [[nodiscard]] auto looks_like_postgresql_uri(std::string_view conninfo) noexcept -> bool
+    {
+        return starts_with(conninfo, "postgresql://") || starts_with(conninfo, "postgres://");
+    }
+
+    [[nodiscard]] auto redact_uri_password(std::string_view conninfo) -> std::string
+    {
+        auto redacted = std::string{conninfo};
+        auto const scheme_end = redacted.find("://");
+        if (scheme_end == std::string::npos)
+        {
+            return redacted;
+        }
+
+        auto const authority_begin = scheme_end + 3U;
+        auto const authority_end = redacted.find_first_of("/?", authority_begin);
+        auto const userinfo_end = redacted.find('@', authority_begin);
+        if (userinfo_end == std::string::npos || (authority_end != std::string::npos && userinfo_end > authority_end))
+        {
+            return redacted;
+        }
+
+        auto const password_begin = redacted.find(':', authority_begin);
+        if (password_begin == std::string::npos || password_begin > userinfo_end)
+        {
+            return redacted;
+        }
+
+        redacted.replace(password_begin + 1U, userinfo_end - password_begin - 1U, "redacted");
+        return redacted;
+    }
+
+    [[nodiscard]] auto redact_key_value_password(std::string_view conninfo) -> std::string
+    {
+        auto redacted = std::string{conninfo};
+        auto cursor = std::size_t{0U};
+        while (cursor < redacted.size())
+        {
+            auto const password_key = redacted.find("password=", cursor);
+            if (password_key == std::string::npos)
+            {
+                break;
+            }
+
+            auto const value_begin = password_key + std::string_view{"password="}.size();
+            auto value_end = redacted.find(' ', value_begin);
+            if (value_end == std::string::npos)
+            {
+                value_end = redacted.size();
+            }
+            redacted.replace(value_begin, value_end - value_begin, "redacted");
+            cursor = value_begin + std::string_view{"redacted"}.size();
+        }
+        return redacted;
+    }
+
+    [[nodiscard]] auto connection_error(PGconn& connection) -> std::string
+    {
+        auto const* error = PQerrorMessage(&connection);
+        if (error == nullptr || std::string_view{error}.empty())
+        {
+            return "PostgreSQL connection failed";
+        }
+        return std::string{error};
+    }
+
+    [[nodiscard]] auto result_error(PGresult& result) -> std::string
+    {
+        auto const* error = PQresultErrorMessage(&result);
+        if (error == nullptr || std::string_view{error}.empty())
+        {
+            return "PostgreSQL statement failed";
+        }
+        return std::string{error};
+    }
+
+    [[nodiscard]] auto result_is_success(PGresult& result) noexcept -> bool
+    {
+        auto const status = PQresultStatus(&result);
+        return status == PGRES_COMMAND_OK || status == PGRES_TUPLES_OK;
+    }
+
+    [[nodiscard]] auto command_is_success(PGresult& result) noexcept -> bool
+    {
+        return PQresultStatus(&result) == PGRES_COMMAND_OK;
+    }
+
+    [[nodiscard]] auto load_result_rows(PGresult& result) -> std::vector<std::vector<std::string>>
+    {
+        auto rows = std::vector<std::vector<std::string>>{};
+        auto const row_count = PQntuples(&result);
+        auto const column_count = PQnfields(&result);
+        if (row_count <= 0 || column_count <= 0)
+        {
+            return rows;
+        }
+
+        rows.reserve(static_cast<std::size_t>(row_count));
+        for (auto row = 0; row < row_count; ++row)
+        {
+            auto values = std::vector<std::string>{};
+            values.reserve(static_cast<std::size_t>(column_count));
+            for (auto column = 0; column < column_count; ++column)
+            {
+                if (PQgetisnull(&result, row, column) == 1)
+                {
+                    values.emplace_back();
+                    continue;
+                }
+                auto const* value = PQgetvalue(&result, row, column);
+                auto const length = PQgetlength(&result, row, column);
+                values.emplace_back(value == nullptr ? std::string{}
+                                                     : std::string{value, static_cast<std::size_t>(length)});
+            }
+            rows.push_back(std::move(values));
+        }
+        return rows;
+    }
+
+    [[nodiscard]] auto execute_raw_command(PGconn& connection, std::string_view sql) -> bool
+    {
+        auto command = std::string{sql};
+        auto result = PostgresqlResultPtr{PQexec(&connection, command.c_str())};
+        return result != nullptr && command_is_success(*result);
+    }
+
+    [[nodiscard]] auto execute_prepared_statement(PGconn& connection, PreparedStatement const& statement) -> QueryResult
+    {
+        auto const validation = prepared_statement_is_valid(statement);
+        if (!validation.valid)
+        {
+            return {false, validation.reason, {}};
+        }
+        if (statement.parameters.size() > static_cast<std::size_t>(std::numeric_limits<int>::max()))
+        {
+            return {false, "too many PostgreSQL statement parameters", {}};
+        }
+
+        auto parameter_values = std::vector<char const*>{};
+        parameter_values.reserve(statement.parameters.size());
+        for (auto const& parameter : statement.parameters)
+        {
+            parameter_values.push_back(parameter.value.c_str());
+        }
+
+        auto* const values = parameter_values.empty() ? nullptr : parameter_values.data();
+        auto result = PostgresqlResultPtr{PQexecParams(&connection, statement.sql.c_str(),
+                                                       static_cast<int>(statement.parameters.size()), nullptr, values,
+                                                       nullptr, nullptr, 0)};
+        if (result == nullptr)
+        {
+            return {false, connection_error(connection), {}};
+        }
+        if (!result_is_success(*result))
+        {
+            return {false, result_error(*result), {}};
+        }
+        return {true, {}, load_result_rows(*result)};
+    }
+
+    [[nodiscard]] auto execute_postgresql_transaction(PGconn& connection,
+                                                      std::vector<PreparedStatement> const& statements) -> bool
+    {
+        if (!execute_raw_command(connection, "BEGIN"))
+        {
+            return false;
+        }
+        for (auto const& statement : statements)
+        {
+            auto result = execute_prepared_statement(connection, statement);
+            if (!result.ok)
+            {
+                static_cast<void>(execute_raw_command(connection, "ROLLBACK"));
+                return false;
+            }
+        }
+        if (!execute_raw_command(connection, "COMMIT"))
+        {
+            static_cast<void>(execute_raw_command(connection, "ROLLBACK"));
+            return false;
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto create_table_if_missing_sql(SchemaTableDefinition const& table) -> std::string
+    {
+        return "CREATE TABLE IF NOT EXISTS " + std::string{table.name} + " (" + std::string{table.columns_sql} + ")";
+    }
+
+    [[nodiscard]] auto migration_record_statement(std::uint32_t version, std::string name) -> PreparedStatement
+    {
+        return {
+            "postgresql_record_migration_" + std::to_string(version),
+            "INSERT INTO schema_migrations VALUES ($1, $2, $3) ON CONFLICT (version) DO NOTHING",
+            {{std::to_string(version), false}, {std::move(name), false}, {"upgrade", false}}
+        };
+    }
+
+    [[nodiscard]] auto query_rows(PostgresqlConnection& connection, std::string name, std::string sql) -> QueryResult
+    {
+        return connection.execute({std::move(name), std::move(sql), {}});
+    }
+
+    [[nodiscard]] auto text_is_true(std::string_view value) noexcept -> bool
+    {
+        return value == "true";
+    }
+
+    [[nodiscard]] auto parse_u64(std::string_view value) noexcept -> std::uint64_t
+    {
+        auto result = std::uint64_t{0U};
+        for (auto const character : value)
+        {
+            if (character < '0' || character > '9')
+            {
+                return 0U;
+            }
+            result = (result * 10U) + static_cast<std::uint64_t>(character - '0');
+        }
+        return result;
+    }
+
+    auto load_persistent_rows(PostgresqlConnection& connection, PersistentStore& store) -> bool
+    {
+        auto users = query_rows(connection, "postgresql_load_users",
+                                "SELECT user_id, password_hash, locked, suspended, admin FROM users ORDER BY user_id");
+        if (!users.ok)
+        {
+            return false;
+        }
+        for (auto const& row : users.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                store.users.push_back(
+                    {row[0], row[1], text_is_true(row[2]), text_is_true(row[3]), text_is_true(row[4])});
+            }
+        }
+
+        auto devices = query_rows(connection, "postgresql_load_devices",
+                                  "SELECT user_id, device_id, display_name FROM devices ORDER BY user_id, device_id");
+        if (!devices.ok)
+        {
+            return false;
+        }
+        for (auto const& row : devices.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                store.devices.push_back({row[0], row[1], row[2]});
+            }
+        }
+
+        auto tokens =
+            query_rows(connection, "postgresql_load_access_tokens",
+                       "SELECT user_id, device_id, token_hash, revoked FROM access_tokens ORDER BY token_hash");
+        if (!tokens.ok)
+        {
+            return false;
+        }
+        for (auto const& row : tokens.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                store.access_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3])});
+            }
+        }
+
+        auto rooms = query_rows(connection, "postgresql_load_rooms",
+                                "SELECT room_id, creator_user_id FROM rooms ORDER BY room_id");
+        if (!rooms.ok)
+        {
+            return false;
+        }
+        for (auto const& row : rooms.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                store.rooms.push_back({row[0], row[1]});
+            }
+        }
+
+        auto memberships = query_rows(connection, "postgresql_load_membership",
+                                      "SELECT room_id, user_id FROM membership ORDER BY room_id, user_id");
+        if (!memberships.ok)
+        {
+            return false;
+        }
+        for (auto const& row : memberships.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                store.memberships.push_back({row[0], row[1]});
+            }
+        }
+
+        auto events = query_rows(connection, "postgresql_load_events",
+                                 "SELECT event_id, room_id, sender_user_id, json FROM events ORDER BY event_id");
+        if (!events.ok)
+        {
+            return false;
+        }
+        for (auto const& row : events.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                store.events.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        auto state = query_rows(connection, "postgresql_load_current_state",
+                                "SELECT room_id, event_type, state_key, event_id FROM current_state ORDER BY room_id, "
+                                "event_type, state_key");
+        if (!state.ok)
+        {
+            return false;
+        }
+        for (auto const& row : state.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                store.state.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        auto media = query_rows(connection, "postgresql_load_media",
+                                "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, "
+                                "quarantined, removed FROM media ORDER BY media_id");
+        if (!media.ok)
+        {
+            return false;
+        }
+        for (auto const& row : media.rows)
+        {
+            if (row.size() >= 8U)
+            {
+                store.local_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4], row[5],
+                                             text_is_true(row[6]), text_is_true(row[7])});
+            }
+        }
+
+        auto remote_media = query_rows(connection, "postgresql_load_remote_media",
+                                       "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM "
+                                       "remote_media ORDER BY server_name, media_id");
+        if (!remote_media.ok)
+        {
+            return false;
+        }
+        for (auto const& row : remote_media.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                store.remote_media.push_back({row[0], row[1], row[2], parse_u64(row[3]), text_is_true(row[4])});
+            }
+        }
+
+        auto audit_log =
+            query_rows(connection, "postgresql_load_audit_log",
+                       "SELECT category, event_type, actor, target, reason FROM audit_log ORDER BY event_type, actor");
+        if (!audit_log.ok)
+        {
+            return false;
+        }
+        for (auto const& row : audit_log.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                store.audit_log.push_back({row[0], row[1], row[2], row[3], row[4]});
+            }
+        }
+
+        auto admin_actions =
+            query_rows(connection, "postgresql_load_admin_actions",
+                       "SELECT admin_user_id, action, target FROM admin_actions ORDER BY admin_user_id, action");
+        if (!admin_actions.ok)
+        {
+            return false;
+        }
+        for (auto const& row : admin_actions.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                store.admin_actions.push_back({row[0], row[1], row[2]});
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto load_schema_state(PostgresqlConnection& connection) -> std::optional<SchemaState>
+    {
+        auto state = SchemaState{};
+        auto tables = query_rows(
+            connection, "postgresql_load_table_names",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name");
+        if (!tables.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : tables.rows)
+        {
+            if (!row.empty())
+            {
+                state.tables.push_back(row.front());
+            }
+        }
+
+        auto migrations = query_rows(connection, "postgresql_load_schema_migrations",
+                                     "SELECT version, name, direction FROM schema_migrations ORDER BY version");
+        if (!migrations.ok)
+        {
+            return std::nullopt;
+        }
+        for (auto const& row : migrations.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                auto const version = static_cast<std::uint32_t>(parse_u64(row[0]));
+                state.applied_migrations.push_back(
+                    {version, row[1],
+                     row[2] == "downgrade" ? MigrationDirection::downgrade : MigrationDirection::upgrade});
+                if (version > state.version)
+                {
+                    state.version = version;
+                }
+            }
+        }
+        return state;
+    }
+
+} // namespace
+
+struct PostgresqlConnectionHandle final
+{
+    PostgresqlConnectionPtr connection{};
+};
+
+PostgresqlConnection::PostgresqlConnection() noexcept = default;
+PostgresqlConnection::PostgresqlConnection(std::unique_ptr<PostgresqlConnectionHandle> handle) noexcept
+    : handle_{std::move(handle)}
+{
+}
+PostgresqlConnection::PostgresqlConnection(PostgresqlConnection&& other) noexcept = default;
+auto PostgresqlConnection::operator=(PostgresqlConnection&& other) noexcept -> PostgresqlConnection& = default;
+PostgresqlConnection::~PostgresqlConnection() = default;
+
+auto PostgresqlConnection::open() const noexcept -> bool
+{
+    return handle_ != nullptr && handle_->connection != nullptr && PQstatus(handle_->connection.get()) == CONNECTION_OK;
+}
+
+auto PostgresqlConnection::execute(PreparedStatement const& statement) -> QueryResult
+{
+    if (!open())
+    {
+        return {false, "PostgreSQL connection is not open", {}};
+    }
+
+    return execute_prepared_statement(*handle_->connection, statement);
+}
+
+auto PostgresqlConnection::execute_transaction(std::vector<PreparedStatement> const& statements) -> bool
+{
+    return open() && execute_postgresql_transaction(*handle_->connection, statements);
+}
+
+auto validate_postgresql_conninfo(std::string_view conninfo) -> PostgresqlConnectionPolicyResult
+{
+    if (conninfo.empty())
+    {
+        return {false, "PostgreSQL connection info must not be empty"};
+    }
+    if (has_control_character(conninfo))
+    {
+        return {false, "PostgreSQL connection info must not contain control characters"};
+    }
+    if (!looks_like_postgresql_uri(conninfo) && !looks_like_key_value_conninfo(conninfo))
+    {
+        return {false, "PostgreSQL connection info must use a PostgreSQL URI or key/value form"};
+    }
+    return {true, {}};
+}
+
+auto redact_postgresql_conninfo(std::string_view conninfo) -> std::string
+{
+    auto redacted = looks_like_postgresql_uri(conninfo) ? redact_uri_password(conninfo) : std::string{conninfo};
+    return redact_key_value_password(redacted);
+}
+
+auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
+{
+    auto statements = std::vector<PreparedStatement>{};
+    for (auto const& table : initial_schema_definitions())
+    {
+        statements.push_back({"postgresql_create_" + std::string{table.name}, create_table_if_missing_sql(table), {}});
+    }
+    statements.push_back(migration_record_statement(1U, "initial_schema"));
+    statements.push_back(migration_record_statement(2U, "media_metadata_columns"));
+    return statements;
+}
+
+auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnectionOpenResult
+{
+    auto const policy = validate_postgresql_conninfo(conninfo);
+    auto const redacted = redact_postgresql_conninfo(conninfo);
+    if (!policy.allowed)
+    {
+        return {false, policy.reason, redacted, {}};
+    }
+
+    auto conninfo_string = std::string{conninfo};
+    auto connection = PostgresqlConnectionPtr{PQconnectdb(conninfo_string.c_str())};
+    if (connection == nullptr)
+    {
+        return {false, "PostgreSQL connection allocation failed", redacted, {}};
+    }
+    if (PQstatus(connection.get()) != CONNECTION_OK)
+    {
+        auto reason = connection_error(*connection);
+        return {false, reason, redacted, {}};
+    }
+
+    auto handle = std::make_unique<PostgresqlConnectionHandle>();
+    handle->connection = std::move(connection);
+    return {true, {}, redacted, PostgresqlConnection{std::move(handle)}};
+}
+
+auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentStoreOpenResult
+{
+    auto opened = open_postgresql_connection(conninfo);
+    if (!opened.ok)
+    {
+        return {false, opened.reason, {}};
+    }
+
+    auto& connection = opened.connection;
+    auto const bootstrap = postgresql_schema_bootstrap_statements();
+    if (!connection.execute_transaction(bootstrap))
+    {
+        return {false, "unable to initialize PostgreSQL schema", {}};
+    }
+
+    auto schema = load_schema_state(connection);
+    if (!schema.has_value())
+    {
+        return {false, "unable to hydrate PostgreSQL schema state", {}};
+    }
+
+    auto store = PersistentStore{};
+    store.open = true;
+    store.backend = PersistentStoreBackend::postgresql;
+    store.postgresql_conninfo = std::string{conninfo};
+    store.schema = std::move(*schema);
+    if (!load_persistent_rows(connection, store))
+    {
+        return {false, "unable to hydrate PostgreSQL persistent rows", {}};
+    }
+
+    auto compatibility = validate_persistent_store(store);
+    if (!compatibility.valid)
+    {
+        return {false, compatibility.reason, {}};
+    }
+    return {true, {}, std::move(store)};
+}
+
+namespace detail
+{
+
+    auto persist_transaction_to_postgresql(PersistentStore const& store,
+                                           std::vector<PreparedStatement> const& statements) -> bool
+    {
+        if (store.postgresql_conninfo.empty())
+        {
+            return false;
+        }
+        auto opened = open_postgresql_connection(store.postgresql_conninfo);
+        return opened.ok && opened.connection.execute_transaction(statements);
+    }
+
+} // namespace detail
+
+} // namespace merovingian::database

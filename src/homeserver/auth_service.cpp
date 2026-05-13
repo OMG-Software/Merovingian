@@ -240,13 +240,13 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
         runtime.database.persistent_store.devices, [user, device_id](database::PersistentDevice const& device) {
             return device.user_id == user->user_id && device.device_id == device_id;
         });
-    if (!device_exists && !database::store_device(runtime.database.persistent_store,
-                                                  {user->user_id, std::string{device_id}, std::string{device_id}}))
+    auto device = std::optional<database::PersistentDevice>{};
+    if (!device_exists)
     {
-        return make_operation_result(false, {}, "device persistence failed", 500U);
+        device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{device_id}};
     }
-    if (!database::store_access_token(runtime.database.persistent_store,
-                                      {user->user_id, std::string{device_id}, *token_hash, false}))
+    if (!database::store_device_and_access_token(runtime.database.persistent_store, std::move(device),
+                                                 {user->user_id, std::string{device_id}, *token_hash, false}))
     {
         return make_operation_result(false, {}, "token persistence failed", 500U);
     }
