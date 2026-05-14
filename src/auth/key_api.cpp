@@ -139,14 +139,15 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
     case KeyApiEndpoint::upload_keys:
         return {
             {"key_api_store_one_time_keys",
-             "INSERT INTO one_time_keys user_id, device_id, key_payload VALUES $1, $2, $3", {public_value(user_id), public_value(device_id), sensitive_placeholder("one-time-key-payload")}},
+             "INSERT INTO one_time_keys VALUES ($1, $2, $3, $4)", {public_value(user_id), public_value(device_id), public_value("key_id"),
+              sensitive_placeholder("one-time-key-payload")}},
             {"key_api_store_fallback_keys",
-             "INSERT INTO fallback_keys user_id, device_id, key_payload VALUES $1, $2, $3", {public_value(user_id), public_value(device_id), sensitive_placeholder("fallback-key-payload")}},
+             "INSERT INTO fallback_keys VALUES ($1, $2, $3, $4)", {public_value(user_id), public_value(device_id), public_value("key_id"),
+              sensitive_placeholder("fallback-key-payload")}},
         };
     case KeyApiEndpoint::query_keys:
         return {
-            {"key_api_query_device_keys",
-             "SELECT key_payload FROM device_keys WHERE user_id = $1", {public_value(user_id)}}
+            {"key_api_query_device_keys", "SELECT json FROM device_keys WHERE user_id = $1", {public_value(user_id)}}
         };
     case KeyApiEndpoint::claim_keys:
         return {
@@ -161,27 +162,28 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
     case KeyApiEndpoint::upload_cross_signing_keys:
         return {
             {"key_api_store_cross_signing_keys",
-             "INSERT INTO cross_signing_keys user_id, key_payload VALUES $1, $2", {public_value(user_id), sensitive_placeholder("cross-signing-key-payload")}}
+             "INSERT INTO cross_signing_keys VALUES ($1, $2, $3)", {public_value(user_id), public_value("master"), sensitive_placeholder("cross-signing-key-payload")}}
         };
     case KeyApiEndpoint::upload_signatures:
         return {
             {"key_api_store_key_signatures",
-             "INSERT INTO key_signatures user_id, signature_payload VALUES $1, $2", {public_value(user_id), sensitive_placeholder("signature-payload")}}
+             "INSERT INTO key_signatures VALUES ($1, $2, $3, $4)", {public_value(user_id), public_value(user_id), public_value(device_id),
+              sensitive_placeholder("signature-payload")}}
         };
     case KeyApiEndpoint::get_key_backup_version:
         return {
             {"key_api_get_backup_version",
-             "SELECT version, metadata_payload FROM key_backup_versions WHERE user_id = $1", {public_value(user_id)}}
+             "SELECT version, json FROM key_backup_versions WHERE user_id = $1", {public_value(user_id)}}
         };
     case KeyApiEndpoint::create_key_backup_version:
         return {
             {"key_api_create_backup_version",
-             "INSERT INTO key_backup_versions user_id, metadata_payload VALUES $1, $2", {public_value(user_id), sensitive_placeholder("backup-version-metadata")}}
+             "INSERT INTO key_backup_versions VALUES ($1, $2, $3)", {public_value(user_id), public_value("1"), sensitive_placeholder("backup-version-metadata")}}
         };
     case KeyApiEndpoint::update_key_backup_version:
         return {
             {"key_api_update_backup_version",
-             "UPDATE key_backup_versions SET metadata_payload = $1 WHERE user_id = $2", {sensitive_placeholder("backup-version-metadata"), public_value(user_id)}}
+             "UPDATE key_backup_versions SET json = $1 WHERE user_id = $2", {sensitive_placeholder("backup-version-metadata"), public_value(user_id)}}
         };
     case KeyApiEndpoint::delete_key_backup_version:
         return {
@@ -191,12 +193,13 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
     case KeyApiEndpoint::put_room_key_backup:
         return {
             {"key_api_put_room_key_backup",
-             "INSERT INTO key_backup_sessions user_id, room_key_payload VALUES $1, $2", {public_value(user_id), sensitive_placeholder("room-key-backup-payload")}}
+             "INSERT INTO key_backup_sessions VALUES ($1, $2, $3, $4, $5)", {public_value(user_id), public_value("1"), public_value("room_id"), public_value("session_id"),
+              sensitive_placeholder("room-key-backup-payload")}}
         };
     case KeyApiEndpoint::get_room_key_backup:
         return {
             {"key_api_get_room_key_backup",
-             "SELECT room_key_payload FROM key_backup_sessions WHERE user_id = $1", {public_value(user_id)}}
+             "SELECT json FROM key_backup_sessions WHERE user_id = $1", {public_value(user_id)}}
         };
     case KeyApiEndpoint::delete_room_key_backup:
         return {

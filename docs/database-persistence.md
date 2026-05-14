@@ -17,11 +17,12 @@ remaining work before PostgreSQL-backed production operation.
 - Contiguous upgrade and explicit downgrade migration-plan validation.
 - Initial schema table inventory covering the Matrix storage areas from the project plan.
 - Media metadata schema migration from version `1` to version `2`.
+- E2EE key storage schema migration from version `2` to version `3`.
 - SQLite RAII wrappers around database connections and prepared statements.
 - SQLite current-schema bootstrap for new database files.
 - SQLite row hydration for users, devices, access tokens, rooms, memberships,
-  events, current state, media metadata, remote media metadata, audit events,
-  and admin actions.
+  events, current state, E2EE key state, media metadata, remote media metadata,
+  audit events, and admin actions.
 - Write-through SQLite persistence behind the existing store mutation helpers.
 - Transaction-aware persistent-store commits with SQLite rollback support.
 - Atomic helpers for multi-row login, room creation, and state-event writes.
@@ -32,6 +33,9 @@ remaining work before PostgreSQL-backed production operation.
 - `libpq` dependency review and a PostgreSQL RAII connection/result wrapper.
 - PostgreSQL current-schema bootstrap, row hydration, and write-through
   transaction execution when a URI file is explicitly configured.
+- Durable persistent-store helpers for device keys, one-time keys, fallback
+  keys, cross-signing keys, key signatures, key backup versions, and key backup
+  sessions.
 - Physical migration-file loading for SQL files with explicit metadata and
   statement names.
 - Offline `merovingian-db-migrate` planning scaffold.
@@ -59,7 +63,8 @@ The boundary provides these guarantees:
 - Media rows include hash algorithm, digest, quarantine state, and removal state before runtime media writes are accepted.
 - Fresh SQLite database files are created with the current schema and recorded
   migration metadata.
-- Existing SQLite database files are validated before runtime state is hydrated.
+- Existing SQLite database files apply pending project-owned migrations before
+  runtime state is hydrated.
 - Auth and room mutations fail the request when required persistent writes fail.
 - Device/token, room/membership, and event/current-state mutations are committed
   atomically before in-memory runtime state is updated.
@@ -76,10 +81,10 @@ These remain deferred:
 
 - Full PostgreSQL integration tests against a running temporary server.
 - Runtime/migration role grants enforced by actual database users.
-- PostgreSQL-backed federation, policy, account data, push rules,
-  E2EE keys, and full media repository blob metadata hydration.
-- SQLite-backed federation queues, policy rules, account data, push rules,
-  E2EE keys, and full media repository blob metadata hydration.
+- PostgreSQL-backed federation, policy, account data, push rules, and full
+  media repository blob metadata hydration.
+- SQLite-backed federation queues, policy rules, account data, push rules, and
+  full media repository blob metadata hydration.
 
 ## Next starting points
 
@@ -88,4 +93,5 @@ These remain deferred:
 2. Enforce runtime/migration role grants with separate PostgreSQL users.
 3. Extend transaction helpers across federation queues, policy actions, and
    media metadata once those rows are runtime-wired.
-4. Persist account data, push rules, E2EE keys, and media blob metadata.
+4. Persist account data, push rules, federation queues, and media blob
+   metadata.

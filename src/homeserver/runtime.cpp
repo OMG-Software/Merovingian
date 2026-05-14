@@ -153,6 +153,13 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
         !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") ||
         !database_has_table(runtime.database, "membership") || !database_has_table(runtime.database, "events") ||
         !database_has_table(runtime.database, "current_state") || !database_has_table(runtime.database, "media") ||
+        !database_has_table(runtime.database, "device_keys") ||
+        !database_has_table(runtime.database, "one_time_keys") ||
+        !database_has_table(runtime.database, "fallback_keys") ||
+        !database_has_table(runtime.database, "cross_signing_keys") ||
+        !database_has_table(runtime.database, "key_signatures") ||
+        !database_has_table(runtime.database, "key_backup_versions") ||
+        !database_has_table(runtime.database, "key_backup_sessions") ||
         !database_has_table(runtime.database, "remote_media") || !database_has_table(runtime.database, "audit_log") ||
         !database_has_table(runtime.database, "admin_actions"))
     {

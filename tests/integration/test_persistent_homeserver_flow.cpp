@@ -144,6 +144,72 @@ SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions 
     }
 }
 
+SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across restart",
+         "[database][sqlite][homeserver][key-api][integration]")
+{
+    GIVEN("a registration-enabled SQLite homeserver config")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto const config = sqlite_registration_enabled_config(sqlite_path);
+
+        WHEN("a device uploads device, one-time, and fallback keys before restart")
+        {
+            auto token = std::string{};
+            {
+                auto started = merovingian::homeserver::start_client_server(config);
+                REQUIRE(started.started);
+                auto& runtime = started.runtime;
+
+                auto const registered = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"keys","password":"CorrectHorse7!"})"});
+                auto const login = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST",
+                     "/_matrix/client/v3/login",
+                     {},
+                     R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@keys:example.org"},"password":"CorrectHorse7!","device_id":"KEYS1"})"});
+                token = token_from_login_body(login.body);
+                auto const upload = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/keys/upload", token,
+                     R"({"device_keys":{"algorithms":["m.megolm.v1.aes-sha2"]},"one_time_keys":{"signed_curve25519:AAA":{"key":"otk"}},"fallback_keys":{"signed_curve25519:FB":{"key":"fallback"}}})"});
+
+                REQUIRE(registered.status == 200U);
+                REQUIRE(login.status == 200U);
+                REQUIRE(upload.status == 200U);
+                REQUIRE(std::filesystem::exists(sqlite_path));
+            }
+
+            auto restarted = merovingian::homeserver::start_client_server(config);
+            REQUIRE(restarted.started);
+            auto& runtime = restarted.runtime;
+            auto const query = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/query", token, R"({"device_keys":{}})"});
+            auto const first_claim = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/claim", token, R"({"one_time_keys":{}})"});
+            auto const second_claim = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/claim", token, R"({"one_time_keys":{}})"});
+
+            THEN("device keys survive restart and fallback keys are reused after one-time keys are consumed")
+            {
+                REQUIRE(query.status == 200U);
+                REQUIRE(first_claim.status == 200U);
+                REQUIRE(second_claim.status == 200U);
+                REQUIRE(query.body.find("m.megolm.v1.aes-sha2") != std::string::npos);
+                REQUIRE(first_claim.body.find("otk") != std::string::npos);
+                REQUIRE(second_claim.body.find("fallback") != std::string::npos);
+                REQUIRE(runtime.homeserver.database.persistent_store.device_keys.size() == 1U);
+                REQUIRE(runtime.homeserver.database.persistent_store.one_time_keys.empty());
+                REQUIRE(runtime.homeserver.database.persistent_store.fallback_keys.size() == 1U);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
 SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[database][homeserver][integration]")
 {
     GIVEN("registration-enabled config and no existing schema")
@@ -164,12 +230,14 @@ SCENARIO("Persistent homeserver runtime bootstraps a fresh migrated schema", "[d
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "access_tokens"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "membership"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "current_state"));
+                REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "device_keys"));
+                REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "key_backup_sessions"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "admin_actions"));
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 2U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 3U);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.front().direction ==
                         merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.back().name ==
-                        "media_metadata_columns");
+                        "e2ee_key_storage");
             }
         }
     }
@@ -193,7 +261,7 @@ SCENARIO("Persistent homeserver startup is idempotent for an already migrated sc
                 REQUIRE(started.started);
                 REQUIRE(started.runtime.database.persistent_store.schema.version ==
                         merovingian::database::current_schema_version());
-                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 2U);
+                REQUIRE(started.runtime.database.persistent_store.schema.applied_migrations.size() == 3U);
             }
         }
     }

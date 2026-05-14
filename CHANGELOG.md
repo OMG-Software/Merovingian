@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.25
+
+- Added schema version `3` for durable E2EE key storage tables covering device
+  keys, key signatures, key backup versions, and key backup sessions.
+- Added persistent-store helpers and SQLite/PostgreSQL hydration for device
+  keys, one-time keys, fallback keys, cross-signing keys, signatures, key
+  backup versions, and key backup sessions.
+- Wired `/keys/upload`, `/keys/query`, and `/keys/claim` to persisted
+  server-blind key state, including one-time-key consumption and fallback-key
+  reuse after restart.
+
 ## 0.1.24
 
 - Runtime-wired authenticated E2EE key API route handling through the

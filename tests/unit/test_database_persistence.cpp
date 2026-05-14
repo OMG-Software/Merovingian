@@ -235,7 +235,7 @@ SCENARIO("Database migration plans are contiguous and direction-aware", "[databa
                 REQUIRE_FALSE(gap_result.valid);
                 REQUIRE(gap_result.reason == "migration versions must be contiguous");
                 REQUIRE(summary == "database migration plan direction=upgrade current_version=0 "
-                                   "target_version=2 steps=2");
+                                   "target_version=3 steps=3");
             }
         }
     }
@@ -262,17 +262,17 @@ SCENARIO("Database migration runner applies versioned upgrade and downgrade path
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 2U);
+                REQUIRE(upgrade_plan.steps.size() == 3U);
                 REQUIRE(upgrade_plan.steps.front().version == 1U);
-                REQUIRE(upgrade_plan.steps.back().version == 2U);
+                REQUIRE(upgrade_plan.steps.back().version == 3U);
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 2U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 3U);
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 2U);
+                REQUIRE(downgrade_plan.steps.size() == 3U);
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -302,12 +302,13 @@ SCENARIO("Database migration runner upgrades existing media schemas with metadat
             {
                 REQUIRE(media_plan.current_version == 1U);
                 REQUIRE(media_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(media_plan.steps.size() == 1U);
+                REQUIRE(media_plan.steps.size() == 2U);
                 REQUIRE(media_plan.steps.front().name == "media_metadata_columns");
                 REQUIRE(media_plan.steps.front().statements.size() == 3U);
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 2U);
-                REQUIRE(upgraded.state.applied_migrations.back().name == "media_metadata_columns");
+                REQUIRE(upgraded.state.version == 3U);
+                REQUIRE(upgraded.state.applied_migrations[1U].name == "media_metadata_columns");
+                REQUIRE(upgraded.state.applied_migrations.back().name == "e2ee_key_storage");
                 REQUIRE(compatible.valid);
             }
         }
@@ -480,6 +481,60 @@ SCENARIO("Persistent store offers atomic helpers for multi-row runtime mutations
     }
 }
 
+SCENARIO("Persistent store records durable server-blind E2EE key state", "[database][persistence][key-api]")
+{
+    GIVEN("an opened persistent store")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        WHEN("device, one-time, fallback, cross-signing, signature, and backup keys are stored")
+        {
+            auto const device_ok = merovingian::database::store_device_key(
+                store, {"@alice:example.org", "DEVICE1", R"({"algorithms":["m.megolm.v1.aes-sha2"]})"});
+            auto const one_time_ok = merovingian::database::store_one_time_key(
+                store, {"@alice:example.org", "DEVICE1", "signed_curve25519:AAA", R"({"key":"otk"})"});
+            auto const fallback_ok = merovingian::database::store_fallback_key(
+                store, {"@alice:example.org", "DEVICE1", "signed_curve25519:FB", R"({"key":"fallback"})"});
+            auto const cross_signing_ok = merovingian::database::store_cross_signing_key(
+                store, {"@alice:example.org", "master", R"({"keys":{"ed25519:master":"pub"}})"});
+            auto const signature_ok = merovingian::database::store_key_signature(
+                store, {"@alice:example.org", "@alice:example.org", "DEVICE1", R"({"signatures":{}})"});
+            auto const backup_version_ok = merovingian::database::store_key_backup_version(
+                store, {"@alice:example.org", "1", R"({"algorithm":"m.megolm_backup.v1"})"});
+            auto const backup_session_ok = merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "!room:example.org", "SESSION1", R"({"session_data":{}})"});
+            auto claimed = merovingian::database::claim_one_time_key(store, "@alice:example.org", "DEVICE1");
+            auto fallback = merovingian::database::find_fallback_key(store, "@alice:example.org", "DEVICE1");
+            auto fallback_again = merovingian::database::find_fallback_key(store, "@alice:example.org", "DEVICE1");
+
+            THEN("one-time keys are consumed while fallback and backup state remain durable")
+            {
+                REQUIRE(device_ok);
+                REQUIRE(one_time_ok);
+                REQUIRE(fallback_ok);
+                REQUIRE(cross_signing_ok);
+                REQUIRE(signature_ok);
+                REQUIRE(backup_version_ok);
+                REQUIRE(backup_session_ok);
+                REQUIRE(claimed.has_value());
+                REQUIRE(claimed->key_id == "signed_curve25519:AAA");
+                REQUIRE(store.one_time_keys.empty());
+                REQUIRE(fallback.has_value());
+                REQUIRE(fallback_again.has_value());
+                REQUIRE(store.fallback_keys.size() == 1U);
+                REQUIRE(store.device_keys.size() == 1U);
+                REQUIRE(store.cross_signing_keys.size() == 1U);
+                REQUIRE(store.key_signatures.size() == 1U);
+                REQUIRE(store.key_backup_versions.size() == 1U);
+                REQUIRE(store.key_backup_sessions.size() == 1U);
+                REQUIRE(merovingian::database::sensitive_values_are_redacted(store));
+            }
+        }
+    }
+}
+
 SCENARIO("PostgreSQL connection policy rejects unsafe or ambiguous libpq inputs", "[database][postgresql]")
 {
     GIVEN("empty and non-PostgreSQL connection strings")
@@ -623,8 +678,8 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
 
             THEN("required Matrix storage areas have table-specific definitions")
             {
-                REQUIRE(tables.size() == 33U);
-                REQUIRE(merovingian::database::current_schema_version() == 2U);
+                REQUIRE(tables.size() == 37U);
+                REQUIRE(merovingian::database::current_schema_version() == 3U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);

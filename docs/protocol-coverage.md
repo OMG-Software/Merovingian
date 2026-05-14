@@ -48,7 +48,7 @@ Matrix v1.18 behavior, durable state where applicable, and conformance evidence.
 | Media | `POST /_matrix/media/v3/upload` | `partial` | Local authenticated upload, MIME checks, quarantine, digest, metrics, audit, and metadata persistence are runtime-wired. Needs multipart/content handling through real HTTP and durable blob storage. |
 | Media | `GET /_matrix/media/v3/download/{serverName}/{mediaId}` | `partial` | Local download is runtime-wired. Remote fetch is disabled and fail-closed. |
 | Reports | `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` | `scaffolded` | Trust and safety route matching and validation exist. Runtime route is not wired. |
-| E2EE keys | Device keys, one-time keys, fallback keys, cross-signing, backup APIs | `partial` | Authenticated key API route shapes are runtime-wired through the client-server adapter with server-blind payload redaction and audit records. Needs real key storage, device-list stream semantics, key backup storage, and conformance fixtures. |
+| E2EE keys | Device keys, one-time keys, fallback keys, cross-signing, backup APIs | `partial` | Authenticated key API route shapes are runtime-wired through the client-server adapter with durable server-blind key storage, one-time-key consumption, fallback-key reuse, backup rows, payload redaction, audit records, and SQLite restart coverage. Needs Matrix device-list stream semantics, complete backup retrieval/deletion semantics, full key-count behavior, and conformance fixtures. |
 
 ## Federation API
 

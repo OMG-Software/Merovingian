@@ -203,6 +203,21 @@ namespace
         });
     }
 
+    [[nodiscard]] auto key_payload_is_valid(std::string_view json) noexcept -> bool
+    {
+        return !json.empty();
+    }
+
+    [[nodiscard]] auto sensitive_value(std::string_view value) -> BoundValue
+    {
+        return {std::string{value}, true};
+    }
+
+    [[nodiscard]] auto public_value(std::string_view value) -> BoundValue
+    {
+        return {std::string{value}, false};
+    }
+
 } // namespace
 
 [[nodiscard]] auto open_persistent_store(SchemaState existing_state) -> PersistentStoreOpenResult
@@ -599,6 +614,250 @@ namespace
             store.state.push_back(std::move(*state));
         }
     }
+    return true;
+}
+
+[[nodiscard]] auto store_device_key(PersistentStore& store, PersistentDeviceKey key) -> bool
+{
+    if (!key_payload_is_valid(key.json))
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement(
+                "upsert_device_key",
+                "INSERT INTO device_keys VALUES ($1, $2, $3) ON CONFLICT (user_id, device_id) DO UPDATE SET json = $3",
+                {public_value(key.user_id), public_value(key.device_id), sensitive_value(key.json)})))
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.device_keys, [&key](PersistentDeviceKey const& current) {
+        return current.user_id == key.user_id && current.device_id == key.device_id;
+    });
+    if (existing != store.device_keys.end())
+    {
+        existing->json = std::move(key.json);
+        return true;
+    }
+    store.device_keys.push_back(std::move(key));
+    return true;
+}
+
+[[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
+    -> std::optional<PersistentDeviceKey>
+{
+    auto const existing = std::ranges::find_if(store.device_keys, [user_id, device_id](PersistentDeviceKey const& key) {
+        return key.user_id == user_id && key.device_id == device_id;
+    });
+    return existing == store.device_keys.end() ? std::nullopt : std::optional<PersistentDeviceKey>{*existing};
+}
+
+[[nodiscard]] auto store_one_time_key(PersistentStore& store, PersistentOneTimeKey key) -> bool
+{
+    if (!key_payload_is_valid(key.json) || key.key_id.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(store,
+                            record_statement("upsert_one_time_key",
+                                             "INSERT INTO one_time_keys VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, "
+                                             "device_id, key_id) DO UPDATE SET json = $4",
+                                             {public_value(key.user_id), public_value(key.device_id),
+                                              public_value(key.key_id), sensitive_value(key.json)})))
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.one_time_keys, [&key](PersistentOneTimeKey const& current) {
+        return current.user_id == key.user_id && current.device_id == key.device_id && current.key_id == key.key_id;
+    });
+    if (existing != store.one_time_keys.end())
+    {
+        existing->json = std::move(key.json);
+        return true;
+    }
+    store.one_time_keys.push_back(std::move(key));
+    return true;
+}
+
+[[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id)
+    -> std::optional<PersistentOneTimeKey>
+{
+    auto const existing =
+        std::ranges::find_if(store.one_time_keys, [user_id, device_id](PersistentOneTimeKey const& key) {
+            return key.user_id == user_id && key.device_id == device_id;
+        });
+    if (existing == store.one_time_keys.end())
+    {
+        return std::nullopt;
+    }
+    auto claimed = *existing;
+    if (!record_and_persist(store, record_statement("delete_one_time_key",
+                                                    "DELETE FROM one_time_keys WHERE user_id = $1 AND device_id = $2 "
+                                                    "AND key_id = $3",
+                                                    {public_value(claimed.user_id), public_value(claimed.device_id),
+                                                     public_value(claimed.key_id)})))
+    {
+        return std::nullopt;
+    }
+    store.one_time_keys.erase(existing);
+    return claimed;
+}
+
+[[nodiscard]] auto store_fallback_key(PersistentStore& store, PersistentFallbackKey key) -> bool
+{
+    if (!key_payload_is_valid(key.json) || key.key_id.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(store,
+                            record_statement("upsert_fallback_key",
+                                             "INSERT INTO fallback_keys VALUES ($1, $2, $3, $4) ON CONFLICT (user_id, "
+                                             "device_id, key_id) DO UPDATE SET json = $4",
+                                             {public_value(key.user_id), public_value(key.device_id),
+                                              public_value(key.key_id), sensitive_value(key.json)})))
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.fallback_keys, [&key](PersistentFallbackKey const& current) {
+        return current.user_id == key.user_id && current.device_id == key.device_id && current.key_id == key.key_id;
+    });
+    if (existing != store.fallback_keys.end())
+    {
+        existing->json = std::move(key.json);
+        return true;
+    }
+    store.fallback_keys.push_back(std::move(key));
+    return true;
+}
+
+[[nodiscard]] auto find_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
+    -> std::optional<PersistentFallbackKey>
+{
+    auto const existing =
+        std::ranges::find_if(store.fallback_keys, [user_id, device_id](PersistentFallbackKey const& key) {
+            return key.user_id == user_id && key.device_id == device_id;
+        });
+    return existing == store.fallback_keys.end() ? std::nullopt : std::optional<PersistentFallbackKey>{*existing};
+}
+
+[[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool
+{
+    if (!key_payload_is_valid(key.json) || key.key_type.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement(
+                "upsert_cross_signing_key",
+                "INSERT INTO cross_signing_keys VALUES ($1, $2, $3) ON CONFLICT (user_id, key_type) DO UPDATE SET json "
+                "= $3",
+                {public_value(key.user_id), public_value(key.key_type), sensitive_value(key.json)})))
+    {
+        return false;
+    }
+    auto const existing =
+        std::ranges::find_if(store.cross_signing_keys, [&key](PersistentCrossSigningKey const& current) {
+            return current.user_id == key.user_id && current.key_type == key.key_type;
+        });
+    if (existing != store.cross_signing_keys.end())
+    {
+        existing->json = std::move(key.json);
+        return true;
+    }
+    store.cross_signing_keys.push_back(std::move(key));
+    return true;
+}
+
+[[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool
+{
+    if (!key_payload_is_valid(signature.json) || signature.target_device_id.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store, record_statement("upsert_key_signature",
+                                    "INSERT INTO key_signatures VALUES ($1, $2, $3, $4) ON CONFLICT (signer_user_id, "
+                                    "target_user_id, target_device_id) DO UPDATE SET json = $4",
+                                    {public_value(signature.signer_user_id), public_value(signature.target_user_id),
+                                     public_value(signature.target_device_id), sensitive_value(signature.json)})))
+    {
+        return false;
+    }
+    auto const existing =
+        std::ranges::find_if(store.key_signatures, [&signature](PersistentKeySignature const& current) {
+            return current.signer_user_id == signature.signer_user_id &&
+                   current.target_user_id == signature.target_user_id &&
+                   current.target_device_id == signature.target_device_id;
+        });
+    if (existing != store.key_signatures.end())
+    {
+        existing->json = std::move(signature.json);
+        return true;
+    }
+    store.key_signatures.push_back(std::move(signature));
+    return true;
+}
+
+[[nodiscard]] auto store_key_backup_version(PersistentStore& store, PersistentKeyBackupVersion version) -> bool
+{
+    if (!key_payload_is_valid(version.json) || version.version.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement(
+                "upsert_key_backup_version",
+                "INSERT INTO key_backup_versions VALUES ($1, $2, $3) ON CONFLICT (user_id, version) DO UPDATE SET json "
+                "= $3",
+                {public_value(version.user_id), public_value(version.version), sensitive_value(version.json)})))
+    {
+        return false;
+    }
+    auto const existing =
+        std::ranges::find_if(store.key_backup_versions, [&version](PersistentKeyBackupVersion const& current) {
+            return current.user_id == version.user_id && current.version == version.version;
+        });
+    if (existing != store.key_backup_versions.end())
+    {
+        existing->json = std::move(version.json);
+        return true;
+    }
+    store.key_backup_versions.push_back(std::move(version));
+    return true;
+}
+
+[[nodiscard]] auto store_key_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> bool
+{
+    if (!key_payload_is_valid(session.json) || session.version.empty() || session.room_id.empty() ||
+        session.session_id.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement(
+                "upsert_key_backup_session",
+                "INSERT INTO key_backup_sessions VALUES ($1, $2, $3, $4, $5) ON CONFLICT (user_id, version, room_id, "
+                "session_id) DO UPDATE SET json = $5",
+                {public_value(session.user_id), public_value(session.version), public_value(session.room_id),
+                 public_value(session.session_id), sensitive_value(session.json)})))
+    {
+        return false;
+    }
+    auto const existing =
+        std::ranges::find_if(store.key_backup_sessions, [&session](PersistentKeyBackupSession const& current) {
+            return current.user_id == session.user_id && current.version == session.version &&
+                   current.room_id == session.room_id && current.session_id == session.session_id;
+        });
+    if (existing != store.key_backup_sessions.end())
+    {
+        existing->json = std::move(session.json);
+        return true;
+    }
+    store.key_backup_sessions.push_back(std::move(session));
     return true;
 }
 

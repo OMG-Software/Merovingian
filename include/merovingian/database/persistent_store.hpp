@@ -73,6 +73,60 @@ struct PersistentStateEvent final
     std::string event_id{};
 };
 
+struct PersistentDeviceKey final
+{
+    std::string user_id{};
+    std::string device_id{};
+    std::string json{};
+};
+
+struct PersistentOneTimeKey final
+{
+    std::string user_id{};
+    std::string device_id{};
+    std::string key_id{};
+    std::string json{};
+};
+
+struct PersistentFallbackKey final
+{
+    std::string user_id{};
+    std::string device_id{};
+    std::string key_id{};
+    std::string json{};
+};
+
+struct PersistentCrossSigningKey final
+{
+    std::string user_id{};
+    std::string key_type{};
+    std::string json{};
+};
+
+struct PersistentKeySignature final
+{
+    std::string signer_user_id{};
+    std::string target_user_id{};
+    std::string target_device_id{};
+    std::string json{};
+};
+
+struct PersistentKeyBackupVersion final
+{
+    std::string user_id{};
+    std::string version{};
+    std::string json{};
+};
+
+struct PersistentKeyBackupSession final
+{
+    std::string user_id{};
+    std::string version{};
+    std::string room_id{};
+    std::string session_id{};
+    std::string json{};
+};
+
 struct PersistentLocalMedia final
 {
     std::string media_id{};
@@ -124,6 +178,13 @@ struct PersistentStore final
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentEvent> events{};
     std::vector<PersistentStateEvent> state{};
+    std::vector<PersistentDeviceKey> device_keys{};
+    std::vector<PersistentOneTimeKey> one_time_keys{};
+    std::vector<PersistentFallbackKey> fallback_keys{};
+    std::vector<PersistentCrossSigningKey> cross_signing_keys{};
+    std::vector<PersistentKeySignature> key_signatures{};
+    std::vector<PersistentKeyBackupVersion> key_backup_versions{};
+    std::vector<PersistentKeyBackupSession> key_backup_sessions{};
     std::vector<PersistentLocalMedia> local_media{};
     std::vector<PersistentRemoteMedia> remote_media{};
     std::vector<PersistentAuditEvent> audit_log{};
@@ -157,6 +218,19 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
                                           std::optional<PersistentStateEvent> state) -> bool;
+[[nodiscard]] auto store_device_key(PersistentStore& store, PersistentDeviceKey key) -> bool;
+[[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
+    -> std::optional<PersistentDeviceKey>;
+[[nodiscard]] auto store_one_time_key(PersistentStore& store, PersistentOneTimeKey key) -> bool;
+[[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id)
+    -> std::optional<PersistentOneTimeKey>;
+[[nodiscard]] auto store_fallback_key(PersistentStore& store, PersistentFallbackKey key) -> bool;
+[[nodiscard]] auto find_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
+    -> std::optional<PersistentFallbackKey>;
+[[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool;
+[[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool;
+[[nodiscard]] auto store_key_backup_version(PersistentStore& store, PersistentKeyBackupVersion version) -> bool;
+[[nodiscard]] auto store_key_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> bool;
 [[nodiscard]] auto store_local_media(PersistentStore& store, PersistentLocalMedia media) -> bool;
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool;
