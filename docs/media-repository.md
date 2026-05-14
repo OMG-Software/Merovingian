@@ -11,6 +11,9 @@ current in-process runtime path.
   change.
 - Admin quarantine, release, and remove actions update repository state, persistent metadata, admin actions, and audit events.
 - Media metrics expose accepted uploads, rejected uploads, quarantines, releases, removals, remote fetch rejections, stored blobs, and stored bytes.
+- The media repository is runtime-wired, but still partial against Matrix
+  v1.18 because multipart upload handling, remote fetch, durable blob storage,
+  thumbnailing, and sandboxed processing remain production gaps.
 
 ## Status Codes
 

@@ -10,7 +10,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{2U};
+    constexpr auto schema_version = std::uint32_t{3U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -53,6 +53,8 @@ namespace
                               "push_rules",              "user_id TEXT NOT NULL, rule_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, rule_id)"      },
         SchemaTableDefinition{
                               "filters",                 "user_id TEXT NOT NULL, filter_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, filter_id)"  },
+        SchemaTableDefinition{"device_keys",             "user_id TEXT NOT NULL, device_id TEXT NOT NULL, json TEXT NOT NULL, "
+                                             "PRIMARY KEY (user_id, device_id)"                                      },
         SchemaTableDefinition{"one_time_keys",           "user_id TEXT NOT NULL, device_id TEXT NOT NULL, key_id TEXT NOT NULL, "
                                                "json TEXT NOT NULL, PRIMARY KEY (user_id, device_id, key_id)"      },
         SchemaTableDefinition{"fallback_keys",           "user_id TEXT NOT NULL, device_id TEXT NOT NULL, key_id TEXT NOT NULL, "
@@ -60,7 +62,15 @@ namespace
         SchemaTableDefinition{
                               "cross_signing_keys",      "user_id TEXT NOT NULL, key_type TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, key_type)"    },
         SchemaTableDefinition{
+                              "key_signatures",          "signer_user_id TEXT NOT NULL, target_user_id TEXT NOT NULL, target_device_id TEXT NOT NULL, "
+            "json TEXT NOT NULL, PRIMARY KEY (signer_user_id, target_user_id, target_device_id)"                  },
+        SchemaTableDefinition{
                               "key_backups",             "user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version)"      },
+        SchemaTableDefinition{
+                              "key_backup_versions",     "user_id TEXT NOT NULL, version TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, version)"      },
+        SchemaTableDefinition{
+                              "key_backup_sessions",     "user_id TEXT NOT NULL, version TEXT NOT NULL, room_id TEXT NOT NULL, session_id TEXT NOT NULL, "
+            "json TEXT NOT NULL, PRIMARY KEY (user_id, version, room_id, session_id)"                        },
         SchemaTableDefinition{"media",                   "media_id TEXT PRIMARY KEY, owner_user_id TEXT NOT NULL, content_type TEXT NOT "
                                        "NULL, size_bytes TEXT NOT NULL, hash_algorithm TEXT NOT NULL, digest TEXT NOT "
                                        "NULL, quarantined TEXT NOT NULL, removed TEXT NOT NULL"                            },

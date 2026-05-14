@@ -14,6 +14,7 @@ namespace
 
     constexpr auto initial_schema_version = std::uint32_t{1U};
     constexpr auto media_metadata_schema_version = std::uint32_t{2U};
+    constexpr auto e2ee_key_storage_schema_version = std::uint32_t{3U};
 
     [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table) -> PreparedStatement
     {
@@ -212,6 +213,36 @@ auto downgrade_media_metadata_migration() -> MigrationStep
     };
 }
 
+auto e2ee_key_storage_migration() -> MigrationStep
+{
+    return {
+        e2ee_key_storage_schema_version,
+        "e2ee_key_storage",
+        {
+          make_create_table_statement(*schema_table_definition("device_keys")),
+          make_create_table_statement(*schema_table_definition("key_signatures")),
+          make_create_table_statement(*schema_table_definition("key_backup_versions")),
+          make_create_table_statement(*schema_table_definition("key_backup_sessions")),
+          },
+        MigrationDirection::upgrade,
+    };
+}
+
+auto downgrade_e2ee_key_storage_migration() -> MigrationStep
+{
+    return {
+        media_metadata_schema_version,
+        "e2ee_key_storage_downgrade",
+        {
+          make_drop_table_statement("key_backup_sessions"),
+          make_drop_table_statement("key_backup_versions"),
+          make_drop_table_statement("key_signatures"),
+          make_drop_table_statement("device_keys"),
+          },
+        MigrationDirection::downgrade,
+    };
+}
+
 auto downgrade_initial_schema_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -225,12 +256,13 @@ auto downgrade_initial_schema_migration() -> MigrationStep
 
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration(), media_metadata_migration()};
+    return {initial_schema_migration(), media_metadata_migration(), e2ee_key_storage_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_initial_schema_migration(), downgrade_media_metadata_migration()};
+    return {downgrade_initial_schema_migration(), downgrade_media_metadata_migration(),
+            downgrade_e2ee_key_storage_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan

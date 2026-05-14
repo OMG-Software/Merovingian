@@ -318,6 +318,50 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
     }
 }
 
+SCENARIO("Client-server runtime wires server-blind E2EE key API routes", "[homeserver][client-server][key-api]")
+{
+    GIVEN("a logged-in client-server device")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
+                    .status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        WHEN("the device uploads server-blind key material and queries keys")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", token,
+                          R"({"device_keys":{"sensitive":"curve25519-secret"},"one_time_keys":{}})"});
+            auto const query = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/query", token, R"({"device_keys":{}})"});
+            auto const unauthenticated = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", {}, R"({"device_keys":{}})"});
+
+            THEN("the runtime path accepts the route without exposing key payloads")
+            {
+                REQUIRE(upload.status == 200U);
+                REQUIRE(query.status == 200U);
+                REQUIRE(unauthenticated.status == 401U);
+                REQUIRE(upload.body.find("one_time_key_counts") != std::string::npos);
+                REQUIRE(query.body.find("device_keys") != std::string::npos);
+                REQUIRE(upload.body.find("curve25519-secret") == std::string::npos);
+                REQUIRE(merovingian::homeserver::key_api_record_count(runtime, "@alice:example.org") == 2U);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server runtime enforces request limits and Matrix-style errors", "[homeserver][client-server]")
 {
     GIVEN("a started client-server runtime with tight limits")

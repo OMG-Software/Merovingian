@@ -227,8 +227,44 @@ namespace
 
         return execute_sql(connection,
                            "INSERT OR IGNORE INTO schema_migrations VALUES ('1', 'initial_schema', 'upgrade')") &&
+               execute_sql(
+                   connection,
+                   "INSERT OR IGNORE INTO schema_migrations VALUES ('2', 'media_metadata_columns', 'upgrade')") &&
                execute_sql(connection,
-                           "INSERT OR IGNORE INTO schema_migrations VALUES ('2', 'media_metadata_columns', 'upgrade')");
+                           "INSERT OR IGNORE INTO schema_migrations VALUES ('3', 'e2ee_key_storage', 'upgrade')");
+    }
+
+    auto apply_pending_migrations(sqlite3& connection, SchemaState state) -> std::optional<SchemaState>
+    {
+        auto const plan = migration_plan_for(state);
+        auto const validation = migration_plan_is_valid(plan);
+        if (!validation.valid)
+        {
+            return std::nullopt;
+        }
+        for (auto const& step : plan.steps)
+        {
+            for (auto const& statement : step.statements)
+            {
+                if (!execute_sql(connection, statement.sql))
+                {
+                    return std::nullopt;
+                }
+            }
+            auto const record_sql = "INSERT OR IGNORE INTO schema_migrations VALUES ('" + std::to_string(step.version) +
+                                    "', '" + step.name + "', '" +
+                                    std::string{migration_direction_name(step.direction)} + "')";
+            if (!execute_sql(connection, record_sql))
+            {
+                return std::nullopt;
+            }
+        }
+        auto applied = apply_migration_plan(std::move(state), plan);
+        if (!applied.ok)
+        {
+            return std::nullopt;
+        }
+        return std::move(applied.state);
     }
 
     template <typename RowLoader>
@@ -281,6 +317,43 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.state.push_back(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, device_id, json FROM device_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.device_keys.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, device_id, key_id, json FROM one_time_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.one_time_keys.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, device_id, key_id, json FROM fallback_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.fallback_keys.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, key_type, json FROM cross_signing_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.cross_signing_keys.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection,
+                         "SELECT signer_user_id, target_user_id, target_device_id, json FROM key_signatures",
+                         [&store](sqlite3_stmt& row) {
+                             store.key_signatures.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, version, json FROM key_backup_versions",
+                         [&store](sqlite3_stmt& row) {
+                             store.key_backup_versions.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection, "SELECT user_id, version, room_id, session_id, json FROM key_backup_sessions",
+                         [&store](sqlite3_stmt& row) {
+                             store.key_backup_sessions.push_back({column_text(row, 0), column_text(row, 1),
+                                                                  column_text(row, 2), column_text(row, 3),
+                                                                  column_text(row, 4)});
                          }) &&
                load_rows(
                    connection,
@@ -388,6 +461,15 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     store.backend = PersistentStoreBackend::sqlite;
     store.sqlite_path = path;
     store.schema = load_schema_state(sqlite);
+    if (store.schema.version < current_schema_version())
+    {
+        auto migrated = apply_pending_migrations(sqlite, store.schema);
+        if (!migrated.has_value())
+        {
+            return {false, "unable to migrate SQLite schema", {}};
+        }
+        store.schema = std::move(*migrated);
+    }
     if (!load_persistent_rows(sqlite, store))
     {
         return {false, "unable to hydrate SQLite rows", {}};

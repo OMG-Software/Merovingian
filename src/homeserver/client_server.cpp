@@ -2,7 +2,9 @@
 
 #include "merovingian/homeserver/client_server.hpp"
 
+#include "merovingian/auth/key_api.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/http/request.hpp"
 
@@ -200,6 +202,38 @@ namespace
         return *object;
     }
 
+    [[nodiscard]] auto serialized_value(canonicaljson::Value const& value) -> std::optional<std::string>
+    {
+        auto serialized = canonicaljson::serialize_canonical(value);
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return std::nullopt;
+        }
+        return serialized.output;
+    }
+
+    [[nodiscard]] auto serialized_object_member(canonicaljson::Object const& object, std::string_view key)
+        -> std::optional<std::string>
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return std::nullopt;
+        }
+        return serialized_value(*value);
+    }
+
+    [[nodiscard]] auto object_member_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<canonicaljson::Object>(&value->storage());
+    }
+
     [[nodiscard]] auto parse_register_body(std::string_view body) -> std::optional<MatrixRegisterBody>
     {
         auto const object = parsed_json_object(body);
@@ -356,6 +390,14 @@ namespace
         return it == rt.devices.end() ? nullptr : &(*it);
     }
 
+    [[nodiscard]] auto first_device_id(ClientServerRuntime const& rt, std::string_view user) -> std::string
+    {
+        auto const it = std::ranges::find_if(rt.devices, [user](ClientDevice const& d) {
+            return d.user_id == user;
+        });
+        return it == rt.devices.end() ? std::string{} : it->device_id;
+    }
+
     [[nodiscard]] auto devices_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
     {
         auto out = std::string{"{\"devices\":["};
@@ -430,6 +472,226 @@ namespace
             return err(r.status, "M_FORBIDDEN", r.body);
         }
         return resp(200U, "{\"" + std::string{key} + "\":\"" + json_escape(r.body) + "\"}");
+    }
+
+    [[nodiscard]] auto key_api_success_body(auth::KeyApiEndpoint endpoint) -> std::string
+    {
+        switch (endpoint)
+        {
+        case auth::KeyApiEndpoint::upload_keys:
+            return R"({"one_time_key_counts":{}})";
+        case auth::KeyApiEndpoint::query_keys:
+            return R"({"device_keys":{}})";
+        case auth::KeyApiEndpoint::claim_keys:
+            return R"({"one_time_keys":{}})";
+        case auth::KeyApiEndpoint::get_key_backup_version:
+            return R"({"algorithm":"m.megolm_backup.v1","auth_data":{},"version":"1"})";
+        case auth::KeyApiEndpoint::get_room_key_backup:
+            return R"({"rooms":{}})";
+        case auth::KeyApiEndpoint::device_list_update:
+        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+        case auth::KeyApiEndpoint::upload_signatures:
+        case auth::KeyApiEndpoint::create_key_backup_version:
+        case auth::KeyApiEndpoint::update_key_backup_version:
+        case auth::KeyApiEndpoint::delete_key_backup_version:
+        case auth::KeyApiEndpoint::put_room_key_backup:
+        case auth::KeyApiEndpoint::delete_room_key_backup:
+            return "{}";
+        }
+        return "{}";
+    }
+
+    auto record_key_api_access(ClientServerRuntime& rt, auth::KeyApiRoute const& route, std::string_view user,
+                               std::string_view device_id, std::string_view payload) -> void
+    {
+        auto const plan = auth::make_key_api_boundary_plan(route, user, device_id);
+        rt.key_api_records.push_back({std::string{user}, std::string{device_id},
+                                      auth::key_api_endpoint_name(route.endpoint),
+                                      auth::redacted_key_payload_summary(payload), plan.database_statements.size()});
+        rt.homeserver.database.audit_events.push_back(
+            observability::make_audit_event(observability::AuditCategory::auth, plan.audit_event_type, user, device_id,
+                                            auth::redacted_key_payload_summary(payload), "client-server"));
+    }
+
+    [[nodiscard]] auto one_time_key_count(ClientServerRuntime const& rt, std::string_view user,
+                                          std::string_view device_id) noexcept -> std::size_t
+    {
+        return static_cast<std::size_t>(
+            std::ranges::count_if(rt.homeserver.database.persistent_store.one_time_keys,
+                                  [user, device_id](database::PersistentOneTimeKey const& key) {
+                                      return key.user_id == user && key.device_id == device_id;
+                                  }));
+    }
+
+    [[nodiscard]] auto store_key_object_members(ClientServerRuntime& rt, std::string_view user,
+                                                std::string_view device_id, canonicaljson::Object const& object,
+                                                bool fallback) -> bool
+    {
+        for (auto const& member : object)
+        {
+            if (member.value == nullptr)
+            {
+                return false;
+            }
+            auto const payload = serialized_value(*member.value);
+            if (!payload.has_value())
+            {
+                return false;
+            }
+            auto& store = rt.homeserver.database.persistent_store;
+            auto const ok = fallback ? database::store_fallback_key(
+                                           store, {std::string{user}, std::string{device_id}, member.key, *payload})
+                                     : database::store_one_time_key(
+                                           store, {std::string{user}, std::string{device_id}, member.key, *payload});
+            if (!ok)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto handle_key_upload(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
+                                         std::string_view body) -> LocalHttpResponse
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "key upload body must be Matrix JSON");
+        }
+        auto& store = rt.homeserver.database.persistent_store;
+        if (auto const device_keys = serialized_object_member(*object, "device_keys");
+            device_keys.has_value() &&
+            !database::store_device_key(store, {std::string{user}, std::string{device_id}, *device_keys}))
+        {
+            return err(500U, "M_UNKNOWN", "device key persistence failed");
+        }
+        if (auto const* keys = object_member_object(*object, "one_time_keys");
+            keys != nullptr && !store_key_object_members(rt, user, device_id, *keys, false))
+        {
+            return err(500U, "M_UNKNOWN", "one-time key persistence failed");
+        }
+        if (auto const* keys = object_member_object(*object, "fallback_keys");
+            keys != nullptr && !store_key_object_members(rt, user, device_id, *keys, true))
+        {
+            return err(500U, "M_UNKNOWN", "fallback key persistence failed");
+        }
+        return resp(200U, "{\"one_time_key_counts\":{\"signed_curve25519\":" +
+                              std::to_string(one_time_key_count(rt, user, device_id)) + "}}");
+    }
+
+    [[nodiscard]] auto handle_key_query(ClientServerRuntime const& rt, std::string_view user,
+                                        std::string_view device_id) -> LocalHttpResponse
+    {
+        auto const key = database::find_device_key(rt.homeserver.database.persistent_store, user, device_id);
+        if (!key.has_value())
+        {
+            return resp(200U, R"({"device_keys":{}})");
+        }
+        return resp(200U, "{\"device_keys\":{\"" + json_escape(user) + "\":{\"" + json_escape(device_id) +
+                              "\":" + key->json + "}}}");
+    }
+
+    [[nodiscard]] auto handle_key_claim(ClientServerRuntime& rt, std::string_view user, std::string_view device_id)
+        -> LocalHttpResponse
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        if (auto claimed = database::claim_one_time_key(store, user, device_id); claimed.has_value())
+        {
+            return resp(200U, "{\"one_time_keys\":{\"" + json_escape(user) + "\":{\"" + json_escape(device_id) +
+                                  "\":{\"" + json_escape(claimed->key_id) + "\":" + claimed->json + "}}}}");
+        }
+        auto const fallback = database::find_fallback_key(store, user, device_id);
+        if (!fallback.has_value())
+        {
+            return resp(200U, R"({"one_time_keys":{}})");
+        }
+        return resp(200U, "{\"one_time_keys\":{\"" + json_escape(user) + "\":{\"" + json_escape(device_id) + "\":{\"" +
+                              json_escape(fallback->key_id) + "\":" + fallback->json + "}}}}");
+    }
+
+    [[nodiscard]] auto route_suffix(std::string_view target, std::string_view prefix) noexcept -> std::string_view
+    {
+        return starts_with(target, prefix) ? target.substr(prefix.size()) : std::string_view{};
+    }
+
+    [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
+                                             std::string_view user, std::string_view device_id,
+                                             LocalHttpRequest const& req) -> bool
+    {
+        auto& store = rt.homeserver.database.persistent_store;
+        switch (endpoint)
+        {
+        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+            return database::store_cross_signing_key(store, {std::string{user}, "master", req.body});
+        case auth::KeyApiEndpoint::upload_signatures:
+            return database::store_key_signature(
+                store, {std::string{user}, std::string{user}, std::string{device_id}, req.body});
+        case auth::KeyApiEndpoint::create_key_backup_version:
+        case auth::KeyApiEndpoint::update_key_backup_version:
+            return database::store_key_backup_version(store, {std::string{user}, "1", req.body});
+        case auth::KeyApiEndpoint::put_room_key_backup: {
+            auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
+            auto const suffix = route_suffix(req.target, prefix);
+            auto const separator = suffix.find('/');
+            if (separator == std::string_view::npos || separator == 0U || separator + 1U >= suffix.size())
+            {
+                return false;
+            }
+            return database::store_key_backup_session(store, {std::string{user}, "1",
+                                                              std::string{suffix.substr(0U, separator)},
+                                                              std::string{suffix.substr(separator + 1U)}, req.body});
+        }
+        case auth::KeyApiEndpoint::upload_keys:
+        case auth::KeyApiEndpoint::query_keys:
+        case auth::KeyApiEndpoint::claim_keys:
+        case auth::KeyApiEndpoint::device_list_update:
+        case auth::KeyApiEndpoint::get_key_backup_version:
+        case auth::KeyApiEndpoint::delete_key_backup_version:
+        case auth::KeyApiEndpoint::get_room_key_backup:
+        case auth::KeyApiEndpoint::delete_room_key_backup:
+            return true;
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto handle_key_api_route(ClientServerRuntime& rt, auth::KeyApiRoute const& route,
+                                            std::string_view user, std::string_view device_id,
+                                            LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        record_key_api_access(rt, route, user, device_id, req.body);
+        switch (route.endpoint)
+        {
+        case auth::KeyApiEndpoint::upload_keys:
+            return handle_key_upload(rt, user, device_id, req.body);
+        case auth::KeyApiEndpoint::query_keys:
+            return handle_key_query(rt, user, device_id);
+        case auth::KeyApiEndpoint::claim_keys:
+            return handle_key_claim(rt, user, device_id);
+        case auth::KeyApiEndpoint::get_key_backup_version:
+            if (auto const& versions = rt.homeserver.database.persistent_store.key_backup_versions; !versions.empty())
+            {
+                return resp(200U, versions.front().json);
+            }
+            return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+        case auth::KeyApiEndpoint::get_room_key_backup:
+            return resp(200U, R"({"rooms":{}})");
+        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+        case auth::KeyApiEndpoint::upload_signatures:
+        case auth::KeyApiEndpoint::create_key_backup_version:
+        case auth::KeyApiEndpoint::update_key_backup_version:
+        case auth::KeyApiEndpoint::delete_key_backup_version:
+        case auth::KeyApiEndpoint::put_room_key_backup:
+        case auth::KeyApiEndpoint::delete_room_key_backup:
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req))
+            {
+                return err(500U, "M_UNKNOWN", "key API persistence failed");
+            }
+            return resp(200U, key_api_success_body(route.endpoint));
+        case auth::KeyApiEndpoint::device_list_update:
+            return err(404U, "M_UNRECOGNIZED", "route not found");
+        }
+        return err(404U, "M_UNRECOGNIZED", "route not found");
     }
 
 } // namespace
@@ -567,6 +829,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     {
         return resp(200U, "{\"user_id\":\"" + json_escape(*user) + "\"}");
     }
+    auto const key_route = auth::match_key_api_route(req.method, req.target);
+    if (key_route.matched && key_route.route.endpoint != auth::KeyApiEndpoint::device_list_update)
+    {
+        auto const device_id = first_device_id(rt, *user);
+        return handle_key_api_route(rt, key_route.route, *user, device_id, req);
+    }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/devices")
     {
         return resp(200U, devices_json(rt, *user));
@@ -641,6 +909,13 @@ auto joined_room_count(ClientServerRuntime const& rt, std::string_view user) noe
 {
     return static_cast<std::size_t>(std::ranges::count_if(rt.homeserver.database.rooms, [user](LocalRoom const& room) {
         return joined(room, user);
+    }));
+}
+
+auto key_api_record_count(ClientServerRuntime const& rt, std::string_view user) noexcept -> std::size_t
+{
+    return static_cast<std::size_t>(std::ranges::count_if(rt.key_api_records, [user](ClientKeyApiRecord const& record) {
+        return record.user_id == user;
     }));
 }
 

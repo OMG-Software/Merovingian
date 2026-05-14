@@ -1,5 +1,38 @@
 # Changelog
 
+## 0.1.26
+
+- Replaced event ID scaffolding with Matrix reference-hash event IDs for modern
+  room versions using SHA-256 and URL-safe unpadded Base64.
+- Added Matrix content-hash calculation that excludes `unsigned`, `signatures`,
+  and `hashes` before canonical JSON hashing.
+- Redacted events before signing, stored Ed25519 signatures as Matrix unpadded
+  Base64, and added verification against the signed canonical payload.
+
+## 0.1.25
+
+- Added schema version `3` for durable E2EE key storage tables covering device
+  keys, key signatures, key backup versions, and key backup sessions.
+- Added persistent-store helpers and SQLite/PostgreSQL hydration for device
+  keys, one-time keys, fallback keys, cross-signing keys, signatures, key
+  backup versions, and key backup sessions.
+- Wired `/keys/upload`, `/keys/query`, and `/keys/claim` to persisted
+  server-blind key state, including one-time-key consumption and fallback-key
+  reuse after restart.
+- Aligned executable version banners with the Meson project version and kept
+  migration-plan validation coverage independent from current-schema coverage.
+
+## 0.1.24
+
+- Runtime-wired authenticated E2EE key API route handling through the
+  client-server Matrix JSON adapter while keeping uploaded key payloads
+  server-blind and redacted from runtime records/audit summaries.
+- Promoted the progress ledger for E2EE key APIs, rooms/events/sync,
+  federation, and the media repository to `runtime-wired` with current
+  production gaps documented.
+- Updated Matrix protocol coverage notes for the newly wired key API route
+  slice and existing runtime wiring evidence.
+
 ## 0.1.23
 
 - Resolved the PostgreSQL persistence branch merge with the SQLite transaction

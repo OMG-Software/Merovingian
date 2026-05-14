@@ -383,6 +383,112 @@ namespace
             }
         }
 
+        auto device_keys = query_rows(connection, "postgresql_load_device_keys",
+                                      "SELECT user_id, device_id, json FROM device_keys ORDER BY user_id, device_id");
+        if (!device_keys.ok)
+        {
+            return false;
+        }
+        for (auto const& row : device_keys.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                store.device_keys.push_back({row[0], row[1], row[2]});
+            }
+        }
+
+        auto one_time_keys = query_rows(
+            connection, "postgresql_load_one_time_keys",
+            "SELECT user_id, device_id, key_id, json FROM one_time_keys ORDER BY user_id, device_id, key_id");
+        if (!one_time_keys.ok)
+        {
+            return false;
+        }
+        for (auto const& row : one_time_keys.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                store.one_time_keys.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        auto fallback_keys = query_rows(
+            connection, "postgresql_load_fallback_keys",
+            "SELECT user_id, device_id, key_id, json FROM fallback_keys ORDER BY user_id, device_id, key_id");
+        if (!fallback_keys.ok)
+        {
+            return false;
+        }
+        for (auto const& row : fallback_keys.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                store.fallback_keys.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        auto cross_signing_keys =
+            query_rows(connection, "postgresql_load_cross_signing_keys",
+                       "SELECT user_id, key_type, json FROM cross_signing_keys ORDER BY user_id, key_type");
+        if (!cross_signing_keys.ok)
+        {
+            return false;
+        }
+        for (auto const& row : cross_signing_keys.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                store.cross_signing_keys.push_back({row[0], row[1], row[2]});
+            }
+        }
+
+        auto key_signatures =
+            query_rows(connection, "postgresql_load_key_signatures",
+                       "SELECT signer_user_id, target_user_id, target_device_id, json FROM key_signatures ORDER BY "
+                       "signer_user_id, target_user_id, target_device_id");
+        if (!key_signatures.ok)
+        {
+            return false;
+        }
+        for (auto const& row : key_signatures.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                store.key_signatures.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        auto key_backup_versions =
+            query_rows(connection, "postgresql_load_key_backup_versions",
+                       "SELECT user_id, version, json FROM key_backup_versions ORDER BY user_id, version");
+        if (!key_backup_versions.ok)
+        {
+            return false;
+        }
+        for (auto const& row : key_backup_versions.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                store.key_backup_versions.push_back({row[0], row[1], row[2]});
+            }
+        }
+
+        auto key_backup_sessions = query_rows(
+            connection, "postgresql_load_key_backup_sessions",
+            "SELECT user_id, version, room_id, session_id, json FROM key_backup_sessions ORDER BY user_id, version, "
+            "room_id, session_id");
+        if (!key_backup_sessions.ok)
+        {
+            return false;
+        }
+        for (auto const& row : key_backup_sessions.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                store.key_backup_sessions.push_back({row[0], row[1], row[2], row[3], row[4]});
+            }
+        }
+
         auto media = query_rows(connection, "postgresql_load_media",
                                 "SELECT media_id, owner_user_id, content_type, size_bytes, hash_algorithm, digest, "
                                 "quarantined, removed FROM media ORDER BY media_id");
@@ -555,6 +661,7 @@ auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
     }
     statements.push_back(migration_record_statement(1U, "initial_schema"));
     statements.push_back(migration_record_statement(2U, "media_metadata_columns"));
+    statements.push_back(migration_record_statement(3U, "e2ee_key_storage"));
     return statements;
 }
 

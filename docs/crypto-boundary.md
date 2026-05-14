@@ -7,19 +7,20 @@ implementing custom cryptographic primitives.
 
 - Constant-time comparison boundary.
 - Random-source interface for future reviewed RNG integration.
-- Ed25519 provider interface for future reviewed signing and verification integration.
+- Ed25519 provider interface for reviewed signing and verification integration.
 - Server signing-key store interface.
-- Server signing-service scaffold that selects the active server key and delegates signing to a provider.
+- Server signing service that selects the active server key and delegates
+  signing to a provider.
 - Validation for Ed25519 public-key shape, signature shape, and key IDs.
 - Bounded random request-size validation.
-- Unit tests using deterministic test doubles.
+- Event-signing integration tests using deterministic provider doubles.
 
 ## Security posture
 
-This capability intentionally does not yet implement Ed25519 signing or
-verification. Local homeserver password hashing, access-token generation,
-access-token hashing, and media deduplication hashes now use LibSodium directly
-while the remaining signing-provider boundary is completed.
+Local homeserver password hashing, access-token generation, access-token
+hashing, media deduplication hashes, and Matrix event hashes use LibSodium.
+Event signing and verification now flow through the Ed25519 provider interface;
+server signing-key persistence and rotation remain separate work.
 
 The boundary provides these guarantees:
 
@@ -27,13 +28,14 @@ The boundary provides these guarantees:
 - Signing fails closed when no active usable key exists.
 - Providers returning invalid signature shapes are rejected.
 - Key IDs must be Ed25519-shaped before use.
+- Matrix event signatures are encoded as unpadded Base64 and verified against
+  the redacted canonical payload.
 - Random byte requests are bounded at the interface edge.
 
 ## Deliberately not included
 
 These remain deferred:
 
-- Real Ed25519 signing and verification.
 - Server signing-key persistence.
 - Signing-key rotation and audit-log persistence.
 - Hardware-backed key support.
@@ -41,7 +43,7 @@ These remain deferred:
 ## Next starting points
 
 1. Add dependency review documentation for the selected crypto provider.
-2. Add a concrete provider behind the Ed25519 and RNG interfaces.
+2. Add a concrete production provider behind the Ed25519 and RNG interfaces.
 3. Add database-backed signing-key persistence.
-4. Integrate event signing with the signing-service boundary.
+4. Wire runtime-created room events through the signing-service boundary.
 5. Add audit events for signing-key lifecycle changes.
