@@ -24,7 +24,108 @@ namespace
             return base_key_is_allowed(key) || key == "origin" || key == "prev_state" || key == "membership";
         }
 
-        return base_key_is_allowed(key) || key == "unsigned";
+        return base_key_is_allowed(key);
+    }
+
+    [[nodiscard]] auto object_member_value(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+
+        return nullptr;
+    }
+
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
+    {
+        auto const* value = object_member_value(object, key);
+        return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto content_key_allowed(std::string_view event_type, std::string_view key,
+                                           rooms::RoomVersionPolicy const& policy) noexcept -> bool
+    {
+        if (event_type == "m.room.member")
+        {
+            return key == "membership" || key == "join_authorised_via_users_server" ||
+                   (policy.redaction_rules == rooms::RedactionRules::room_v11_plus && key == "third_party_invite");
+        }
+        if (event_type == "m.room.create")
+        {
+            return policy.redaction_rules == rooms::RedactionRules::room_v11_plus || key == "creator";
+        }
+        if (event_type == "m.room.join_rules")
+        {
+            return key == "join_rule" || key == "allow";
+        }
+        if (event_type == "m.room.power_levels")
+        {
+            return key == "ban" || key == "events" || key == "events_default" || key == "kick" || key == "redact" ||
+                   key == "state_default" || key == "users" || key == "users_default" ||
+                   (policy.redaction_rules == rooms::RedactionRules::room_v11_plus && key == "invite");
+        }
+        if (event_type == "m.room.history_visibility")
+        {
+            return key == "history_visibility";
+        }
+        if (event_type == "m.room.redaction")
+        {
+            return policy.redaction_rules == rooms::RedactionRules::room_v11_plus && key == "redacts";
+        }
+
+        return false;
+    }
+
+    [[nodiscard]] auto redact_third_party_invite(canonicaljson::Value const& value) -> canonicaljson::Value
+    {
+        auto const* object = std::get_if<canonicaljson::Object>(&value.storage());
+        if (object == nullptr)
+        {
+            return canonicaljson::Value{canonicaljson::Object{}};
+        }
+
+        auto redacted = canonicaljson::Object{};
+        if (auto const* signed_value = object_member_value(*object, "signed"); signed_value != nullptr)
+        {
+            redacted.push_back(canonicaljson::make_member("signed", *signed_value));
+        }
+        return canonicaljson::Value{std::move(redacted)};
+    }
+
+    [[nodiscard]] auto redact_content(canonicaljson::Value const& content, std::string_view event_type,
+                                      rooms::RoomVersionPolicy const& policy) -> canonicaljson::Value
+    {
+        auto const* object = std::get_if<canonicaljson::Object>(&content.storage());
+        if (object == nullptr)
+        {
+            return canonicaljson::Value{canonicaljson::Object{}};
+        }
+
+        auto redacted = canonicaljson::Object{};
+        redacted.reserve(object->size());
+        for (auto const& member : *object)
+        {
+            if (content_key_allowed(event_type, member.key, policy))
+            {
+                if (member.key == "third_party_invite")
+                {
+                    redacted.push_back(
+                        canonicaljson::make_member(member.key, redact_third_party_invite(*member.value)));
+                }
+                else
+                {
+                    redacted.push_back(canonicaljson::make_member(member.key, *member.value));
+                }
+            }
+        }
+
+        return canonicaljson::Value{std::move(redacted)};
     }
 
 } // namespace
@@ -39,11 +140,20 @@ auto redact_event(canonicaljson::Value const& event, rooms::RoomVersionPolicy co
 
     auto redacted = canonicaljson::Object{};
     redacted.reserve(object->size());
+    auto const* event_type = string_member(*object, "type");
     for (auto const& member : *object)
     {
         if (key_is_allowed(member.key, policy))
         {
-            redacted.push_back(canonicaljson::make_member(member.key, *member.value));
+            if (member.key == "content" && event_type != nullptr)
+            {
+                redacted.push_back(
+                    canonicaljson::make_member(member.key, redact_content(*member.value, *event_type, policy)));
+            }
+            else
+            {
+                redacted.push_back(canonicaljson::make_member(member.key, *member.value));
+            }
         }
     }
 

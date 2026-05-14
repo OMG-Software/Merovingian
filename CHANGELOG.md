@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.26
+
+- Replaced event ID scaffolding with Matrix reference-hash event IDs for modern
+  room versions using SHA-256 and URL-safe unpadded Base64.
+- Added Matrix content-hash calculation that excludes `unsigned`, `signatures`,
+  and `hashes` before canonical JSON hashing.
+- Redacted events before signing, stored Ed25519 signatures as Matrix unpadded
+  Base64, and added verification against the signed canonical payload.
+
 ## 0.1.25
 
 - Added schema version `3` for durable E2EE key storage tables covering device

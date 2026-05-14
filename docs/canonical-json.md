@@ -27,13 +27,15 @@ Implemented now:
 
 Not implemented yet:
 
-- event-signing integration
 - room/event fixture suite beyond canonical JSON shape fixtures
-- full Matrix event ID/signature pipeline
+- full Matrix room-version fixture suite
 
 ## Rules
 
-Canonical JSON is security-critical because Matrix event IDs and signatures depend on deterministic serialization.
+Canonical JSON is security-critical because Matrix event IDs and signatures
+depend on deterministic serialization. The event engine now uses canonical JSON
+for Matrix content hashes, reference-hash event IDs, and redacted Ed25519
+signing payloads.
 
 The parser and serializer must:
 

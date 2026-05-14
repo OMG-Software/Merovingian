@@ -7,18 +7,24 @@ canonical JSON.
 
 Implemented now:
 
-- deterministic event ID scaffold over canonical JSON
+- Matrix reference-hash event IDs for modern room versions using SHA-256 and
+  URL-safe unpadded Base64
+- Matrix content-hash calculation that removes `unsigned`, `signatures`, and
+  `hashes` before canonical JSON hashing
 - event envelope parsing and validation for core Matrix fields
-- event signing payload construction that excludes `unsigned` and `signatures`
-- signature attachment and presence-verification scaffolding
+- event signing payload construction that redacts by room version and excludes
+  `unsigned` and `signatures`
+- Ed25519 signature attachment, Matrix unpadded Base64 encoding, presence
+  checking, and provider-backed verification against the signed payload
 - room-version policy registry for modern stable room versions
 - room-version policy shape for event format, redaction rules, auth rules, state resolution, and event ID format
-- redaction scaffold with room-version-dependent key retention
-- unit coverage for event IDs, event envelope parsing, signing payloads, signature presence, redaction, and room-version lookup
+- redaction with room-version-dependent top-level and event-content key retention
+- unit coverage for content hashes, reference-hash event IDs, event envelope
+  parsing, signing payloads, signature attachment/verification, redaction, and
+  room-version lookup
 
 Not implemented yet:
 
-- Ed25519 cryptographic signing and verification
 - server signing-key storage and rotation
 - event authorization rules
 - auth event selection
@@ -38,24 +44,27 @@ unfinished.
 
 ## Signing boundary
 
-The event signing payload is produced from canonical JSON after removing fields that Matrix signing excludes from the signed payload:
+The event signing payload follows the Matrix event signing pipeline:
 
-- `unsigned`
-- `signatures`
+1. Redact the event with the room-version policy.
+2. Remove `unsigned` and `signatures`.
+3. Serialize as canonical JSON.
+4. Sign the canonical bytes with the active Ed25519 provider and store the
+   signature as Matrix unpadded Base64 under `signatures.<server>.<key_id>`.
 
-The current implementation does not implement Ed25519. `attach_event_signature`
-records a caller-supplied signature under a server name and key ID so later
-crypto integration has a stable event-shape boundary.
+Verification rebuilds the same canonical payload, decodes the Matrix Base64
+signature, and delegates Ed25519 verification to the configured provider.
 
 ## Event IDs
 
-`make_content_hash_id` is currently a deterministic scaffold over canonical
-JSON. It is not the final Matrix room-version-specific event ID algorithm.
-Later crypto/event work must replace the placeholder hash with the correct
-Matrix reference-hash behavior for each room version.
+`make_content_hash` calculates the Matrix content hash over the unredacted
+event after removing `unsigned`, `signatures`, and `hashes`. `make_reference_hash`
+redacts the event, removes `unsigned` and `signatures`, canonicalizes, and
+calculates the SHA-256 reference hash. `make_reference_hash_event_id` prefixes
+the URL-safe unpadded Base64 reference hash with `$` for modern room versions.
 
 ## Redaction
 
-The redaction engine currently retains a conservative key allowlist and switches
-`unsigned` retention based on room-version redaction policy. Later work must
-expand this with full Matrix room-version fixtures.
+The redaction engine retains top-level keys and event-content keys according to
+the supported room-version policy split. Later work must expand this with full
+Matrix room-version fixtures.
