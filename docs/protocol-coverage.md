@@ -45,16 +45,16 @@ Matrix v1.18 behavior, durable state where applicable, and conformance evidence.
 | Rooms | `GET /_matrix/client/v3/rooms/{roomId}/state` | `partial` | Local state summary works through the client listener and is covered after SQLite restart. Needs full state event retrieval and state resolution semantics. |
 | Sync | `GET /_matrix/client/v3/sync` | `partial` | In-memory joined-room summary works through the client listener and avoids plaintext event content. Needs incremental sync, filters, presence, device updates, to-device messages, and durable stream tokens. |
 | Joined rooms | `GET /_matrix/client/v3/joined_rooms` | `partial` | Joined-room list works through the client listener and is hydrated from SQLite memberships. Needs full access checks. |
-| Media | `POST /_matrix/media/v3/upload` | `partial` | Local authenticated upload, MIME checks, quarantine, digest, and metrics exist. Needs multipart/content handling through real HTTP and durable storage. |
-| Media | `GET /_matrix/media/v3/download/{serverName}/{mediaId}` | `partial` | Local download exists. Remote fetch is disabled and fail-closed. |
+| Media | `POST /_matrix/media/v3/upload` | `partial` | Local authenticated upload, MIME checks, quarantine, digest, metrics, audit, and metadata persistence are runtime-wired. Needs multipart/content handling through real HTTP and durable blob storage. |
+| Media | `GET /_matrix/media/v3/download/{serverName}/{mediaId}` | `partial` | Local download is runtime-wired. Remote fetch is disabled and fail-closed. |
 | Reports | `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` | `scaffolded` | Trust and safety route matching and validation exist. Runtime route is not wired. |
-| E2EE keys | Device keys, one-time keys, fallback keys, cross-signing, backup APIs | `scaffolded` | Planning boundary exists. Runtime behavior and persistence are not implemented. |
+| E2EE keys | Device keys, one-time keys, fallback keys, cross-signing, backup APIs | `partial` | Authenticated key API route shapes are runtime-wired through the client-server adapter with server-blind payload redaction and audit records. Needs real key storage, device-list stream semantics, key backup storage, and conformance fixtures. |
 
 ## Federation API
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` | `partial` | Inbound transaction scaffold exists with request policy, duplicate handling, and PDU checks. Needs real Matrix signing, canonical JSON, persistence, and event ingestion. |
+| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` | `partial` | Inbound transaction handling is runtime-wired through federation listener local-router dispatch with request policy, duplicate handling, and PDU checks. Needs real Matrix signing, canonical JSON, persistence, and event ingestion. |
 | Joins/leaves/invites | Federation join, leave, invite, and backfill flows | `scaffolded` | Route planning exists for selected federation surfaces. Full federation behavior is not implemented. |
 | Server discovery | Well-known, DNS, TLS, and key discovery | `scaffolded` | Policy checks exist for SSRF/TLS constraints. Network discovery is not implemented. |
 | Signing verification | Request and event signatures | `scaffolded` | Placeholder signing/hash behavior exists in places. Must be replaced with Matrix canonical JSON and Ed25519 verification. |

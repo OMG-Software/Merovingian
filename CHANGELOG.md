@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.24
+
+- Runtime-wired authenticated E2EE key API route handling through the
+  client-server Matrix JSON adapter while keeping uploaded key payloads
+  server-blind and redacted from runtime records/audit summaries.
+- Promoted the progress ledger for E2EE key APIs, rooms/events/sync,
+  federation, and the media repository to `runtime-wired` with current
+  production gaps documented.
+- Updated Matrix protocol coverage notes for the newly wired key API route
+  slice and existing runtime wiring evidence.
+
 ## 0.1.23
 
 - Resolved the PostgreSQL persistence branch merge with the SQLite transaction

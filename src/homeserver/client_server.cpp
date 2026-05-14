@@ -2,6 +2,7 @@
 
 #include "merovingian/homeserver/client_server.hpp"
 
+#include "merovingian/auth/key_api.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/http/request.hpp"
@@ -356,6 +357,14 @@ namespace
         return it == rt.devices.end() ? nullptr : &(*it);
     }
 
+    [[nodiscard]] auto first_device_id(ClientServerRuntime const& rt, std::string_view user) -> std::string
+    {
+        auto const it = std::ranges::find_if(rt.devices, [user](ClientDevice const& d) {
+            return d.user_id == user;
+        });
+        return it == rt.devices.end() ? std::string{} : it->device_id;
+    }
+
     [[nodiscard]] auto devices_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
     {
         auto out = std::string{"{\"devices\":["};
@@ -430,6 +439,45 @@ namespace
             return err(r.status, "M_FORBIDDEN", r.body);
         }
         return resp(200U, "{\"" + std::string{key} + "\":\"" + json_escape(r.body) + "\"}");
+    }
+
+    [[nodiscard]] auto key_api_success_body(auth::KeyApiEndpoint endpoint) -> std::string
+    {
+        switch (endpoint)
+        {
+        case auth::KeyApiEndpoint::upload_keys:
+            return R"({"one_time_key_counts":{}})";
+        case auth::KeyApiEndpoint::query_keys:
+            return R"({"device_keys":{}})";
+        case auth::KeyApiEndpoint::claim_keys:
+            return R"({"one_time_keys":{}})";
+        case auth::KeyApiEndpoint::get_key_backup_version:
+            return R"({"algorithm":"m.megolm_backup.v1","auth_data":{},"version":"1"})";
+        case auth::KeyApiEndpoint::get_room_key_backup:
+            return R"({"rooms":{}})";
+        case auth::KeyApiEndpoint::device_list_update:
+        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+        case auth::KeyApiEndpoint::upload_signatures:
+        case auth::KeyApiEndpoint::create_key_backup_version:
+        case auth::KeyApiEndpoint::update_key_backup_version:
+        case auth::KeyApiEndpoint::delete_key_backup_version:
+        case auth::KeyApiEndpoint::put_room_key_backup:
+        case auth::KeyApiEndpoint::delete_room_key_backup:
+            return "{}";
+        }
+        return "{}";
+    }
+
+    auto record_key_api_access(ClientServerRuntime& rt, auth::KeyApiRoute const& route, std::string_view user,
+                               std::string_view device_id, std::string_view payload) -> void
+    {
+        auto const plan = auth::make_key_api_boundary_plan(route, user, device_id);
+        rt.key_api_records.push_back({std::string{user}, std::string{device_id},
+                                      auth::key_api_endpoint_name(route.endpoint),
+                                      auth::redacted_key_payload_summary(payload), plan.database_statements.size()});
+        rt.homeserver.database.audit_events.push_back(
+            observability::make_audit_event(observability::AuditCategory::auth, plan.audit_event_type, user, device_id,
+                                            auth::redacted_key_payload_summary(payload), "client-server"));
     }
 
 } // namespace
@@ -567,6 +615,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     {
         return resp(200U, "{\"user_id\":\"" + json_escape(*user) + "\"}");
     }
+    auto const key_route = auth::match_key_api_route(req.method, req.target);
+    if (key_route.matched && key_route.route.endpoint != auth::KeyApiEndpoint::device_list_update)
+    {
+        auto const device_id = first_device_id(rt, *user);
+        record_key_api_access(rt, key_route.route, *user, device_id, req.body);
+        return resp(200U, key_api_success_body(key_route.route.endpoint));
+    }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/devices")
     {
         return resp(200U, devices_json(rt, *user));
@@ -641,6 +696,13 @@ auto joined_room_count(ClientServerRuntime const& rt, std::string_view user) noe
 {
     return static_cast<std::size_t>(std::ranges::count_if(rt.homeserver.database.rooms, [user](LocalRoom const& room) {
         return joined(room, user);
+    }));
+}
+
+auto key_api_record_count(ClientServerRuntime const& rt, std::string_view user) noexcept -> std::size_t
+{
+    return static_cast<std::size_t>(std::ranges::count_if(rt.key_api_records, [user](ClientKeyApiRecord const& record) {
+        return record.user_id == user;
     }));
 }
 

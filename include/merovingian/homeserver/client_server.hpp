@@ -26,6 +26,15 @@ struct ClientRateLimitCounter final
     std::uint64_t window_start_request{0U};
 };
 
+struct ClientKeyApiRecord final
+{
+    std::string user_id{};
+    std::string device_id{};
+    std::string endpoint{};
+    std::string payload_summary{};
+    std::size_t statement_count{0U};
+};
+
 struct ClientApiLimits final
 {
     std::size_t max_body_bytes{4096U};
@@ -40,6 +49,7 @@ struct ClientServerRuntime final
     HomeserverRuntime homeserver{};
     ClientApiLimits limits{};
     std::vector<ClientDevice> devices{};
+    std::vector<ClientKeyApiRecord> key_api_records{};
     std::vector<ClientRateLimitCounter> rate_limits{};
     std::uint64_t request_clock{0U};
 };
@@ -60,6 +70,8 @@ struct ClientServerStartResult final
     -> LocalHttpResponse;
 [[nodiscard]] auto device_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept -> std::size_t;
 [[nodiscard]] auto joined_room_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
+    -> std::size_t;
+[[nodiscard]] auto key_api_record_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept
     -> std::size_t;
 [[nodiscard]] auto run_client_server_flow(config::Config const& config) -> OperationResult;
 

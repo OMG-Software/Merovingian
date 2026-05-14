@@ -24,8 +24,17 @@ Not implemented yet:
 - auth event selection
 - state resolution
 - event DAG persistence
-- room membership behavior
+- full Matrix room membership behavior
 - full Matrix room-version fixture suite
+
+## Runtime wiring
+
+The local runtime path now serves room creation, local joins, local sends,
+state summaries, joined room listing, and bounded sync summaries through the
+client-server Matrix JSON adapter. Sync deliberately returns event counts and
+membership summaries rather than plaintext event bodies, preserving the
+server-blind encrypted-room posture while the full Matrix sync stream is still
+unfinished.
 
 ## Signing boundary
 
