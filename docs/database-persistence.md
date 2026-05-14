@@ -42,7 +42,10 @@ remaining work before PostgreSQL-backed production operation.
 - Database `runtime` and `migration` role separation.
 - Runtime hydration for users, sessions, rooms, memberships, events, and client
   device listings.
-- Unit coverage for statement validation, executor gating, redaction, migration planning, and schema inventory.
+- Unit coverage for statement validation, executor gating, redaction, migration
+  planning, and schema inventory.
+- Migration-plan validation coverage uses explicit hand-built plans, while
+  current-schema upgrade coverage separately tracks schema-version bumps.
 - Integration coverage proving SQLite users, sessions, rooms, and events survive
   a homeserver runtime restart.
 

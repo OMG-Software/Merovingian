@@ -10,6 +10,8 @@
 - Wired `/keys/upload`, `/keys/query`, and `/keys/claim` to persisted
   server-blind key state, including one-time-key consumption and fallback-key
   reuse after restart.
+- Aligned executable version banners with the Meson project version and kept
+  migration-plan validation coverage independent from current-schema coverage.
 
 ## 0.1.24
 

@@ -235,7 +235,7 @@ SCENARIO("Database migration plans are contiguous and direction-aware", "[databa
                 REQUIRE_FALSE(gap_result.valid);
                 REQUIRE(gap_result.reason == "migration versions must be contiguous");
                 REQUIRE(summary == "database migration plan direction=upgrade current_version=0 "
-                                   "target_version=3 steps=3");
+                                   "target_version=2 steps=2");
             }
         }
     }
