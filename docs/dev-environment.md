@@ -37,6 +37,8 @@ enabled, Meson can build the pinned OpenSSL wrap from
 `subprojects/openssl.wrap`.
 libpq is also included as a system dependency so PostgreSQL platform headers do
 not bypass third-party warning isolation.
+Dependency reviews live under `docs/dependencies/`; new direct dependencies
+should add or update a review there before they are wired into Meson.
 
 Linux and BSD CI builds run through the same wrappers intended for local use:
 

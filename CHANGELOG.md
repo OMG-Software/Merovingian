@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.32
+
+- Moved dependency reviews into `docs/dependencies/` and added reviews for
+  LibSodium, OpenSSL, SQLite, yyjson, and Catch2 alongside PostgreSQL libpq.
+- Added release-readiness checks for the dependency-review documentation set.
+
 ## 0.1.31
 
 - Routed Linux, sanitizer, coverage, static-analysis, CodeQL, and FreeBSD CI

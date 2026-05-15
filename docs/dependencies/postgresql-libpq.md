@@ -5,28 +5,28 @@ This note records the dependency review for adding PostgreSQL support through
 
 ## Decision
 
-`libpq` is accepted as the PostgreSQL client dependency for The Merovingian.
-It is wrapped inside the database module and must not leak `PGconn`,
-`PGresult`, or other libpq-specific types into homeserver services.
+`libpq` is accepted as the PostgreSQL client dependency for Merovingian. It is
+wrapped inside the database module and must not leak `PGconn`, `PGresult`, or
+other libpq-specific types into homeserver services.
 
 ## Why it is needed
 
-PostgreSQL is the intended production database backend. Speaking the
-PostgreSQL wire protocol directly would be high-risk, unauditable project
-code. `libpq` is the native PostgreSQL client API, is packaged by supported
-Linux and BSD distributions, and gives the project a stable interface for
-connection management, parameterized execution, and PostgreSQL error reporting.
+PostgreSQL is the intended production database backend. Speaking the PostgreSQL
+wire protocol directly would be high-risk, unauditable project code. `libpq` is
+the native PostgreSQL client API, is packaged by supported Linux and BSD
+distributions, and gives the project a stable interface for connection
+management, parameterized execution, and PostgreSQL error reporting.
 
 ## Security boundary
 
 - Connection strings are accepted only in explicit PostgreSQL URI or libpq
   key/value form.
-- Connection summaries redact passwords before they can be logged or surfaced
-  in diagnostics.
+- Connection summaries redact passwords before they can be logged or surfaced in
+  diagnostics.
 - `PGconn` ownership is RAII-managed with `PQfinish`.
 - `PGresult` ownership is RAII-managed with `PQclear`.
-- Statement execution uses `PQexecParams` so parameter values stay separate
-  from SQL command text.
+- Statement execution uses `PQexecParams` so parameter values stay separate from
+  SQL command text.
 - Existing project statement-name, SQL-shape, and placeholder validation still
   runs before libpq execution.
 - Runtime startup uses PostgreSQL only when a URI file is explicitly present;
@@ -38,8 +38,8 @@ connection management, parameterized execution, and PostgreSQL error reporting.
 ## Maintenance and platform posture
 
 `libpq` is maintained with PostgreSQL and is available on the target Linux and
-BSD platforms through normal package managers. The project build now requires
-the Meson `libpq` dependency when building the database module.
+BSD platforms through normal package managers. The project build requires the
+Meson `libpq` dependency when building the database module.
 
 ## Current limitations
 
@@ -50,5 +50,5 @@ the Meson `libpq` dependency when building the database module.
 
 ## Source references
 
-- PostgreSQL 18 libpq connection control documentation.
-- PostgreSQL 18 libpq command execution documentation.
+- PostgreSQL libpq connection control documentation.
+- PostgreSQL libpq command execution documentation.
