@@ -2,14 +2,23 @@
 
 #include "merovingian/federation/inbound_request.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+
+#include <sodium.h>
 
 namespace merovingian::federation
 {
@@ -18,15 +27,46 @@ namespace
 
     auto constexpr clock_skew_seconds = std::uint64_t{300U};
 
-    [[nodiscard]] auto stable_hash(std::string_view value) noexcept -> std::uint64_t
+    [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
-        auto hash = std::uint64_t{1469598103934665603ULL};
-        for (auto const character : value)
+        static auto const ready = sodium_init() >= 0;
+        return ready;
+    }
+
+    auto derive_federation_keypair(std::string_view key_material,
+                                   std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
+                                   std::array<unsigned char, crypto_sign_SECRETKEYBYTES>& secret_key) noexcept -> bool
+    {
+        if (!sodium_is_ready())
         {
-            hash ^= static_cast<unsigned char>(character);
-            hash *= std::uint64_t{1099511628211ULL};
+            return false;
         }
-        return hash;
+        auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
+        if (crypto_generichash(seed.data(), seed.size(), reinterpret_cast<unsigned char const*>(key_material.data()),
+                               key_material.size(), nullptr, 0U) != 0)
+        {
+            return false;
+        }
+        return crypto_sign_seed_keypair(public_key.data(), secret_key.data(), seed.data()) == 0;
+    }
+
+    [[nodiscard]] auto federation_request_payload(std::string_view origin, std::string_view method,
+                                                  std::string_view target, std::uint64_t origin_server_ts,
+                                                  std::string_view body) -> std::optional<std::string>
+    {
+        auto object = canonicaljson::Object{};
+        object.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin}}));
+        object.push_back(canonicaljson::make_member("method", canonicaljson::Value{std::string{method}}));
+        object.push_back(canonicaljson::make_member("uri", canonicaljson::Value{std::string{target}}));
+        object.push_back(canonicaljson::make_member("origin_server_ts",
+                                                    canonicaljson::Value{static_cast<std::int64_t>(origin_server_ts)}));
+        object.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::string{body}}));
+        auto serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(object)});
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return std::nullopt;
+        }
+        return serialized.output;
     }
 
     [[nodiscard]] auto split_fields(std::string_view input, char separator) -> std::vector<std::string>
@@ -124,6 +164,42 @@ namespace
         return decision.allowed;
     }
 
+    class FederationEd25519Verifier final : public crypto::Ed25519Provider
+    {
+    public:
+        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const&, std::string_view)
+            -> crypto::SignatureResult override
+        {
+            return {{}, "federation verifier does not sign"};
+        }
+
+        [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
+                                  crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
+        {
+            if (!crypto::ed25519_public_key_shape_is_valid(public_key) ||
+                !crypto::ed25519_signature_shape_is_valid(signature))
+            {
+                return {false, "invalid Ed25519 material"};
+            }
+            auto const ok =
+                crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.bytes.data()),
+                                            reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                                            reinterpret_cast<unsigned char const*>(public_key.bytes.data())) == 0;
+            return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
+        }
+    };
+
+    [[nodiscard]] auto public_key_from_material(std::string_view key_material) -> std::string
+    {
+        auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        if (!derive_federation_keypair(key_material, public_key, secret_key))
+        {
+            return {};
+        }
+        return std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()};
+    }
+
 } // namespace
 
 auto load_server_signing_key(std::string_view server_name, std::string_view key_id, std::string_view key_material)
@@ -133,7 +209,7 @@ auto load_server_signing_key(std::string_view server_name, std::string_view key_
     {
         return {};
     }
-    return {std::string{server_name}, std::string{key_id}, std::to_string(stable_hash(key_material)), true};
+    return {std::string{server_name}, std::string{key_id}, std::string{key_material}, true};
 }
 
 auto signing_key_summary(FederationSigningKey const& key) -> std::string
@@ -146,10 +222,21 @@ auto make_federation_signature(std::string_view origin, std::string_view key_id,
                                std::string_view method, std::string_view target, std::uint64_t origin_server_ts,
                                std::string_view body) -> std::string
 {
-    auto const material = std::string{origin} + "|" + std::string{key_id} + "|" + std::string{verify_token} + "|" +
-                          std::string{method} + "|" + std::string{target} + "|" + std::to_string(origin_server_ts) +
-                          "|" + std::string{body};
-    return "sig:v1:" + std::to_string(stable_hash(material));
+    auto const payload = federation_request_payload(origin, method, target, origin_server_ts, body);
+    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+    if (!payload.has_value() || !derive_federation_keypair(verify_token, public_key, secret_key))
+    {
+        return {};
+    }
+    auto signature = std::string(crypto_sign_BYTES, '\0');
+    if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
+                             reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),
+                             secret_key.data()) != 0)
+    {
+        return {};
+    }
+    return events::matrix_base64_from_bytes(signature);
 }
 
 auto verify_signed_federation_request(SignedFederationRequest const& request, FederationKeyRecord const& key,
@@ -169,9 +256,15 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
     {
         return make_decision(false, 401U, "request timestamp outside allowed bounds");
     }
-    auto const expected = make_federation_signature(request.origin, request.key_id, key.verify_token, request.method,
-                                                    request.target, request.origin_server_ts, request.body);
-    if (request.signature != expected)
+    auto const payload = federation_request_payload(request.origin, request.method, request.target,
+                                                    request.origin_server_ts, request.body);
+    auto const signature = events::matrix_bytes_from_base64(request.signature);
+    auto const public_key = public_key_from_material(key.verify_token);
+    if (!payload.has_value() || !crypto::ed25519_signature_shape_is_valid(crypto::Ed25519Signature{signature}) ||
+        !crypto::ed25519_public_key_shape_is_valid(crypto::Ed25519PublicKey{public_key}) ||
+        crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.data()),
+                                    reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),
+                                    reinterpret_cast<unsigned char const*>(public_key.data())) != 0)
     {
         return make_decision(false, 401U, "request signature verification failed");
     }
@@ -207,6 +300,12 @@ auto federation_remote_is_known(FederationRuntimeState const& runtime, std::stri
 
 auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin) -> FederationDecision
 {
+    return authorize_federation_pdu(pdu, expected_origin, std::nullopt);
+}
+
+auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
+                              std::optional<FederationKeyRecord> const& key) -> FederationDecision
+{
     if (pdu.event_id.empty() || pdu.room_id.empty() || pdu.event_type.empty() || pdu.sender.empty())
     {
         return make_decision(false, 400U, "PDU is missing required fields");
@@ -220,6 +319,28 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
     {
         return make_decision(false, 403U, signature.reason);
     }
+    if (key.has_value() && !pdu.json.empty())
+    {
+        auto const* room_version = rooms::find_room_version_policy("12");
+        if (room_version == nullptr)
+        {
+            return make_decision(false, 500U, "room version policy is unavailable");
+        }
+        auto const parsed = canonicaljson::parse_lossless(pdu.json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
+        }
+        auto const public_key = public_key_from_material(key->verify_token);
+        auto verifier = FederationEd25519Verifier{};
+        auto const verified =
+            events::verify_event_signature(parsed.value, *room_version, {expected_origin, key->key_id},
+                                           crypto::Ed25519PublicKey{public_key}, verifier);
+        if (!verified.valid)
+        {
+            return make_decision(false, 403U, verified.error);
+        }
+    }
     if (!pdu_is_authorized(pdu))
     {
         return make_decision(false, 403U, "PDU failed event authorization");
@@ -229,12 +350,33 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
 
 auto parse_federation_pdu(std::string_view encoded) -> FederationPdu
 {
+    if (!encoded.empty() && encoded.front() == '{')
+    {
+        auto const parsed = canonicaljson::parse_lossless(encoded);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const envelope = events::parse_event_envelope(parsed.value);
+        if (!envelope.error.empty())
+        {
+            return {};
+        }
+        auto const* room_version = rooms::find_room_version_policy("12");
+        if (room_version == nullptr)
+        {
+            return {};
+        }
+        auto id = events::make_reference_hash_event_id(parsed.value, *room_version);
+        return {id.event_id,           envelope.event.room_id,    envelope.event.event_type,
+                envelope.event.sender, envelope.event.signatures, std::string{encoded}};
+    }
     auto const fields = split_fields(encoded, ',');
     if (fields.size() != 7U || fields[6].empty())
     {
         return {};
     }
-    return {fields[0], fields[1], fields[2], fields[3], {{fields[4], fields[5], fields[6]}}};
+    return {fields[0], fields[1], fields[2], fields[3], {{fields[4], fields[5], fields[6]}}, {}};
 }
 
 auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -315,7 +457,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     for (auto const& encoded_pdu : transaction.pdus)
     {
         auto const pdu = parse_federation_pdu(encoded_pdu);
-        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin);
+        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, remote->signing_key);
         if (!pdu_decision.accepted)
         {
             ++remote->trust.consecutive_failures;

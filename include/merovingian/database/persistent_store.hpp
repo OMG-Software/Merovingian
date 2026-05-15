@@ -3,6 +3,7 @@
 
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/statement.hpp"
+#include "merovingian/events/event.hpp"
 
 #include <cstddef>
 #include <cstdint>
@@ -45,6 +46,13 @@ struct PersistentAccessToken final
     bool revoked{false};
 };
 
+struct PersistentServerSigningKey final
+{
+    std::string key_id{};
+    std::string public_key{};
+    std::uint64_t valid_until_ts{0U};
+};
+
 struct PersistentRoom final
 {
     std::string room_id{};
@@ -63,6 +71,10 @@ struct PersistentEvent final
     std::string room_id{};
     std::string sender_user_id{};
     std::string json{};
+    std::uint64_t depth{0U};
+    std::vector<std::string> prev_event_ids{};
+    std::vector<std::string> auth_event_ids{};
+    std::vector<events::EventSignature> signatures{};
 };
 
 struct PersistentStateEvent final
@@ -71,6 +83,26 @@ struct PersistentStateEvent final
     std::string event_type{};
     std::string state_key{};
     std::string event_id{};
+};
+
+struct PersistentEventEdge final
+{
+    std::string event_id{};
+    std::string prev_event_id{};
+};
+
+struct PersistentEventAuth final
+{
+    std::string event_id{};
+    std::string auth_event_id{};
+};
+
+struct PersistentEventSignature final
+{
+    std::string event_id{};
+    std::string server_name{};
+    std::string key_id{};
+    std::string signature{};
 };
 
 struct PersistentDeviceKey final
@@ -174,10 +206,14 @@ struct PersistentStore final
     std::vector<PersistentUser> users{};
     std::vector<PersistentDevice> devices{};
     std::vector<PersistentAccessToken> access_tokens{};
+    std::vector<PersistentServerSigningKey> server_signing_keys{};
     std::vector<PersistentRoom> rooms{};
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentEvent> events{};
     std::vector<PersistentStateEvent> state{};
+    std::vector<PersistentEventEdge> event_edges{};
+    std::vector<PersistentEventAuth> event_auth{};
+    std::vector<PersistentEventSignature> event_signatures{};
     std::vector<PersistentDeviceKey> device_keys{};
     std::vector<PersistentOneTimeKey> one_time_keys{};
     std::vector<PersistentFallbackKey> fallback_keys{};
@@ -210,6 +246,9 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
                                                  PersistentAccessToken token) -> bool;
 [[nodiscard]] auto revoke_access_token(PersistentStore& store, std::string_view token_hash) -> std::size_t;
+[[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool;
+[[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view key_id)
+    -> std::optional<PersistentServerSigningKey>;
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,

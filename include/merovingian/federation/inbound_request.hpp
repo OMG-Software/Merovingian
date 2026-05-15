@@ -8,6 +8,7 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -51,6 +52,7 @@ struct FederationPdu final
     std::string event_type{};
     std::string sender{};
     std::vector<events::EventSignature> signatures{};
+    std::string json{};
 };
 
 struct FederationAcceptedTransaction final
@@ -106,6 +108,8 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
                                               std::string_view server_name) noexcept -> bool;
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin)
     -> FederationDecision;
+[[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
+                                            std::optional<FederationKeyRecord> const& key) -> FederationDecision;
 [[nodiscard]] auto parse_federation_pdu(std::string_view encoded) -> FederationPdu;
 [[nodiscard]] auto handle_inbound_federation_request(FederationRuntimeState& runtime,
                                                      SignedFederationRequest const& request) -> FederationResponse;

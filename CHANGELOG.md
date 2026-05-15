@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.27
+
+- Wired runtime-created room events through persisted server signing keys, Matrix
+  content/reference hashes, Ed25519 signatures, and reference-hash event IDs.
+- Persisted local event DAG rows for previous events, auth events, and event
+  signatures during runtime event writes, with SQLite/PostgreSQL hydration.
+- Replaced federation request-signature scaffolding with canonical JSON
+  Ed25519 verification and added JSON PDU event-signature verification for
+  known remote signing keys.
+
 ## 0.1.26
 
 - Replaced event ID scaffolding with Matrix reference-hash event IDs for modern

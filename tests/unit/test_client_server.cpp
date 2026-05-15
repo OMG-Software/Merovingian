@@ -44,6 +44,17 @@ namespace
     return body.substr(value_begin, value_end - value_begin);
 }
 
+[[nodiscard]] auto event_id(std::string const& body) -> std::string
+{
+    auto const key = std::string{"\"event_id\":\""};
+    auto const begin = body.find(key);
+    REQUIRE(begin != std::string::npos);
+    auto const value_begin = begin + key.size();
+    auto const value_end = body.find('"', value_begin);
+    REQUIRE(value_end != std::string::npos);
+    return body.substr(value_begin, value_end - value_begin);
+}
+
 } // namespace
 
 SCENARIO("Client-server runtime wraps errors in stable Matrix-style shapes", "[homeserver][client-server]")
@@ -313,6 +324,66 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
                 REQUIRE(sync.body.find("secret") == std::string::npos);
                 REQUIRE(sync.body.find("m.room.encrypted") == std::string::npos);
                 REQUIRE(merovingian::homeserver::joined_room_count(runtime, "@alice:example.org") == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server runtime signs sent events and persists their DAG metadata",
+         "[homeserver][client-server][events]")
+{
+    GIVEN("a logged-in client-server user with a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
+                    .status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        auto const id = room_id(room.body);
+
+        WHEN("state and message events are sent through the runtime")
+        {
+            auto const state = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                 R"({"type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"join"}})"});
+            auto const message = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
+                          R"({"type":"m.room.message","content":{"body":"hi","msgtype":"m.text"}})"});
+            auto const state_event_id = event_id(state.body);
+            auto const message_event_id = event_id(message.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+
+            THEN("the returned event IDs are reference hashes and persisted rows include signatures and DAG edges")
+            {
+                REQUIRE(state.status == 200U);
+                REQUIRE(message.status == 200U);
+                REQUIRE(state_event_id.starts_with("$"));
+                REQUIRE(message_event_id.starts_with("$"));
+                REQUIRE(state_event_id.find(":") == std::string::npos);
+                REQUIRE(message_event_id.find(":") == std::string::npos);
+                REQUIRE(store.server_signing_keys.size() == 1U);
+                REQUIRE(store.events.size() == 2U);
+                REQUIRE(store.events.back().json.find("\"hashes\"") != std::string::npos);
+                REQUIRE(store.events.back().json.find("\"signatures\"") != std::string::npos);
+                REQUIRE(store.event_signatures.size() == 2U);
+                REQUIRE(store.event_edges.size() == 1U);
+                REQUIRE(store.event_auth.size() == 1U);
+                REQUIRE(store.event_edges.front().event_id == message_event_id);
+                REQUIRE(store.event_edges.front().prev_event_id == state_event_id);
+                REQUIRE(store.event_auth.front().auth_event_id == state_event_id);
             }
         }
     }
