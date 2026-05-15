@@ -315,14 +315,16 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.rooms.push_back({column_text(row, 0), column_text(row, 1)});
                          }) &&
-               load_rows(connection, "SELECT room_id, user_id FROM membership",
+               load_rows(connection, "SELECT room_id, user_id, membership, stream_ordering FROM membership",
                          [&store](sqlite3_stmt& row) {
-                             store.memberships.push_back({column_text(row, 0), column_text(row, 1)});
+                              store.memberships.push_back({column_text(row, 0), column_text(row, 1),
+                                                           column_text(row, 2), parse_u64(column_text(row, 3))});
                          }) &&
-               load_rows(connection, "SELECT event_id, room_id, sender_user_id, json, depth FROM events",
+               load_rows(connection, "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM events",
                          [&store](sqlite3_stmt& row) {
-                             store.events.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
-                                                     column_text(row, 3), parse_u64(column_text(row, 4))});
+                              store.events.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                      column_text(row, 3), parse_u64(column_text(row, 4)),
+                                                      parse_u64(column_text(row, 5))});
                          }) &&
                load_rows(connection, "SELECT event_id, prev_event_id FROM event_edges",
                          [&store](sqlite3_stmt& row) {
