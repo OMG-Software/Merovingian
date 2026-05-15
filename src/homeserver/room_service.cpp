@@ -404,13 +404,13 @@ namespace
         auto signed_event_value = canonicaljson::parse_lossless(signed_event.event_json);
         if (signed_event_value.error == canonicaljson::ParseError::none)
         {
-            auto const* policy = rooms::find_room_version_policy("12");
-            if (policy != nullptr)
+            auto const* auth_policy = rooms::find_room_version_policy("12");
+            if (auth_policy != nullptr)
             {
                 auto auth_map = build_auth_event_map(runtime.database.persistent_store, room_id, sender,
                                                      state_key.value_or(""), event_type);
                 auto const auth_decision =
-                    events::authorize_event_against_auth_events(signed_event_value.value, *policy, auth_map);
+                    events::authorize_event_against_auth_events(signed_event_value.value, *auth_policy, auth_map);
                 if (!auth_decision.allowed)
                 {
                     return std::nullopt;
