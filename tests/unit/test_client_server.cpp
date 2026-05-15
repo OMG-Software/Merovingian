@@ -56,6 +56,16 @@ namespace
     return body.substr(value_begin, value_end - value_begin);
 }
 
+[[nodiscard]] auto json_value(std::string const& body, std::string const& key) -> std::string
+{
+    auto const begin = body.find(key);
+    REQUIRE(begin != std::string::npos);
+    auto const value_begin = begin + key.size();
+    auto const value_end = body.find('"', value_begin);
+    REQUIRE(value_end != std::string::npos);
+    return body.substr(value_begin, value_end - value_begin);
+}
+
 } // namespace
 
 SCENARIO("Client-server runtime wraps errors in stable Matrix-style shapes", "[homeserver][client-server]")
@@ -601,7 +611,7 @@ SCENARIO("Client-server runtime rate-limit buckets reset after the logical windo
         {
             auto const first = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
-            auto const limited = merovingian::handle_client_server_request(
+            auto const limited = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
             auto const reset = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
@@ -673,7 +683,4 @@ SCENARIO("Sync endpoint returns stream token and event bodies for initial and in
             }
         }
     }
-}
-}
-}
 }

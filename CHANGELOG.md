@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.42
+
+- Fixed meson subdir ordering: `rooms_lib` must be defined before `events_lib`
+  can reference it.
+- Added missing `#include <algorithm>` for `std::reverse` in `stream_token.cpp`.
+- Fixed `test_client_server.cpp`: qualified
+  `merovingian::homeserver::handle_client_server_request` namespace,
+  added `json_value` helper for incremental sync tests, removed extraneous
+  closing braces.
+
 ## 0.1.40
 
 - Added BDD test coverage for sync endpoint: initial sync returns stream
