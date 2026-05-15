@@ -378,23 +378,23 @@ namespace
 
 [[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool
 {
-    if (key.key_id.empty() || key.public_key.empty() || key.valid_until_ts == 0U)
+    if (key.server_name.empty() || key.key_id.empty() || key.public_key.empty() || key.valid_until_ts == 0U)
     {
         return false;
     }
     if (!record_and_persist(
-            store,
-            record_statement("upsert_server_signing_key",
-                             "INSERT INTO server_signing_keys VALUES ($1, $2, $3) ON CONFLICT (key_id) DO UPDATE SET "
-                             "public_key = $2, valid_until_ts = $3",
-                             {public_value(key.key_id), public_value(key.public_key),
-                              public_value(std::to_string(key.valid_until_ts))})))
+            store, record_statement(
+                       "upsert_server_signing_key",
+                       "INSERT INTO server_signing_keys VALUES ($1, $2, $3, $4) ON CONFLICT (server_name, key_id) "
+                       "DO UPDATE SET public_key = $3, valid_until_ts = $4",
+                       {public_value(key.server_name), public_value(key.key_id), public_value(key.public_key),
+                        public_value(std::to_string(key.valid_until_ts))})))
     {
         return false;
     }
     auto const existing =
         std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
-            return row.key_id == key.key_id;
+            return row.server_name == key.server_name && row.key_id == key.key_id;
         });
     if (existing != store.server_signing_keys.end())
     {
@@ -406,12 +406,12 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view key_id)
-    -> std::optional<PersistentServerSigningKey>
+[[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
+                                           std::string_view key_id) -> std::optional<PersistentServerSigningKey>
 {
     auto const existing =
-        std::ranges::find_if(store.server_signing_keys, [key_id](PersistentServerSigningKey const& key) {
-            return key.key_id == key_id;
+        std::ranges::find_if(store.server_signing_keys, [server_name, key_id](PersistentServerSigningKey const& key) {
+            return key.server_name == server_name && key.key_id == key_id;
         });
     return existing == store.server_signing_keys.end() ? std::nullopt
                                                        : std::optional<PersistentServerSigningKey>{*existing};
@@ -487,10 +487,13 @@ namespace
         return false;
     }
     auto statements = std::vector<PreparedStatement>{
-        record_statement(
-            "insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4)",
-            {{event.event_id, false}, {event.room_id, false}, {event.sender_user_id, false}, {event.json, true}}
-             )
+        record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5)",
+                         {{event.event_id, false},
+                                                                                            {event.room_id, false},
+                                                                                            {event.sender_user_id, false},
+                                                                                            {event.json, true},
+                                                                                            {std::to_string(event.depth), false}}
+                          )
     };
     append_event_graph_statements(statements, event);
     if (!commit_persistent_transaction(store, statements))
@@ -552,13 +555,13 @@ namespace
     {
         return false;
     }
-    auto const event_statement = record_statement(
-        "insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4)",
-        {
-            {event.event_id,       false},
-            {event.room_id,        false},
-            {event.sender_user_id, false},
-            {event.json,           true }
+    auto const event_statement = record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5)",
+                                                  {
+                                                      {event.event_id,              false},
+                                                      {event.room_id,               false},
+                                                      {event.sender_user_id,        false},
+                                                      {event.json,                  true },
+                                                      {std::to_string(event.depth), false}
     });
     auto statements = std::vector<PreparedStatement>{event_statement};
     append_event_graph_statements(statements, event);

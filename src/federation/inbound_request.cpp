@@ -320,26 +320,33 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
     {
         return make_decision(false, 403U, signature.reason);
     }
-    if (key.has_value() && !pdu.json.empty())
+    if (key.has_value())
     {
         auto const* room_version = rooms::find_room_version_policy("12");
         if (room_version == nullptr)
         {
             return make_decision(false, 500U, "room version policy is unavailable");
         }
-        auto const parsed = canonicaljson::parse_lossless(pdu.json);
-        if (parsed.error != canonicaljson::ParseError::none)
+        if (!pdu.json.empty())
         {
-            return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
+            auto const parsed = canonicaljson::parse_lossless(pdu.json);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
+            }
+            auto const public_key = public_key_from_material(key->verify_token);
+            auto verifier = FederationEd25519Verifier{};
+            auto const verified =
+                events::verify_event_signature(parsed.value, *room_version, {std::string{expected_origin}, key->key_id},
+                                               crypto::Ed25519PublicKey{public_key}, verifier);
+            if (!verified.valid)
+            {
+                return make_decision(false, 403U, verified.error);
+            }
         }
-        auto const public_key = public_key_from_material(key->verify_token);
-        auto verifier = FederationEd25519Verifier{};
-        auto const verified =
-            events::verify_event_signature(parsed.value, *room_version, {std::string{expected_origin}, key->key_id},
-                                           crypto::Ed25519PublicKey{public_key}, verifier);
-        if (!verified.valid)
+        else
         {
-            return make_decision(false, 403U, verified.error);
+            return make_decision(false, 400U, "comma-delimited PDUs require JSON for cryptographic verification");
         }
     }
     if (!pdu_is_authorized(pdu))

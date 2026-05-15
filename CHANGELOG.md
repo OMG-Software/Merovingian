@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.1.36
+
+- Replaced deterministic signing-key derivation with cryptographically random
+  Ed25519 keypair generation so the runtime signing secret cannot be
+  reconstructed from public server identity values (P1 fix).
+- Required full Ed25519 event-signature verification for all PDUs when a
+  signing key is available; comma-delimited PDUs without JSON are now
+  rejected rather than bypassing cryptographic verification (P1 fix).
+- Fixed `origin_server_ts` to use wall-clock Unix-epoch milliseconds
+  instead of the sequential depth counter, conforming to the Matrix
+  specification (P2 fix).
+- Added `depth` column to the `events` table so event depth survives
+  server restarts instead of regressing to zero (P2 fix).
+- Extended `server_signing_keys` with a `server_name` column and composite
+  primary key so key lookups are scoped to server identity, preventing
+  cross-server key confusion after a `server_name` change (P2 fix).
+- Added schema version `4` migration for the new `depth` and `server_name`
+  columns and updated SQLite/PostgreSQL hydration and bootstrap.
+- Added BDD coverage for random signing keys, depth persistence,
+  server-scoped key lookups, comma-delimited PDU rejection, and
+  wall-clock `origin_server_ts`.
+
 ## 0.1.35
 
 - Removed the tracked `subprojects/yyjson` gitlink so CI and local clean
