@@ -7,6 +7,12 @@
   event stream.
 - Added `sync` library with `StreamToken`, `encode_stream_token`,
   `decode_stream_token`, and `is_valid_stream_token` functions.
+- Added `core::SyncRequest` and `core::parse_query_params` for extracting
+  `since`, `timeout`, `full_state`, and `filter` from `/sync` query strings.
+- Added `core::percent_decode` for URL percent-decoding sync filter values.
+- Rewrote `sync_json` to produce Matrix v1.18-compliant sync responses with
+  actual event bodies in timelines, stream-token-based `next_batch`, and
+  incremental diffing when a `since` token is provided.
 - Schema migration v5: added `stream_ordering` column to `events` and
   `membership` tables, `membership` column to `membership` table, and
   `event_id` + `stream_ordering` columns to `invites` table.
@@ -15,8 +21,8 @@
   increasing event stream positions.
 - Updated `store_event`, `store_event_with_state`, and `store_membership` to
   persist stream ordering and membership type.
-- BDD test coverage for stream tokens and updated migration count assertions
-  for v5.
+- BDD test coverage for stream tokens, query parameter parsing, URL
+  percent-decoding, and updated migration count assertions for v5.
 
 ## 0.1.38
 

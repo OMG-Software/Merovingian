@@ -7,7 +7,9 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/http/request.hpp"
+#include "merovingian/sync/stream_token.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
@@ -523,27 +525,73 @@ namespace
         return out + "]}";
     }
 
-    [[nodiscard]] auto sync_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
+    [[nodiscard]] auto sync_json(ClientServerRuntime const& rt, std::string_view user, core::SyncRequest const& request)
+        -> std::string
     {
-        auto out = std::string{"{\"next_batch\":\"s1\",\"rooms\":{\"join\":{"};
-        auto first = true;
-        auto count = std::size_t{0U};
+        auto const since_token =
+            request.since.has_value() ? sync::decode_stream_token(*request.since) : std::optional<sync::StreamToken>{};
+        auto const since_ordering = since_token.has_value() ? since_token->event_ordering : std::uint64_t{0U};
+
+        auto const next_token =
+            sync::StreamToken{rt.homeserver.database.next_stream_ordering, rt.homeserver.database.next_stream_ordering};
+        auto out = std::string{"{\"next_batch\":\"" + sync::encode_stream_token(next_token) + "\""};
+
+        auto join_rooms = std::string{};
+        auto first_join = true;
+        auto join_count = std::size_t{0U};
+
         for (auto const& room : rt.homeserver.database.rooms)
         {
-            if (count >= rt.limits.max_sync_rooms || !joined(room, user))
+            if (join_count >= rt.limits.max_sync_rooms || !joined(room, user))
             {
                 continue;
             }
-            out += first ? "" : ",";
-            first = false;
-            ++count;
-            auto const event_count = std::min(room.events.size(), rt.limits.max_sync_events_per_room);
-            out += "\"" + json_escape(room.room_id) + "\":{\"timeline\":{\"limited\":";
-            out += room.events.size() > event_count ? "true" : "false";
-            out += ",\"event_count\":" + std::to_string(event_count) +
-                   "},\"state\":{\"member_count\":" + std::to_string(room.members.size()) + "}}";
+            auto const member_count = room.members.size();
+            auto timeline_events = std::string{};
+            auto first_event = true;
+            auto event_count = std::size_t{0U};
+
+            for (auto const& event : rt.homeserver.database.persistent_store.events)
+            {
+                if (event.room_id != room.room_id)
+                {
+                    continue;
+                }
+                if (since_ordering > 0U && event.stream_ordering <= since_ordering)
+                {
+                    continue;
+                }
+                if (event_count >= rt.limits.max_sync_events_per_room)
+                {
+                    break;
+                }
+                if (!first_event)
+                {
+                    timeline_events += ",";
+                }
+                first_event = false;
+                timeline_events += event.json;
+                ++event_count;
+            }
+
+            if (!first_join)
+            {
+                join_rooms += ",";
+            }
+            first_join = false;
+            ++join_count;
+
+            auto const limited =
+                rt.homeserver.database.persistent_store.events.size() > rt.limits.max_sync_events_per_room;
+            join_rooms += "\"" + json_escape(room.room_id) + "\":{\"timeline\":{\"events\":[";
+            join_rooms += timeline_events;
+            join_rooms += "],\"limited\":";
+            join_rooms += limited ? "true" : "false";
+            join_rooms += "},\"state\":{\"member_count\":" + std::to_string(member_count) + "}}";
         }
-        return out + "}}}";
+
+        out += ",\"rooms\":{\"join\":{" + join_rooms + "}}}";
+        return out;
     }
 
     [[nodiscard]] auto wrap(LocalHttpResponse const& r, std::string_view key) -> LocalHttpResponse
@@ -1082,9 +1130,11 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     {
         return resp(200U, joined_rooms_json(rt, *user));
     }
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/sync")
+    auto constexpr sync_prefix = std::string_view{"/_matrix/client/v3/sync"};
+    if (req.method == "GET" && starts_with(req.target, sync_prefix))
     {
-        return resp(200U, sync_json(rt, *user));
+        auto const sync_request = merovingian::core::parse_query_params(req.target);
+        return resp(200U, sync_json(rt, *user, sync_request));
     }
 
     auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};

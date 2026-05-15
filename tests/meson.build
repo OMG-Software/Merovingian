@@ -1,5 +1,5 @@
-if get_option('build_tests')
-  shell = find_program('sh')
+if get_option ('build_tests')
+shell = find_program('sh')
   python = find_program('python3', 'python')
   catch2_dep = dependency(
     'catch2',
@@ -62,6 +62,7 @@ if get_option('build_tests')
       'unit/test_media_security.cpp',
       'unit/test_not_null.cpp',
       'unit/test_observability.cpp',
+      'unit/test_query_params.cpp',
       'unit/test_review_regressions.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',
