@@ -203,16 +203,6 @@ namespace
         return result;
     }
 
-    auto build_state_map(StateGroup const& group) -> StateMap
-    {
-        auto map = StateMap{};
-        for (auto const& event : group.state)
-        {
-            map[event.key] = event;
-        }
-        return map;
-    }
-
 } // namespace
 
 auto state_key_matches(StateKey const& left, StateKey const& right) noexcept -> bool
