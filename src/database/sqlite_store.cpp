@@ -232,9 +232,12 @@ namespace
                    "INSERT OR IGNORE INTO schema_migrations VALUES ('2', 'media_metadata_columns', 'upgrade')") &&
                execute_sql(connection,
                            "INSERT OR IGNORE INTO schema_migrations VALUES ('3', 'e2ee_key_storage', 'upgrade')") &&
+                execute_sql(
+                    connection,
+                    "INSERT OR IGNORE INTO schema_migrations VALUES ('4', 'signing_key_and_event_depth', 'upgrade')") &&
                execute_sql(
                    connection,
-                   "INSERT OR IGNORE INTO schema_migrations VALUES ('4', 'signing_key_and_event_depth', 'upgrade')");
+                   "INSERT OR IGNORE INTO schema_migrations VALUES ('5', 'stream_ordering_and_membership_columns', 'upgrade')");
     }
 
     auto apply_pending_migrations(sqlite3& connection, SchemaState state) -> std::optional<SchemaState>

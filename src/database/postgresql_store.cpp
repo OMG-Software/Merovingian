@@ -722,6 +722,7 @@ auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
     statements.push_back(migration_record_statement(2U, "media_metadata_columns"));
     statements.push_back(migration_record_statement(3U, "e2ee_key_storage"));
     statements.push_back(migration_record_statement(4U, "signing_key_and_event_depth"));
+    statements.push_back(migration_record_statement(5U, "stream_ordering_and_membership_columns"));
     return statements;
 }
 
