@@ -216,7 +216,7 @@ SCENARIO("Auth rules allow a member join event when sender matches state_key and
             THEN("the event is allowed because the user is already joined")
             {
                 REQUIRE(decision.allowed);
-                REQUIRE(decision.rule_step == "4");
+                REQUIRE(decision.rule_step == "5");
             }
         }
     }

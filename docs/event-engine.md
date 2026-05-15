@@ -29,7 +29,12 @@ Implemented now:
   guard, state-default and events-default power enforcement, redaction power
 - auth-event map construction from current room state for authorization
 - auth checking wired into the event sending path: composed events are
-  authorized against current room state before persistence
+  authorized against current room state before persistence; auth is
+  conditional on the presence of a create event in room state to allow
+  the simplified room-creation bootstrap flow
+- room creator is implicitly treated as joined with power level 100 when
+  no sender_member or power_levels event exists, enabling correct
+  authorization of initial state events during room bootstrapping
 - v2 state resolution algorithm: conflicted/unconflicted partition, reverse
   topological power sort, mainline ordering for power-level event ties,
   iterative auth-based conflict resolution

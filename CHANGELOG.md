@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.1.38
+
+- Fixed event authorization for room bootstrapping: the room creator is now
+  implicitly treated as joined with power level 100 when no sender_member
+  or power_levels event exists in the auth event map.
+- Fixed self-join ban check: banned users are now correctly rejected by
+  checking the target's membership rather than the sender's membership,
+  resolving a false-allow when sender_member is absent but target_member
+  records a ban.
+- Fixed target_current_membership resolution for self-joins: when sender
+  equals state_key, the sender_member is now used as the authoritative
+  target membership if available.
+- Made event auth check conditional on the presence of a create event in
+  room state, allowing the simplified room creation flow to send events
+  without auth rejection before a formal m.room.create state event exists.
+- Added `effective_sender_power` helper to compute sender power level with
+  creator-default-100 fallback when no power_levels event exists.
+
 ## 0.1.37
 
 - Implemented full Matrix v6+ event authorization rules (14-step algorithm

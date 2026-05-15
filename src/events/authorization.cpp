@@ -133,6 +133,21 @@ namespace
         return sender_power >= redact_level || sender_power >= ban_level;
     }
 
+    [[nodiscard]] auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
+                                              canonicaljson::Value const& create_event) noexcept -> std::int64_t
+    {
+        if (value_has_content(power_levels))
+        {
+            return extract_user_power_level(power_levels, sender);
+        }
+        auto const* creator = event_content_string(create_event, "creator");
+        if (creator != nullptr && sender == *creator)
+        {
+            return 100;
+        }
+        return 0;
+    }
+
 } // namespace
 
 auto auth_rule_hook_name(rooms::RoomVersionPolicy const& policy) -> std::string
@@ -392,7 +407,11 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         }
 
         auto target_current_membership = MembershipState::leave;
-        if (value_has_content(auth_events.target_member))
+        if (target_is_sender && value_has_content(auth_events.sender_member))
+        {
+            target_current_membership = parse_membership_state(extract_content_membership(auth_events.sender_member));
+        }
+        else if (value_has_content(auth_events.target_member))
         {
             target_current_membership = parse_membership_state(extract_content_membership(auth_events.target_member));
         }
@@ -406,7 +425,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         // Step 5 continued: A user can join if they are joined already (re-join accepted)
         if (requested == MembershipState::join && target_is_sender)
         {
-            if (sender_current_membership == MembershipState::ban)
+            if (target_current_membership == MembershipState::ban)
             {
                 return make_denied("5", "banned user cannot join");
             }
@@ -489,9 +508,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             auto const invite_power = value_has_content(auth_events.power_levels)
                                           ? extract_power_level_key(auth_events.power_levels, "invite", 0)
                                           : 0;
-            auto const sender_power = value_has_content(auth_events.power_levels)
-                                          ? extract_user_power_level(auth_events.power_levels, *sender)
-                                          : 0;
+            auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
             if (sender_power < invite_power)
             {
                 return make_denied("6", "insufficient power to invite");
@@ -521,9 +538,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 auto const ban_power = value_has_content(auth_events.power_levels)
                                            ? extract_power_level_key(auth_events.power_levels, "ban", 50)
                                            : 50;
-                auto const sender_power = value_has_content(auth_events.power_levels)
-                                              ? extract_user_power_level(auth_events.power_levels, *sender)
-                                              : 0;
+                auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
                 if (sender_power < ban_power)
                 {
                     return make_denied("7", "insufficient power to unban");
@@ -535,9 +550,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             auto const kick_power = value_has_content(auth_events.power_levels)
                                         ? extract_power_level_key(auth_events.power_levels, "kick", 50)
                                         : 50;
-            auto const sender_power = value_has_content(auth_events.power_levels)
-                                          ? extract_user_power_level(auth_events.power_levels, *sender)
-                                          : 0;
+            auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
             if (sender_power < kick_power)
             {
                 return make_denied("7", "insufficient power to kick");
@@ -557,9 +570,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             auto const ban_power = value_has_content(auth_events.power_levels)
                                        ? extract_power_level_key(auth_events.power_levels, "ban", 50)
                                        : 50;
-            auto const sender_power = value_has_content(auth_events.power_levels)
-                                          ? extract_user_power_level(auth_events.power_levels, *sender)
-                                          : 0;
+            auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
             if (sender_power < ban_power)
             {
                 return make_denied("8", "insufficient power to ban");
@@ -578,23 +589,28 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     {
         sender_membership = parse_membership_state(extract_content_membership(auth_events.sender_member));
     }
+    else
+    {
+        auto const* creator = event_content_string(auth_events.create, "creator");
+        if (creator != nullptr && *sender == *creator)
+        {
+            sender_membership = MembershipState::join;
+        }
+    }
     if (sender_membership != MembershipState::join)
     {
         return make_denied("10", "sender is not joined to the room");
     }
 
     // Step 11: check power levels for the event type
-    auto const sender_power =
-        value_has_content(auth_events.power_levels) ? extract_user_power_level(auth_events.power_levels, *sender) : 0;
+    auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
 
     auto const* state_key = string_member(*obj, "state_key");
     auto const is_state_event = state_key != nullptr;
 
     if (*event_type == "m.room.power_levels")
     {
-        auto const pl_sender_power = value_has_content(auth_events.power_levels)
-                                         ? extract_user_power_level(auth_events.power_levels, *sender)
-                                         : 0;
+        auto const pl_sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
 
         // For m.room.power_levels, the sender must have the level to change each key
         // Check that the sender can set the new event's content power levels
