@@ -6,6 +6,10 @@
   and `postgresql_schema_bootstrap_statements` (PostgreSQL): fresh databases
   now correctly record the `stream_ordering_and_membership_columns` migration,
   preventing schema validation failure on startup.
+- Fixed sync JSON response missing `event_count` field that caused
+  `run_client_server_flow` to fail.
+- Fixed version string in `main.cpp` and `db_migrate.cpp` to match meson
+  project version (0.1.43).
 - Updated schema version test assertion from `4U` to `5U`.
 - Added `005_stream_ordering_and_membership_columns.sql` migration file.
 
