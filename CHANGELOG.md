@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.41
+
+- Added outbound federation module: `OutboundTransaction` struct for tracking
+  pending PDUs/EDUs to remote servers, `make_outbound_transaction` factory,
+  exponential backoff with cap (`compute_backoff`), and circuit breaker retry
+  policy (`destination_should_retry`).
+- Added server discovery module: `ServerDiscoveryResult` for resolving server
+  names, well-known delegation, and private IP rejection; `FederationDestination`
+  struct for retry state persistence.
+- BDD test coverage for outbound transaction creation, backoff computation,
+  circuit breaker behavior, and server discovery validation.
+
 ## 0.1.40
 
 - Added BDD test coverage for sync endpoint: initial sync returns stream
