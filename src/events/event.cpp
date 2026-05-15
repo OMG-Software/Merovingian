@@ -46,6 +46,17 @@ namespace
         return std::get_if<std::int64_t>(&value->storage());
     }
 
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<canonicaljson::Object>(&value->storage());
+    }
+
     [[nodiscard]] auto contains_no_control_or_space(std::string_view value) noexcept -> bool
     {
         for (auto const character : value)
@@ -58,6 +69,34 @@ namespace
         }
 
         return true;
+    }
+
+    [[nodiscard]] auto parse_event_signatures(canonicaljson::Object const& object) -> std::vector<EventSignature>
+    {
+        auto const* signatures = object_member_as_object(object, "signatures");
+        if (signatures == nullptr)
+        {
+            return {};
+        }
+
+        auto parsed = std::vector<EventSignature>{};
+        for (auto const& server_member : *signatures)
+        {
+            auto const* server_signatures = std::get_if<canonicaljson::Object>(&server_member.value->storage());
+            if (server_signatures == nullptr)
+            {
+                continue;
+            }
+            for (auto const& key_member : *server_signatures)
+            {
+                auto const* signature = std::get_if<std::string>(&key_member.value->storage());
+                if (signature != nullptr)
+                {
+                    parsed.push_back({server_member.key, key_member.key, *signature});
+                }
+            }
+        }
+        return parsed;
     }
 
 } // namespace
@@ -112,6 +151,7 @@ auto parse_event_envelope(canonicaljson::Value const& json) -> EventParseResult
     event.event_type = *type;
     event.sender = *sender;
     event.origin_server_ts = *origin_server_ts;
+    event.signatures = parse_event_signatures(*object);
 
     if (auto const* state_key = string_member(*object, "state_key"); state_key != nullptr)
     {

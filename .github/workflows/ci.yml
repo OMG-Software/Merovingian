@@ -44,14 +44,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja
 
-      - name: Configure
-        run: meson setup build -Dbuild_tests=true -Dbuild_fuzz=false
-
-      - name: Compile
-        run: meson compile -C build
-
-      - name: Test
-        run: meson test -C build --print-errorlogs
+      - name: Build and test
+        run: sh scripts/build-linux.sh --builddir build
 
       - name: Validate Phase 1 configuration gates
         run: bash scripts/validate-phase1-config.sh build
@@ -91,9 +85,7 @@ jobs:
           usesh: true
           run: |
             pkg install -y meson ninja llvm catch2 pkgconf git libsodium postgresql16-client openssl sqlite3
-            meson setup build -Dbuild_tests=true -Dbuild_fuzz=false
-            meson compile -C build
-            meson test -C build --print-errorlogs
+            sh scripts/build-bsd.sh --builddir build
             mkdir -p artifacts/bin artifacts/config artifacts/docs
             cp build/src/merovingian-server artifacts/bin/
             cp config/merovingian.conf.example artifacts/config/

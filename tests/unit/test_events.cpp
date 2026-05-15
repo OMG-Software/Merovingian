@@ -383,3 +383,35 @@ SCENARIO("Room version registry exposes stable modern room versions", "[rooms]")
         }
     }
 }
+
+SCENARIO("Room-version fixtures pin Matrix v10 v11 and v12 policy differences", "[rooms][events]")
+{
+    GIVEN("the supported modern room-version fixture set")
+    {
+        auto const* room_v10 = merovingian::rooms::find_room_version_policy("10");
+        auto const* room_v11 = merovingian::rooms::find_room_version_policy("11");
+        auto const* room_v12 = merovingian::rooms::find_room_version_policy("12");
+
+        WHEN("the room-version policies are inspected")
+        {
+            auto const fixtures = merovingian::rooms::known_room_versions();
+
+            THEN("each stable version uses reference-hash event IDs and the expected redaction split")
+            {
+                REQUIRE(room_v10 != nullptr);
+                REQUIRE(room_v11 != nullptr);
+                REQUIRE(room_v12 != nullptr);
+                REQUIRE(fixtures.size() == 3U);
+                REQUIRE(room_v10->stable);
+                REQUIRE(room_v11->stable);
+                REQUIRE(room_v12->stable);
+                REQUIRE(room_v10->event_id_format == merovingian::rooms::EventIdFormat::reference_hash);
+                REQUIRE(room_v11->event_id_format == merovingian::rooms::EventIdFormat::reference_hash);
+                REQUIRE(room_v12->event_id_format == merovingian::rooms::EventIdFormat::reference_hash);
+                REQUIRE(room_v10->redaction_rules == merovingian::rooms::RedactionRules::room_v1_v10);
+                REQUIRE(room_v11->redaction_rules == merovingian::rooms::RedactionRules::room_v11_plus);
+                REQUIRE(room_v12->redaction_rules == merovingian::rooms::RedactionRules::room_v11_plus);
+            }
+        }
+    }
+}

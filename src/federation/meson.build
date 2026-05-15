@@ -9,4 +9,6 @@ federation_lib = static_library(
   'merovingian-federation',
   federation_sources,
   include_directories: inc,
+  dependencies: [libsodium_dep],
+  link_with: [canonicaljson_lib, crypto_lib, events_lib, rooms_lib],
 )

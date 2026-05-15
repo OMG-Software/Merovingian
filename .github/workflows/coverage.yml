@@ -41,14 +41,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja
 
-      - name: Configure coverage build
-        run: meson setup build-coverage -Dbuild_tests=true -Dbuild_fuzz=false -Db_coverage=true
-
-      - name: Build
-        run: meson compile -C build-coverage
-
-      - name: Test
-        run: meson test -C build-coverage --print-errorlogs
+      - name: Build and test with coverage
+        run: sh scripts/build-linux.sh --builddir build-coverage --coverage
 
       - name: Generate coverage reports
         run: |

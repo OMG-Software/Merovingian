@@ -22,8 +22,17 @@ require_file docs/progress.md
 require_file docs/protocol-coverage.md
 require_file docs/01-production-readiness.md
 require_file docs/security-review-checklist.md
+require_file docs/dependencies/index.md
+require_file docs/dependencies/catch2.md
+require_file docs/dependencies/libsodium.md
+require_file docs/dependencies/openssl.md
+require_file docs/dependencies/postgresql-libpq.md
+require_file docs/dependencies/sqlite.md
+require_file docs/dependencies/yyjson.md
 require_file scripts/build-linux.sh
+require_file scripts/build-bsd.sh
 require_file scripts/build-wsl.ps1
+require_file scripts/wsl-setup.sh
 
 if grep -R "password-hash:v1" src include >/dev/null 2>&1; then
     fail "production sources still contain legacy password-hash:v1"

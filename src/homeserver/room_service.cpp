@@ -1,27 +1,51 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "local_services.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/events/event.hpp"
+#include "merovingian/events/event_id.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
-#include <merovingian/homeserver/vertical_slice.hpp>
+#include <sodium.h>
 
 namespace merovingian::homeserver
 {
 namespace
 {
 
-    struct LocalStateFields final
+    struct ComposedEvent final
     {
+        std::string event_id{};
+        std::string json{};
+        std::uint64_t depth{0U};
+        std::vector<std::string> prev_event_ids{};
+        std::vector<std::string> auth_event_ids{};
+        std::vector<events::EventSignature> signatures{};
         std::string event_type{};
-        std::string state_key{};
+        std::optional<std::string> state_key{};
     };
+
+    [[nodiscard]] auto sodium_is_ready() noexcept -> bool
+    {
+        static auto const ready = sodium_init() >= 0;
+        return ready;
+    }
 
     [[nodiscard]] auto find_room(LocalDatabase& database, std::string_view room_id) -> LocalRoom*
     {
@@ -46,131 +70,290 @@ namespace
         });
     }
 
-    [[nodiscard]] auto make_event_id(HomeserverRuntime& runtime) -> std::string
+    auto derive_signing_keypair(std::string_view server_name, std::string_view key_id,
+                                std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
+                                std::array<unsigned char, crypto_sign_SECRETKEYBYTES>& secret_key) noexcept -> bool
     {
-        auto const sequence = runtime.database.next_event_id++;
-        return "$event" + std::to_string(sequence) + ":" + runtime.config.server().server_name;
-    }
-
-    [[nodiscard]] auto is_json_space(char value) noexcept -> bool
-    {
-        return value == ' ' || value == '\n' || value == '\r' || value == '\t';
-    }
-
-    auto skip_json_space(std::string_view input, std::size_t& cursor) noexcept -> void
-    {
-        while (cursor < input.size() && is_json_space(input[cursor]))
+        if (!sodium_is_ready())
         {
-            ++cursor;
+            return false;
         }
+        auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
+        auto const material = std::string{server_name} + "|" + std::string{key_id};
+        if (crypto_generichash(seed.data(), seed.size(), reinterpret_cast<unsigned char const*>(material.data()),
+                               material.size(), nullptr, 0U) != 0)
+        {
+            return false;
+        }
+        return crypto_sign_seed_keypair(public_key.data(), secret_key.data(), seed.data()) == 0;
     }
 
-    [[nodiscard]] auto parse_json_string(std::string_view input, std::size_t& cursor) -> std::optional<std::string>
+    class RuntimeSigningKeyStore final : public crypto::SigningKeyStore
     {
-        if (cursor >= input.size() || input[cursor] != '"')
+    public:
+        RuntimeSigningKeyStore(std::string server_name, database::PersistentServerSigningKey key)
+            : server_name_{std::move(server_name)}
+            , key_{std::move(key)}
+        {
+        }
+
+        [[nodiscard]] auto active_key_for_server(std::string_view server_name)
+            -> crypto::SigningKeyLookupResult override
+        {
+            if (server_name != server_name_)
+            {
+                return {{}, "signing key not found"};
+            }
+            auto public_key = events::matrix_bytes_from_base64(key_.public_key);
+            return {
+                crypto::SigningKeyRecord{server_name_, key_.key_id, crypto::Ed25519PublicKey{std::move(public_key)},
+                                         true},
+                {}
+            };
+        }
+
+    private:
+        std::string server_name_{};
+        database::PersistentServerSigningKey key_{};
+    };
+
+    class RuntimeEd25519Provider final : public crypto::Ed25519Provider
+    {
+    public:
+        explicit RuntimeEd25519Provider(std::string server_name)
+            : server_name_{std::move(server_name)}
+        {
+        }
+
+        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& key, std::string_view message)
+            -> crypto::SignatureResult override
+        {
+            auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+            auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+            if (!derive_signing_keypair(server_name_, key.key_id, public_key, secret_key))
+            {
+                return {{}, "unable to derive signing key"};
+            }
+            auto signature = std::string(crypto_sign_BYTES, '\0');
+            if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
+                                     reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                                     secret_key.data()) != 0)
+            {
+                return {{}, "Ed25519 signing failed"};
+            }
+            return {crypto::Ed25519Signature{std::move(signature)}, {}};
+        }
+
+        [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
+                                  crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
+        {
+            if (!crypto::ed25519_public_key_shape_is_valid(public_key) ||
+                !crypto::ed25519_signature_shape_is_valid(signature))
+            {
+                return {false, "invalid Ed25519 material"};
+            }
+            auto const ok =
+                crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.bytes.data()),
+                                            reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                                            reinterpret_cast<unsigned char const*>(public_key.bytes.data())) == 0;
+            return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
+        }
+
+    private:
+        std::string server_name_{};
+    };
+
+    [[nodiscard]] auto ensure_runtime_signing_key(HomeserverRuntime& runtime)
+        -> std::optional<database::PersistentServerSigningKey>
+    {
+        auto constexpr key_id = std::string_view{"ed25519:auto"};
+        auto existing = database::find_server_signing_key(runtime.database.persistent_store, key_id);
+        if (existing.has_value())
+        {
+            return existing;
+        }
+
+        auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        if (!derive_signing_keypair(runtime.config.server().server_name, key_id, public_key, secret_key))
         {
             return std::nullopt;
         }
-        ++cursor;
-        auto output = std::string{};
-        while (cursor < input.size())
-        {
-            auto const character = input[cursor++];
-            if (character == '"')
-            {
-                return output;
-            }
-            if (character == '\\')
-            {
-                if (cursor >= input.size())
-                {
-                    return std::nullopt;
-                }
-                auto const escaped = input[cursor++];
-                if (escaped == '"' || escaped == '\\' || escaped == '/')
-                {
-                    output.push_back(escaped);
-                }
-                else if (escaped == 'n')
-                {
-                    output.push_back('\n');
-                }
-                else if (escaped == 'r')
-                {
-                    output.push_back('\r');
-                }
-                else if (escaped == 't')
-                {
-                    output.push_back('\t');
-                }
-                else
-                {
-                    return std::nullopt;
-                }
-            }
-            else
-            {
-                output.push_back(character);
-            }
-        }
-        return std::nullopt;
-    }
-
-    [[nodiscard]] auto top_level_json_string_field(std::string_view json, std::string_view field_name)
-        -> std::optional<std::string>
-    {
-        auto cursor = std::size_t{0U};
-        skip_json_space(json, cursor);
-        if (cursor >= json.size() || json[cursor] != '{')
+        auto key = database::PersistentServerSigningKey{
+            std::string{key_id},
+            events::matrix_base64_from_bytes(
+                std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
+            32503680000000ULL,
+        };
+        if (!database::store_server_signing_key(runtime.database.persistent_store, key))
         {
             return std::nullopt;
         }
-        ++cursor;
-        while (cursor < json.size())
-        {
-            skip_json_space(json, cursor);
-            if (cursor < json.size() && json[cursor] == '}')
-            {
-                return std::nullopt;
-            }
-            auto const key = parse_json_string(json, cursor);
-            if (!key.has_value())
-            {
-                return std::nullopt;
-            }
-            skip_json_space(json, cursor);
-            if (cursor >= json.size() || json[cursor] != ':')
-            {
-                return std::nullopt;
-            }
-            ++cursor;
-            skip_json_space(json, cursor);
-            if (*key == field_name)
-            {
-                return parse_json_string(json, cursor);
-            }
-            if (!parse_json_string(json, cursor).has_value())
-            {
-                return std::nullopt;
-            }
-            skip_json_space(json, cursor);
-            if (cursor < json.size() && json[cursor] == ',')
-            {
-                ++cursor;
-            }
-        }
-        return std::nullopt;
+        return key;
     }
 
-    [[nodiscard]] auto state_fields_from_event(std::string_view event_json) -> std::optional<LocalStateFields>
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
-        auto const event_type = top_level_json_string_field(event_json, "type");
-        auto const state_key = top_level_json_string_field(event_json, "state_key");
-        if (!event_type.has_value() || !state_key.has_value())
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto copy_member_or_empty_object(canonicaljson::Object const& object, std::string_view key)
+        -> canonicaljson::Value
+    {
+        auto const* value = object_member(object, key);
+        auto const* member_object = value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
+        return member_object == nullptr ? canonicaljson::Value{canonicaljson::Object{}}
+                                        : canonicaljson::Value{*member_object};
+    }
+
+    [[nodiscard]] auto string_array(std::vector<std::string> const& values) -> canonicaljson::Value
+    {
+        auto array = canonicaljson::Array{};
+        array.reserve(values.size());
+        for (auto const& value : values)
+        {
+            array.push_back(canonicaljson::Value{value});
+        }
+        return canonicaljson::Value{std::move(array)};
+    }
+
+    [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store, std::string_view room_id)
+        -> std::vector<std::string>
+    {
+        for (auto iterator = store.events.rbegin(); iterator != store.events.rend(); ++iterator)
+        {
+            if (iterator->room_id == room_id)
+            {
+                return {iterator->event_id};
+            }
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto auth_events_for_room(database::PersistentStore const& store, std::string_view room_id)
+        -> std::vector<std::string>
+    {
+        auto event_ids = std::vector<std::string>{};
+        for (auto const& state : store.state)
+        {
+            if (state.room_id == room_id)
+            {
+                event_ids.push_back(state.event_id);
+            }
+        }
+        return event_ids;
+    }
+
+    [[nodiscard]] auto next_depth_for_room(database::PersistentStore const& store, std::string_view room_id) noexcept
+        -> std::uint64_t
+    {
+        auto depth = std::uint64_t{0U};
+        for (auto const& event : store.events)
+        {
+            if (event.room_id == room_id && event.depth > depth)
+            {
+                depth = event.depth;
+            }
+        }
+        return depth + 1U;
+    }
+
+    [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
+                                            std::string_view sender, std::string_view client_event_json)
+        -> std::optional<ComposedEvent>
+    {
+        auto const parsed = canonicaljson::parse_lossless(client_event_json);
+        auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        auto fallback = canonicaljson::Object{};
+        if (parsed.error != canonicaljson::ParseError::none || input == nullptr)
+        {
+            fallback.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.message"}}));
+            fallback.push_back(
+                canonicaljson::make_member("content", canonicaljson::Value{std::string{client_event_json}}));
+            input = &fallback;
+        }
+
+        auto const* type = string_member(*input, "type");
+        auto const event_type = type == nullptr ? std::string{"m.room.message"} : *type;
+        auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
+        auto const auth_events = auth_events_for_room(runtime.database.persistent_store, room_id);
+        auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
+        auto event = canonicaljson::Object{};
+        event.push_back(canonicaljson::make_member("type", canonicaljson::Value{event_type}));
+        event.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{std::string{room_id}}));
+        event.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{sender}}));
+        event.push_back(
+            canonicaljson::make_member("origin_server_ts", canonicaljson::Value{static_cast<std::int64_t>(depth)}));
+        event.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(depth)}));
+        event.push_back(canonicaljson::make_member("prev_events", string_array(prev_events)));
+        event.push_back(canonicaljson::make_member("auth_events", string_array(auth_events)));
+        event.push_back(canonicaljson::make_member("content", copy_member_or_empty_object(*input, "content")));
+        auto state_key = std::optional<std::string>{};
+        if (auto const* found_state_key = string_member(*input, "state_key"); found_state_key != nullptr)
+        {
+            state_key = *found_state_key;
+            event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*state_key}));
+        }
+
+        auto unsigned_event = canonicaljson::Value{event};
+        auto const content_hash = events::make_content_hash(unsigned_event);
+        if (!content_hash.error.empty())
         {
             return std::nullopt;
         }
-        return LocalStateFields{*event_type, *state_key};
+        auto hashes = canonicaljson::Object{};
+        hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
+        event.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
+        auto hash_event = canonicaljson::Value{event};
+        auto const* policy = rooms::find_room_version_policy("12");
+        if (policy == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const event_id = events::make_reference_hash_event_id(hash_event, *policy);
+        if (!event_id.error.empty())
+        {
+            return std::nullopt;
+        }
+
+        auto key = ensure_runtime_signing_key(runtime);
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        auto key_store = RuntimeSigningKeyStore{runtime.config.server().server_name, *key};
+        auto provider = RuntimeEd25519Provider{runtime.config.server().server_name};
+        auto const signed_event = events::sign_event_for_server(hash_event, *policy, key_store, provider,
+                                                                runtime.config.server().server_name);
+        if (!signed_event.error.empty())
+        {
+            return std::nullopt;
+        }
+        return ComposedEvent{
+            event_id.event_id,
+            signed_event.event_json,
+            depth,
+            prev_events,
+            auth_events,
+            {{signed_event.server_name, signed_event.key_id, signed_event.signature}},
+            event_type,
+            state_key,
+        };
     }
 
 } // namespace
@@ -254,23 +437,29 @@ namespace
         return make_operation_result(false, {}, "empty event");
     }
 
-    auto const event_id = make_event_id(runtime);
-    auto state = std::optional<database::PersistentStateEvent>{};
-    if (auto const state_fields = state_fields_from_event(event_json); state_fields.has_value())
+    auto const composed = compose_signed_event(runtime, room_id, *user_id, event_json);
+    if (!composed.has_value())
     {
-        state = database::PersistentStateEvent{std::string{room_id}, state_fields->event_type, state_fields->state_key,
-                                               event_id};
+        return make_operation_result(false, {}, "event signing failed", 500U);
+    }
+    auto state = std::optional<database::PersistentStateEvent>{};
+    if (composed->state_key.has_value())
+    {
+        state = database::PersistentStateEvent{std::string{room_id}, composed->event_type, *composed->state_key,
+                                               composed->event_id};
     }
     if (!database::store_event_with_state(runtime.database.persistent_store,
-                                          {event_id, std::string{room_id}, *user_id, std::string{event_json}},
+                                          {composed->event_id, std::string{room_id}, *user_id, composed->json,
+                                           composed->depth, composed->prev_event_ids, composed->auth_event_ids,
+                                           composed->signatures},
                                           std::move(state)))
     {
         return make_operation_result(false, {}, "event persistence failed", 500U);
     }
-    room->events.push_back(std::string{event_json});
+    room->events.push_back(composed->json);
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", *user_id, room_id,
                        "stored");
-    return make_operation_result(true, event_id);
+    return make_operation_result(true, composed->event_id);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 

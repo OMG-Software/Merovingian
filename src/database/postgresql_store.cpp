@@ -326,6 +326,21 @@ namespace
             }
         }
 
+        auto server_signing_keys =
+            query_rows(connection, "postgresql_load_server_signing_keys",
+                       "SELECT key_id, public_key, valid_until_ts FROM server_signing_keys ORDER BY key_id");
+        if (!server_signing_keys.ok)
+        {
+            return false;
+        }
+        for (auto const& row : server_signing_keys.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                store.server_signing_keys.push_back({row[0], row[1], parse_u64(row[2])});
+            }
+        }
+
         auto rooms = query_rows(connection, "postgresql_load_rooms",
                                 "SELECT room_id, creator_user_id FROM rooms ORDER BY room_id");
         if (!rooms.ok)
@@ -365,6 +380,49 @@ namespace
             if (row.size() >= 4U)
             {
                 store.events.push_back({row[0], row[1], row[2], row[3]});
+            }
+        }
+
+        auto event_edges = query_rows(connection, "postgresql_load_event_edges",
+                                      "SELECT event_id, prev_event_id FROM event_edges ORDER BY event_id");
+        if (!event_edges.ok)
+        {
+            return false;
+        }
+        for (auto const& row : event_edges.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                store.event_edges.push_back({row[0], row[1]});
+            }
+        }
+
+        auto event_auth = query_rows(connection, "postgresql_load_event_auth",
+                                     "SELECT event_id, auth_event_id FROM event_auth ORDER BY event_id");
+        if (!event_auth.ok)
+        {
+            return false;
+        }
+        for (auto const& row : event_auth.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                store.event_auth.push_back({row[0], row[1]});
+            }
+        }
+
+        auto event_signatures = query_rows(
+            connection, "postgresql_load_event_signatures",
+            "SELECT event_id, server_name, key_id, signature FROM event_signatures ORDER BY event_id, server_name");
+        if (!event_signatures.ok)
+        {
+            return false;
+        }
+        for (auto const& row : event_signatures.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                store.event_signatures.push_back({row[0], row[1], row[2], row[3]});
             }
         }
 

@@ -16,31 +16,38 @@ Implemented now:
   `unsigned` and `signatures`
 - Ed25519 signature attachment, Matrix unpadded Base64 encoding, presence
   checking, and provider-backed verification against the signed payload
+- runtime-created room events now receive Matrix content hashes,
+  reference-hash event IDs, and Ed25519 signatures before persistence
 - room-version policy registry for modern stable room versions
 - room-version policy shape for event format, redaction rules, auth rules, state resolution, and event ID format
 - redaction with room-version-dependent top-level and event-content key retention
 - unit coverage for content hashes, reference-hash event IDs, event envelope
   parsing, signing payloads, signature attachment/verification, redaction, and
-  room-version lookup
+  room-version fixtures
 
 Not implemented yet:
 
-- server signing-key storage and rotation
+- signing-key rotation
 - event authorization rules
 - auth event selection
-- state resolution
-- event DAG persistence
+- full state resolution
 - full Matrix room membership behavior
-- full Matrix room-version fixture suite
+- full Matrix room-version conformance fixture suite
 
 ## Runtime wiring
 
 The local runtime path now serves room creation, local joins, local sends,
 state summaries, joined room listing, and bounded sync summaries through the
-client-server Matrix JSON adapter. Sync deliberately returns event counts and
-membership summaries rather than plaintext event bodies, preserving the
-server-blind encrypted-room posture while the full Matrix sync stream is still
-unfinished.
+client-server Matrix JSON adapter. Local sends compose Matrix-shaped room
+version `12` events, persist the active server signing key, store signed event
+JSON, and record previous-event, auth-event, and signature rows. Sync
+deliberately returns event counts and membership summaries rather than plaintext
+event bodies, preserving the server-blind encrypted-room posture while the full
+Matrix sync stream is still unfinished.
+
+State-event materialization follows Matrix semantics: an event is a state event
+when the `state_key` member is present, including when that state key is the
+valid empty string.
 
 ## Signing boundary
 
@@ -62,6 +69,13 @@ event after removing `unsigned`, `signatures`, and `hashes`. `make_reference_has
 redacts the event, removes `unsigned` and `signatures`, canonicalizes, and
 calculates the SHA-256 reference hash. `make_reference_hash_event_id` prefixes
 the URL-safe unpadded Base64 reference hash with `$` for modern room versions.
+
+## Runtime event graph
+
+Runtime events store their immediate `prev_events`, current-state-derived
+`auth_events`, and attached server signatures in the persistent store. This is
+the first durable DAG slice; full auth-event selection and state resolution
+remain separate work.
 
 ## Redaction
 

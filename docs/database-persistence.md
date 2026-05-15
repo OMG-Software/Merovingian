@@ -21,8 +21,9 @@ remaining work before PostgreSQL-backed production operation.
 - SQLite RAII wrappers around database connections and prepared statements.
 - SQLite current-schema bootstrap for new database files.
 - SQLite row hydration for users, devices, access tokens, rooms, memberships,
-  events, current state, E2EE key state, media metadata, remote media metadata,
-  audit events, and admin actions.
+  events, current state, server signing keys, event DAG rows, event signatures,
+  E2EE key state, media metadata, remote media metadata, audit events, and admin
+  actions.
 - Write-through SQLite persistence behind the existing store mutation helpers.
 - Transaction-aware persistent-store commits with SQLite rollback support.
 - Atomic helpers for multi-row login, room creation, and state-event writes.
@@ -42,6 +43,8 @@ remaining work before PostgreSQL-backed production operation.
 - Database `runtime` and `migration` role separation.
 - Runtime hydration for users, sessions, rooms, memberships, events, and client
   device listings.
+- Runtime event writes persist previous-event edges, auth-event edges, and
+  Matrix event signatures in the same transaction as the event row.
 - Unit coverage for statement validation, executor gating, redaction, migration
   planning, and schema inventory.
 - Migration-plan validation coverage uses explicit hand-built plans, while
@@ -71,6 +74,8 @@ The boundary provides these guarantees:
 - Auth and room mutations fail the request when required persistent writes fail.
 - Device/token, room/membership, and event/current-state mutations are committed
   atomically before in-memory runtime state is updated.
+- Signed event DAG rows are committed before the runtime room timeline is
+  updated.
 - Multi-row runtime mutations commit through one backend transaction so partial
   login, room, or state-event writes are rolled back.
 - PostgreSQL connection strings are accepted only in explicit URI or libpq
@@ -84,8 +89,8 @@ These remain deferred:
 
 - Full PostgreSQL integration tests against a running temporary server.
 - Runtime/migration role grants enforced by actual database users.
-- PostgreSQL-backed federation, policy, account data, push rules, and full
-  media repository blob metadata hydration.
+- PostgreSQL-backed federation queues, policy, account data, push rules, and
+  full media repository blob metadata hydration.
 - SQLite-backed federation queues, policy rules, account data, push rules, and
   full media repository blob metadata hydration.
 

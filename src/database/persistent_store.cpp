@@ -2,11 +2,12 @@
 
 #include "merovingian/database/persistent_store.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+
 #include <algorithm>
 #include <optional>
 #include <utility>
-
-#include <merovingian/database/persistent_store.hpp>
+#include <variant>
 
 namespace merovingian::database
 {
@@ -38,111 +39,25 @@ namespace
         return !hash_algorithm.empty() && !digest.empty() && digest.find('/') == std::string_view::npos;
     }
 
-    [[nodiscard]] auto is_json_space(char value) noexcept -> bool
-    {
-        return value == ' ' || value == '\n' || value == '\r' || value == '\t';
-    }
-
-    [[nodiscard]] auto parse_json_string(std::string_view input, std::size_t& cursor) -> std::optional<std::string>
-    {
-        if (cursor >= input.size() || input[cursor] != '"')
-        {
-            return std::nullopt;
-        }
-        ++cursor;
-        auto output = std::string{};
-        while (cursor < input.size())
-        {
-            auto const character = input[cursor++];
-            if (character == '"')
-            {
-                return output;
-            }
-            if (character == '\\')
-            {
-                if (cursor >= input.size())
-                {
-                    return std::nullopt;
-                }
-                auto const escaped = input[cursor++];
-                if (escaped == '"' || escaped == '\\' || escaped == '/')
-                {
-                    output.push_back(escaped);
-                }
-                else if (escaped == 'n')
-                {
-                    output.push_back('\n');
-                }
-                else if (escaped == 'r')
-                {
-                    output.push_back('\r');
-                }
-                else if (escaped == 't')
-                {
-                    output.push_back('\t');
-                }
-                else
-                {
-                    return std::nullopt;
-                }
-            }
-            else
-            {
-                output.push_back(character);
-            }
-        }
-        return std::nullopt;
-    }
-
-    auto skip_json_space(std::string_view input, std::size_t& cursor) noexcept -> void
-    {
-        while (cursor < input.size() && is_json_space(input[cursor]))
-        {
-            ++cursor;
-        }
-    }
-
     [[nodiscard]] auto top_level_json_string_field(std::string_view json, std::string_view field_name)
         -> std::optional<std::string>
     {
-        auto cursor = std::size_t{0U};
-        skip_json_space(json, cursor);
-        if (cursor >= json.size() || json[cursor] != '{')
+        auto const parsed = canonicaljson::parse_lossless(json);
+        if (parsed.error != canonicaljson::ParseError::none)
         {
             return std::nullopt;
         }
-        ++cursor;
-        while (cursor < json.size())
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (object == nullptr)
         {
-            skip_json_space(json, cursor);
-            if (cursor < json.size() && json[cursor] == '}')
+            return std::nullopt;
+        }
+        for (auto const& member : *object)
+        {
+            if (member.key == field_name)
             {
-                return std::nullopt;
-            }
-            auto const key = parse_json_string(json, cursor);
-            if (!key.has_value())
-            {
-                return std::nullopt;
-            }
-            skip_json_space(json, cursor);
-            if (cursor >= json.size() || json[cursor] != ':')
-            {
-                return std::nullopt;
-            }
-            ++cursor;
-            skip_json_space(json, cursor);
-            if (*key == field_name)
-            {
-                return parse_json_string(json, cursor);
-            }
-            if (!parse_json_string(json, cursor).has_value())
-            {
-                return std::nullopt;
-            }
-            skip_json_space(json, cursor);
-            if (cursor < json.size() && json[cursor] == ',')
-            {
-                ++cursor;
+                auto const* value = std::get_if<std::string>(&member.value->storage());
+                return value == nullptr ? std::nullopt : std::optional<std::string>{*value};
             }
         }
         return std::nullopt;
@@ -216,6 +131,44 @@ namespace
     [[nodiscard]] auto public_value(std::string_view value) -> BoundValue
     {
         return {std::string{value}, false};
+    }
+
+    auto append_event_graph_statements(std::vector<PreparedStatement>& statements, PersistentEvent const& event) -> void
+    {
+        for (auto const& prev_event_id : event.prev_event_ids)
+        {
+            statements.push_back(record_statement("insert_event_edge", "INSERT INTO event_edges VALUES ($1, $2)",
+                                                  {public_value(event.event_id), public_value(prev_event_id)}));
+        }
+        for (auto const& auth_event_id : event.auth_event_ids)
+        {
+            statements.push_back(record_statement("insert_event_auth", "INSERT INTO event_auth VALUES ($1, $2)",
+                                                  {public_value(event.event_id), public_value(auth_event_id)}));
+        }
+        for (auto const& signature : event.signatures)
+        {
+            statements.push_back(
+                record_statement("insert_event_signature", "INSERT INTO event_signatures VALUES ($1, $2, $3, $4)",
+                                 {public_value(event.event_id), public_value(signature.server_name),
+                                  public_value(signature.key_id), sensitive_value(signature.signature)}));
+        }
+    }
+
+    auto append_event_graph_rows(PersistentStore& store, PersistentEvent const& event) -> void
+    {
+        for (auto const& prev_event_id : event.prev_event_ids)
+        {
+            store.event_edges.push_back({event.event_id, prev_event_id});
+        }
+        for (auto const& auth_event_id : event.auth_event_ids)
+        {
+            store.event_auth.push_back({event.event_id, auth_event_id});
+        }
+        for (auto const& signature : event.signatures)
+        {
+            store.event_signatures.push_back(
+                {event.event_id, signature.server_name, signature.key_id, signature.signature});
+        }
     }
 
 } // namespace
@@ -423,6 +376,47 @@ namespace
     return revoked;
 }
 
+[[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool
+{
+    if (key.key_id.empty() || key.public_key.empty() || key.valid_until_ts == 0U)
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement("upsert_server_signing_key",
+                             "INSERT INTO server_signing_keys VALUES ($1, $2, $3) ON CONFLICT (key_id) DO UPDATE SET "
+                             "public_key = $2, valid_until_ts = $3",
+                             {public_value(key.key_id), public_value(key.public_key),
+                              public_value(std::to_string(key.valid_until_ts))})))
+    {
+        return false;
+    }
+    auto const existing =
+        std::ranges::find_if(store.server_signing_keys, [&key](PersistentServerSigningKey const& row) {
+            return row.key_id == key.key_id;
+        });
+    if (existing != store.server_signing_keys.end())
+    {
+        existing->public_key = std::move(key.public_key);
+        existing->valid_until_ts = key.valid_until_ts;
+        return true;
+    }
+    store.server_signing_keys.push_back(std::move(key));
+    return true;
+}
+
+[[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view key_id)
+    -> std::optional<PersistentServerSigningKey>
+{
+    auto const existing =
+        std::ranges::find_if(store.server_signing_keys, [key_id](PersistentServerSigningKey const& key) {
+            return key.key_id == key_id;
+        });
+    return existing == store.server_signing_keys.end() ? std::nullopt
+                                                       : std::optional<PersistentServerSigningKey>{*existing};
+}
+
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool
 {
     if (room_exists(store, room.room_id))
@@ -492,16 +486,18 @@ namespace
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4)",
-                                                    {
-                                                        {event.event_id,       false},
-                                                        {event.room_id,        false},
-                                                        {event.sender_user_id, false},
-                                                        {event.json,           true }
-    })))
+    auto statements = std::vector<PreparedStatement>{
+        record_statement(
+            "insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4)",
+            {{event.event_id, false}, {event.room_id, false}, {event.sender_user_id, false}, {event.json, true}}
+             )
+    };
+    append_event_graph_statements(statements, event);
+    if (!commit_persistent_transaction(store, statements))
     {
         return false;
     }
+    append_event_graph_rows(store, event);
     store.events.push_back(std::move(event));
     return true;
 }
@@ -565,6 +561,7 @@ namespace
             {event.json,           true }
     });
     auto statements = std::vector<PreparedStatement>{event_statement};
+    append_event_graph_statements(statements, event);
     auto const existing_state = state.has_value()
                                     ? std::ranges::find_if(store.state,
                                                            [&state](PersistentStateEvent const& current) {
@@ -602,6 +599,7 @@ namespace
     {
         return false;
     }
+    append_event_graph_rows(store, event);
     store.events.push_back(std::move(event));
     if (state.has_value())
     {

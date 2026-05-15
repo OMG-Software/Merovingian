@@ -47,11 +47,8 @@ jobs:
           queries: security-extended,security-and-quality
           build-mode: manual
 
-      - name: Configure Meson
-        run: meson setup build -Dbuild_tests=true -Dbuild_fuzz=false
-
       - name: Build
-        run: meson compile -C build
+        run: sh scripts/build-linux.sh --builddir build --compile-only
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4

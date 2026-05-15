@@ -481,6 +481,66 @@ SCENARIO("Persistent store offers atomic helpers for multi-row runtime mutations
     }
 }
 
+SCENARIO("Persistent store records server signing keys and event DAG metadata", "[database][persistence][events]")
+{
+    GIVEN("an opened persistent store with a room")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        REQUIRE(merovingian::database::store_room(store, {"!room-dag:example.org", "@alice:example.org"}));
+
+        WHEN("a runtime signing key and a signed state-linked event are stored")
+        {
+            auto const key_ok = merovingian::database::store_server_signing_key(
+                store, {"ed25519:auto", "public-key-base64", 32503680000000ULL});
+            auto const state_event_ok = merovingian::database::store_event_with_state(
+                store,
+                {"$state:example.org",
+                 "!room-dag:example.org",
+                 "@alice:example.org",
+                 R"({"type":"m.room.member","state_key":"@alice:example.org"})",
+                 1U,
+                 {},
+                 {},
+                 {}},
+                merovingian::database::PersistentStateEvent{"!room-dag:example.org", "m.room.member",
+                                                            "@alice:example.org", "$state:example.org"});
+            auto const message_event_ok = merovingian::database::store_event_with_state(
+                store,
+                {"$message:example.org",
+                 "!room-dag:example.org",
+                 "@alice:example.org",
+                 R"({"type":"m.room.message","state_key":""})",
+                 2U,
+                 {"$state:example.org"},
+                 {"$state:example.org"},
+                 {{"example.org", "ed25519:auto",
+                   "c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzcw"}}},
+                std::nullopt);
+            auto const found_key = merovingian::database::find_server_signing_key(store, "ed25519:auto");
+
+            THEN("the signing key edge auth and signature rows are durable")
+            {
+                REQUIRE(key_ok);
+                REQUIRE(state_event_ok);
+                REQUIRE(message_event_ok);
+                REQUIRE(found_key.has_value());
+                REQUIRE(found_key->public_key == "public-key-base64");
+                REQUIRE(store.events.size() == 2U);
+                REQUIRE(store.events.back().depth == 2U);
+                REQUIRE(store.event_edges.size() == 1U);
+                REQUIRE(store.event_auth.size() == 1U);
+                REQUIRE(store.event_signatures.size() == 1U);
+                REQUIRE(store.event_edges.front().prev_event_id == "$state:example.org");
+                REQUIRE(store.event_auth.front().auth_event_id == "$state:example.org");
+                REQUIRE(store.event_signatures.front().server_name == "example.org");
+                REQUIRE(store.prepared_statements.back().name == "insert_event_signature");
+            }
+        }
+    }
+}
+
 SCENARIO("Persistent store records durable server-blind E2EE key state", "[database][persistence][key-api]")
 {
     GIVEN("an opened persistent store")

@@ -41,7 +41,7 @@ Matrix v1.18 behavior, durable state where applicable, and conformance evidence.
 | Devices | `DELETE /_matrix/client/v3/devices/{deviceId}` | `scaffolded` | Route planning exists. Runtime behavior is incomplete. |
 | Rooms | `POST /_matrix/client/v3/createRoom` | `partial` | Local room creation works through the client listener and SQLite-persisted rooms survive restart. Needs full create-room semantics, auth events, and conformance fixtures. |
 | Rooms | `POST /_matrix/client/v3/rooms/{roomId}/join` | `partial` | Local join slice works through the client listener and membership writes route through the persistent store. Needs full membership rules and federation-aware joins. |
-| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/send` | `partial` | Local send slice works through the client listener and SQLite-persisted events survive restart. Needs transaction IDs, event auth, event IDs, signatures, DAG persistence, and full response semantics. |
+| Rooms | `POST /_matrix/client/v3/rooms/{roomId}/send` | `partial` | Local send slice works through the client listener with Matrix reference-hash event IDs, content hashes, persisted Ed25519 signatures, and previous/auth event DAG rows. SQLite-persisted events survive restart. Needs transaction IDs, full event auth, state resolution, and full response semantics. |
 | Rooms | `GET /_matrix/client/v3/rooms/{roomId}/state` | `partial` | Local state summary works through the client listener and is covered after SQLite restart. Needs full state event retrieval and state resolution semantics. |
 | Sync | `GET /_matrix/client/v3/sync` | `partial` | In-memory joined-room summary works through the client listener and avoids plaintext event content. Needs incremental sync, filters, presence, device updates, to-device messages, and durable stream tokens. |
 | Joined rooms | `GET /_matrix/client/v3/joined_rooms` | `partial` | Joined-room list works through the client listener and is hydrated from SQLite memberships. Needs full access checks. |
@@ -54,10 +54,10 @@ Matrix v1.18 behavior, durable state where applicable, and conformance evidence.
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` | `partial` | Inbound transaction handling is runtime-wired through federation listener local-router dispatch with request policy, duplicate handling, and PDU checks. Needs real Matrix signing, canonical JSON, persistence, and event ingestion. |
+| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` | `partial` | Inbound transaction handling is runtime-wired through federation listener local-router dispatch with request policy, duplicate handling, canonical JSON request-signature verification, JSON PDU event-signature verification for known keys, and PDU checks. Needs real key discovery, persistence, joins/backfill, and event ingestion. |
 | Joins/leaves/invites | Federation join, leave, invite, and backfill flows | `scaffolded` | Route planning exists for selected federation surfaces. Full federation behavior is not implemented. |
 | Server discovery | Well-known, DNS, TLS, and key discovery | `scaffolded` | Policy checks exist for SSRF/TLS constraints. Network discovery is not implemented. |
-| Signing verification | Request and event signatures | `scaffolded` | Placeholder signing/hash behavior exists in places. Must be replaced with Matrix canonical JSON and Ed25519 verification. |
+| Signing verification | Request and event signatures | `partial` | Federation requests now verify canonical JSON Ed25519 signatures, and JSON PDUs verify Matrix event signatures against known remote key material with CI-covered event-ID API linkage. Needs Matrix key discovery, TLS-bound origin validation, room-version-specific verification, and persisted federation key rotation. |
 | Federation queues | Outbound federation and retry/backoff | `not-started` | Runtime worker and persistence model are not implemented. |
 
 ## Server administration and operations

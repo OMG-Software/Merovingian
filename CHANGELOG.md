@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.1.33
+
+- Fixed runtime state-event materialization so Matrix state events are detected
+  by the presence of `state_key`, including the valid empty-string state key.
+
+## 0.1.32
+
+- Moved dependency reviews into `docs/dependencies/` and added reviews for
+  LibSodium, OpenSSL, SQLite, yyjson, and Catch2 alongside PostgreSQL libpq.
+- Added release-readiness checks for the dependency-review documentation set.
+
+## 0.1.31
+
+- Routed Linux, sanitizer, coverage, static-analysis, CodeQL, and FreeBSD CI
+  builds through reusable local build wrappers.
+- Added a FreeBSD build wrapper and Ubuntu/Debian WSL setup script that installs
+  the native dependencies plus a current Meson/Ninja virtualenv.
+
+## 0.1.30
+
+- Fixed federation inbound-request compilation under CI warning-as-error builds
+  by naming the intentionally unused request-signing key ID parameter,
+  constructing owned signing-key IDs, and including the event-ID API.
+
+## 0.1.29
+
+- Confirmed OpenSSL as the TLS provider behind Merovingian's project-owned TLS
+  boundary and kept the pinned WrapDB fallback for bootstrap builds.
+- Clarified that GnuTLS is not the active replacement path while WrapDB lacks a
+  standard `gnutls` package for this project to consume.
+
+## 0.1.28
+
+- Added a pinned OpenSSL WrapDB fallback so TLS builds no longer require a
+  system OpenSSL package when Meson fallback downloads are enabled.
+- Documented the GnuTLS tradeoff: it can be considered as a TLS provider, but
+  there is no standard WrapDB `gnutls` package to consume directly.
+
+## 0.1.27
+
+- Wired runtime-created room events through persisted server signing keys, Matrix
+  content/reference hashes, Ed25519 signatures, and reference-hash event IDs.
+- Persisted local event DAG rows for previous events, auth events, and event
+  signatures during runtime event writes, with SQLite/PostgreSQL hydration.
+- Replaced federation request-signature scaffolding with canonical JSON
+  Ed25519 verification and added JSON PDU event-signature verification for
+  known remote signing keys.
+
 ## 0.1.26
 
 - Replaced event ID scaffolding with Matrix reference-hash event IDs for modern

@@ -15,4 +15,5 @@ database_lib = static_library(
   database_sources,
   include_directories: inc,
   dependencies: [libpq_dep, sqlite_dep],
+  link_with: [canonicaljson_lib],
 )

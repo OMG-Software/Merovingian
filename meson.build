@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.1.26',
+  version: '0.1.33',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -16,7 +16,7 @@ project(
 cpp = meson.get_compiler('cpp')
 thread_dep = dependency('threads')
 libsodium_dep = dependency('libsodium')
-openssl_dep = dependency('openssl', include_type: 'system')
+openssl_dep = dependency('openssl', include_type: 'system', fallback: ['openssl', 'openssl_dep'])
 libpq_dep = dependency('libpq', include_type: 'system')
 sqlite_dep = dependency('sqlite3')
 yyjson_dep = dependency(

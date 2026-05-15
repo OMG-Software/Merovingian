@@ -6,7 +6,7 @@ set -eu
 builddir=build
 cc=${CC:-clang}
 cxx=${CXX:-clang++}
-pkg_config=${PKG_CONFIG:-pkg-config}
+pkg_config=${PKG_CONFIG:-}
 wrap_mode=default
 build_tests=true
 build_fuzz=false
@@ -14,9 +14,6 @@ run_tests=1
 setup_only=0
 compile_only=0
 dry_run=0
-buildtype=
-sanitize=
-coverage=false
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
 repo_root=$(CDPATH= cd "$script_dir/.." && pwd -P)
@@ -25,17 +22,14 @@ cd "$repo_root"
 usage() {
     cat <<'EOF'
 Usage:
-  sh scripts/build-linux.sh [options]
+  sh scripts/build-bsd.sh [options]
 
 Options:
   --builddir <path>   Meson build directory. Default: build.
   --cc <command>      C compiler command. Default: clang or $CC.
   --cxx <command>     C++ compiler command. Default: clang++ or $CXX.
-  --pkg-config <cmd>  pkg-config-compatible command. Default: pkg-config.
+  --pkg-config <cmd>  pkg-config-compatible command. Default: pkgconf, then pkg-config.
   --wrap-mode <mode>  Meson wrap mode. Default: default.
-  --buildtype <type>  Meson buildtype, for example debug.
-  --sanitize <list>   Meson b_sanitize value, for example address,undefined.
-  --coverage          Enable Meson coverage instrumentation.
   --build-fuzz        Enable fuzz harness targets.
   --no-tests          Build without running tests.
   --setup-only        Configure/reconfigure Meson and stop.
@@ -44,9 +38,8 @@ Options:
   --help              Show this help text.
 
 Examples:
-  sh scripts/build-linux.sh
-  sh scripts/build-linux.sh --builddir build-asan --buildtype debug --sanitize address,undefined
-  sh scripts/build-linux.sh --builddir build-coverage --coverage
+  sh scripts/build-bsd.sh
+  sh scripts/build-bsd.sh --builddir build-freebsd --compile-only
 EOF
 }
 
@@ -80,6 +73,18 @@ run() {
     if [ "$dry_run" -eq 0 ]; then
         "$@"
     fi
+}
+
+select_pkg_config() {
+    if [ -n "$pkg_config" ]; then
+        printf '%s\n' "$pkg_config"
+        return
+    fi
+    if command -v pkgconf >/dev/null 2>&1; then
+        printf '%s\n' pkgconf
+        return
+    fi
+    printf '%s\n' pkg-config
 }
 
 check_command() {
@@ -123,19 +128,6 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -gt 0 ] || fail "--wrap-mode requires a value"
             wrap_mode=$1
             ;;
-        --buildtype)
-            shift
-            [ "$#" -gt 0 ] || fail "--buildtype requires a value"
-            buildtype=$1
-            ;;
-        --sanitize)
-            shift
-            [ "$#" -gt 0 ] || fail "--sanitize requires a value"
-            sanitize=$1
-            ;;
-        --coverage)
-            coverage=true
-            ;;
         --build-fuzz)
             build_fuzz=true
             ;;
@@ -164,6 +156,8 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
+pkg_config=$(select_pkg_config)
+
 check_command "$cc"
 check_command "$cxx"
 check_command meson
@@ -175,16 +169,13 @@ check_pkg_config_module libpq
 check_pkg_config_module sqlite3
 
 meson_options="-Dbuild_tests=$build_tests -Dbuild_fuzz=$build_fuzz --wrap-mode=$wrap_mode"
-[ -z "$buildtype" ] || meson_options="$meson_options --buildtype=$buildtype"
-[ -z "$sanitize" ] || meson_options="$meson_options -Db_sanitize=$sanitize"
-[ "$coverage" = false ] || meson_options="$meson_options -Db_coverage=true"
 
 if [ -f "$builddir/build.ninja" ]; then
     # shellcheck disable=SC2086
-    run env CC="$cc" CXX="$cxx" meson setup "$builddir" --reconfigure $meson_options
+    run env CC="$cc" CXX="$cxx" PKG_CONFIG="$pkg_config" meson setup "$builddir" --reconfigure $meson_options
 else
     # shellcheck disable=SC2086
-    run env CC="$cc" CXX="$cxx" meson setup "$builddir" $meson_options
+    run env CC="$cc" CXX="$cxx" PKG_CONFIG="$pkg_config" meson setup "$builddir" $meson_options
 fi
 
 if [ "$setup_only" -eq 1 ]; then

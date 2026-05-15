@@ -300,6 +300,11 @@ namespace
                              store.access_tokens.push_back({column_text(row, 0), column_text(row, 1),
                                                             column_text(row, 2), text_is_true(column_text(row, 3))});
                          }) &&
+               load_rows(connection, "SELECT key_id, public_key, valid_until_ts FROM server_signing_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.server_signing_keys.push_back(
+                                 {column_text(row, 0), column_text(row, 1), parse_u64(column_text(row, 2))});
+                         }) &&
                load_rows(connection, "SELECT room_id, creator_user_id FROM rooms",
                          [&store](sqlite3_stmt& row) {
                              store.rooms.push_back({column_text(row, 0), column_text(row, 1)});
@@ -311,6 +316,19 @@ namespace
                load_rows(connection, "SELECT event_id, room_id, sender_user_id, json FROM events",
                          [&store](sqlite3_stmt& row) {
                              store.events.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                         }) &&
+               load_rows(connection, "SELECT event_id, prev_event_id FROM event_edges",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_edges.push_back({column_text(row, 0), column_text(row, 1)});
+                         }) &&
+               load_rows(connection, "SELECT event_id, auth_event_id FROM event_auth",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_auth.push_back({column_text(row, 0), column_text(row, 1)});
+                         }) &&
+               load_rows(connection, "SELECT event_id, server_name, key_id, signature FROM event_signatures",
+                         [&store](sqlite3_stmt& row) {
+                             store.event_signatures.push_back(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
                          }) &&
                load_rows(connection, "SELECT room_id, event_type, state_key, event_id FROM current_state",
