@@ -2,11 +2,13 @@
 
 #include "merovingian/homeserver/client_server.hpp"
 
+#include "local_services.hpp"
 #include "merovingian/auth/key_api.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/http/request.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -108,6 +110,29 @@ namespace
         std::string display_name{};
     };
 
+    struct MatrixSafetyReportBody final
+    {
+        std::string reason{};
+        std::int32_t score{0};
+    };
+
+    struct MatrixAdminReviewBody final
+    {
+        std::string reason{"manual_review"};
+    };
+
+    struct ReportPathParts final
+    {
+        std::string room_id{};
+        std::string event_id{};
+    };
+
+    struct AdminReviewPathParts final
+    {
+        trust_safety::ReviewTarget target{trust_safety::ReviewTarget::media};
+        std::string target_id{};
+    };
+
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
     {
@@ -130,6 +155,17 @@ namespace
             return nullptr;
         }
         return std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<std::int64_t>(&value->storage());
     }
 
     [[nodiscard]] auto ascii_equal_case_insensitive(std::string_view left, std::string_view right) noexcept -> bool
@@ -311,6 +347,47 @@ namespace
         return MatrixDeviceUpdateBody{*display_name};
     }
 
+    [[nodiscard]] auto parse_safety_report_body(std::string_view body) -> std::optional<MatrixSafetyReportBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* reason = string_member(*object, "reason");
+        auto const* score = integer_member(*object, "score");
+        if (reason == nullptr)
+        {
+            return std::nullopt;
+        }
+        if (score != nullptr && (*score < static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min()) ||
+                                 *score > static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max())))
+        {
+            return std::nullopt;
+        }
+        auto const bounded_score = score == nullptr ? 0 : static_cast<std::int32_t>(*score);
+        return MatrixSafetyReportBody{*reason, bounded_score};
+    }
+
+    [[nodiscard]] auto parse_admin_review_body(std::string_view body) -> std::optional<MatrixAdminReviewBody>
+    {
+        if (body.empty())
+        {
+            return MatrixAdminReviewBody{};
+        }
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* reason = string_member(*object, "reason");
+        if (reason == nullptr || reason->empty())
+        {
+            return MatrixAdminReviewBody{};
+        }
+        return MatrixAdminReviewBody{*reason};
+    }
+
     [[nodiscard]] auto json_value(std::string_view body, std::string_view key) -> std::string
     {
         auto const start = body.find(key);
@@ -352,6 +429,10 @@ namespace
         if (starts_with(target, device_prefix))
         {
             return req.method + " /_matrix/client/v3/devices/{deviceId}";
+        }
+        if (trust_safety::match_reporting_api_route(req.method, target).matched)
+        {
+            return req.method + " /_matrix/client/v3/trust-safety/{route}";
         }
         return req.method + ' ' + req.target;
     }
@@ -508,9 +589,8 @@ namespace
         rt.key_api_records.push_back({std::string{user}, std::string{device_id},
                                       auth::key_api_endpoint_name(route.endpoint),
                                       auth::redacted_key_payload_summary(payload), plan.database_statements.size()});
-        rt.homeserver.database.audit_events.push_back(
-            observability::make_audit_event(observability::AuditCategory::auth, plan.audit_event_type, user, device_id,
-                                            auth::redacted_key_payload_summary(payload), "client-server"));
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, plan.audit_event_type, user,
+                           device_id, auth::redacted_key_payload_summary(payload));
     }
 
     [[nodiscard]] auto one_time_key_count(ClientServerRuntime const& rt, std::string_view user,
@@ -615,6 +695,61 @@ namespace
         return starts_with(target, prefix) ? target.substr(prefix.size()) : std::string_view{};
     }
 
+    [[nodiscard]] auto report_path_parts(std::string_view target) -> std::optional<ReportPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr separator_text = std::string_view{"/report/"};
+        auto const suffix = route_suffix(target, prefix);
+        auto const separator = suffix.find(separator_text);
+        if (suffix.empty() || separator == std::string_view::npos || separator == 0U ||
+            separator + separator_text.size() >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        return ReportPathParts{std::string{suffix.substr(0U, separator)},
+                               std::string{suffix.substr(separator + separator_text.size())}};
+    }
+
+    [[nodiscard]] auto review_target_from_path(std::string_view target) -> std::optional<trust_safety::ReviewTarget>
+    {
+        if (target == "federation" || target == "federation_server")
+        {
+            return trust_safety::ReviewTarget::federation_server;
+        }
+        if (target == "media")
+        {
+            return trust_safety::ReviewTarget::media;
+        }
+        if (target == "room")
+        {
+            return trust_safety::ReviewTarget::room;
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] auto admin_review_path_parts(std::string_view target) -> std::optional<AdminReviewPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/admin/safety/review/"};
+        auto const suffix = route_suffix(target, prefix);
+        auto const separator = suffix.find('/');
+        if (suffix.empty() || separator == std::string_view::npos || separator == 0U || separator + 1U >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        auto const review_target = review_target_from_path(suffix.substr(0U, separator));
+        if (!review_target.has_value())
+        {
+            return std::nullopt;
+        }
+        return AdminReviewPathParts{*review_target, std::string{suffix.substr(separator + 1U)}};
+    }
+
+    auto append_policy_audit(ClientServerRuntime& rt, trust_safety::SafetyAuditEvent const& event) -> void
+    {
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::policy, event.event_type, event.actor,
+                           event.entity, event.reason.code);
+    }
+
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
                                              std::string_view user, std::string_view device_id,
                                              LocalHttpRequest const& req) -> bool
@@ -692,6 +827,77 @@ namespace
             return err(404U, "M_UNRECOGNIZED", "route not found");
         }
         return err(404U, "M_UNRECOGNIZED", "route not found");
+    }
+
+    [[nodiscard]] auto safety_reports_json(ClientServerRuntime const& rt) -> std::string
+    {
+        auto out = std::string{"{\"reports\":["};
+        auto first = true;
+        for (auto const& event : rt.homeserver.database.persistent_store.audit_log)
+        {
+            if (!starts_with(event.event_type, "trust_safety."))
+            {
+                continue;
+            }
+            out += first ? "" : ",";
+            first = false;
+            out += "{\"event_type\":\"" + json_escape(event.event_type) + "\",\"actor\":\"" + json_escape(event.actor) +
+                   "\",\"target\":\"" + json_escape(event.target) + "\",\"reason\":\"" + json_escape(event.reason) +
+                   "\"}";
+        }
+        return out + "]}";
+    }
+
+    [[nodiscard]] auto handle_safety_report(ClientServerRuntime& rt, std::string_view user, LocalHttpRequest const& req)
+        -> LocalHttpResponse
+    {
+        auto const path = report_path_parts(req.target);
+        auto const body = parse_safety_report_body(req.body);
+        if (!path.has_value() || !body.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "report body must include reason and optional score");
+        }
+        auto const decision = trust_safety::validate_safety_report(
+            {std::string{user}, path->room_id, path->event_id, body->reason, body->score});
+        auto const audit = trust_safety::make_safety_audit_event(user, path->event_id, decision);
+        append_policy_audit(rt, audit);
+        if (!decision.allowed)
+        {
+            return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
+        }
+        return resp(200U, "{}");
+    }
+
+    [[nodiscard]] auto handle_admin_safety_route(ClientServerRuntime& rt, std::string_view admin_user,
+                                                 LocalHttpRequest const& req) -> LocalHttpResponse
+    {
+        if (req.method == "GET" && req.target == "/_matrix/client/v3/admin/safety/reports")
+        {
+            return resp(200U, safety_reports_json(rt));
+        }
+
+        auto const path = admin_review_path_parts(req.target);
+        auto const body = parse_admin_review_body(req.body);
+        if (!path.has_value() || !body.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "admin review body must be Matrix JSON");
+        }
+        auto const reason =
+            trust_safety::enforcement_reason(body->reason, "target held for review", "admin marked target for review");
+        auto const record = trust_safety::ReviewRecord{path->target, path->target_id, true, reason};
+        auto const decision = trust_safety::review_policy(record);
+        auto const audit = trust_safety::make_safety_audit_event(admin_user, path->target_id, decision);
+        append_policy_audit(rt, audit);
+        if (!database::append_admin_action(rt.homeserver.database.persistent_store,
+                                           {std::string{admin_user}, audit.event_type, path->target_id}))
+        {
+            return err(500U, "M_UNKNOWN", "admin action persistence failed");
+        }
+        if (decision.action == trust_safety::PolicyAction::quarantine || decision.allowed)
+        {
+            return resp(200U, "{}");
+        }
+        return err(400U, "M_BAD_REQUEST", decision.reason.public_summary);
     }
 
 } // namespace
@@ -854,10 +1060,19 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
         }
         device->display_name = body->display_name;
-        rt.homeserver.database.audit_events.push_back(
-            observability::make_audit_event(observability::AuditCategory::auth, "device.updated", *user,
-                                            device->device_id, "display_name_updated", "client-server"));
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", *user,
+                           device->device_id, "display_name_updated");
         return resp(200U, "{}");
+    }
+    auto const safety_route = trust_safety::match_reporting_api_route(req.method, req.target);
+    if (safety_route.matched)
+    {
+        if (safety_route.route.requires_admin && !authenticated_admin_user(rt.homeserver, req.access_token).has_value())
+        {
+            return err(403U, "M_FORBIDDEN", "admin authentication required");
+        }
+        return safety_route.route.requires_admin ? handle_admin_safety_route(rt, *user, req)
+                                                 : handle_safety_report(rt, *user, req);
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/createRoom")
     {

@@ -48,6 +48,7 @@ struct PersistentAccessToken final
 
 struct PersistentServerSigningKey final
 {
+    std::string server_name{};
     std::string key_id{};
     std::string public_key{};
     std::uint64_t valid_until_ts{0U};
@@ -247,8 +248,8 @@ struct PersistentStoreOpenResult final
                                                  PersistentAccessToken token) -> bool;
 [[nodiscard]] auto revoke_access_token(PersistentStore& store, std::string_view token_hash) -> std::size_t;
 [[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool;
-[[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view key_id)
-    -> std::optional<PersistentServerSigningKey>;
+[[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
+                                           std::string_view key_id) -> std::optional<PersistentServerSigningKey>;
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,

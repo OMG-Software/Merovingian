@@ -25,6 +25,12 @@ production-gated.
 - `/keys/query` returns persisted device keys, and `/keys/claim` consumes
   one-time keys before reusing fallback keys.
 - Redacted key payload summaries in runtime records and audit events.
+- Client-server registration, password login, logout, whoami, device listing,
+  and device update routes use runtime token validation.
+- Access-token hashes are durable and hydrate back into runtime sessions after
+  restart.
+- Client-server auth/device/key actions append durable audit rows without
+  logging plaintext credentials, bearer tokens, or key payloads.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.
 
 ## Security posture
@@ -54,11 +60,9 @@ These remain deferred:
 - Full Matrix `/login`, `/logout`, `/register`, or device-management endpoint
   conformance.
 - Refresh-token rotation.
-- Access-token database persistence.
 - Admin bootstrap flow.
 - Registration token storage.
 - Rate-limit integration.
-- Audit-log persistence.
 - Session invalidation.
 - Device-list stream tokens and cross-device key update semantics.
 - Complete backup retrieval/deletion semantics.

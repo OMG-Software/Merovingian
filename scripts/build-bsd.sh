@@ -8,12 +8,17 @@ cc=${CC:-clang}
 cxx=${CXX:-clang++}
 pkg_config=${PKG_CONFIG:-}
 wrap_mode=default
+profile=
 build_tests=true
 build_fuzz=false
 run_tests=1
 setup_only=0
 compile_only=0
 dry_run=0
+buildtype=
+sanitize=
+coverage=false
+hardening=
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
 repo_root=$(CDPATH= cd "$script_dir/.." && pwd -P)
@@ -30,6 +35,10 @@ Options:
   --cxx <command>     C++ compiler command. Default: clang++ or $CXX.
   --pkg-config <cmd>  pkg-config-compatible command. Default: pkgconf, then pkg-config.
   --wrap-mode <mode>  Meson wrap mode. Default: default.
+  --profile <name>    Named profile: debug, release, sanitizer, coverage, fuzz, hardened.
+  --buildtype <type>  Meson buildtype, for example debug.
+  --sanitize <list>   Meson b_sanitize value, for example address,undefined.
+  --coverage          Enable Meson coverage instrumentation.
   --build-fuzz        Enable fuzz harness targets.
   --no-tests          Build without running tests.
   --setup-only        Configure/reconfigure Meson and stop.
@@ -39,6 +48,7 @@ Options:
 
 Examples:
   sh scripts/build-bsd.sh
+  sh scripts/build-bsd.sh --profile hardened --builddir build-hardened
   sh scripts/build-bsd.sh --builddir build-freebsd --compile-only
 EOF
 }
@@ -128,6 +138,24 @@ while [ "$#" -gt 0 ]; do
             [ "$#" -gt 0 ] || fail "--wrap-mode requires a value"
             wrap_mode=$1
             ;;
+        --profile)
+            shift
+            [ "$#" -gt 0 ] || fail "--profile requires a value"
+            profile=$1
+            ;;
+        --buildtype)
+            shift
+            [ "$#" -gt 0 ] || fail "--buildtype requires a value"
+            buildtype=$1
+            ;;
+        --sanitize)
+            shift
+            [ "$#" -gt 0 ] || fail "--sanitize requires a value"
+            sanitize=$1
+            ;;
+        --coverage)
+            coverage=true
+            ;;
         --build-fuzz)
             build_fuzz=true
             ;;
@@ -156,6 +184,36 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 
+case "$profile" in
+    "")
+        ;;
+    debug)
+        [ -n "$buildtype" ] || buildtype=debug
+        ;;
+    release)
+        [ -n "$buildtype" ] || buildtype=release
+        ;;
+    sanitizer)
+        [ -n "$buildtype" ] || buildtype=debug
+        [ -n "$sanitize" ] || sanitize=address,undefined
+        ;;
+    coverage)
+        [ -n "$buildtype" ] || buildtype=debugoptimized
+        coverage=true
+        ;;
+    fuzz)
+        [ -n "$buildtype" ] || buildtype=debugoptimized
+        build_fuzz=true
+        ;;
+    hardened)
+        [ -n "$buildtype" ] || buildtype=release
+        hardening=true
+        ;;
+    *)
+        fail "unknown profile: $profile"
+        ;;
+esac
+
 pkg_config=$(select_pkg_config)
 
 check_command "$cc"
@@ -169,6 +227,10 @@ check_pkg_config_module libpq
 check_pkg_config_module sqlite3
 
 meson_options="-Dbuild_tests=$build_tests -Dbuild_fuzz=$build_fuzz --wrap-mode=$wrap_mode"
+[ -z "$buildtype" ] || meson_options="$meson_options --buildtype=$buildtype"
+[ -z "$sanitize" ] || meson_options="$meson_options -Db_sanitize=$sanitize"
+[ "$coverage" = false ] || meson_options="$meson_options -Db_coverage=true"
+[ -z "$hardening" ] || meson_options="$meson_options -Dhardening=$hardening"
 
 if [ -f "$builddir/build.ninja" ]; then
     # shellcheck disable=SC2086

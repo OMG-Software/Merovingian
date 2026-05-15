@@ -56,6 +56,7 @@ struct LocalDatabase final
     std::vector<LocalRoom> rooms{};
     std::vector<observability::AuditLogEvent> audit_events{};
     database::PersistentStore persistent_store{};
+    std::vector<unsigned char> signing_secret_key{};
 };
 
 struct HomeserverRuntime final
@@ -107,6 +108,8 @@ struct LocalHttpResponse final
     -> RuntimeStartResult;
 [[nodiscard]] auto admin_health(HomeserverRuntime const& runtime) -> observability::HealthCheckSnapshot;
 [[nodiscard]] auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string;
+[[nodiscard]] auto admin_metrics_summary(HomeserverRuntime const& runtime) -> std::string;
+[[nodiscard]] auto admin_audit_summary(HomeserverRuntime const& runtime) -> std::string;
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse;
 [[nodiscard]] auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,

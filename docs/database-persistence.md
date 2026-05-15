@@ -18,12 +18,13 @@ remaining work before PostgreSQL-backed production operation.
 - Initial schema table inventory covering the Matrix storage areas from the project plan.
 - Media metadata schema migration from version `1` to version `2`.
 - E2EE key storage schema migration from version `2` to version `3`.
+- Signing key and event depth schema migration from version `3` to version `4`.
 - SQLite RAII wrappers around database connections and prepared statements.
 - SQLite current-schema bootstrap for new database files.
 - SQLite row hydration for users, devices, access tokens, rooms, memberships,
-  events, current state, server signing keys, event DAG rows, event signatures,
-  E2EE key state, media metadata, remote media metadata, audit events, and admin
-  actions.
+  events (with depth), current state, server signing keys (with server_name),
+  event DAG rows, event signatures, E2EE key state, media metadata, remote
+  media metadata, audit events, and admin actions.
 - Write-through SQLite persistence behind the existing store mutation helpers.
 - Transaction-aware persistent-store commits with SQLite rollback support.
 - Atomic helpers for multi-row login, room creation, and state-event writes.
@@ -35,8 +36,8 @@ remaining work before PostgreSQL-backed production operation.
 - PostgreSQL current-schema bootstrap, row hydration, and write-through
   transaction execution when a URI file is explicitly configured.
 - Durable persistent-store helpers for device keys, one-time keys, fallback
-  keys, cross-signing keys, key signatures, key backup versions, and key backup
-  sessions.
+  keys, cross-signing keys, key signatures, key backup versions, and key
+  backup sessions.
 - Physical migration-file loading for SQL files with explicit metadata and
   statement names.
 - Offline `merovingian-db-migrate` planning scaffold.
@@ -45,6 +46,10 @@ remaining work before PostgreSQL-backed production operation.
   device listings.
 - Runtime event writes persist previous-event edges, auth-event edges, and
   Matrix event signatures in the same transaction as the event row.
+- Event depth column persisted alongside events so depth survives restarts.
+- Server signing keys scoped by server_name with composite primary key.
+- Runtime trust-and-safety report/review paths append durable policy audit rows
+  and admin action rows.
 - Unit coverage for statement validation, executor gating, redaction, migration
   planning, and schema inventory.
 - Migration-plan validation coverage uses explicit hand-built plans, while
@@ -89,9 +94,9 @@ These remain deferred:
 
 - Full PostgreSQL integration tests against a running temporary server.
 - Runtime/migration role grants enforced by actual database users.
-- PostgreSQL-backed federation queues, policy, account data, push rules, and
+- PostgreSQL-backed federation queues, policy rules, account data, push rules, and
   full media repository blob metadata hydration.
-- SQLite-backed federation queues, policy rules, account data, push rules, and
+- SQLite-backed federation queues, policy-rule management, account data, push rules, and
   full media repository blob metadata hydration.
 
 ## Next starting points

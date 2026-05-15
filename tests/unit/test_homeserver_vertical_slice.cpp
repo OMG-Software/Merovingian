@@ -158,6 +158,44 @@ SCENARIO("Homeserver local auth route creates unique sessions and revokes tokens
     }
 }
 
+SCENARIO("Homeserver admin observability endpoints expose runtime metrics and durable audit",
+         "[homeserver][vertical][observability]")
+{
+    GIVEN("a started runtime with an admin session")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+        REQUIRE(login.status == 200U);
+
+        WHEN("admin metrics and audit are requested")
+        {
+            auto const metrics = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/metrics", login.body, {}});
+            auto const audit = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/audit", login.body, {}});
+            auto const unauthenticated = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/audit", "not-a-token", {}});
+
+            THEN("only the admin session can read safe operational summaries")
+            {
+                REQUIRE(metrics.status == 200U);
+                REQUIRE(audit.status == 200U);
+                REQUIRE(unauthenticated.status == 401U);
+                REQUIRE(metrics.body.find("audit_events_appended_total") != std::string::npos);
+                REQUIRE(metrics.body.find("access_token") == std::string::npos);
+                REQUIRE(audit.body.find("runtime.started") != std::string::npos);
+                REQUIRE(audit.body.find("CorrectHorse7") == std::string::npos);
+                REQUIRE(runtime.database.persistent_store.audit_log.size() >= 3U);
+            }
+        }
+    }
+}
+
 SCENARIO("Homeserver local auth stores hardened password and token hashes", "[homeserver][vertical][auth][security]")
 {
     GIVEN("a started runtime with local registration enabled")
@@ -320,6 +358,43 @@ SCENARIO("Homeserver local route dispatcher rejects unknown routes", "[homeserve
             {
                 REQUIRE(route.status == 404U);
                 REQUIRE(route.body == "route not found");
+            }
+        }
+    }
+}
+
+SCENARIO("Homeserver event send uses wall-clock origin_server_ts", "[homeserver][vertical][events]")
+{
+    GIVEN("a logged-in user with a room")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+        REQUIRE(user.status == 200U);
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+        REQUIRE(login.status == 200U);
+        auto const room = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", login.body, {}});
+        REQUIRE(room.status == 200U);
+
+        WHEN("an event is sent and the stored JSON is inspected")
+        {
+            auto const event = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room.body + "/send", login.body,
+                          R"({"type":"m.room.message"})"});
+            REQUIRE(event.status == 200U);
+            auto const& stored = runtime.database.persistent_store.events;
+
+            THEN("origin_server_ts is a Unix-epoch millisecond timestamp not a depth counter")
+            {
+                REQUIRE_FALSE(stored.empty());
+                auto const& event_json = stored.back().json;
+                REQUIRE(event_json.find("\"origin_server_ts\"") != std::string::npos);
+                auto const depth = stored.back().depth;
+                REQUIRE(depth >= 1U);
             }
         }
     }

@@ -262,17 +262,17 @@ SCENARIO("Database migration runner applies versioned upgrade and downgrade path
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 3U);
+                REQUIRE(upgrade_plan.steps.size() == 4U);
                 REQUIRE(upgrade_plan.steps.front().version == 1U);
-                REQUIRE(upgrade_plan.steps.back().version == 3U);
+                REQUIRE(upgrade_plan.steps.back().version == 4U);
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 3U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 4U);
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 3U);
+                REQUIRE(downgrade_plan.steps.size() == 4U);
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -302,13 +302,13 @@ SCENARIO("Database migration runner upgrades existing media schemas with metadat
             {
                 REQUIRE(media_plan.current_version == 1U);
                 REQUIRE(media_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(media_plan.steps.size() == 2U);
+                REQUIRE(media_plan.steps.size() == 3U);
                 REQUIRE(media_plan.steps.front().name == "media_metadata_columns");
                 REQUIRE(media_plan.steps.front().statements.size() == 3U);
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 3U);
+                REQUIRE(upgraded.state.version == 4U);
                 REQUIRE(upgraded.state.applied_migrations[1U].name == "media_metadata_columns");
-                REQUIRE(upgraded.state.applied_migrations.back().name == "e2ee_key_storage");
+                REQUIRE(upgraded.state.applied_migrations.back().name == "signing_key_and_event_depth");
                 REQUIRE(compatible.valid);
             }
         }
@@ -493,7 +493,7 @@ SCENARIO("Persistent store records server signing keys and event DAG metadata", 
         WHEN("a runtime signing key and a signed state-linked event are stored")
         {
             auto const key_ok = merovingian::database::store_server_signing_key(
-                store, {"ed25519:auto", "public-key-base64", 32503680000000ULL});
+                store, {"example.org", "ed25519:auto", "public-key-base64", 32503680000000ULL});
             auto const state_event_ok = merovingian::database::store_event_with_state(
                 store,
                 {"$state:example.org",
@@ -518,7 +518,7 @@ SCENARIO("Persistent store records server signing keys and event DAG metadata", 
                  {{"example.org", "ed25519:auto",
                    "c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzcw"}}},
                 std::nullopt);
-            auto const found_key = merovingian::database::find_server_signing_key(store, "ed25519:auto");
+            auto const found_key = merovingian::database::find_server_signing_key(store, "example.org", "ed25519:auto");
 
             THEN("the signing key edge auth and signature rows are durable")
             {
@@ -526,6 +526,7 @@ SCENARIO("Persistent store records server signing keys and event DAG metadata", 
                 REQUIRE(state_event_ok);
                 REQUIRE(message_event_ok);
                 REQUIRE(found_key.has_value());
+                REQUIRE(found_key->server_name == "example.org");
                 REQUIRE(found_key->public_key == "public-key-base64");
                 REQUIRE(store.events.size() == 2U);
                 REQUIRE(store.events.back().depth == 2U);
@@ -739,13 +740,90 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             THEN("required Matrix storage areas have table-specific definitions")
             {
                 REQUIRE(tables.size() == 37U);
-                REQUIRE(merovingian::database::current_schema_version() == 3U);
+                REQUIRE(merovingian::database::current_schema_version() == 4U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);
                 REQUIRE(current_state_columns.find("PRIMARY KEY (room_id, event_type, state_key)") !=
                         std::string_view::npos);
                 REQUIRE_FALSE(unknown_is_core);
+            }
+        }
+    }
+}
+
+SCENARIO("Persistent store includes event depth in event statements", "[database][persistence][events]")
+{
+    GIVEN("an opened persistent store with a room")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        REQUIRE(merovingian::database::store_room(store, {"!room-depth:example.org", "@alice:example.org"}));
+
+        WHEN("events with explicit depth are stored")
+        {
+            auto const event_ok = merovingian::database::store_event(store, {"$depth1:example.org",
+                                                                             "!room-depth:example.org",
+                                                                             "@alice:example.org",
+                                                                             R"({"type":"m.room.message"})",
+                                                                             1U,
+                                                                             {},
+                                                                             {},
+                                                                             {}});
+            auto const event_ok2 = merovingian::database::store_event(store, {"$depth2:example.org",
+                                                                              "!room-depth:example.org",
+                                                                              "@alice:example.org",
+                                                                              R"({"type":"m.room.message"})",
+                                                                              5U,
+                                                                              {},
+                                                                              {},
+                                                                              {}});
+
+            THEN("depth is persisted in the event row and recoverable after storage")
+            {
+                REQUIRE(event_ok);
+                REQUIRE(event_ok2);
+                REQUIRE(store.events.size() == 2U);
+                REQUIRE(store.events.front().depth == 1U);
+                REQUIRE(store.events.back().depth == 5U);
+                REQUIRE(store.prepared_statements.back().sql.find("$5") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Server signing keys are looked up by server identity and key ID", "[database][persistence][signing-key]")
+{
+    GIVEN("an opened persistent store with signing keys for different servers")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        auto const key_a_ok = merovingian::database::store_server_signing_key(
+            store, {"server-a.org", "ed25519:auto", "public-key-a", 32503680000000ULL});
+        auto const key_b_ok = merovingian::database::store_server_signing_key(
+            store, {"server-b.org", "ed25519:auto", "public-key-b", 32503680000000ULL});
+
+        WHEN("keys are looked up by server name and key ID")
+        {
+            auto const found_a = merovingian::database::find_server_signing_key(store, "server-a.org", "ed25519:auto");
+            auto const found_b = merovingian::database::find_server_signing_key(store, "server-b.org", "ed25519:auto");
+            auto const not_found =
+                merovingian::database::find_server_signing_key(store, "server-c.org", "ed25519:auto");
+
+            THEN("each server has its own key and unrelated lookups return nothing")
+            {
+                REQUIRE(key_a_ok);
+                REQUIRE(key_b_ok);
+                REQUIRE(found_a.has_value());
+                REQUIRE(found_a->server_name == "server-a.org");
+                REQUIRE(found_a->public_key == "public-key-a");
+                REQUIRE(found_b.has_value());
+                REQUIRE(found_b->server_name == "server-b.org");
+                REQUIRE(found_b->public_key == "public-key-b");
+                REQUIRE_FALSE(not_found.has_value());
             }
         }
     }

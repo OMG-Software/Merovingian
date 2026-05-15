@@ -1,12 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <array>
 #include <string>
+
+#include <sodium.h>
 
 namespace
 {
@@ -41,12 +49,6 @@ namespace
     return remote;
 }
 
-[[nodiscard]] auto pdu_for(std::string const& origin) -> std::string
-{
-    return "$event1:example.org,!room1:example.org,m.room.message,@alice:" + origin + ',' + origin +
-           ",ed25519:auto,signature";
-}
-
 [[nodiscard]] auto federation_authorization_with_clock(std::string const& origin, std::string const& key_id,
                                                        std::string const& verify_token, std::string const& method,
                                                        std::string const& target, std::string const& body,
@@ -66,6 +68,116 @@ namespace
     return federation_authorization_with_clock(origin, key_id, verify_token, method, target, body, 1000U, 1000U);
 }
 
+[[nodiscard]] auto sodium_is_ready() noexcept -> bool
+{
+    static auto const ready = sodium_init() >= 0;
+    return ready;
+}
+
+auto derive_test_keypair(std::string_view key_material,
+                         std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
+                         std::array<unsigned char, crypto_sign_SECRETKEYBYTES>& secret_key) noexcept -> bool
+{
+    if (!sodium_is_ready())
+    {
+        return false;
+    }
+    auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
+    if (crypto_generichash(seed.data(), seed.size(), reinterpret_cast<unsigned char const*>(key_material.data()),
+                           key_material.size(), nullptr, 0U) != 0)
+    {
+        return false;
+    }
+    return crypto_sign_seed_keypair(public_key.data(), secret_key.data(), seed.data()) == 0;
+}
+
+class IntegrationTestSigningStore final : public merovingian::crypto::SigningKeyStore
+{
+public:
+    explicit IntegrationTestSigningStore(merovingian::crypto::SigningKeyRecord key)
+        : key_{std::move(key)}
+    {
+    }
+
+    [[nodiscard]] auto active_key_for_server(std::string_view server_name)
+        -> merovingian::crypto::SigningKeyLookupResult override
+    {
+        if (server_name != key_.server_name)
+        {
+            return {{}, "signing key not found"};
+        }
+        return {key_, {}};
+    }
+
+private:
+    merovingian::crypto::SigningKeyRecord key_{};
+};
+
+class IntegrationTestEd25519Provider final : public merovingian::crypto::Ed25519Provider
+{
+public:
+    explicit IntegrationTestEd25519Provider(std::string key_material)
+        : key_material_{std::move(key_material)}
+    {
+    }
+
+    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const&, std::string_view message)
+        -> merovingian::crypto::SignatureResult override
+    {
+        auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        if (!derive_test_keypair(key_material_, public_key, secret_key))
+        {
+            return {{}, "unable to derive signing key"};
+        }
+        auto signature = std::string(crypto_sign_BYTES, '\0');
+        if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
+                                 reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                                 secret_key.data()) != 0)
+        {
+            return {{}, "signing failed"};
+        }
+        return {merovingian::crypto::Ed25519Signature{std::move(signature)}, {}};
+    }
+
+    [[nodiscard]] auto verify(merovingian::crypto::Ed25519PublicKey const&, std::string_view,
+                              merovingian::crypto::Ed25519Signature const&)
+        -> merovingian::crypto::VerificationResult override
+    {
+        return {false, "test provider does not verify"};
+    }
+
+private:
+    std::string key_material_{};
+};
+
+[[nodiscard]] auto signed_json_pdu(std::string const& origin, std::string const& key_id, std::string const& token)
+    -> std::string
+{
+    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+    REQUIRE(derive_test_keypair(token, public_key, secret_key));
+    auto const event_json =
+        "{\"auth_events\":[],\"content\":{\"body\":\"hi\",\"msgtype\":\"m.text\"},\"depth\":1,\"hashes\":{\"sha256\":"
+        "\"hash\"},\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\",\"sender\":\"@alice:" +
+        origin + "\",\"type\":\"m.room.message\"}";
+    auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    REQUIRE(policy != nullptr);
+    auto store = IntegrationTestSigningStore{
+        merovingian::crypto::SigningKeyRecord{
+                                              origin, key_id,
+                                              merovingian::crypto::Ed25519PublicKey{
+                std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()}},
+                                              true, }
+    };
+    auto provider = IntegrationTestEd25519Provider{token};
+    auto signed_event = merovingian::events::sign_event_for_server(parsed.value, *policy, store, provider, origin);
+    REQUIRE(signed_event.error.empty());
+    return signed_event.event_json;
+}
+
 } // namespace
 
 SCENARIO("Homeserver routes signed inbound federation transactions through runtime policy", "[integration][federation]")
@@ -80,7 +192,7 @@ SCENARIO("Homeserver routes signed inbound federation transactions through runti
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, token));
         auto const target = std::string{"/_matrix/federation/v1/send/txn123"};
-        auto const body = pdu_for(origin);
+        auto const body = signed_json_pdu(origin, key_id, token);
         auto const authorization = federation_authorization(origin, key_id, token, "PUT", target, body);
 
         WHEN("a signed federation request reaches the local router")
@@ -116,7 +228,7 @@ SCENARIO("Homeserver rejects malformed overflow and private-address federation r
         remote.discovery.resolved_addresses = {"127.0.0.1"};
         merovingian::federation::upsert_remote(runtime.federation, remote);
         auto const target = std::string{"/_matrix/federation/v1/send/txn123"};
-        auto const body = pdu_for(origin);
+        auto const body = signed_json_pdu(origin, key_id, token);
         auto const authorization = federation_authorization(origin, key_id, token, "PUT", target, body);
         auto const overflow_authorization =
             origin + "|" + key_id + "|sig:v1:ignored|184467440737095516160|1000|canonical";
@@ -163,7 +275,7 @@ SCENARIO("Homeserver rejects stale federation requests using received server tim
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, token));
         auto const target = std::string{"/_matrix/federation/v1/send/txn123"};
-        auto const body = pdu_for(origin);
+        auto const body = signed_json_pdu(origin, key_id, token);
         auto const stale_authorization =
             federation_authorization_with_clock(origin, key_id, token, "PUT", target, body, 1000U, 1700U);
 

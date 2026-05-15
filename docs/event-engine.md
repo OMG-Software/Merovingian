@@ -21,6 +21,8 @@ Implemented now:
 - room-version policy registry for modern stable room versions
 - room-version policy shape for event format, redaction rules, auth rules, state resolution, and event ID format
 - redaction with room-version-dependent top-level and event-content key retention
+- `origin_server_ts` uses wall-clock Unix-epoch milliseconds per Matrix spec
+- event depth is persisted in the database and survives server restarts
 - unit coverage for content hashes, reference-hash event IDs, event envelope
   parsing, signing payloads, signature attachment/verification, redaction, and
   room-version fixtures
@@ -62,6 +64,12 @@ The event signing payload follows the Matrix event signing pipeline:
 Verification rebuilds the same canonical payload, decodes the Matrix Base64
 signature, and delegates Ed25519 verification to the configured provider.
 
+Runtime signing keys are now generated from system entropy using
+`crypto_sign_keypair` rather than being deterministically derived from public
+server identity values. The secret key is held in process memory only; on
+restart a new keypair is generated and the public key is upserted, effecting
+automatic key rotation.
+
 ## Event IDs
 
 `make_content_hash` calculates the Matrix content hash over the unredacted
@@ -76,6 +84,9 @@ Runtime events store their immediate `prev_events`, current-state-derived
 `auth_events`, and attached server signatures in the persistent store. This is
 the first durable DAG slice; full auth-event selection and state resolution
 remain separate work.
+
+Event depth is persisted alongside the event row so ordering metadata survives
+a server restart.
 
 ## Redaction
 
