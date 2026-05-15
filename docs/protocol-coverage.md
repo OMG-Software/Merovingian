@@ -56,9 +56,9 @@ Matrix v1.18 behavior, durable state where applicable, and conformance evidence.
 | --- | --- | --- | --- |
 | Transactions | `PUT /_matrix/federation/v1/send/{txnId}` | `partial` | Inbound transaction handling is runtime-wired through federation listener local-router dispatch with request policy, duplicate handling, canonical JSON request-signature verification, JSON PDU event-signature verification for known keys, and PDU checks. Needs real key discovery, persistence, joins/backfill, and event ingestion. |
 | Joins/leaves/invites | Federation join, leave, invite, and backfill flows | `scaffolded` | Route planning exists for selected federation surfaces. Full federation behavior is not implemented. |
-| Server discovery | Well-known, DNS, TLS, and key discovery | `scaffolded` | Policy checks exist for SSRF/TLS constraints. Network discovery is not implemented. |
+| Server discovery | Well-known, DNS, TLS, and key discovery | `scaffolded` | Policy checks exist for SSRF/TLS constraints. Server discovery module parses well-known delegation, extracts host/port, rejects private IPs. FederationDestination tracks retry state. Network discovery (DNS SRV, HTTPS fetch, key fetch from `/_matrix/key/v2/server`) is not yet implemented. |
 | Signing verification | Request and event signatures | `partial` | Federation requests now verify canonical JSON Ed25519 signatures, and JSON PDUs verify Matrix event signatures against known remote key material with CI-covered event-ID API linkage. Needs Matrix key discovery, TLS-bound origin validation, room-version-specific verification, and persisted federation key rotation. |
-| Federation queues | Outbound federation and retry/backoff | `not-started` | Runtime worker and persistence model are not implemented. |
+| Federation queues | Outbound federation and retry/backoff | `scaffolded` | Outbound transaction types with exponential backoff and circuit breaker policy are defined. FederationDestination tracks retry state. Durable queue persistence, HTTP client, and actual delivery are not yet implemented. |
 
 ## Server administration and operations
 
