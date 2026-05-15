@@ -29,7 +29,9 @@ Implemented now:
 - dispatch-mode separation so client listeners use the Matrix JSON
   `client_server` adapter while federation/internal compatibility paths can
   keep using the local router
-- OpenSSL-backed TLS server context and connection wrappers
+- OpenSSL-backed TLS server context and connection wrappers, with OpenSSL
+  resolved through a pinned Meson wrap fallback when no system package is
+  available
 - TLS listener accept path with bounded handshake timeout
 - single-mutex serialisation of runtime mutation across acceptors
 
@@ -54,6 +56,13 @@ chain, load the private key, or verify that the private key matches the
 certificate. Handshakes use a bounded timeout aligned with the current
 per-connection read deadline. The server currently enforces TLS 1.2 or newer and
 keeps connection lifetime to a single HTTP request.
+
+OpenSSL is the selected TLS provider for this boundary. The project-owned
+wrapper keeps OpenSSL-specific types out of higher-level transport code, which
+contains provider maintenance without making provider replacement part of the
+current plan. GnuTLS is not the active replacement path while Meson WrapDB
+provides an OpenSSL wrap and does not provide a standard `gnutls` package for
+this project to consume directly.
 
 ## Request limits
 

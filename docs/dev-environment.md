@@ -29,8 +29,12 @@ groups and timeouts. Headers are analyzed transitively through the Meson compile
 database instead of being invoked as standalone clang-tidy inputs.
 The unsafe source gate is a Bash script and must be run with `bash`, matching
 CI, because it relies on strict shell options and portable grep behavior.
-OpenSSL is included as a system dependency in Meson so platform headers are not
-held to Merovingian's project warning-as-error policy.
+OpenSSL is the selected TLS provider and is resolved through Meson as a system
+dependency with a pinned WrapDB fallback. When the host provides OpenSSL, its
+headers remain system includes so Merovingian's warning-as-error policy applies
+to project code rather than third-party headers. When fallback downloads are
+enabled, Meson can build the pinned OpenSSL wrap from
+`subprojects/openssl.wrap`.
 libpq is also included as a system dependency so PostgreSQL platform headers do
 not bypass third-party warning isolation.
 

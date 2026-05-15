@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.29
+
+- Confirmed OpenSSL as the TLS provider behind Merovingian's project-owned TLS
+  boundary and kept the pinned WrapDB fallback for bootstrap builds.
+- Clarified that GnuTLS is not the active replacement path while WrapDB lacks a
+  standard `gnutls` package for this project to consume.
+
+## 0.1.28
+
+- Added a pinned OpenSSL WrapDB fallback so TLS builds no longer require a
+  system OpenSSL package when Meson fallback downloads are enabled.
+- Documented the GnuTLS tradeoff: it can be considered as a TLS provider, but
+  there is no standard WrapDB `gnutls` package to consume directly.
+
 ## 0.1.27
 
 - Wired runtime-created room events through persisted server signing keys, Matrix
