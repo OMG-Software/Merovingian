@@ -45,6 +45,10 @@ deliberately returns event counts and membership summaries rather than plaintext
 event bodies, preserving the server-blind encrypted-room posture while the full
 Matrix sync stream is still unfinished.
 
+State-event materialization follows Matrix semantics: an event is a state event
+when the `state_key` member is present, including when that state key is the
+valid empty string.
+
 ## Signing boundary
 
 The event signing payload follows the Matrix event signing pipeline:

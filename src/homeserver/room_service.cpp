@@ -38,7 +38,7 @@ namespace
         std::vector<std::string> auth_event_ids{};
         std::vector<events::EventSignature> signatures{};
         std::string event_type{};
-        std::string state_key{};
+        std::optional<std::string> state_key{};
     };
 
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
@@ -303,11 +303,11 @@ namespace
         event.push_back(canonicaljson::make_member("prev_events", string_array(prev_events)));
         event.push_back(canonicaljson::make_member("auth_events", string_array(auth_events)));
         event.push_back(canonicaljson::make_member("content", copy_member_or_empty_object(*input, "content")));
-        auto state_key = std::string{};
+        auto state_key = std::optional<std::string>{};
         if (auto const* found_state_key = string_member(*input, "state_key"); found_state_key != nullptr)
         {
             state_key = *found_state_key;
-            event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{state_key}));
+            event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*state_key}));
         }
 
         auto unsigned_event = canonicaljson::Value{event};
@@ -443,9 +443,9 @@ namespace
         return make_operation_result(false, {}, "event signing failed", 500U);
     }
     auto state = std::optional<database::PersistentStateEvent>{};
-    if (!composed->state_key.empty())
+    if (composed->state_key.has_value())
     {
-        state = database::PersistentStateEvent{std::string{room_id}, composed->event_type, composed->state_key,
+        state = database::PersistentStateEvent{std::string{room_id}, composed->event_type, *composed->state_key,
                                                composed->event_id};
     }
     if (!database::store_event_with_state(runtime.database.persistent_store,

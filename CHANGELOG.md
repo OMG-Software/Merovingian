@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.33
+
+- Fixed runtime state-event materialization so Matrix state events are detected
+  by the presence of `state_key`, including the valid empty-string state key.
+
 ## 0.1.32
 
 - Moved dependency reviews into `docs/dependencies/` and added reviews for
