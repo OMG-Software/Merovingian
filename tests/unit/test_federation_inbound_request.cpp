@@ -262,7 +262,8 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
         auto const key_id = std::string{"ed25519:auto"};
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
-        auto const request = signed_request(origin, key_id, token, pdu_for(origin));
+        auto const json_pdu = signed_json_pdu(origin, key_id, token);
+        auto const request = signed_request(origin, key_id, token, json_pdu);
 
         WHEN("the signed transaction is handled twice")
         {
