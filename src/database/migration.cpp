@@ -16,6 +16,7 @@ namespace
     constexpr auto media_metadata_schema_version = std::uint32_t{2U};
     constexpr auto e2ee_key_storage_schema_version = std::uint32_t{3U};
     constexpr auto signing_key_and_event_depth_schema_version = std::uint32_t{4U};
+    constexpr auto stream_ordering_schema_version = std::uint32_t{5U};
 
     [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table) -> PreparedStatement
     {
@@ -251,8 +252,8 @@ auto signing_key_and_event_depth_migration() -> MigrationStep
         "signing_key_and_event_depth",
         {
           {"alter_server_signing_keys_add_server_name",
-              "ALTER TABLE server_signing_keys ADD COLUMN server_name TEXT NOT NULL DEFAULT ''",
-              {}},
+             "ALTER TABLE server_signing_keys ADD COLUMN server_name TEXT NOT NULL DEFAULT ''",
+             {}},
           {"alter_events_add_depth", "ALTER TABLE events ADD COLUMN depth TEXT NOT NULL DEFAULT '0'", {}},
           },
         MigrationDirection::upgrade,
@@ -267,8 +268,48 @@ auto downgrade_signing_key_and_event_depth_migration() -> MigrationStep
         {
           {"downgrade_events_remove_depth", "ALTER TABLE events RENAME TO events", {}},
           {"downgrade_server_signing_keys_remove_server_name",
-              "ALTER TABLE server_signing_keys RENAME TO server_signing_keys",
-              {}},
+             "ALTER TABLE server_signing_keys RENAME TO server_signing_keys",
+             {}},
+          },
+        MigrationDirection::downgrade,
+    };
+}
+
+auto stream_ordering_migration() -> MigrationStep
+{
+    return {
+        stream_ordering_schema_version,
+        "stream_ordering_and_membership_columns",
+        {
+          {"events_add_stream_ordering",
+             "ALTER TABLE events ADD COLUMN stream_ordering TEXT NOT NULL DEFAULT '0'",
+             {}},
+          {"membership_add_membership_column",
+             "ALTER TABLE membership ADD COLUMN membership TEXT NOT NULL DEFAULT 'join'",
+             {}},
+          {"membership_add_stream_ordering",
+             "ALTER TABLE membership ADD COLUMN stream_ordering TEXT NOT NULL DEFAULT '0'",
+             {}},
+          {"invites_add_event_id", "ALTER TABLE invites ADD COLUMN event_id TEXT NOT NULL DEFAULT ''", {}},
+          {"invites_add_stream_ordering",
+             "ALTER TABLE invites ADD COLUMN stream_ordering TEXT NOT NULL DEFAULT '0'",
+             {}},
+          },
+        MigrationDirection::upgrade,
+    };
+}
+
+auto downgrade_stream_ordering_migration() -> MigrationStep
+{
+    return {
+        signing_key_and_event_depth_schema_version,
+        "stream_ordering_and_membership_columns_downgrade",
+        {
+          {"downgrade_invites_remove_stream_ordering", "ALTER TABLE invites RENAME TO invites", {}},
+          {"downgrade_invites_remove_event_id", "ALTER TABLE invites RENAME TO invites", {}},
+          {"downgrade_membership_remove_stream_ordering", "ALTER TABLE membership RENAME TO membership", {}},
+          {"downgrade_membership_remove_membership_column", "ALTER TABLE membership RENAME TO membership", {}},
+          {"downgrade_events_remove_stream_ordering", "ALTER TABLE events RENAME TO events", {}},
           },
         MigrationDirection::downgrade,
     };
@@ -288,14 +329,14 @@ auto downgrade_initial_schema_migration() -> MigrationStep
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(), media_metadata_migration(), e2ee_key_storage_migration(),
-            signing_key_and_event_depth_migration()};
+            signing_key_and_event_depth_migration(), stream_ordering_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {downgrade_initial_schema_migration(), downgrade_media_metadata_migration(),
-            downgrade_e2ee_key_storage_migration(),
-            downgrade_signing_key_and_event_depth_migration()};
+            downgrade_e2ee_key_storage_migration(), downgrade_signing_key_and_event_depth_migration(),
+            downgrade_stream_ordering_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan

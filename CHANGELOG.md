@@ -7,8 +7,16 @@
   event stream.
 - Added `sync` library with `StreamToken`, `encode_stream_token`,
   `decode_stream_token`, and `is_valid_stream_token` functions.
-- Started incremental sync feature branch: schema migration v5 and sync
-  endpoint rewrite in progress.
+- Schema migration v5: added `stream_ordering` column to `events` and
+  `membership` tables, `membership` column to `membership` table, and
+  `event_id` + `stream_ordering` columns to `invites` table.
+- Added `stream_ordering` field to `PersistentEvent` and `PersistentMembership`
+  structs; `LocalDatabase` tracks `next_stream_ordering` for monotonically
+  increasing event stream positions.
+- Updated `store_event`, `store_event_with_state`, and `store_membership` to
+  persist stream ordering and membership type.
+- BDD test coverage for stream tokens and updated migration count assertions
+  for v5.
 
 ## 0.1.38
 

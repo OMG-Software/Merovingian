@@ -10,7 +10,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{4U};
+    constexpr auto schema_version = std::uint32_t{5U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -30,7 +30,7 @@ namespace
         SchemaTableDefinition{"room_versions",           "room_id TEXT PRIMARY KEY, version TEXT NOT NULL"                                                       },
         SchemaTableDefinition{
                               "events",                  "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, json TEXT "
-                      "NOT NULL, depth TEXT NOT NULL"                                                                     },
+                      "NOT NULL, depth TEXT NOT NULL, stream_ordering TEXT NOT NULL DEFAULT '0'"                          },
         SchemaTableDefinition{"event_json",              "event_id TEXT PRIMARY KEY, json TEXT NOT NULL"                                                         },
         SchemaTableDefinition{
                               "event_edges",             "event_id TEXT NOT NULL, prev_event_id TEXT NOT NULL, PRIMARY KEY (event_id, prev_event_id)"            },
@@ -46,9 +46,12 @@ namespace
         SchemaTableDefinition{"state_group_edges",       "state_group_id TEXT NOT NULL, prev_state_group_id TEXT NOT NULL, "
                                                    "PRIMARY KEY (state_group_id, prev_state_group_id)"         },
         SchemaTableDefinition{"membership",
-                              "room_id TEXT NOT NULL, user_id TEXT NOT NULL, PRIMARY KEY (room_id, user_id)"                                                     },
-        SchemaTableDefinition{"invites",                 "room_id TEXT NOT NULL, user_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, "
-                                         "PRIMARY KEY (room_id, user_id)"                                                },
+                              "room_id TEXT NOT NULL, user_id TEXT NOT NULL, membership TEXT NOT NULL DEFAULT 'join', "
+                              "stream_ordering TEXT NOT NULL DEFAULT '0', PRIMARY KEY (room_id, user_id)"                                                        },
+        SchemaTableDefinition{"invites",
+                              "room_id TEXT NOT NULL, user_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, "
+                              "event_id TEXT NOT NULL DEFAULT '', stream_ordering TEXT NOT NULL DEFAULT '0', "
+                              "PRIMARY KEY (room_id, user_id)"                                                                                                   },
         SchemaTableDefinition{
                               "account_data",            "user_id TEXT NOT NULL, event_type TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, event_type)"},
         SchemaTableDefinition{
