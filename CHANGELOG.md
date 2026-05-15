@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.37
+
+- Implemented full Matrix v6+ event authorization rules (14-step algorithm
+  per spec section 10): create event validation, sender-domain matching,
+  member join/invite/leave/ban with join-rule and power-level checks,
+  power-level elevation guard, state-default and events-default enforcement,
+  and redact power checks.
+- Implemented v2 state resolution algorithm: conflicted/unconflicted state
+  partition, reverse topological power sort, mainline ordering for
+  power-level event ties, and iterative auth-based conflict resolution.
+- Added `AuthEventMap` for building auth event context from current room state.
+- Wired auth checking into the event sending path: composed events are
+  authorized against current room state before persistence.
+- Added helper functions for power-level extraction, membership state parsing,
+  sender domain extraction, and content membership reading.
+- Added `MembershipState::ban` to the membership state enum.
+- Added comprehensive BDD test coverage for auth rule steps, join rules,
+  power levels, kick/ban/invite flows, and v2 state resolution conflict
+  scenarios.
+
 ## 0.1.36
 
 - Replaced deterministic signing-key derivation with cryptographically random
