@@ -92,20 +92,6 @@ namespace
         return {true, {}, std::move(step), {}};
     }
 
-    [[nodiscard]] auto event_field_string(canonicaljson::Value const& event, std::string_view key) noexcept
-        -> std::string const*
-    {
-        auto const* obj = value_is_object(event);
-        return obj == nullptr ? nullptr : string_member(*obj, key);
-    }
-
-    [[nodiscard]] auto event_field_integer(canonicaljson::Value const& event, std::string_view key) noexcept
-        -> std::int64_t const*
-    {
-        auto const* obj = value_is_object(event);
-        return obj == nullptr ? nullptr : integer_member(*obj, key);
-    }
-
     [[nodiscard]] auto event_content_string(canonicaljson::Value const& event, std::string_view key) noexcept
         -> std::string const*
     {
@@ -126,13 +112,6 @@ namespace
             return *level;
         }
         return -1;
-    }
-
-    [[nodiscard]] auto sender_is_creator(canonicaljson::Value const& create_event, std::string_view sender) noexcept
-        -> bool
-    {
-        auto const* creator = event_content_string(create_event, "creator");
-        return creator != nullptr && *creator == sender;
     }
 
     [[nodiscard]] auto membership_at_least_one_of(MembershipState current,
