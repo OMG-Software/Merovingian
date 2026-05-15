@@ -7,6 +7,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
@@ -218,7 +219,7 @@ auto signing_key_summary(FederationSigningKey const& key) -> std::string
            " loaded=" + std::string{key.loaded ? "true" : "false"};
 }
 
-auto make_federation_signature(std::string_view origin, std::string_view key_id, std::string_view verify_token,
+auto make_federation_signature(std::string_view origin, std::string_view /*key_id*/, std::string_view verify_token,
                                std::string_view method, std::string_view target, std::uint64_t origin_server_ts,
                                std::string_view body) -> std::string
 {
@@ -334,7 +335,7 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
         auto const public_key = public_key_from_material(key->verify_token);
         auto verifier = FederationEd25519Verifier{};
         auto const verified =
-            events::verify_event_signature(parsed.value, *room_version, {expected_origin, key->key_id},
+            events::verify_event_signature(parsed.value, *room_version, {std::string{expected_origin}, key->key_id},
                                            crypto::Ed25519PublicKey{public_key}, verifier);
         if (!verified.valid)
         {

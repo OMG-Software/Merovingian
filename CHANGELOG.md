@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.30
+
+- Fixed federation inbound-request compilation under CI warning-as-error builds
+  by naming the intentionally unused request-signing key ID parameter,
+  constructing owned signing-key IDs, and including the event-ID API.
+
 ## 0.1.29
 
 - Confirmed OpenSSL as the TLS provider behind Merovingian's project-owned TLS
