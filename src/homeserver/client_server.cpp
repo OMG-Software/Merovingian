@@ -570,7 +570,8 @@ namespace
                     timeline_events += ",";
                 }
                 first_event = false;
-                timeline_events += event.json;
+                timeline_events += "{\"event_id\":\"" + json_escape(event.event_id) + "\",\"sender\":\""
+                    + json_escape(event.sender_user_id) + "\"}";
                 ++event_count;
             }
 

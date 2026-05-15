@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.44
+
+- Fixed `store_room_with_membership` inserting only 2 columns into the 4-column
+  `membership` table (missing `membership` and `stream_ordering`), causing
+  `createRoom` to fail at runtime.
+- Fixed SQLite and PostgreSQL hydration queries to select all columns from
+  `membership` (4 cols) and `events` (6 cols) tables, preserving
+  `stream_ordering` across restarts.
+- Fixed sync JSON leaking raw event content (`m.room.encrypted`, `secret`);
+  now outputs bounded summaries with only `event_id` and `sender`.
+
 ## 0.1.43
 
 - Fixed missing v5 migration record in `initialize_current_schema` (SQLite)

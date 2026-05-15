@@ -468,10 +468,12 @@ namespace
                                                      {room.room_id,         false},
                                                      {room.creator_user_id, false}
     });
-    auto const membership_statement = record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2)",
+    auto const membership_statement = record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2, $3, $4)",
                                                        {
-                                                           {membership.room_id, false},
-                                                           {membership.user_id, false}
+                                                           {membership.room_id,                         false},
+                                                           {membership.user_id,                         false},
+                                                           {membership.membership,                      false},
+                                                           {std::to_string(membership.stream_ordering), false}
     });
     auto const statements = std::vector<PreparedStatement>{room_statement, membership_statement};
     if (!commit_persistent_transaction(store, statements))

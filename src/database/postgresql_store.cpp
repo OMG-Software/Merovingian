@@ -357,30 +357,30 @@ namespace
         }
 
         auto memberships = query_rows(connection, "postgresql_load_membership",
-                                      "SELECT room_id, user_id FROM membership ORDER BY room_id, user_id");
+                                      "SELECT room_id, user_id, membership, stream_ordering FROM membership ORDER BY room_id, user_id");
         if (!memberships.ok)
         {
             return false;
         }
         for (auto const& row : memberships.rows)
         {
-            if (row.size() >= 2U)
+            if (row.size() >= 4U)
             {
-                store.memberships.push_back({row[0], row[1]});
+                store.memberships.push_back({row[0], row[1], row[2], parse_u64(row[3])});
             }
         }
 
         auto events = query_rows(connection, "postgresql_load_events",
-                                 "SELECT event_id, room_id, sender_user_id, json, depth FROM events ORDER BY event_id");
+                                 "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM events ORDER BY event_id");
         if (!events.ok)
         {
             return false;
         }
         for (auto const& row : events.rows)
         {
-            if (row.size() >= 5U)
+            if (row.size() >= 6U)
             {
-                store.events.push_back({row[0], row[1], row[2], row[3], parse_u64(row[4])});
+                store.events.push_back({row[0], row[1], row[2], row[3], parse_u64(row[4]), parse_u64(row[5])});
             }
         }
 
