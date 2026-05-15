@@ -7,6 +7,7 @@
   package file.
 - Ignored Meson-downloaded yyjson subproject checkouts and Python bytecode
   caches to keep generated dependency artifacts out of commits.
+- Aligned CLI version output with the Meson project version for CI smoke tests.
 
 ## 0.1.34
 
