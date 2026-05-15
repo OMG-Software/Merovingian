@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.34
+
+- Runtime-wired authentication/session audit durability, admin metrics/audit
+  summaries, and trust-and-safety report/review routes through the
+  client-server runtime.
+- Added named Linux/BSD/WSL build profiles for debug, release, sanitizer,
+  coverage, fuzz, and hardened builds.
+- Promoted authentication and sessions, database persistence, observability and
+  audit, trust and safety, and build/warning policy to `runtime-wired` in the
+  progress ledger with remaining production gaps documented.
+
 ## 0.1.33
 
 - Fixed runtime state-event materialization so Matrix state events are detected

@@ -224,6 +224,18 @@ namespace
                    ? response(200U, media_metrics_summary(runtime))
                    : response(401U, "admin authentication required");
     }
+    if (request.method == "GET" && request.target == "/_merovingian/admin/metrics")
+    {
+        return authenticated_admin_user(runtime, request.access_token).has_value()
+                   ? response(200U, admin_metrics_summary(runtime))
+                   : response(401U, "admin authentication required");
+    }
+    if (request.method == "GET" && request.target == "/_merovingian/admin/audit")
+    {
+        return authenticated_admin_user(runtime, request.access_token).has_value()
+                   ? response(200U, admin_audit_summary(runtime))
+                   : response(401U, "admin authentication required");
+    }
     if (starts_with(request.target, "/_matrix/federation/"))
     {
         auto signed_request = parse_signed_federation_request(request);

@@ -5,6 +5,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 
 namespace
@@ -428,6 +429,98 @@ SCENARIO("Client-server runtime wires server-blind E2EE key API routes", "[homes
                 REQUIRE(query.body.find("device_keys") != std::string::npos);
                 REQUIRE(upload.body.find("curve25519-secret") == std::string::npos);
                 REQUIRE(merovingian::homeserver::key_api_record_count(runtime, "@alice:example.org") == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server runtime wires trust and safety report and admin review routes",
+         "[homeserver][client-server][trust-safety]")
+{
+    GIVEN("a logged-in admin client-server user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
+                    .status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        WHEN("the client reports an event and the admin reviews a media target")
+        {
+            auto const report = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/!room:example.org/report/$event", token,
+                          R"({"reason":"spam","score":50})"});
+            auto const reports = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/admin/safety/reports", token, {}});
+            auto const review = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/admin/safety/review/media/media123", token,
+                          R"({"reason":"manual_review"})"});
+
+            THEN("policy decisions are served through runtime auth and persisted as audit/admin rows")
+            {
+                REQUIRE(report.status == 200U);
+                REQUIRE(reports.status == 200U);
+                REQUIRE(review.status == 200U);
+                REQUIRE(reports.body.find("trust_safety.room.accept_report") != std::string::npos);
+                REQUIRE(runtime.homeserver.database.persistent_store.audit_log.size() >= 4U);
+                REQUIRE(runtime.homeserver.database.persistent_store.admin_actions.size() == 1U);
+                REQUIRE(runtime.homeserver.database.persistent_store.admin_actions.front().action ==
+                        "trust_safety.media.quarantine");
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server runtime persists client action audit events", "[homeserver][client-server][audit]")
+{
+    GIVEN("a logged-in client-server device")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
+                    .status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        WHEN("the device updates metadata and uploads E2EE keys")
+        {
+            auto const update = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/devices/DEVICE1", token, R"({"display_name":"Alice laptop"})"});
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", token, R"({"device_keys":{"secret":"value"}})"});
+
+            THEN("client-server audit events are durable and redact key payloads")
+            {
+                REQUIRE(update.status == 200U);
+                REQUIRE(upload.status == 200U);
+                auto const& audit = runtime.homeserver.database.persistent_store.audit_log;
+                REQUIRE(audit.size() >= 4U);
+                REQUIRE(std::ranges::any_of(audit, [](auto const& event) {
+                    return event.event_type == "device.updated";
+                }));
+                REQUIRE(std::ranges::any_of(audit, [](auto const& event) {
+                    return event.event_type == "key_api.upload_keys" &&
+                           event.reason.find("secret") == std::string::npos;
+                }));
             }
         }
     }

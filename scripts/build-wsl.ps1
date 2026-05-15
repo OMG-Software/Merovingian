@@ -6,10 +6,13 @@ param(
     [string]$CC = "clang",
     [string]$CXX = "clang++",
     [string]$WrapMode = "default",
+    [ValidateSet("", "debug", "release", "sanitizer", "coverage", "fuzz", "hardened")]
+    [string]$Profile = "",
     [switch]$BuildFuzz,
     [switch]$NoTests,
     [switch]$SetupOnly,
-    [switch]$CompileOnly
+    [switch]$CompileOnly,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -45,6 +48,9 @@ $ArgsList = @(
     "--wrap-mode", $WrapMode
 )
 
+if ($Profile -ne "") {
+    $ArgsList += @("--profile", $Profile)
+}
 if ($BuildFuzz) {
     $ArgsList += "--build-fuzz"
 }
@@ -56,6 +62,9 @@ if ($SetupOnly) {
 }
 if ($CompileOnly) {
     $ArgsList += "--compile-only"
+}
+if ($DryRun) {
+    $ArgsList += "--dry-run"
 }
 
 $QuotedArgs = ($ArgsList | ForEach-Object { Quote-Bash $_ }) -join " "

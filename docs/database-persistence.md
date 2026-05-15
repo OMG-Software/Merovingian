@@ -45,6 +45,8 @@ remaining work before PostgreSQL-backed production operation.
   device listings.
 - Runtime event writes persist previous-event edges, auth-event edges, and
   Matrix event signatures in the same transaction as the event row.
+- Runtime trust-and-safety report/review paths append durable policy audit rows
+  and admin action rows.
 - Unit coverage for statement validation, executor gating, redaction, migration
   planning, and schema inventory.
 - Migration-plan validation coverage uses explicit hand-built plans, while
@@ -89,9 +91,9 @@ These remain deferred:
 
 - Full PostgreSQL integration tests against a running temporary server.
 - Runtime/migration role grants enforced by actual database users.
-- PostgreSQL-backed federation queues, policy, account data, push rules, and
+- PostgreSQL-backed federation queues, policy rules, account data, push rules, and
   full media repository blob metadata hydration.
-- SQLite-backed federation queues, policy rules, account data, push rules, and
+- SQLite-backed federation queues, policy-rule management, account data, push rules, and
   full media repository blob metadata hydration.
 
 ## Next starting points

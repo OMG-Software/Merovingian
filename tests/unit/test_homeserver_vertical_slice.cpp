@@ -158,6 +158,44 @@ SCENARIO("Homeserver local auth route creates unique sessions and revokes tokens
     }
 }
 
+SCENARIO("Homeserver admin observability endpoints expose runtime metrics and durable audit",
+         "[homeserver][vertical][observability]")
+{
+    GIVEN("a started runtime with an admin session")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+        REQUIRE(login.status == 200U);
+
+        WHEN("admin metrics and audit are requested")
+        {
+            auto const metrics = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/metrics", login.body, {}});
+            auto const audit = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/audit", login.body, {}});
+            auto const unauthenticated = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/audit", "not-a-token", {}});
+
+            THEN("only the admin session can read safe operational summaries")
+            {
+                REQUIRE(metrics.status == 200U);
+                REQUIRE(audit.status == 200U);
+                REQUIRE(unauthenticated.status == 401U);
+                REQUIRE(metrics.body.find("audit_events_appended_total") != std::string::npos);
+                REQUIRE(metrics.body.find("access_token") == std::string::npos);
+                REQUIRE(audit.body.find("runtime.started") != std::string::npos);
+                REQUIRE(audit.body.find("CorrectHorse7") == std::string::npos);
+                REQUIRE(runtime.database.persistent_store.audit_log.size() >= 3U);
+            }
+        }
+    }
+}
+
 SCENARIO("Homeserver local auth stores hardened password and token hashes", "[homeserver][vertical][auth][security]")
 {
     GIVEN("a started runtime with local registration enabled")

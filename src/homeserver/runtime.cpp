@@ -219,4 +219,26 @@ auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string
     return observability::health_snapshot_summary(admin_health(runtime));
 }
 
+auto admin_metrics_summary(HomeserverRuntime const& runtime) -> std::string
+{
+    auto const& store = runtime.database.persistent_store;
+    return "metrics users_total=" + std::to_string(store.users.size()) +
+           " sessions_total=" + std::to_string(store.access_tokens.size()) +
+           " rooms_total=" + std::to_string(store.rooms.size()) +
+           " events_total=" + std::to_string(store.events.size()) +
+           " audit_events_appended_total=" + std::to_string(store.audit_log.size()) +
+           " admin_actions_total=" + std::to_string(store.admin_actions.size());
+}
+
+auto admin_audit_summary(HomeserverRuntime const& runtime) -> std::string
+{
+    auto summary = std::string{"audit events="} + std::to_string(runtime.database.persistent_store.audit_log.size());
+    for (auto const& event : runtime.database.persistent_store.audit_log)
+    {
+        summary += " entry=" + event.category + ':' + event.event_type + ':' + event.actor + ':' + event.target + ':' +
+                   event.reason;
+    }
+    return summary;
+}
+
 } // namespace merovingian::homeserver
