@@ -46,16 +46,6 @@ namespace
     return merovingian::canonicaljson::parse_lossless(json).value;
 }
 
-[[nodiscard]] auto make_join_rules_value(std::string_view join_rule) -> merovingian::canonicaljson::Value
-{
-    auto json = std::string{"{\"type\":\"m.room.join_rules\",\"state_key\":\"\",\"sender\":\"@alice:example.org\","
-                            "\"room_id\":\"!room:example.org\",\"content\":{\"join_rule\":\"" +
-                            std::string{join_rule} +
-                            "\"},\"origin_server_ts\":2,\"depth\":1,\"prev_events\":[],\"auth_events\":[],"
-                            "\"hashes\":{\"sha256\":\"hash\"}}"};
-    return merovingian::canonicaljson::parse_lossless(json).value;
-}
-
 } // namespace
 
 SCENARIO("State groups expose state events by type and state key", "[events][state]")
