@@ -33,11 +33,8 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja
 
-      - name: Configure
-        run: meson setup build -Dbuild_tests=true -Dbuild_fuzz=false
-
       - name: Generate compile commands
-        run: meson compile -C build
+        run: sh scripts/build-linux.sh --builddir build --compile-only
 
       - name: Run clang-tidy on changed C++ translation units
         run: |

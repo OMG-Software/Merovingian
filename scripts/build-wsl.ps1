@@ -2,9 +2,9 @@
 [CmdletBinding()]
 param(
     [string]$Distro = "Ubuntu-24.04",
-    [string]$BuildDir = "build-clang22",
-    [string]$CC = "clang-22",
-    [string]$CXX = "clang++-22",
+    [string]$BuildDir = "build-wsl",
+    [string]$CC = "clang",
+    [string]$CXX = "clang++",
     [string]$WrapMode = "default",
     [switch]$BuildFuzz,
     [switch]$NoTests,

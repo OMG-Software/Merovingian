@@ -38,6 +38,27 @@ enabled, Meson can build the pinned OpenSSL wrap from
 libpq is also included as a system dependency so PostgreSQL platform headers do
 not bypass third-party warning isolation.
 
+Linux and BSD CI builds run through the same wrappers intended for local use:
+
+```sh
+sh scripts/build-linux.sh --builddir build
+sh scripts/build-bsd.sh --builddir build
+```
+
+Ubuntu/Debian WSL hosts should first run:
+
+```sh
+sh scripts/wsl-setup.sh
+export PATH="$HOME/.local/bin:$PATH"
+sh scripts/build-linux.sh --builddir build-wsl
+```
+
+The WSL setup script installs the compiler, linker, PostgreSQL/SQLite/OpenSSL
+and LibSodium headers, Catch2, clang tooling, cppcheck, and a current
+Meson/Ninja virtual environment. The virtual environment is used because the
+distribution Meson in Ubuntu 24.04 is too old to configure the repo's C++26
+build.
+
 Project-owned headers should use quoted includes. Use the rewrite helper to
 convert angle-bracket Merovingian includes in source trees:
 

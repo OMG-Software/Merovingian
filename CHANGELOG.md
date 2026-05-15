@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.31
+
+- Routed Linux, sanitizer, coverage, static-analysis, CodeQL, and FreeBSD CI
+  builds through reusable local build wrappers.
+- Added a FreeBSD build wrapper and Ubuntu/Debian WSL setup script that installs
+  the native dependencies plus a current Meson/Ninja virtualenv.
+
 ## 0.1.30
 
 - Fixed federation inbound-request compilation under CI warning-as-error builds

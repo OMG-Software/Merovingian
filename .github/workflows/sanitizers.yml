@@ -32,16 +32,5 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja
 
-      - name: Configure
-        run: |
-          meson setup build \
-            --buildtype=debug \
-            -Dbuild_tests=true \
-            -Dbuild_fuzz=false \
-            -Db_sanitize=address,undefined
-
-      - name: Compile
-        run: meson compile -C build
-
-      - name: Test
-        run: meson test -C build --print-errorlogs
+      - name: Build and test with sanitizers
+        run: sh scripts/build-linux.sh --builddir build --buildtype debug --sanitize address,undefined
