@@ -587,6 +587,7 @@ namespace
             join_rooms += timeline_events;
             join_rooms += "],\"limited\":";
             join_rooms += limited ? "true" : "false";
+            join_rooms += ",\"event_count\":" + std::to_string(event_count);
             join_rooms += "},\"state\":{\"member_count\":" + std::to_string(member_count) + "}}";
         }
 
