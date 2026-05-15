@@ -15,6 +15,7 @@ namespace
     constexpr auto initial_schema_version = std::uint32_t{1U};
     constexpr auto media_metadata_schema_version = std::uint32_t{2U};
     constexpr auto e2ee_key_storage_schema_version = std::uint32_t{3U};
+    constexpr auto signing_key_and_event_depth_schema_version = std::uint32_t{4U};
 
     [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table) -> PreparedStatement
     {
@@ -243,6 +244,36 @@ auto downgrade_e2ee_key_storage_migration() -> MigrationStep
     };
 }
 
+auto signing_key_and_event_depth_migration() -> MigrationStep
+{
+    return {
+        signing_key_and_event_depth_schema_version,
+        "signing_key_and_event_depth",
+        {
+          {"alter_server_signing_keys_add_server_name",
+              "ALTER TABLE server_signing_keys ADD COLUMN server_name TEXT NOT NULL DEFAULT ''",
+              {}},
+          {"alter_events_add_depth", "ALTER TABLE events ADD COLUMN depth TEXT NOT NULL DEFAULT '0'", {}},
+          },
+        MigrationDirection::upgrade,
+    };
+}
+
+auto downgrade_signing_key_and_event_depth_migration() -> MigrationStep
+{
+    return {
+        e2ee_key_storage_schema_version,
+        "signing_key_and_event_depth_downgrade",
+        {
+          {"downgrade_events_remove_depth", "ALTER TABLE events RENAME TO events", {}},
+          {"downgrade_server_signing_keys_remove_server_name",
+              "ALTER TABLE server_signing_keys RENAME TO server_signing_keys",
+              {}},
+          },
+        MigrationDirection::downgrade,
+    };
+}
+
 auto downgrade_initial_schema_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -256,13 +287,15 @@ auto downgrade_initial_schema_migration() -> MigrationStep
 
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration(), media_metadata_migration(), e2ee_key_storage_migration()};
+    return {initial_schema_migration(), media_metadata_migration(), e2ee_key_storage_migration(),
+            signing_key_and_event_depth_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {downgrade_initial_schema_migration(), downgrade_media_metadata_migration(),
-            downgrade_e2ee_key_storage_migration()};
+            downgrade_e2ee_key_storage_migration(),
+            downgrade_signing_key_and_event_depth_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan
