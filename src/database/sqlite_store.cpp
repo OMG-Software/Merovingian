@@ -231,7 +231,10 @@ namespace
                    connection,
                    "INSERT OR IGNORE INTO schema_migrations VALUES ('2', 'media_metadata_columns', 'upgrade')") &&
                execute_sql(connection,
-                           "INSERT OR IGNORE INTO schema_migrations VALUES ('3', 'e2ee_key_storage', 'upgrade')");
+                           "INSERT OR IGNORE INTO schema_migrations VALUES ('3', 'e2ee_key_storage', 'upgrade')") &&
+               execute_sql(
+                   connection,
+                   "INSERT OR IGNORE INTO schema_migrations VALUES ('4', 'signing_key_and_event_depth', 'upgrade')");
     }
 
     auto apply_pending_migrations(sqlite3& connection, SchemaState state) -> std::optional<SchemaState>
@@ -300,10 +303,10 @@ namespace
                              store.access_tokens.push_back({column_text(row, 0), column_text(row, 1),
                                                             column_text(row, 2), text_is_true(column_text(row, 3))});
                          }) &&
-               load_rows(connection, "SELECT key_id, public_key, valid_until_ts FROM server_signing_keys",
+               load_rows(connection, "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys",
                          [&store](sqlite3_stmt& row) {
-                             store.server_signing_keys.push_back(
-                                 {column_text(row, 0), column_text(row, 1), parse_u64(column_text(row, 2))});
+                             store.server_signing_keys.push_back({column_text(row, 0), column_text(row, 1),
+                                                                  column_text(row, 2), parse_u64(column_text(row, 3))});
                          }) &&
                load_rows(connection, "SELECT room_id, creator_user_id FROM rooms",
                          [&store](sqlite3_stmt& row) {
@@ -313,10 +316,10 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.memberships.push_back({column_text(row, 0), column_text(row, 1)});
                          }) &&
-               load_rows(connection, "SELECT event_id, room_id, sender_user_id, json FROM events",
+               load_rows(connection, "SELECT event_id, room_id, sender_user_id, json, depth FROM events",
                          [&store](sqlite3_stmt& row) {
-                             store.events.push_back(
-                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2), column_text(row, 3)});
+                             store.events.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                     column_text(row, 3), parse_u64(column_text(row, 4))});
                          }) &&
                load_rows(connection, "SELECT event_id, prev_event_id FROM event_edges",
                          [&store](sqlite3_stmt& row) {

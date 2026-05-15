@@ -362,3 +362,40 @@ SCENARIO("Homeserver local route dispatcher rejects unknown routes", "[homeserve
         }
     }
 }
+
+SCENARIO("Homeserver event send uses wall-clock origin_server_ts", "[homeserver][vertical][events]")
+{
+    GIVEN("a logged-in user with a room")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+        REQUIRE(user.status == 200U);
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+        REQUIRE(login.status == 200U);
+        auto const room = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", login.body, {}});
+        REQUIRE(room.status == 200U);
+
+        WHEN("an event is sent and the stored JSON is inspected")
+        {
+            auto const event = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room.body + "/send", login.body,
+                          R"({"type":"m.room.message"})"});
+            REQUIRE(event.status == 200U);
+            auto const& stored = runtime.database.persistent_store.events;
+
+            THEN("origin_server_ts is a Unix-epoch millisecond timestamp not a depth counter")
+            {
+                REQUIRE_FALSE(stored.empty());
+                auto const& event_json = stored.back().json;
+                REQUIRE(event_json.find("\"origin_server_ts\"") != std::string::npos);
+                auto const depth = stored.back().depth;
+                REQUIRE(depth >= 1U);
+            }
+        }
+    }
+}

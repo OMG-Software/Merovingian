@@ -262,7 +262,8 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
         auto const key_id = std::string{"ed25519:auto"};
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
-        auto const request = signed_request(origin, key_id, token, pdu_for(origin));
+        auto const json_pdu = signed_json_pdu(origin, key_id, token);
+        auto const request = signed_request(origin, key_id, token, json_pdu);
 
         WHEN("the signed transaction is handled twice")
         {
@@ -490,6 +491,32 @@ SCENARIO("Federation PDU authorization verifies JSON event signatures with the r
                 REQUIRE(accepted.accepted);
                 REQUIRE_FALSE(rejected.accepted);
                 REQUIRE(rejected.reason == "signature verification failed");
+            }
+        }
+    }
+}
+
+SCENARIO("Federation PDU authorization rejects comma-delimited PDUs when a signing key is available",
+         "[federation][inbound][pdu][security]")
+{
+    GIVEN("a comma-delimited PDU without JSON and a signing key record")
+    {
+        auto const pdu_text =
+            std::string{"$event1:example.org,!room1:example.org,m.room.message,@alice:matrix.example.org,"
+                        "matrix.example.org,ed25519:auto,c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nz"
+                        "c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzcw=="};
+        auto const pdu = merovingian::federation::parse_federation_pdu(pdu_text);
+        auto const key =
+            merovingian::federation::FederationKeyRecord{"matrix.example.org", "ed25519:auto", "verify-token", 2000U};
+
+        WHEN("the comma-delimited PDU is authorized with a key record")
+        {
+            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, "matrix.example.org", key);
+
+            THEN("the PDU is rejected because legacy format cannot be cryptographically verified")
+            {
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.reason == "comma-delimited PDUs require JSON for cryptographic verification");
             }
         }
     }

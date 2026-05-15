@@ -56,6 +56,7 @@ struct LocalDatabase final
     std::vector<LocalRoom> rooms{};
     std::vector<observability::AuditLogEvent> audit_events{};
     database::PersistentStore persistent_store{};
+    std::vector<unsigned char> signing_secret_key{};
 };
 
 struct HomeserverRuntime final

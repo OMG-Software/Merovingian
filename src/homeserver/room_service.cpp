@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -70,22 +71,15 @@ namespace
         });
     }
 
-    auto derive_signing_keypair(std::string_view server_name, std::string_view key_id,
-                                std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
-                                std::array<unsigned char, crypto_sign_SECRETKEYBYTES>& secret_key) noexcept -> bool
+    auto generate_random_signing_keypair(std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
+                                         std::array<unsigned char, crypto_sign_SECRETKEYBYTES>& secret_key) noexcept
+        -> bool
     {
         if (!sodium_is_ready())
         {
             return false;
         }
-        auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
-        auto const material = std::string{server_name} + "|" + std::string{key_id};
-        if (crypto_generichash(seed.data(), seed.size(), reinterpret_cast<unsigned char const*>(material.data()),
-                               material.size(), nullptr, 0U) != 0)
-        {
-            return false;
-        }
-        return crypto_sign_seed_keypair(public_key.data(), secret_key.data(), seed.data()) == 0;
+        return crypto_sign_keypair(public_key.data(), secret_key.data()) == 0;
     }
 
     class RuntimeSigningKeyStore final : public crypto::SigningKeyStore
@@ -120,24 +114,18 @@ namespace
     class RuntimeEd25519Provider final : public crypto::Ed25519Provider
     {
     public:
-        explicit RuntimeEd25519Provider(std::string server_name)
-            : server_name_{std::move(server_name)}
+        explicit RuntimeEd25519Provider(std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key)
+            : secret_key_{std::move(secret_key)}
         {
         }
 
-        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& key, std::string_view message)
+        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/, std::string_view message)
             -> crypto::SignatureResult override
         {
-            auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
-            auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-            if (!derive_signing_keypair(server_name_, key.key_id, public_key, secret_key))
-            {
-                return {{}, "unable to derive signing key"};
-            }
             auto signature = std::string(crypto_sign_BYTES, '\0');
             if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
                                      reinterpret_cast<unsigned char const*>(message.data()), message.size(),
-                                     secret_key.data()) != 0)
+                                     secret_key_.data()) != 0)
             {
                 return {{}, "Ed25519 signing failed"};
             }
@@ -160,26 +148,32 @@ namespace
         }
 
     private:
-        std::string server_name_{};
+        std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key_{};
     };
 
     [[nodiscard]] auto ensure_runtime_signing_key(HomeserverRuntime& runtime)
         -> std::optional<database::PersistentServerSigningKey>
     {
         auto constexpr key_id = std::string_view{"ed25519:auto"};
-        auto existing = database::find_server_signing_key(runtime.database.persistent_store, key_id);
-        if (existing.has_value())
+        auto const& server_name = runtime.config.server().server_name;
+
+        if (!runtime.database.signing_secret_key.empty())
         {
-            return existing;
+            auto existing = database::find_server_signing_key(runtime.database.persistent_store, server_name, key_id);
+            if (existing.has_value())
+            {
+                return existing;
+            }
         }
 
         auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
         auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        if (!derive_signing_keypair(runtime.config.server().server_name, key_id, public_key, secret_key))
+        if (!generate_random_signing_keypair(public_key, secret_key))
         {
             return std::nullopt;
         }
         auto key = database::PersistentServerSigningKey{
+            std::string{server_name},
             std::string{key_id},
             events::matrix_base64_from_bytes(
                 std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
@@ -189,6 +183,7 @@ namespace
         {
             return std::nullopt;
         }
+        runtime.database.signing_secret_key = std::vector<unsigned char>(secret_key.begin(), secret_key.end());
         return key;
     }
 
@@ -293,12 +288,14 @@ namespace
         auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
         auto const auth_events = auth_events_for_room(runtime.database.persistent_store, room_id);
         auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
+        auto const now_ms = static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
         auto event = canonicaljson::Object{};
         event.push_back(canonicaljson::make_member("type", canonicaljson::Value{event_type}));
         event.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{std::string{room_id}}));
         event.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{sender}}));
-        event.push_back(
-            canonicaljson::make_member("origin_server_ts", canonicaljson::Value{static_cast<std::int64_t>(depth)}));
+        event.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
         event.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(depth)}));
         event.push_back(canonicaljson::make_member("prev_events", string_array(prev_events)));
         event.push_back(canonicaljson::make_member("auth_events", string_array(auth_events)));
@@ -337,7 +334,13 @@ namespace
             return std::nullopt;
         }
         auto key_store = RuntimeSigningKeyStore{runtime.config.server().server_name, *key};
-        auto provider = RuntimeEd25519Provider{runtime.config.server().server_name};
+        auto secret_key_array = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        if (runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES)
+        {
+            std::copy(runtime.database.signing_secret_key.begin(), runtime.database.signing_secret_key.end(),
+                      secret_key_array.begin());
+        }
+        auto provider = RuntimeEd25519Provider{std::move(secret_key_array)};
         auto const signed_event = events::sign_event_for_server(hash_event, *policy, key_store, provider,
                                                                 runtime.config.server().server_name);
         if (!signed_event.error.empty())

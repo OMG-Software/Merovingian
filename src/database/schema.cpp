@@ -10,7 +10,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{3U};
+    constexpr auto schema_version = std::uint32_t{4U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -24,11 +24,13 @@ namespace
         SchemaTableDefinition{
                               "refresh_tokens",          "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL"    },
         SchemaTableDefinition{"server_signing_keys",
-                              "key_id TEXT PRIMARY KEY, public_key TEXT NOT NULL, valid_until_ts TEXT NOT NULL"                                                  },
+                              "server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, "
+                              "valid_until_ts TEXT NOT NULL, PRIMARY KEY (server_name, key_id)"                                                                  },
         SchemaTableDefinition{"rooms",                   "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL"                                               },
         SchemaTableDefinition{"room_versions",           "room_id TEXT PRIMARY KEY, version TEXT NOT NULL"                                                       },
         SchemaTableDefinition{
-                              "events",                  "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, json TEXT NOT NULL"    },
+                              "events",                  "event_id TEXT PRIMARY KEY, room_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, json TEXT "
+                      "NOT NULL, depth TEXT NOT NULL"                                                                     },
         SchemaTableDefinition{"event_json",              "event_id TEXT PRIMARY KEY, json TEXT NOT NULL"                                                         },
         SchemaTableDefinition{
                               "event_edges",             "event_id TEXT NOT NULL, prev_event_id TEXT NOT NULL, PRIMARY KEY (event_id, prev_event_id)"            },

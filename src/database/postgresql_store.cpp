@@ -328,16 +328,17 @@ namespace
 
         auto server_signing_keys =
             query_rows(connection, "postgresql_load_server_signing_keys",
-                       "SELECT key_id, public_key, valid_until_ts FROM server_signing_keys ORDER BY key_id");
+                       "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys ORDER BY "
+                       "server_name, key_id");
         if (!server_signing_keys.ok)
         {
             return false;
         }
         for (auto const& row : server_signing_keys.rows)
         {
-            if (row.size() >= 3U)
+            if (row.size() >= 4U)
             {
-                store.server_signing_keys.push_back({row[0], row[1], parse_u64(row[2])});
+                store.server_signing_keys.push_back({row[0], row[1], row[2], parse_u64(row[3])});
             }
         }
 
@@ -370,16 +371,16 @@ namespace
         }
 
         auto events = query_rows(connection, "postgresql_load_events",
-                                 "SELECT event_id, room_id, sender_user_id, json FROM events ORDER BY event_id");
+                                 "SELECT event_id, room_id, sender_user_id, json, depth FROM events ORDER BY event_id");
         if (!events.ok)
         {
             return false;
         }
         for (auto const& row : events.rows)
         {
-            if (row.size() >= 4U)
+            if (row.size() >= 5U)
             {
-                store.events.push_back({row[0], row[1], row[2], row[3]});
+                store.events.push_back({row[0], row[1], row[2], row[3], parse_u64(row[4])});
             }
         }
 
@@ -720,6 +721,7 @@ auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
     statements.push_back(migration_record_statement(1U, "initial_schema"));
     statements.push_back(migration_record_statement(2U, "media_metadata_columns"));
     statements.push_back(migration_record_statement(3U, "e2ee_key_storage"));
+    statements.push_back(migration_record_statement(4U, "signing_key_and_event_depth"));
     return statements;
 }
 
