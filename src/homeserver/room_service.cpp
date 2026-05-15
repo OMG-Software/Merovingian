@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
@@ -268,6 +269,59 @@ namespace
         return depth + 1U;
     }
 
+    [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
+        -> canonicaljson::Value
+    {
+        for (auto const& event : store.events)
+        {
+            if (event.event_id == event_id)
+            {
+                auto const parsed = canonicaljson::parse_lossless(event.json);
+                if (parsed.error == canonicaljson::ParseError::none)
+                {
+                    return parsed.value;
+                }
+            }
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto build_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
+                                            std::string_view sender, std::string_view target_state_key,
+                                            std::string_view event_type) -> events::AuthEventMap
+    {
+        auto result = events::AuthEventMap{};
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id)
+            {
+                continue;
+            }
+            if (state.event_type == "m.room.create" && state.state_key.empty())
+            {
+                result.create = find_event_json(store, state.event_id);
+            }
+            if (state.event_type == "m.room.power_levels" && state.state_key.empty())
+            {
+                result.power_levels = find_event_json(store, state.event_id);
+            }
+            if (state.event_type == "m.room.join_rules" && state.state_key.empty())
+            {
+                result.join_rules = find_event_json(store, state.event_id);
+            }
+            if (state.event_type == "m.room.member" && state.state_key == sender)
+            {
+                result.sender_member = find_event_json(store, state.event_id);
+            }
+            if (state.event_type == "m.room.member" && event_type == "m.room.member" &&
+                state.state_key == target_state_key)
+            {
+                result.target_member = find_event_json(store, state.event_id);
+            }
+        }
+        return result;
+    }
+
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                             std::string_view sender, std::string_view client_event_json)
         -> std::optional<ComposedEvent>
@@ -347,6 +401,28 @@ namespace
         {
             return std::nullopt;
         }
+        auto signed_event_value = canonicaljson::parse_lossless(signed_event.event_json);
+        if (signed_event_value.error == canonicaljson::ParseError::none)
+        {
+            auto const* auth_policy = rooms::find_room_version_policy("12");
+            if (auth_policy != nullptr)
+            {
+                auto auth_map = build_auth_event_map(runtime.database.persistent_store, room_id, sender,
+                                                     state_key.value_or(""), event_type);
+                auto const has_create_event =
+                    !std::holds_alternative<std::nullptr_t>(auth_map.create.storage());
+                if (has_create_event)
+                {
+                    auto const auth_decision =
+                        events::authorize_event_against_auth_events(signed_event_value.value, *auth_policy, auth_map);
+                    if (!auth_decision.allowed)
+                    {
+                        return std::nullopt;
+                    }
+                }
+            }
+        }
+
         return ComposedEvent{
             event_id.event_id,
             signed_event.event_json,
@@ -443,7 +519,7 @@ namespace
     auto const composed = compose_signed_event(runtime, room_id, *user_id, event_json);
     if (!composed.has_value())
     {
-        return make_operation_result(false, {}, "event signing failed", 500U);
+        return make_operation_result(false, {}, "event authorization or signing failed", 403U);
     }
     auto state = std::optional<database::PersistentStateEvent>{};
     if (composed->state_key.has_value())

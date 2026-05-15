@@ -23,18 +23,33 @@ Implemented now:
 - redaction with room-version-dependent top-level and event-content key retention
 - `origin_server_ts` uses wall-clock Unix-epoch milliseconds per Matrix spec
 - event depth is persisted in the database and survives server restarts
+- full Matrix v6+ event authorization rules (14-step algorithm per spec
+  section 10): create events, sender-domain validation, member joins/invites/
+  leaves/bans with join-rule and power-level checks, power-level elevation
+  guard, state-default and events-default power enforcement, redaction power
+- auth-event map construction from current room state for authorization
+- auth checking wired into the event sending path: composed events are
+  authorized against current room state before persistence; auth is
+  conditional on the presence of a create event in room state to allow
+  the simplified room-creation bootstrap flow
+- room creator is implicitly treated as joined with power level 100 when
+  no sender_member or power_levels event exists, enabling correct
+  authorization of initial state events during room bootstrapping
+- v2 state resolution algorithm: conflicted/unconflicted partition, reverse
+  topological power sort, mainline ordering for power-level event ties,
+  iterative auth-based conflict resolution
+- helper functions for power-level extraction, membership parsing, sender
+  domain extraction
 - unit coverage for content hashes, reference-hash event IDs, event envelope
-  parsing, signing payloads, signature attachment/verification, redaction, and
-  room-version fixtures
+  parsing, signing payloads, signature attachment/verification, redaction,
+  room-version fixtures, full auth rule steps, and v2 state resolution
 
 Not implemented yet:
 
 - signing-key rotation
-- event authorization rules
-- auth event selection
-- full state resolution
-- full Matrix room membership behavior
 - full Matrix room-version conformance fixture suite
+- restricted join rule evaluation (requires parent-space membership)
+- third-party invite auth event handling
 
 ## Runtime wiring
 
@@ -42,9 +57,10 @@ The local runtime path now serves room creation, local joins, local sends,
 state summaries, joined room listing, and bounded sync summaries through the
 client-server Matrix JSON adapter. Local sends compose Matrix-shaped room
 version `12` events, persist the active server signing key, store signed event
-JSON, and record previous-event, auth-event, and signature rows. Sync
-deliberately returns event counts and membership summaries rather than plaintext
-event bodies, preserving the server-blind encrypted-room posture while the full
+JSON, record previous-event, auth-event, and signature rows, and authorize
+events against the current room state before persistence. Sync deliberately
+returns event counts and membership summaries rather than plaintext event
+bodies, preserving the server-blind encrypted-room posture while the full
 Matrix sync stream is still unfinished.
 
 State-event materialization follows Matrix semantics: an event is a state event
@@ -81,9 +97,10 @@ the URL-safe unpadded Base64 reference hash with `$` for modern room versions.
 ## Runtime event graph
 
 Runtime events store their immediate `prev_events`, current-state-derived
-`auth_events`, and attached server signatures in the persistent store. This is
-the first durable DAG slice; full auth-event selection and state resolution
-remain separate work.
+`auth_events`, and attached server signatures in the persistent store.
+Auth-event maps are built from current room state for authorization checking.
+The v2 state resolution algorithm resolves conflicting state using reverse
+topological power ordering and mainline depth.
 
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.
