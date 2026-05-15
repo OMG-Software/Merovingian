@@ -82,6 +82,6 @@ using StateMap = std::unordered_map<StateKey, StateEventReference, StateKeyHash>
 [[nodiscard]] auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::pair<StateMap, StateMap>;
 [[nodiscard]] auto reverse_topological_power_sort(std::vector<StateEventReference> const& conflicted,
                                                   StateMap const& unconflicted) -> std::vector<StateEventReference>;
-[[nodiscard]] auto mainline_order(std::vector<StateEventReference>& events, StateMap const& unconflicted) -> void;
+auto mainline_order(std::vector<StateEventReference>& events, StateMap const& unconflicted) -> void;
 
 } // namespace merovingian::events

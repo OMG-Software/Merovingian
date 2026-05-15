@@ -371,8 +371,7 @@ auto mainline_order(std::vector<StateEventReference>& events, StateMap const& un
         mainline_depth[mainline[i]] = i;
     }
 
-    auto mainline_compare = [&mainline_depth, &unconflicted](StateEventReference const& a,
-                                                             StateEventReference const& b) -> bool {
+    auto mainline_compare = [&mainline_depth](StateEventReference const& a, StateEventReference const& b) -> bool {
         auto depth_a = std::size_t{0};
         auto depth_b = std::size_t{0};
 
