@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.40
+
+- Added BDD test coverage for sync endpoint: initial sync returns stream
+  token and event bodies; incremental sync with since token returns new
+  events without duplicates.
+- Sync route now uses starts_with to support query parameters.
+
 ## 0.1.39
 
 - Added stream token type for incremental sync: encode/decode hex-based
