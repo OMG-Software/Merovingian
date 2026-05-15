@@ -35,7 +35,7 @@ No capability is production-ready until it reaches `production-gated`.
 | Authentication and sessions | `runtime-wired` | LibSodium password hashing, CSPRNG access tokens, durable token hashes, SQLite/PostgreSQL hydration into runtime sessions, client-server register/login/logout/whoami/device routes, policy checks, durable audit events, and restart-survival coverage | Add refresh-token rotation, registration tokens, explicit admin bootstrap controls, account recovery controls, global logout, and Matrix conformance fixtures. |
 | E2EE key APIs | `runtime-wired` | Key API route/planning boundary, authenticated client-server runtime dispatch for upload/query/claim/cross-signing/signature/backup route shapes, durable device/one-time/fallback/cross-signing/signature/backup storage, one-time-key consumption, fallback-key reuse, server-blind payload redaction, audit records, and SQLite restart coverage | Add Matrix device-list stream semantics, full key-count algorithms, complete backup version/session retrieval/deletion, Matrix v1.18 semantics, and conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | `yyjson`-backed strict canonical JSON parser boundary, deterministic serializer, event envelope, Matrix content hashes, reference-hash event IDs, redacted canonical signing payloads, Matrix Base64 Ed25519 signature attachment/verification boundary, persisted runtime signing key, signed runtime event JSON, durable previous/auth/signature event DAG rows, room-version-aware redaction, full v6+ auth rules (14-step spec algorithm with create/join/invite/leave/ban/power-level/join-rule checks), auth-event map from current room state, auth checking wired into event send path (conditional on create event presence for bootstrap compatibility), creator-implicit join and power-level-100 bootstrapping, v2 state resolution (conflicted/unconflicted partition, reverse topological power sort, mainline ordering, iterative auth-based conflict resolution), incremental sync with stream tokens and `since` parameter support, Matrix v1.18-compliant sync response with event bodies in timelines, encrypted-room policy, local room flow, client listener dispatch for create/join/send/state/joined_rooms/sync, and restart-survival integration coverage | Add incremental sync with long polling and filters, invite/leave room categories in sync, presence, device updates, to-device messages, restricted join rule evaluation, third-party invite auth, and broader Matrix v1.18 room-version conformance fixtures. |
-| Federation | `runtime-wired` | Runtime federation listener dispatch through the local router, inbound transaction scaffold, SSRF/TLS policy checks, trust-state logic, duplicate handling, canonical JSON Ed25519 request verification, JSON PDU event-signature verification for known remote keys, and signed-request integration coverage | Implement real server discovery, TLS verification against remote origins, joins/invites/backfill, event ingestion, and durable federation queues. |
+| Federation | `runtime-wired` | Runtime federation listener dispatch through the local router, inbound transaction scaffold, SSRF/TLS policy checks, trust-state logic, duplicate handling, canonical JSON Ed25519 request verification, JSON PDU event-signature verification for known remote keys, signed-request integration coverage, server discovery module (well-known delegation parsing, private IP rejection, FederationDestination retry state), and outbound transaction types with exponential backoff and circuit breaker policy | Implement real server discovery (DNS SRV, well-known HTTPS fetch, key fetch from `/_matrix/key/v2/server`), outbound HTTP client for federation requests, durable transaction queue persistence with retry delivery, joins/invites/backfill, event ingestion, and TLS verification against remote origins. |
 | Media repository | `runtime-wired` | Runtime media routes for authenticated local upload/download, MIME policy, quarantine/release/remove, LibSodium digest, metrics, audit, persistent metadata writes, and integration coverage | Add sandboxed processing worker, remote fetch, AV hook boundary, thumbnailing, decompression limits, and durable blob storage. |
 | Database persistence | `runtime-wired` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, fail-closed hydration, busy timeout, runtime hydration, write-through users/devices/tokens/rooms/events/E2EE keys/media/audit/admin rows, SQLite transaction rollback, atomic runtime helpers for device/token, room/membership, event/current-state, and key writes, dependency reviews under `docs/dependencies/`, PostgreSQL RAII connection/result boundary, PostgreSQL schema bootstrap/hydration/write-through path, physical migration-file loading, offline migrator scaffold, database role separation, durable trust-and-safety audit/admin action rows, and restart-survival integration coverage | Add live PostgreSQL integration tests, enforce runtime/migration grants through separate PostgreSQL users, and full persistence for federation queues, account data, policy rules, and media blob metadata. |
 | Observability and audit | `runtime-wired` | Structured logging, health snapshots, safe metrics summaries, redaction helpers, durable audit events, admin health/metrics/audit runtime endpoints, and client-server action audit persistence | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
@@ -48,8 +48,81 @@ No capability is production-ready until it reaches `production-gated`.
 ## Immediate priority order
 
 1. Add live PostgreSQL integration coverage and runtime/migration role grants.
-2. Implement incremental sync streams with stream tokens.
-3. Implement outbound federation, server discovery, and durable federation queues.
+2. Implement incremental sync with long polling, filters, invite/leave room
+   categories, and durable stream tokens.
+3. Implement outbound federation HTTP client, server key discovery
+   (`/_matrix/key/v2/server`), well-known/DNS resolution, durable transaction
+   persistence with retry delivery, and joins/invites/backfill event ingestion.
 4. Keep `docs/protocol-coverage.md` up to date with every endpoint change.
 5. Promote CI from build/test checks to capability gates with conformance,
    fuzzing, platform, packaging, and release evidence.
+
+## Completed capability details
+
+### Incremental sync (v0.1.39–v0.1.40, PR #75)
+
+- `merovingian::sync::StreamToken` with hex-based `event_ordering` and
+  `membership_ordering` fields; encode/decode/validate with BDD coverage.
+- `merovingian::core::SyncRequest` with `since`, `timeout`, `full_state`,
+  `filter` optional fields parsed from URL query strings via
+  `parse_query_params`; `percent_decode` for URL-encoded filter values.
+- Schema migration v5: `stream_ordering` column on `events`, `membership`,
+  and `invites`; `membership` type column on `membership`; `event_id` on
+  `invites`.
+- `PersistentEvent` and `PersistentMembership` gain `stream_ordering`;
+  `LocalDatabase` tracks `next_stream_ordering` (monotonic, hydrated from
+  max on restart).
+- `sync_json` rewritten: Matrix v1.18-compliant JSON with actual event
+  bodies in timelines, stream-token-based `next_batch`, incremental diffing
+  when `since` token is provided.
+- `/sync` route uses `starts_with` to accept query parameters.
+
+### Outbound federation foundation (v0.1.41, PR #76)
+
+- `merovingian::federation::ServerDiscoveryResult`: resolves server names
+  from well-known delegation URLs, extracts host/port with IPv4/IPv6 private
+  range rejection, validates server name format.
+- `merovingian::federation::FederationDestination`: tracks server name, retry
+  state (consecutive failures, next retry timestamp, circuit breaker state)
+  for durable outbound queue processing.
+- `merovingian::federation::OutboundTransaction`: tracks pending PDUs/EDUs
+  to remote servers with method/target/origin/body and retry metadata.
+- `make_outbound_transaction()`: factory for constructing outbound
+  transactions.
+- `compute_backoff()`: exponential backoff with 2 s base and 5 min cap.
+- `destination_should_retry()`: circuit breaker policy that opens after 3
+  consecutive failures and respects backoff expiry.
+- BDD coverage for transaction creation, backoff computation, circuit
+  breaker behavior, server discovery, and private IP rejection.
+
+### Remaining outbound federation work
+
+The foundational types and policies are in place but the following are still
+needed:
+
+1. **Outbound HTTP client**: A TLS-enabled HTTP/1.1 client for making
+   federation requests to remote homeservers. Requires integration with the
+   existing OpenSSL RAII boundary and the `net::TcpAcceptor` socket layer.
+   Must support `PUT /_matrix/federation/v1/send/{txnId}` and
+   `GET /_matrix/key/v2/server` at minimum.
+
+2. **Server key discovery**: Fetch and verify remote server signing keys via
+   `GET https://<server>/.well-known/matrix/server` (delegation) and
+   `GET /_matrix/key/v2/server`. Cache keys in `server_signing_keys` table
+   with expiry tracking. Verify key validity_ts against wall clock.
+
+3. **Well-known and DNS SRV resolution**: Parse `/.well-known/matrix/server`
+   JSON response, extract delegated host, perform DNS SRV lookup on
+   `_matrix-fed._tcp.<host>`, resolve to IP addresses, verify TLS
+   certificates match the resolved host, reject private/loopback IPs.
+
+4. **Durable transaction persistence**: Write outbound transactions to the
+   `federation_transactions` table before delivery attempt. On failure, update
+   `federation_destinations` with retry state. On success, mark transaction
+   as delivered. Recovery on restart: scan pending transactions and resume
+   delivery with backoff.
+
+5. **PDU delivery and event ingestion**: Send signed PDUs in federation
+   transactions to remote servers. Receive and process inbound join/leave/
+   invite/backfill PDUs through the existing route scaffolds. Persist received
+   events to the room event graph and update current state.

@@ -1,7 +1,9 @@
 federation_sources = files(
   'inbound_request.cpp',
+  'outbound_transaction.cpp',
   'runtime_federation.cpp',
   'security.cpp',
+  'server_discovery.cpp',
   'transactions.cpp',
 )
 
