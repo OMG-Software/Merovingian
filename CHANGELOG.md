@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.43
+
+- Fixed missing v5 migration record in `initialize_current_schema` (SQLite)
+  and `postgresql_schema_bootstrap_statements` (PostgreSQL): fresh databases
+  now correctly record the `stream_ordering_and_membership_columns` migration,
+  preventing schema validation failure on startup.
+- Updated schema version test assertion from `4U` to `5U`.
+- Added `005_stream_ordering_and_membership_columns.sql` migration file.
+
 ## 0.1.42
 
 - Fixed meson subdir ordering: `rooms_lib` must be defined before `events_lib`

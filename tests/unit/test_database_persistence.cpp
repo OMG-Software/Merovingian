@@ -742,7 +742,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             THEN("required Matrix storage areas have table-specific definitions")
             {
                 REQUIRE(tables.size() == 37U);
-                REQUIRE(merovingian::database::current_schema_version() == 4U);
+                REQUIRE(merovingian::database::current_schema_version() == 5U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);
