@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.39
+
+- Added stream token type for incremental sync: encode/decode hex-based
+  `event_ordering_membership_ordering` tokens that represent a position in the
+  event stream.
+- Added `sync` library with `StreamToken`, `encode_stream_token`,
+  `decode_stream_token`, and `is_valid_stream_token` functions.
+- Started incremental sync feature branch: schema migration v5 and sync
+  endpoint rewrite in progress.
+
 ## 0.1.38
 
 - Fixed event authorization for room bootstrapping: the room creator is now
