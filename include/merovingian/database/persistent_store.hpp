@@ -64,6 +64,8 @@ struct PersistentMembership final
 {
     std::string room_id{};
     std::string user_id{};
+    std::string membership{"join"};
+    std::uint64_t stream_ordering{0U};
 };
 
 struct PersistentEvent final
@@ -73,6 +75,7 @@ struct PersistentEvent final
     std::string sender_user_id{};
     std::string json{};
     std::uint64_t depth{0U};
+    std::uint64_t stream_ordering{0U};
     std::vector<std::string> prev_event_ids{};
     std::vector<std::string> auth_event_ids{};
     std::vector<events::EventSignature> signatures{};

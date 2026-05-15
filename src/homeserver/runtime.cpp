@@ -86,6 +86,13 @@ auto hydrate_local_database(LocalDatabase& database) -> void
 
     database.next_session_id = static_cast<std::uint64_t>(database.sessions.size()) + 1U;
     database.next_event_id = static_cast<std::uint64_t>(database.persistent_store.events.size()) + 1U;
+    for (auto const& event : database.persistent_store.events)
+    {
+        if (event.stream_ordering >= database.next_stream_ordering)
+        {
+            database.next_stream_ordering = event.stream_ordering + 1U;
+        }
+    }
 }
 
 auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state) -> LocalDatabase

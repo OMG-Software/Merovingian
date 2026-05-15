@@ -262,17 +262,17 @@ SCENARIO("Database migration runner applies versioned upgrade and downgrade path
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 4U);
+                REQUIRE(upgrade_plan.steps.size() == 5U);
                 REQUIRE(upgrade_plan.steps.front().version == 1U);
-                REQUIRE(upgrade_plan.steps.back().version == 4U);
+                REQUIRE(upgrade_plan.steps.back().version == 5U);
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 4U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 5U);
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 4U);
+                REQUIRE(downgrade_plan.steps.size() == 5U);
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -302,13 +302,13 @@ SCENARIO("Database migration runner upgrades existing media schemas with metadat
             {
                 REQUIRE(media_plan.current_version == 1U);
                 REQUIRE(media_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(media_plan.steps.size() == 3U);
+                REQUIRE(media_plan.steps.size() == 4U);
                 REQUIRE(media_plan.steps.front().name == "media_metadata_columns");
                 REQUIRE(media_plan.steps.front().statements.size() == 3U);
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 4U);
+                REQUIRE(upgraded.state.version == 5U);
                 REQUIRE(upgraded.state.applied_migrations[1U].name == "media_metadata_columns");
-                REQUIRE(upgraded.state.applied_migrations.back().name == "signing_key_and_event_depth");
+                REQUIRE(upgraded.state.applied_migrations.back().name == "stream_ordering_and_membership_columns");
                 REQUIRE(compatible.valid);
             }
         }
@@ -501,6 +501,7 @@ SCENARIO("Persistent store records server signing keys and event DAG metadata", 
                  "@alice:example.org",
                  R"({"type":"m.room.member","state_key":"@alice:example.org"})",
                  1U,
+                 0U,
                  {},
                  {},
                  {}},
@@ -513,6 +514,7 @@ SCENARIO("Persistent store records server signing keys and event DAG metadata", 
                  "@alice:example.org",
                  R"({"type":"m.room.message","state_key":""})",
                  2U,
+                 0U,
                  {"$state:example.org"},
                  {"$state:example.org"},
                  {{"example.org", "ed25519:auto",
@@ -740,7 +742,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             THEN("required Matrix storage areas have table-specific definitions")
             {
                 REQUIRE(tables.size() == 37U);
-                REQUIRE(merovingian::database::current_schema_version() == 4U);
+                REQUIRE(merovingian::database::current_schema_version() == 5U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);
@@ -768,6 +770,7 @@ SCENARIO("Persistent store includes event depth in event statements", "[database
                                                                              "@alice:example.org",
                                                                              R"({"type":"m.room.message"})",
                                                                              1U,
+                                                                             0U,
                                                                              {},
                                                                              {},
                                                                              {}});
@@ -776,6 +779,7 @@ SCENARIO("Persistent store includes event depth in event statements", "[database
                                                                               "@alice:example.org",
                                                                               R"({"type":"m.room.message"})",
                                                                               5U,
+                                                                              0U,
                                                                               {},
                                                                               {},
                                                                               {}});

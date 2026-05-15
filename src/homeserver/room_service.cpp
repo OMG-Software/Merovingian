@@ -36,6 +36,7 @@ namespace
         std::string event_id{};
         std::string json{};
         std::uint64_t depth{0U};
+        std::uint64_t stream_ordering{0U};
         std::vector<std::string> prev_event_ids{};
         std::vector<std::string> auth_event_ids{};
         std::vector<events::EventSignature> signatures{};
@@ -409,8 +410,7 @@ namespace
             {
                 auto auth_map = build_auth_event_map(runtime.database.persistent_store, room_id, sender,
                                                      state_key.value_or(""), event_type);
-                auto const has_create_event =
-                    !std::holds_alternative<std::nullptr_t>(auth_map.create.storage());
+                auto const has_create_event = !std::holds_alternative<std::nullptr_t>(auth_map.create.storage());
                 if (has_create_event)
                 {
                     auto const auth_decision =
@@ -427,6 +427,7 @@ namespace
             event_id.event_id,
             signed_event.event_json,
             depth,
+            0U,
             prev_events,
             auth_events,
             {{signed_event.server_name, signed_event.key_id, signed_event.signature}},
@@ -521,6 +522,7 @@ namespace
     {
         return make_operation_result(false, {}, "event authorization or signing failed", 403U);
     }
+    auto const stream_ordering = runtime.database.next_stream_ordering++;
     auto state = std::optional<database::PersistentStateEvent>{};
     if (composed->state_key.has_value())
     {
@@ -529,8 +531,8 @@ namespace
     }
     if (!database::store_event_with_state(runtime.database.persistent_store,
                                           {composed->event_id, std::string{room_id}, *user_id, composed->json,
-                                           composed->depth, composed->prev_event_ids, composed->auth_event_ids,
-                                           composed->signatures},
+                                           composed->depth, stream_ordering, composed->prev_event_ids,
+                                           composed->auth_event_ids, composed->signatures},
                                           std::move(state)))
     {
         return make_operation_result(false, {}, "event persistence failed", 500U);

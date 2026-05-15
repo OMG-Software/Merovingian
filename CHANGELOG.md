@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.1.44
+
+- Fixed `store_room_with_membership` inserting only 2 columns into the 4-column
+  `membership` table (missing `membership` and `stream_ordering`), causing
+  `createRoom` to fail at runtime.
+- Fixed SQLite and PostgreSQL hydration queries to select all columns from
+  `membership` (4 cols) and `events` (6 cols) tables, preserving
+  `stream_ordering` across restarts.
+- Fixed sync JSON leaking raw event content (`m.room.encrypted`, `secret`);
+  now outputs bounded summaries with only `event_id` and `sender`.
+
+## 0.1.43
+
+- Fixed missing v5 migration record in `initialize_current_schema` (SQLite)
+  and `postgresql_schema_bootstrap_statements` (PostgreSQL): fresh databases
+  now correctly record the `stream_ordering_and_membership_columns` migration,
+  preventing schema validation failure on startup.
+- Fixed sync JSON response missing `event_count` field that caused
+  `run_client_server_flow` to fail.
+- Fixed version string in `main.cpp` and `db_migrate.cpp` to match meson
+  project version (0.1.43).
+- Updated schema version test assertion from `4U` to `5U`.
+- Added `005_stream_ordering_and_membership_columns.sql` migration file.
+
+## 0.1.42
+
+- Fixed meson subdir ordering: `rooms_lib` must be defined before `events_lib`
+  can reference it.
+- Added missing `#include <algorithm>` for `std::reverse` in `stream_token.cpp`.
+- Fixed `test_client_server.cpp`: qualified
+  `merovingian::homeserver::handle_client_server_request` namespace,
+  added `json_value` helper for incremental sync tests, removed extraneous
+  closing braces.
+
+## 0.1.40
+
+- Added BDD test coverage for sync endpoint: initial sync returns stream
+  token and event bodies; incremental sync with since token returns new
+  events without duplicates.
+- Sync route now uses starts_with to support query parameters.
+
+## 0.1.39
+
+- Added stream token type for incremental sync: encode/decode hex-based
+  `event_ordering_membership_ordering` tokens that represent a position in the
+  event stream.
+- Added `sync` library with `StreamToken`, `encode_stream_token`,
+  `decode_stream_token`, and `is_valid_stream_token` functions.
+- Added `core::SyncRequest` and `core::parse_query_params` for extracting
+  `since`, `timeout`, `full_state`, and `filter` from `/sync` query strings.
+- Added `core::percent_decode` for URL percent-decoding sync filter values.
+- Rewrote `sync_json` to produce Matrix v1.18-compliant sync responses with
+  actual event bodies in timelines, stream-token-based `next_batch`, and
+  incremental diffing when a `since` token is provided.
+- Schema migration v5: added `stream_ordering` column to `events` and
+  `membership` tables, `membership` column to `membership` table, and
+  `event_id` + `stream_ordering` columns to `invites` table.
+- Added `stream_ordering` field to `PersistentEvent` and `PersistentMembership`
+  structs; `LocalDatabase` tracks `next_stream_ordering` for monotonically
+  increasing event stream positions.
+- Updated `store_event`, `store_event_with_state`, and `store_membership` to
+  persist stream ordering and membership type.
+- BDD test coverage for stream tokens, query parameter parsing, URL
+  percent-decoding, and updated migration count assertions for v5.
+
 ## 0.1.38
 
 - Fixed event authorization for room bootstrapping: the room creator is now

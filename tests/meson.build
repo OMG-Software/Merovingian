@@ -1,5 +1,5 @@
-if get_option('build_tests')
-  shell = find_program('sh')
+if get_option ('build_tests')
+shell = find_program('sh')
   python = find_program('python3', 'python')
   catch2_dep = dependency(
     'catch2',
@@ -62,6 +62,7 @@ if get_option('build_tests')
       'unit/test_media_security.cpp',
       'unit/test_not_null.cpp',
       'unit/test_observability.cpp',
+      'unit/test_query_params.cpp',
       'unit/test_review_regressions.cpp',
       'unit/test_room_encryption_policy.cpp',
       'unit/test_runtime_config.cpp',
@@ -73,12 +74,13 @@ if get_option('build_tests')
       'unit/test_secret_buffer.cpp',
       'unit/test_shutdown_signal.cpp',
       'unit/test_state_resolution.cpp',
+      'unit/test_stream_token.cpp',
       'unit/test_tcp_acceptor.cpp',
       'unit/test_trust_safety_policy.cpp',
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, trust_safety_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('unit-tests', unit_tests)
@@ -100,7 +102,7 @@ if get_option('build_tests')
     ),
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep],
-    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, trust_safety_lib],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
   test('integration-tests', integration_tests)

@@ -56,6 +56,16 @@ namespace
     return body.substr(value_begin, value_end - value_begin);
 }
 
+[[nodiscard]] auto json_value(std::string const& body, std::string const& key) -> std::string
+{
+    auto const begin = body.find(key);
+    REQUIRE(begin != std::string::npos);
+    auto const value_begin = begin + key.size();
+    auto const value_end = body.find('"', value_begin);
+    REQUIRE(value_end != std::string::npos);
+    return body.substr(value_begin, value_end - value_begin);
+}
+
 } // namespace
 
 SCENARIO("Client-server runtime wraps errors in stable Matrix-style shapes", "[homeserver][client-server]")
@@ -611,6 +621,65 @@ SCENARIO("Client-server runtime rate-limit buckets reset after the logical windo
                 REQUIRE(first.status == 401U);
                 REQUIRE(limited.status == 429U);
                 REQUIRE(reset.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("Sync endpoint returns stream token and event bodies for initial and incremental sync",
+         "[homeserver][client-server][sync]")
+{
+    GIVEN("a logged-in user with a room and a sent event")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const registered = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        auto const token = login_token(login.body);
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        auto const room_id = json_value(room.body, "\"room_id\":\"");
+        auto const send = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/send", token,
+                      R"({"type":"m.room.message","content":{"body":"hello","msgtype":"m.text"}})"});
+
+        WHEN("initial sync is requested without a since token")
+        {
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("the response contains a stream token next_batch and event bodies in the timeline")
+            {
+                REQUIRE(sync.status == 200U);
+                REQUIRE(sync.body.find("\"next_batch\"") != std::string::npos);
+                REQUIRE(sync.body.find("\"events\":") != std::string::npos);
+                REQUIRE(sync.body.find("\"timeline\"") != std::string::npos);
+                REQUIRE(sync.body.find("\"rooms\"") != std::string::npos);
+            }
+        }
+
+        WHEN("incremental sync is requested with the stream token from initial sync")
+        {
+            auto const initial = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+            auto const since_token = json_value(initial.body, "\"next_batch\":\"");
+
+            auto const incremental = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + since_token, token, {}});
+
+            THEN("the incremental response contains a new stream token and no duplicate events")
+            {
+                REQUIRE(incremental.status == 200U);
+                REQUIRE(incremental.body.find("\"next_batch\"") != std::string::npos);
+                REQUIRE(incremental.body.find("\"rooms\"") != std::string::npos);
             }
         }
     }

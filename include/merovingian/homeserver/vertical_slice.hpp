@@ -57,6 +57,7 @@ struct LocalDatabase final
     std::vector<observability::AuditLogEvent> audit_events{};
     database::PersistentStore persistent_store{};
     std::vector<unsigned char> signing_secret_key{};
+    std::uint64_t next_stream_ordering{1U};
 };
 
 struct HomeserverRuntime final

@@ -441,10 +441,13 @@ namespace
     {
         return false;
     }
-    if (!record_and_persist(store, record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2)",
-                                                    {
-                                                        {membership.room_id, false},
-                                                        {membership.user_id, false}
+    if (!record_and_persist(store,
+                            record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2, $3, $4)",
+                                             {
+                                                 {membership.room_id,                         false},
+                                                 {membership.user_id,                         false},
+                                                 {membership.membership,                      false},
+                                                 {std::to_string(membership.stream_ordering), false}
     })))
     {
         return false;
@@ -465,10 +468,12 @@ namespace
                                                      {room.room_id,         false},
                                                      {room.creator_user_id, false}
     });
-    auto const membership_statement = record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2)",
+    auto const membership_statement = record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2, $3, $4)",
                                                        {
-                                                           {membership.room_id, false},
-                                                           {membership.user_id, false}
+                                                           {membership.room_id,                         false},
+                                                           {membership.user_id,                         false},
+                                                           {membership.membership,                      false},
+                                                           {std::to_string(membership.stream_ordering), false}
     });
     auto const statements = std::vector<PreparedStatement>{room_statement, membership_statement};
     if (!commit_persistent_transaction(store, statements))
@@ -487,12 +492,13 @@ namespace
         return false;
     }
     auto statements = std::vector<PreparedStatement>{
-        record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5)",
+        record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6)",
                          {{event.event_id, false},
-                                                                                            {event.room_id, false},
-                                                                                            {event.sender_user_id, false},
-                                                                                            {event.json, true},
-                                                                                            {std::to_string(event.depth), false}}
+                                                                                                {event.room_id, false},
+                                                                                                {event.sender_user_id, false},
+                                                                                                {event.json, true},
+                                                                                                {std::to_string(event.depth), false},
+                                                                                                {std::to_string(event.stream_ordering), false}}
                           )
     };
     append_event_graph_statements(statements, event);
@@ -555,13 +561,14 @@ namespace
     {
         return false;
     }
-    auto const event_statement = record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5)",
+    auto const event_statement = record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6)",
                                                   {
-                                                      {event.event_id,              false},
-                                                      {event.room_id,               false},
-                                                      {event.sender_user_id,        false},
-                                                      {event.json,                  true },
-                                                      {std::to_string(event.depth), false}
+                                                      {event.event_id,                        false},
+                                                      {event.room_id,                         false},
+                                                      {event.sender_user_id,                  false},
+                                                      {event.json,                            true },
+                                                      {std::to_string(event.depth),           false},
+                                                      {std::to_string(event.stream_ordering), false}
     });
     auto statements = std::vector<PreparedStatement>{event_statement};
     append_event_graph_statements(statements, event);
