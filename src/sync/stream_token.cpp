@@ -2,6 +2,7 @@
 
 #include "merovingian/sync/stream_token.hpp"
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
 
