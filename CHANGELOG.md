@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.35
+
+- Removed the tracked `subprojects/yyjson` gitlink so CI and local clean
+  checkouts use the pinned `yyjson.wrap` fallback plus the project-owned Meson
+  package file.
+- Ignored Meson-downloaded yyjson subproject checkouts and Python bytecode
+  caches to keep generated dependency artifacts out of commits.
+
 ## 0.1.34
 
 - Runtime-wired authentication/session audit durability, admin metrics/audit
