@@ -62,6 +62,7 @@ shell = find_program('sh')
       'unit/test_media_security.cpp',
       'unit/test_not_null.cpp',
       'unit/test_observability.cpp',
+      'unit/test_outbound_client.cpp',
       'unit/test_outbound_transaction.cpp',
       'unit/test_query_params.cpp',
       'unit/test_review_regressions.cpp',
@@ -81,7 +82,7 @@ shell = find_program('sh')
       'unit/test_trust_safety_policy.cpp',
     ),
     include_directories: inc,
-    dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep],
+    dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep],
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
@@ -93,6 +94,7 @@ shell = find_program('sh')
       'integration/test_main.cpp',
       'integration/test_client_server_flow.cpp',
       'integration/test_federation_inbound_flow.cpp',
+      'integration/test_federation_outbound_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_http_server_listener_flow.cpp',
       'integration/test_media_repository_security.cpp',
@@ -103,7 +105,7 @@ shell = find_program('sh')
       'integration/test_trust_safety_policy_flow.cpp',
     ),
     include_directories: inc,
-    dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep],
+    dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep],
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 

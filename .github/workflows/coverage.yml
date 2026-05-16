@@ -32,6 +32,7 @@ jobs:
             catch2 \
             clang \
             gcovr \
+            libcurl4-openssl-dev \
             libpq-dev \
             libssl-dev \
             libsqlite3-dev \

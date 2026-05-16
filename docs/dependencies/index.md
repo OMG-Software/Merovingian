@@ -10,6 +10,7 @@ or tooling boundary so upstream APIs do not leak across the homeserver.
 | --- | --- | --- |
 | LibSodium | Runtime cryptography | [libsodium.md](libsodium.md) |
 | OpenSSL | Runtime TLS listener boundary | [openssl.md](openssl.md) |
+| libcurl | Federation outbound HTTP client | [libcurl.md](libcurl.md) |
 | PostgreSQL libpq | Runtime PostgreSQL client | [postgresql-libpq.md](postgresql-libpq.md) |
 | SQLite | Runtime/development embedded database | [sqlite.md](sqlite.md) |
 | yyjson | Canonical JSON parser adapter | [yyjson.md](yyjson.md) |
