@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.50
+
+- Refreshed `docs/progress.md` Federation row evidence and production-gap
+  text to reflect the libcurl-backed `OutboundClient`, the
+  `perform_outbound_transaction` wiring, the per-platform TLS
+  integration coverage, and the response JSON refactor. Replaced the
+  outdated "Remaining outbound federation work" section with a current
+  list of what still has to land for federation.
+- Refreshed `docs/protocol-coverage.md`: split the Transactions row
+  into inbound and outbound entries, moved the Federation queues row
+  from `scaffolded` to `partial`, added a new `not-started` row for
+  the missing inbound `GET /_matrix/key/v2/server` key publication
+  endpoint, and updated Server discovery and Signing verification
+  notes to reflect what the `OutboundClient` now provides.
+- Added `docs/alpha-readiness.md` — the ranked roadmap from where the
+  project is now to a federated alpha. Eight blockers with rationale,
+  scope, effort, and current status; a cross-cutting parallel-work
+  list; a single-server preview path for testers; and a rough
+  end-to-end estimate.
+
 ## 0.1.49
 
 - Phase A complete: replaced every hand-rolled JSON response in
