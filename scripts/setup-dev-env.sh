@@ -151,28 +151,28 @@ detect_package_manager() {
 package_list_for() {
     case "$1" in
         apt)
-            printf '%s\n' "build-essential clang lld meson ninja-build pkg-config git python3 libsodium-dev libpq-dev libsqlite3-dev libssl-dev catch2 clang-format clang-tidy cppcheck"
+            printf '%s\n' "build-essential clang lld meson ninja-build pkg-config git python3 libsodium-dev libpq-dev libsqlite3-dev libssl-dev libcurl4-openssl-dev catch2 clang-format clang-tidy cppcheck"
             ;;
         dnf)
-            printf '%s\n' "gcc-c++ clang lld meson ninja-build pkgconf-pkg-config git python3 libsodium-devel libpq-devel sqlite-devel openssl-devel catch-devel clang-tools-extra cppcheck"
+            printf '%s\n' "gcc-c++ clang lld meson ninja-build pkgconf-pkg-config git python3 libsodium-devel libpq-devel sqlite-devel openssl-devel libcurl-devel catch-devel clang-tools-extra cppcheck"
             ;;
         zypper)
-            printf '%s\n' "gcc-c++ clang lld meson ninja pkg-config git python3 libsodium-devel postgresql-devel sqlite3-devel libopenssl-devel catch2-devel clang-tools cppcheck"
+            printf '%s\n' "gcc-c++ clang lld meson ninja pkg-config git python3 libsodium-devel postgresql-devel sqlite3-devel libopenssl-devel libcurl-devel catch2-devel clang-tools cppcheck"
             ;;
         pacman)
-            printf '%s\n' "base-devel clang lld meson ninja pkgconf git python libsodium postgresql-libs sqlite openssl catch2 clang-tools-extra cppcheck"
+            printf '%s\n' "base-devel clang lld meson ninja pkgconf git python libsodium postgresql-libs sqlite openssl curl catch2 clang-tools-extra cppcheck"
             ;;
         apk)
-            printf '%s\n' "build-base clang lld meson ninja pkgconf git python3 libsodium-dev postgresql-dev sqlite-dev openssl-dev catch2-dev clang-extra-tools cppcheck"
+            printf '%s\n' "build-base clang lld meson ninja pkgconf git python3 libsodium-dev postgresql-dev sqlite-dev openssl-dev curl-dev catch2-dev clang-extra-tools cppcheck"
             ;;
         pkg)
-            printf '%s\n' "llvm meson ninja pkgconf git python3 libsodium postgresql16-client sqlite3 openssl catch2 cppcheck"
+            printf '%s\n' "llvm meson ninja pkgconf git python3 libsodium postgresql16-client sqlite3 openssl curl catch2 cppcheck"
             ;;
         pkg_add)
-            printf '%s\n' "llvm meson ninja pkgconf git libsodium postgresql-client sqlite3 openssl catch2 cppcheck"
+            printf '%s\n' "llvm meson ninja pkgconf git libsodium postgresql-client sqlite3 openssl curl catch2 cppcheck"
             ;;
         pkgin)
-            printf '%s\n' "clang meson ninja-build pkg-config git python311 libsodium postgresql16-client sqlite3 openssl catch2 cppcheck"
+            printf '%s\n' "clang meson ninja-build pkg-config git python311 libsodium postgresql16-client sqlite3 openssl curl catch2 cppcheck"
             ;;
         *)
             fail "unsupported package manager: $1"
@@ -274,7 +274,7 @@ check_environment() {
         check_command "$command_name" || status=1
     done
 
-    for module in libsodium sqlite3 libpq openssl; do
+    for module in libsodium sqlite3 libpq openssl libcurl; do
         check_pkg_config_module "$pc_tool" "$module" || status=1
     done
 

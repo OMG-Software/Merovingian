@@ -1,5 +1,144 @@
 # Changelog
 
+## 0.1.49
+
+- Phase A complete: replaced every hand-rolled JSON response in
+  `src/homeserver/client_server.cpp` with the canonical JSON value
+  model plus `serialize_canonical`. Affected response paths include
+  `matrix_error`, `devices_json`, `joined_rooms_json`, `sync_json`,
+  `safety_reports_json`, the `wrap` single-field helper, the device
+  key and one-time key responses, and the register/login/whoami
+  responses.
+- Deleted the local `json_escape` helper. Its replacement is the
+  canonical serializer, which correctly emits `\u00XX` for U+0000..U+001F
+  control characters and validates UTF-8 — closing the latent gap in
+  the previous hand-rolled escaper.
+- Added a thin builder facade (anonymous-namespace helpers
+  `json_str`, `json_int`, `json_bool`, `json_arr`, `json_obj`,
+  `json_member`, `json_serialize`, `json_embed_raw`) over
+  `canonicaljson::Value` so response paths read as a value tree rather
+  than as string concatenation. The facade is internal to
+  `client_server.cpp` for now; it can be extracted to a header once a
+  second caller needs it.
+- Device key and one-time key responses embed the stored key payload
+  through `json_embed_raw`, which parses the blob with the canonical
+  parser before re-serialization. Invalid or non-UTF-8 stored payloads
+  now surface as `null` in the response rather than producing
+  malformed JSON on the wire.
+- Response key ordering switches from hand-rolled insertion order to
+  the canonical lexicographic order. Existing tests verify substrings,
+  not key positions, so the on-wire shape stays equivalent for every
+  consumer.
+
+## 0.1.48
+
+- Added an optional `trusted_ca_pem` field to `OutboundRequest`. When empty
+  the system trust store stays in effect; when populated the PEM blob is
+  attached via `CURLOPT_CAINFO_BLOB` so tests and pinned-CA deployments
+  can trust a specific certificate without writing it to disk.
+- Added `tests/integration/test_federation_outbound_flow.cpp`: spins up a
+  one-shot TLS test server backed by `merovingian::homeserver::TlsServerContext`
+  with a self-signed CN=localhost certificate and drives
+  `OutboundClient::perform` against it through four scenarios. Valid cert
+  + matching hostname + trusted CA round-trips a 200 response; a mismatched
+  hostname fails with `tls_verification_failed`; an empty trust bundle
+  fails with `tls_verification_failed`; a 302 response surfaces as
+  `redirect_rejected` with the redirect status preserved on the result.
+- Updated `docs/json-output-and-http-client-hardening.md` to mark Phase B
+  slice 3b complete.
+- `tests/integration/test_main.cpp` now ignores `SIGPIPE` at process
+  startup so the integration test process is not killed when a TLS peer
+  closes the connection during handshake or before the server thread's
+  next write. Failures continue to surface through return codes.
+
+## 0.1.47
+
+- Wired `merovingian::http::OutboundClient` into the federation outbound
+  path. Added `OutboundCall` (composed transaction + validated
+  resolution + signing identity), `build_outbound_request` (pure URL,
+  header, and body builder), `apply_outbound_result` (updates the
+  destination retry state and last_success_ts based on the result), and
+  `perform_outbound_transaction` (single-attempt wrapper that
+  short-circuits to `circuit_open` when `destination_should_retry`
+  rejects the attempt and otherwise calls `client.perform`).
+- The X-Matrix Authorization header is built through
+  `make_federation_signature` so outbound and inbound speak the same
+  signing primitive.
+- Federation outbound requests inherit all libcurl security defaults
+  from slice 2: peer + hostname verification, redirects refused,
+  https-only protocol, signal-driven resolution disabled, explicit
+  timeouts, response body cap, and CURLOPT_RESOLVE-pinned DNS.
+- Added BDD coverage for the request builder (URL composition, method,
+  body, pinned addresses, Authorization and Content-Type headers), for
+  retry-state mutations on success and on multiple failure modes
+  (transport error, non-2xx response), and for circuit-breaker early
+  return without any network I/O.
+- Reordered `src/meson.build` so `http_lib` is defined before
+  `federation_lib`; updated `src/federation/meson.build` to link
+  `http_lib` and declare `libcurl_dep`.
+- Updated `docs/json-output-and-http-client-hardening.md` to mark Phase
+  B slice 3 complete and document slice 3b (local TLS integration
+  test harness) as the remaining piece.
+
+## 0.1.46
+
+- Implemented the libcurl-backed `perform()` on
+  `merovingian::http::OutboundClient`. Each request runs with peer
+  verification on (`CURLOPT_SSL_VERIFYPEER=1`), strict hostname
+  verification on (`CURLOPT_SSL_VERIFYHOST=2`), redirects refused
+  (`CURLOPT_FOLLOWLOCATION=0`), the protocol restricted to https
+  (`CURLOPT_PROTOCOLS_STR="https"`), explicit connect and total timeouts,
+  and signal-driven resolution disabled.
+- Pinned DNS for the request URL to the caller-supplied
+  `pinned_addresses` via `CURLOPT_RESOLVE` so the connection cannot
+  drift to a different address after the federation security policy has
+  validated the destination.
+- Mapped libcurl failure modes onto `OutboundError`:
+  `tls_verification_failed`, `connection_failed`, `timeout`,
+  `response_too_large`, and a default `network_error`. A 3xx response
+  surfaces as `redirect_rejected` with the status and headers preserved
+  on the result for audit.
+- Capped response body capture at `max_response_body_bytes`. Oversized
+  responses abort the transfer and report `response_too_large`.
+- Replaced the `not_implemented` stub error with the network-level error
+  set. Updated tests to cover the new error names and the pre-network
+  fail-closed behavior for cleartext URLs, missing pinned addresses, and
+  unknown HTTP methods.
+- Updated `docs/http-transport.md` and
+  `docs/json-output-and-http-client-hardening.md` to reflect Phase B
+  slice 2 completion.
+- Propagated the libcurl dependency through `scripts/setup-dev-env.sh`,
+  `scripts/wsl-setup.sh`, `scripts/build-linux.sh`, `scripts/build-bsd.sh`,
+  the `Dockerfile` (build and runtime layers), and the CI workflows
+  (`ci.yml`, `codeql.yml`, `coverage.yml`, `sanitizers.yml`,
+  `static-analysis.yml`). The FreeBSD CI lane adds `curl` to its
+  `pkg install` line.
+- Added `docs/dependencies/libcurl.md` recording the dependency review;
+  added the row to `docs/dependencies/index.md`, mentioned libcurl
+  headers in `docs/dev-environment.md`, and added the new doc to
+  `scripts/check-release-readiness.sh`.
+
+## 0.1.45
+
+- Added foundation slice of the federation outbound HTTP client:
+  `merovingian::http::OutboundClient`, `OutboundRequest`, `OutboundResponse`,
+  `OutboundResult`, and `OutboundError`. The slice introduces the public
+  surface and a fail-closed `perform()` returning `not_implemented` so
+  callers cannot mistake the result for a successful network round trip.
+- Added `validate_outbound_request`: a pure validator that rejects unknown
+  HTTP methods, cleartext URLs, malformed URLs, and requests without
+  caller-pinned addresses. Keeps the SSRF policy in
+  `merovingian::federation::security` as the single source of truth.
+- Added BDD test coverage for outbound validation, stub fail-closed
+  behavior, and stable audit-friendly error naming.
+- Added `libcurl` (>= 7.85.0) as a build dependency wired into `http_lib`.
+  The TLS backend is whatever the system libcurl was built against; a
+  `subprojects/curl.wrap` fallback is deferred until a known-good WrapDB
+  release is pinned.
+- Updated `docs/http-transport.md` and
+  `docs/json-output-and-http-client-hardening.md` to record the slice 1
+  surface and the work remaining in slices 2 and 3.
+
 ## 0.1.44
 
 - Fixed `store_room_with_membership` inserting only 2 columns into the 4-column
