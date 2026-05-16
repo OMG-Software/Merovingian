@@ -684,3 +684,139 @@ SCENARIO("Sync endpoint returns stream token and event bodies for initial and in
         }
     }
 }
+
+SCENARIO("Client-server /versions advertises Matrix spec compatibility to unauthenticated clients",
+         "[homeserver][client-server][versions]")
+{
+    GIVEN("a started client-server runtime")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+
+        WHEN("an unauthenticated client requests GET /_matrix/client/versions")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/versions", {}, {}});
+
+            THEN("the server answers 200 with a versions array and unstable_features object")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("\"versions\"") != std::string::npos);
+                REQUIRE(response.body.find("\"v1.18\"") != std::string::npos);
+                REQUIRE(response.body.find("\"v1.1\"") != std::string::npos);
+                REQUIRE(response.body.find("\"unstable_features\"") != std::string::npos);
+                REQUIRE_FALSE(merovingian::homeserver::is_matrix_error_response(response));
+            }
+        }
+    }
+}
+
+SCENARIO("Sync surfaces invite and leave room categories alongside Matrix-spec top-level stubs",
+         "[homeserver][client-server][sync]")
+{
+    GIVEN("a registered user with an outstanding invite and a left room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+
+        auto const register_response = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+        REQUIRE(register_response.status == 200U);
+        auto const user_id = json_value(register_response.body, "\"user_id\":\"");
+
+        auto const login_response = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
+                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")" + user_id +
+                          R"("},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login_response.status == 200U);
+        auto const token = login_token(login_response.body);
+
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!invited_room:example.org", user_id, "invite", 0U});
+        runtime.homeserver.database.persistent_store.memberships.push_back(
+            {"!left_room:example.org", user_id, "leave", 0U});
+
+        WHEN("the user requests /sync")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("the response carries invite/leave room categories and Matrix-spec top-level keys")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("\"invite\"") != std::string::npos);
+                REQUIRE(response.body.find("!invited_room:example.org") != std::string::npos);
+                REQUIRE(response.body.find("\"invite_state\"") != std::string::npos);
+                REQUIRE(response.body.find("\"leave\"") != std::string::npos);
+                REQUIRE(response.body.find("!left_room:example.org") != std::string::npos);
+                REQUIRE(response.body.find("\"account_data\"") != std::string::npos);
+                REQUIRE(response.body.find("\"presence\"") != std::string::npos);
+                REQUIRE(response.body.find("\"to_device\"") != std::string::npos);
+                REQUIRE(response.body.find("\"device_lists\"") != std::string::npos);
+                REQUIRE(response.body.find("\"device_one_time_keys_count\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server enforces per-endpoint rate limits with 429 M_LIMIT_EXCEEDED",
+         "[homeserver][client-server][rate-limit]")
+{
+    GIVEN("a started client-server runtime")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+
+        WHEN("registration is invoked more times than the endpoint policy allows in the window")
+        {
+            // endpoint_default_rate_limit returns {max_requests=5, window_seconds=60}
+            // for POST /_matrix/client/v3/register, so the sixth request inside
+            // the wall-clock window must fail closed.
+            auto last_status = std::uint16_t{0U};
+            auto last_body = std::string{};
+            for (auto index = 0; index < 6; ++index)
+            {
+                auto body = std::string{"{\"username\":\"user"};
+                body += std::to_string(index);
+                body += "\",\"password\":\"CorrectHorse7!\"}";
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {}, body});
+                last_status = response.status;
+                last_body = response.body;
+            }
+
+            THEN("the sixth attempt fails closed with 429 and M_LIMIT_EXCEEDED")
+            {
+                REQUIRE(last_status == 429U);
+                REQUIRE(last_body.find("M_LIMIT_EXCEEDED") != std::string::npos);
+            }
+        }
+
+        WHEN("an unrelated endpoint is hit after exhausting registration's quota")
+        {
+            for (auto index = 0; index < 6; ++index)
+            {
+                auto body = std::string{"{\"username\":\"flood"};
+                body += std::to_string(index);
+                body += "\",\"password\":\"CorrectHorse7!\"}";
+                static_cast<void>(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {}, body}));
+            }
+
+            auto const versions_response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/versions", {}, {}});
+
+            THEN("the other endpoint runs on its own bucket and is not rate-limited")
+            {
+                REQUIRE(versions_response.status == 200U);
+                REQUIRE_FALSE(merovingian::homeserver::is_matrix_error_response(versions_response));
+            }
+        }
+    }
+}

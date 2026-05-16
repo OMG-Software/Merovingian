@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.51
+
+- Added `GET /_matrix/client/versions` — the unauthenticated spec
+  discovery endpoint every Matrix client hits before login. Responds
+  before the auth check with a `versions` array (v1.1 through v1.18)
+  and an empty `unstable_features` object.
+- Expanded `sync_json` to a Matrix v1.18-spec-complete response shape.
+  `rooms.invite` and `rooms.leave` are now populated by walking
+  `PersistentMembership` for entries matching the requesting user.
+  Each invite carries an empty `invite_state.events`; each leave
+  carries an empty `timeline` and `state`. Top-level `presence`,
+  `account_data`, `to_device`, `device_lists`, and
+  `device_one_time_keys_count` keys are emitted with empty payloads
+  so clients can parse the response without falling back to spec
+  defaults. The behaviour for those surfaces lands in later changes;
+  the shape stays stable.
+- Rate-limit enforcement now uses per-endpoint policies. `allow()` in
+  `client_server.cpp` consults `http::endpoint_default_rate_limit` for
+  the request's method and target, so login and register carry the
+  tight 5-request quota, key and device APIs carry 30, media APIs 20,
+  federation APIs 120, and the default falls back to 60. The runtime
+  `ClientApiLimits::max_requests_per_bucket` acts as a ceiling on top
+  of the policy so tests can drive the limiter from a single request.
+  Quota breach returns 429 `M_LIMIT_EXCEEDED`. Window length stays in
+  request-count units; switching the window to wall-clock seconds is
+  deferred until an injectable time source is in place for tests.
+- Added BDD coverage in `tests/unit/test_client_server.cpp`:
+  unauthenticated /versions; sync surfacing invite/leave room
+  categories plus the new top-level stubs; per-endpoint rate-limit
+  enforcement (sixth registration in the window returns 429
+  M_LIMIT_EXCEEDED, while another endpoint runs on its own bucket).
+
 ## 0.1.50
 
 - Refreshed `docs/progress.md` Federation row evidence and production-gap

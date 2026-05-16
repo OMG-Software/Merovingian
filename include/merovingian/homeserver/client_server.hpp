@@ -23,6 +23,10 @@ struct ClientRateLimitCounter final
 {
     std::string bucket{};
     std::uint32_t count{0U};
+    // Logical request-count clock value when the current window started.
+    // The bucket-level cap comes from `http::endpoint_default_rate_limit`
+    // for the request's method and target (with `ClientApiLimits::max_requests_per_bucket`
+    // acting as an override ceiling for tests that need a tighter limit).
     std::uint64_t window_start_request{0U};
 };
 

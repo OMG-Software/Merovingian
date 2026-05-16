@@ -206,16 +206,32 @@ messages.
 week depending on how much of the Matrix v1.18 fixture corpus we
 adopt.
 
-**Status today.** `not-started` for versions. `partial` for sync.
+**Status today (v0.1.51).** `GET /_matrix/client/versions` is wired
+and answers with `v1.1`–`v1.18` plus an empty `unstable_features`
+object before the auth check. Sync now emits the Matrix-spec response
+shape — `rooms.join`, `rooms.invite`, `rooms.leave` plus top-level
+`presence`, `account_data`, `to_device`, `device_lists`, and
+`device_one_time_keys_count` keys — with invite and leave room
+membership populated from `PersistentMembership`. Remaining work:
+populate the new top-level surfaces with real behaviour (presence
+updates, device-list change tracking, to-device queueing, account
+data), add Matrix v1.18 conformance fixtures, and add filter and
+long-polling support to `/sync`.
 
 ## Cross-cutting work in parallel
 
 These are not on the critical path but should land before exposing the
 server to external test users:
 
-- **Rate-limit runtime accounting.** The policy primitives exist; the
-  listener does not yet enforce per-endpoint limits. Without this we
-  expose ourselves to trivial abuse during alpha.
+- **Rate-limit runtime accounting.** Done as of v0.1.51. `allow()` in
+  `client_server.cpp` consults `http::endpoint_default_rate_limit`
+  per request and applies the lower of that quota and the runtime's
+  `max_requests_per_bucket` ceiling. Quota breaches return 429
+  `M_LIMIT_EXCEEDED`. The window stays in request-count units for now
+  so unit tests can exercise the limiter without sleeping; the
+  remaining work is switching to wall-clock seconds via an injectable
+  time source, durable persistence of bucket state across restart,
+  and operator-tunable policy overrides.
 - **PostgreSQL live integration.** SQLite is restart-tested; PostgreSQL
   has the code path but no live integration coverage in CI. Alpha on
   SQLite is fine; flag the gap if a tester runs Postgres.
@@ -240,9 +256,9 @@ single homeserver with the following caveats:
   users on the same instance.
 - No remote media. Local upload and download work; remote fetches are
   disabled and fail closed.
-- Client must accept `GET /_matrix/client/versions` returning a useful
-  result. That endpoint is missing today and should be added (item 8
-  above) before any client testing.
+- Client `GET /_matrix/client/versions` advertises `v1.1`–`v1.18` and
+  empty `unstable_features` as of v0.1.51, so modern clients will
+  proceed past discovery against this server.
 - E2EE will show "unverified device" warnings in modern clients.
 
 Treat the single-server preview as a way to surface bugs in the

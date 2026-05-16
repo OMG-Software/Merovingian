@@ -9,6 +9,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -458,9 +459,24 @@ namespace
         return req.method + ' ' + req.target;
     }
 
+    // Per-bucket request limiter. The cap is the lower of the per-endpoint
+    // `http::endpoint_default_rate_limit` quota (login and register 5,
+    // keys and devices 30, media 20, federation 120, default 60) and the
+    // runtime-configured `ClientApiLimits::max_requests_per_bucket` ceiling
+    // (which tests use to drive the limiter from a single request). The
+    // window length stays in request-count units via
+    // `ClientApiLimits::rate_limit_window_requests`; switching the window
+    // to wall-clock seconds is a follow-up that needs an injectable time
+    // source to remain unit-testable without sleeps.
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> bool
     {
         ++rt.request_clock;
+        auto const policy = http::endpoint_default_rate_limit(req.method, req.target);
+        if (!http::rate_limit_policy_is_valid(policy))
+        {
+            return false;
+        }
+        auto const max_requests = std::min(rt.limits.max_requests_per_bucket, policy.max_requests);
         auto const bucket = normalized_bucket(req);
         auto const it = std::ranges::find_if(rt.rate_limits, [&bucket](ClientRateLimitCounter const& c) {
             return c.bucket == bucket;
@@ -475,7 +491,7 @@ namespace
             it->count = 0U;
             it->window_start_request = rt.request_clock;
         }
-        if (it->count >= rt.limits.max_requests_per_bucket)
+        if (it->count >= max_requests)
         {
             return false;
         }
@@ -601,9 +617,58 @@ namespace
                 })));
         }
 
+        // Walk PersistentMembership to surface invite and leave room categories.
+        // Matrix clients expect rooms.invite[<id>].invite_state.events and
+        // rooms.leave[<id>].timeline.events even when both arrays are empty,
+        // so emit the keys with empty payloads when the runtime has no
+        // populated state to attach yet.
+        auto invite_members = canonicaljson::Object{};
+        auto leave_members = canonicaljson::Object{};
+        for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
+        {
+            if (membership.user_id != user)
+            {
+                continue;
+            }
+            if (membership.membership == "invite")
+            {
+                invite_members.push_back(json_member(
+                    membership.room_id,
+                    json_obj({json_member("invite_state", json_obj({json_member("events", json_arr({}))}))})));
+            }
+            else if (membership.membership == "leave" || membership.membership == "ban")
+            {
+                leave_members.push_back(json_member(
+                    membership.room_id, json_obj({
+                                            json_member("timeline", json_obj({
+                                                                        json_member("events", json_arr({})),
+                                                                        json_member("limited", json_bool(false)),
+                                                                        json_member("event_count", json_int(0)),
+                                                                    })),
+                                            json_member("state", json_obj({json_member("events", json_arr({}))})),
+                                        })));
+            }
+        }
+
         return json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
-            json_member("rooms", json_obj({json_member("join", json_obj(std::move(join_members)))})),
+            json_member("rooms", json_obj({
+                                     json_member("join", json_obj(std::move(join_members))),
+                                     json_member("invite", json_obj(std::move(invite_members))),
+                                     json_member("leave", json_obj(std::move(leave_members))),
+                                 })),
+            // Matrix v1.18 top-level placeholders. Behaviour for these
+            // surfaces lands later; emitting the keys keeps the response
+            // shape spec-complete so clients can parse without falling back
+            // to defaults.
+            json_member("presence", json_obj({json_member("events", json_arr({}))})),
+            json_member("account_data", json_obj({json_member("events", json_arr({}))})),
+            json_member("to_device", json_obj({json_member("events", json_arr({}))})),
+            json_member("device_lists", json_obj({
+                                            json_member("changed", json_arr({})),
+                                            json_member("left", json_arr({})),
+                                        })),
+            json_member("device_one_time_keys_count", json_obj({})),
         }));
     }
 
@@ -1066,6 +1131,23 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     if (!allow(rt, req))
     {
         return err(429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
+    }
+
+    // GET /_matrix/client/versions is the unauthenticated discovery endpoint
+    // most Matrix clients hit first. It must answer before any auth check so
+    // a fresh client can negotiate spec compatibility before it has a token.
+    if (req.method == "GET" && req.target == "/_matrix/client/versions")
+    {
+        auto versions = canonicaljson::Array{};
+        for (auto const& spec : {"v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9", "v1.10",
+                                 "v1.11", "v1.12", "v1.13", "v1.14", "v1.15", "v1.16", "v1.17", "v1.18"})
+        {
+            versions.push_back(json_str(spec));
+        }
+        return resp(200U, json_serialize(json_obj({
+                              json_member("versions", json_arr(std::move(versions))),
+                              json_member("unstable_features", json_obj({})),
+                          })));
     }
 
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register")
