@@ -155,6 +155,9 @@ auto DispatchWorker::take_next(OutboundTransaction& out) -> bool
     }
     out = std::move(*ready);
     queue_.erase(ready);
+    // Removing an entry frees a slot under max_queue_depth — top up the
+    // active queue from any replay overflow that was parked at startup.
+    (void)top_up_replay_locked();
     return true;
 }
 
@@ -179,21 +182,35 @@ auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, st
     transaction.retry_count += 1U;
     if (transaction.retry_count >= config_.max_retries)
     {
-        if (persistent_store_ != nullptr)
-        {
-            (void)database::delete_federation_transaction(*persistent_store_, transaction.transaction_id);
-        }
+        // Hold the worker mutex while mutating durable state. The persistent
+        // store helpers mutate shared vectors in-place; enqueue/run_once also
+        // touch them under this same mutex, so without serialization the
+        // concurrent access is a data race. If the durable delete fails we
+        // surface the transaction as failed instead of dropping it cleanly,
+        // so the row survives in storage and is replayed next start.
         auto lock = std::lock_guard{mutex_};
+        if (persistent_store_ != nullptr &&
+            !database::delete_federation_transaction(*persistent_store_, transaction.transaction_id))
+        {
+            ++summary_.failed;
+            return;
+        }
         ++summary_.dropped;
         return;
     }
     transaction.next_retry_ts = now_ts + compute_backoff(transaction.retry_count);
-    if (persistent_store_ != nullptr)
-    {
-        (void)database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction));
-    }
     {
         auto lock = std::lock_guard{mutex_};
+        // Persist the bumped retry state before re-queuing. A persist failure
+        // is a hard failure: silently re-queuing would let durable retry
+        // state diverge from in-memory state, and on restart the older
+        // (or missing) durable row would replace the live one.
+        if (persistent_store_ != nullptr &&
+            !database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction)))
+        {
+            ++summary_.failed;
+            return;
+        }
         queue_.push_back(std::move(transaction));
         ++summary_.pending;
     }
@@ -227,12 +244,13 @@ auto DispatchWorker::run_once() -> bool
         result.sent = false;
         result.error = "discovery_failed";
         apply_outbound_result(destination, result, now);
-        if (persistent_store_ != nullptr)
-        {
-            (void)database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
-        }
         {
             auto lock = std::lock_guard{mutex_};
+            if (persistent_store_ != nullptr)
+            {
+                (void)database::store_federation_destination(*persistent_store_,
+                                                             to_persistent_destination(destination));
+            }
             ++summary_.failed;
         }
         re_enqueue_with_backoff(std::move(transaction), now);
@@ -253,33 +271,58 @@ auto DispatchWorker::run_once() -> bool
 
     if (result.sent && result.http_status >= 200U && result.http_status < 300U)
     {
-        if (persistent_store_ != nullptr)
+        // Persist destination success state and drop the durable queue row.
+        // If the durable delete fails, do NOT count the transaction as
+        // delivered: leaving the row would cause replay-on-restart to re-send
+        // a transaction this run already reported as delivered. Treat as a
+        // transport failure and let the standard retry path handle it.
+        auto durable_drop_failed = false;
         {
-            (void)database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
-            (void)database::delete_federation_transaction(*persistent_store_, transaction.transaction_id);
+            auto lock = std::lock_guard{mutex_};
+            if (persistent_store_ != nullptr)
+            {
+                (void)database::store_federation_destination(*persistent_store_,
+                                                             to_persistent_destination(destination));
+                if (!database::delete_federation_transaction(*persistent_store_, transaction.transaction_id))
+                {
+                    durable_drop_failed = true;
+                    ++summary_.failed;
+                }
+            }
+            if (!durable_drop_failed)
+            {
+                ++summary_.delivered;
+            }
         }
-        auto lock = std::lock_guard{mutex_};
-        ++summary_.delivered;
+        if (durable_drop_failed)
+        {
+            re_enqueue_with_backoff(std::move(transaction), now);
+        }
         return true;
     }
     {
         auto lock = std::lock_guard{mutex_};
+        if (persistent_store_ != nullptr)
+        {
+            (void)database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
+        }
         ++summary_.failed;
-    }
-    if (persistent_store_ != nullptr)
-    {
-        (void)database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
     }
     if (result.error == "circuit_open")
     {
         transaction.next_retry_ts = destination.retry_after_ts > now ? destination.retry_after_ts
                                                                      : now + compute_backoff(transaction.retry_count);
-        if (persistent_store_ != nullptr)
-        {
-            (void)database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction));
-        }
         {
             auto lock = std::lock_guard{mutex_};
+            // Same hard-failure rule as re_enqueue_with_backoff: persisting the
+            // updated next_retry_ts must succeed before we trust the in-memory
+            // queue entry to remain authoritative across a restart.
+            if (persistent_store_ != nullptr &&
+                !database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction)))
+            {
+                ++summary_.failed;
+                return true;
+            }
             queue_.push_back(std::move(transaction));
             ++summary_.pending;
         }
@@ -288,6 +331,24 @@ auto DispatchWorker::run_once() -> bool
     }
     re_enqueue_with_backoff(std::move(transaction), now);
     return true;
+}
+
+auto DispatchWorker::top_up_replay_locked() -> std::size_t
+{
+    auto promoted = std::size_t{0U};
+    while (!pending_replay_.empty())
+    {
+        if (config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth)
+        {
+            break;
+        }
+        queue_.push_back(std::move(pending_replay_.front()));
+        pending_replay_.pop_front();
+        ++summary_.enqueued;
+        ++summary_.pending;
+        ++promoted;
+    }
+    return promoted;
 }
 
 auto DispatchWorker::replay_pending() -> std::size_t
@@ -321,7 +382,11 @@ auto DispatchWorker::replay_pending() -> std::size_t
             }
             if (config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth)
             {
-                break;
+                // Park overflow in pending_replay_ instead of stranding it in
+                // durable storage. top_up_replay_locked() pulls more rows in
+                // as in-flight work completes.
+                pending_replay_.push_back(std::move(outbound));
+                continue;
             }
             queue_.push_back(std::move(outbound));
             ++summary_.enqueued;

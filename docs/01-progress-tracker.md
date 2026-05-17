@@ -118,7 +118,12 @@ deployment milestone.
   the destination retry deadline. Pending outbound transactions and destination
   retry state are persisted to `federation_transactions` and
   `federation_destinations`, then replayed into a restarted worker; shutdown
-  leaves backoff-delayed rows durable for the next start.
+  leaves backoff-delayed rows durable for the next start. All
+  `PersistentStore` mutations from the worker are serialised under the worker
+  mutex, durable persistence failures on the retry/delivery paths are treated
+  as hard failures rather than silent drops, and replay parks rows beyond
+  `max_queue_depth` in an overflow buffer that drains into the active queue
+  as in-flight work completes.
 - Inbound PDU + EDU ingestion: canonical-JSON transaction body parser,
   PDU envelope extraction, `FederationRuntimeState::pdu_sink` and
   `edu_sink` hooks, classification and per-type content validation for

@@ -261,11 +261,17 @@ namespace
         return connection.execute({std::move(name), std::move(sql), {}});
     }
 
-    [[nodiscard]] auto schema_has_existing_tables(PostgresqlConnection& connection) -> std::optional<bool>
+    // Returns whether the Merovingian schema specifically has been bootstrapped,
+    // detected by the presence of the `schema_migrations` ledger. Looking only
+    // at "any table in public" misclassifies shared databases that hold
+    // unrelated tables and would skip bootstrap, then fail downstream when
+    // `schema_migrations` turns out to be missing.
+    [[nodiscard]] auto merovingian_schema_is_initialized(PostgresqlConnection& connection) -> std::optional<bool>
     {
-        auto tables =
-            query_rows(connection, "postgresql_detect_existing_schema",
-                       "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' LIMIT 1");
+        auto tables = query_rows(
+            connection, "postgresql_detect_merovingian_schema",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = "
+            "'schema_migrations' LIMIT 1");
         if (!tables.ok)
         {
             return std::nullopt;
@@ -837,7 +843,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     }
 
     auto& connection = opened.connection;
-    auto const has_schema = schema_has_existing_tables(connection);
+    auto const has_schema = merovingian_schema_is_initialized(connection);
     if (!has_schema.has_value())
     {
         return {false, "unable to inspect PostgreSQL schema", {}};

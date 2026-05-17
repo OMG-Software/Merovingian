@@ -127,6 +127,9 @@ private:
     auto take_next(OutboundTransaction& out) -> bool;
     auto re_enqueue_with_backoff(OutboundTransaction transaction, std::uint64_t now_ts) -> void;
     auto find_or_create_destination(std::string_view server_name) -> FederationDestination&;
+    // Promote replay-overflow rows into the active queue while capacity allows.
+    // Caller must hold mutex_. Returns the number of rows promoted.
+    auto top_up_replay_locked() -> std::size_t;
 
     DispatchWorkerConfig config_{};
     http::OutboundClient& client_;
@@ -138,6 +141,10 @@ private:
     mutable std::mutex mutex_{};
     std::condition_variable cv_{};
     std::deque<OutboundTransaction> queue_{};
+    // Durable rows that didn't fit under max_queue_depth at replay time.
+    // Drained into queue_ as in-flight work completes so backlog larger than
+    // the in-memory cap is not stranded until the next restart.
+    std::deque<OutboundTransaction> pending_replay_{};
     std::vector<DispatchDestinationSnapshot> destinations_{};
     DispatchWorkerSummary summary_{};
 
