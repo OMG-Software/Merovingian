@@ -272,6 +272,41 @@ SCENARIO("Outbound result application updates the federation destination retry s
     }
 }
 
+SCENARIO("Outbound request builder brackets IPv6 literals in the URL", "[federation][outbound][builder][ipv6]")
+{
+    GIVEN("a federation call whose resolved host is an IPv6 literal")
+    {
+        auto call = make_sample_call();
+        call.resolved_host = "2001:db8::1";
+
+        WHEN("the outbound HTTP request is built")
+        {
+            auto const request = merovingian::federation::build_outbound_request(call);
+
+            THEN("the URL brackets the IPv6 literal so the port separator is unambiguous")
+            {
+                REQUIRE(request.url == "https://[2001:db8::1]:8448/_matrix/federation/v1/send/txn123");
+            }
+        }
+    }
+
+    GIVEN("a federation call whose resolved host is an IPv4 literal")
+    {
+        auto call = make_sample_call();
+        call.resolved_host = "203.0.113.10";
+
+        WHEN("the outbound HTTP request is built")
+        {
+            auto const request = merovingian::federation::build_outbound_request(call);
+
+            THEN("the URL does not bracket the IPv4 literal")
+            {
+                REQUIRE(request.url == "https://203.0.113.10:8448/_matrix/federation/v1/send/txn123");
+            }
+        }
+    }
+}
+
 SCENARIO("Outbound transaction respects the circuit breaker without any network attempt",
          "[federation][outbound][circuitbreaker]")
 {

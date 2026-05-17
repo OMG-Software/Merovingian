@@ -4,6 +4,56 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstdint>
+#include <string>
+#include <string_view>
+#include <unordered_map>
+#include <utility>
+#include <vector>
+
+namespace
+{
+
+class FakeDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
+{
+public:
+    merovingian::federation::WellKnownServerResult well_known{};
+    std::vector<merovingian::federation::SrvRecord> srv_records{};
+    std::unordered_map<std::string, std::vector<std::string>> addresses{};
+    std::string fetched_server{};
+    std::uint32_t fetched_timeout{0U};
+
+    [[nodiscard]] auto fetch_well_known(std::string_view server_name, std::uint32_t timeout_seconds)
+        -> merovingian::federation::WellKnownServerResult override
+    {
+        fetched_server = server_name;
+        fetched_timeout = timeout_seconds;
+        return well_known;
+    }
+
+    [[nodiscard]] auto lookup_srv(std::string_view service_name)
+        -> std::vector<merovingian::federation::SrvRecord> override
+    {
+        last_srv_lookup = service_name;
+        return srv_records;
+    }
+
+    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
+    {
+        auto found = addresses.find(std::string{host});
+        if (found == addresses.end())
+        {
+            return {false, {}, "address not found"};
+        }
+        return {true, found->second, {}};
+    }
+
+    std::string last_srv_lookup{};
+};
+
+} // namespace
+
 SCENARIO("Server discovery resolves a direct server name without well-known", "[federation][discovery]")
 {
     GIVEN("a server name with no well-known delegation")
@@ -129,6 +179,215 @@ SCENARIO("Federation destination persists retry state", "[federation][queue]")
                 REQUIRE(destination.server_name == "remote.example.org");
                 REQUIRE(destination.consecutive_failures == 1U);
                 REQUIRE(destination.retry_after_ts == 5000U);
+            }
+        }
+    }
+}
+
+SCENARIO("Server discovery fetches well-known delegation and pins public IPv4 and IPv6 addresses",
+         "[federation][discovery][well-known]")
+{
+    GIVEN("a remote server with a well-known delegation and public address set")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "{\"m.server\":\"fed.example.net:9448\"}", {}};
+        network.addresses.emplace("fed.example.net", std::vector<std::string>{"203.0.113.10", "2001:db8::10"});
+
+        WHEN("the server is discovered through the network boundary")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 7U);
+
+            THEN("the delegated host and validated pinned addresses are returned")
+            {
+                REQUIRE(network.fetched_server == "example.org");
+                REQUIRE(network.fetched_timeout == 7U);
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.well_known_host == "fed.example.net");
+                REQUIRE(result.resolved_host == "fed.example.net");
+                REQUIRE(result.resolved_port == 9448U);
+                auto const expected_addresses = std::vector<std::string>{"203.0.113.10", "2001:db8::10"};
+                REQUIRE(result.pinned_addresses == expected_addresses);
+            }
+        }
+    }
+}
+
+SCENARIO("Server discovery falls back to DNS SRV records and pins resolved addresses", "[federation][discovery][dns]")
+{
+    GIVEN("a remote server without well-known but with Matrix federation SRV records")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.srv_records = {
+            {"slow.example.net", 9448U, 20U, 0U},
+            {"srv.example.net",  9449U, 10U, 0U},
+        };
+        network.addresses.emplace("srv.example.net", std::vector<std::string>{"198.51.100.22"});
+
+        WHEN("the server is discovered through the network boundary")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("the lowest-priority SRV target becomes the outbound destination")
+            {
+                REQUIRE(network.last_srv_lookup == "_matrix-fed._tcp.example.org");
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.resolved_host == "srv.example.net");
+                REQUIRE(result.resolved_port == 9449U);
+                auto const expected_addresses = std::vector<std::string>{"198.51.100.22"};
+                REQUIRE(result.pinned_addresses == expected_addresses);
+            }
+        }
+    }
+}
+
+SCENARIO("Server discovery rejects private and loopback addresses before pinning", "[federation][discovery][security]")
+{
+    GIVEN("well-known and DNS records that resolve to forbidden address ranges")
+    {
+        auto private_ipv4 = FakeDiscoveryNetwork{};
+        private_ipv4.well_known = {true, true, "{\"m.server\":\"fed.example.net:9448\"}", {}};
+        private_ipv4.addresses.emplace("fed.example.net", std::vector<std::string>{"10.0.0.9"});
+
+        auto private_ipv6 = FakeDiscoveryNetwork{};
+        private_ipv6.srv_records = {
+            {"srv.example.net", 9448U, 0U, 0U}
+        };
+        private_ipv6.addresses.emplace("srv.example.net", std::vector<std::string>{"fe80::1"});
+
+        WHEN("discovery attempts to pin those destinations")
+        {
+            auto const rejected_v4 = merovingian::federation::discover_server("example.org", private_ipv4, 5U);
+            auto const rejected_v6 = merovingian::federation::discover_server("example.org", private_ipv6, 5U);
+
+            THEN("both address families fail closed")
+            {
+                REQUIRE_FALSE(rejected_v4.discovery_allowed);
+                REQUIRE(rejected_v4.pinned_addresses.empty());
+                REQUIRE(rejected_v4.reason.find("private") != std::string::npos);
+                REQUIRE_FALSE(rejected_v6.discovery_allowed);
+                REQUIRE(rejected_v6.pinned_addresses.empty());
+                REQUIRE(rejected_v6.reason.find("private") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Server discovery honors an explicit port in the server name", "[federation][discovery][explicit-port]")
+{
+    GIVEN("a server name with an explicit port and SRV/well-known data that would otherwise mislead discovery")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "{\"m.server\":\"misleading.example.net:9999\"}", {}};
+        network.srv_records = {
+            {"misleading.example.net", 9999U, 0U, 0U}
+        };
+        network.addresses.emplace("example.org", std::vector<std::string>{"203.0.113.42"});
+
+        WHEN("discovery resolves a server name with an explicit port")
+        {
+            auto const result = merovingian::federation::discover_server("example.org:7443", network, 5U);
+
+            THEN("the explicit host and port are used without consulting well-known or SRV")
+            {
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.resolved_host == "example.org");
+                REQUIRE(result.resolved_port == 7443U);
+                REQUIRE(network.fetched_server.empty());
+                REQUIRE(network.last_srv_lookup.empty());
+                auto const expected_addresses = std::vector<std::string>{"203.0.113.42"};
+                REQUIRE(result.pinned_addresses == expected_addresses);
+            }
+        }
+    }
+}
+
+SCENARIO("Server discovery falls back when the well-known body is invalid", "[federation][discovery][well-known]")
+{
+    GIVEN("a well-known response that arrives with malformed JSON")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "not-json{", {}};
+        network.srv_records = {
+            {"fallback.example.net", 9448U, 0U, 0U}
+        };
+        network.addresses.emplace("fallback.example.net", std::vector<std::string>{"198.51.100.50"});
+
+        WHEN("discovery proceeds")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("discovery falls through to SRV instead of failing closed")
+            {
+                REQUIRE(network.last_srv_lookup == "_matrix-fed._tcp.example.org");
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.resolved_host == "fallback.example.net");
+                REQUIRE(result.resolved_port == 9448U);
+            }
+        }
+    }
+
+    GIVEN("a well-known response that omits m.server")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "{\"other\":\"value\"}", {}};
+        network.addresses.emplace("example.org", std::vector<std::string>{"203.0.113.42"});
+
+        WHEN("discovery proceeds")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("discovery falls through to direct resolution of the original server name")
+            {
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.resolved_host == "example.org");
+                REQUIRE(result.resolved_port == 8448U);
+            }
+        }
+    }
+}
+
+SCENARIO("Server discovery uses SRV on the delegated host when no port is supplied", "[federation][discovery][well-known][srv]")
+{
+    GIVEN("a well-known delegation that supplies a hostname without a port and matching SRV records")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "{\"m.server\":\"delegated.example.net\"}", {}};
+        network.srv_records = {
+            {"srv.delegated.example.net", 9500U, 0U, 0U}
+        };
+        network.addresses.emplace("srv.delegated.example.net", std::vector<std::string>{"203.0.113.99"});
+
+        WHEN("discovery proceeds")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("SRV lookup is performed on the delegated host and the SRV target is used")
+            {
+                REQUIRE(network.last_srv_lookup == "_matrix-fed._tcp.delegated.example.net");
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.well_known_host == "srv.delegated.example.net");
+                REQUIRE(result.resolved_host == "srv.delegated.example.net");
+                REQUIRE(result.resolved_port == 9500U);
+            }
+        }
+    }
+
+    GIVEN("a well-known delegation with an explicit port")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "{\"m.server\":\"delegated.example.net:9500\"}", {}};
+        network.addresses.emplace("delegated.example.net", std::vector<std::string>{"203.0.113.99"});
+
+        WHEN("discovery proceeds")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("SRV lookup is skipped and the delegated port is honored")
+            {
+                REQUIRE(network.last_srv_lookup.empty());
+                REQUIRE(result.discovery_allowed);
+                REQUIRE(result.resolved_host == "delegated.example.net");
+                REQUIRE(result.resolved_port == 9500U);
             }
         }
     }

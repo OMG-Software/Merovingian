@@ -3,9 +3,16 @@
 #include "merovingian/federation/security.hpp"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
+
+#include <sys/socket.h>
+
+#include <arpa/inet.h>
+#include <netinet/in.h>
 
 namespace merovingian::federation
 {
@@ -31,6 +38,39 @@ namespace
         return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
     }
 
+    [[nodiscard]] auto ipv4_is_private_or_loopback(std::uint32_t address) noexcept -> bool
+    {
+        auto const first = static_cast<std::uint8_t>((address >> 24U) & 0xFFU);
+        auto const second = static_cast<std::uint8_t>((address >> 16U) & 0xFFU);
+        return first == 0U || first == 10U || first == 127U || (first == 169U && second == 254U) ||
+               (first == 172U && second >= 16U && second <= 31U) || (first == 192U && second == 168U);
+    }
+
+    [[nodiscard]] auto ipv6_is_private_or_loopback(in6_addr const& address) noexcept -> bool
+    {
+        auto const* bytes = address.s6_addr;
+        auto const is_unspecified = std::all_of(bytes, bytes + 16U, [](auto byte) noexcept {
+            return byte == std::uint8_t{0U};
+        });
+        auto const is_loopback = std::all_of(bytes, bytes + 15U,
+                                             [](auto byte) noexcept {
+                                                 return byte == std::uint8_t{0U};
+                                             }) &&
+                                 bytes[15] == std::uint8_t{1U};
+        auto const is_unique_local = (bytes[0] & 0xFEU) == 0xFCU;
+        auto const is_link_local = bytes[0] == 0xFEU && (bytes[1] & 0xC0U) == 0x80U;
+        auto const is_v4_mapped = std::all_of(bytes, bytes + 10U,
+                                              [](auto byte) noexcept {
+                                                  return byte == std::uint8_t{0U};
+                                              }) &&
+                                  bytes[10] == 0xFFU && bytes[11] == 0xFFU;
+        auto const mapped_v4 = (static_cast<std::uint32_t>(bytes[12]) << 24U) |
+                               (static_cast<std::uint32_t>(bytes[13]) << 16U) |
+                               (static_cast<std::uint32_t>(bytes[14]) << 8U) | static_cast<std::uint32_t>(bytes[15]);
+        return is_unspecified || is_loopback || is_unique_local || is_link_local ||
+               (is_v4_mapped && ipv4_is_private_or_loopback(mapped_v4));
+    }
+
     [[nodiscard]] auto contains_signature_for(std::vector<events::EventSignature> const& signatures,
                                               std::string_view expected_server) noexcept -> bool
     {
@@ -50,7 +90,18 @@ auto server_name_is_valid(std::string_view server_name) noexcept -> bool
 
 auto ip_address_is_private_or_loopback(std::string_view address) noexcept -> bool
 {
-    return address == "localhost" || address == "::1" || starts_with(address, "127.") || starts_with(address, "10.") ||
+    auto const text = std::string{address};
+    auto v4 = in_addr{};
+    if (::inet_pton(AF_INET, text.c_str(), &v4) == 1)
+    {
+        return ipv4_is_private_or_loopback(ntohl(v4.s_addr));
+    }
+    auto v6 = in6_addr{};
+    if (::inet_pton(AF_INET6, text.c_str(), &v6) == 1)
+    {
+        return ipv6_is_private_or_loopback(v6);
+    }
+    return address == "localhost" || starts_with(address, "127.") || starts_with(address, "10.") ||
            starts_with(address, "192.168.") || starts_with(address, "169.254.") || starts_with(address, "fc") ||
            starts_with(address, "fd") ||
            (starts_with(address, "172.") && address.size() >= 6U && address[4] >= '1' && address[4] <= '3');

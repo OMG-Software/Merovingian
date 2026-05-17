@@ -153,42 +153,6 @@ namespace
         std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key_{};
     };
 
-    [[nodiscard]] auto ensure_runtime_signing_key(HomeserverRuntime& runtime)
-        -> std::optional<database::PersistentServerSigningKey>
-    {
-        auto constexpr key_id = std::string_view{"ed25519:auto"};
-        auto const& server_name = runtime.config.server().server_name;
-
-        if (!runtime.database.signing_secret_key.empty())
-        {
-            auto existing = database::find_server_signing_key(runtime.database.persistent_store, server_name, key_id);
-            if (existing.has_value())
-            {
-                return existing;
-            }
-        }
-
-        auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
-        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        if (!generate_random_signing_keypair(public_key, secret_key))
-        {
-            return std::nullopt;
-        }
-        auto key = database::PersistentServerSigningKey{
-            std::string{server_name},
-            std::string{key_id},
-            events::matrix_base64_from_bytes(
-                std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
-            32503680000000ULL,
-        };
-        if (!database::store_server_signing_key(runtime.database.persistent_store, key))
-        {
-            return std::nullopt;
-        }
-        runtime.database.signing_secret_key = std::vector<unsigned char>(secret_key.begin(), secret_key.end());
-        return key;
-    }
-
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
     {
@@ -383,7 +347,7 @@ namespace
             return std::nullopt;
         }
 
-        auto key = ensure_runtime_signing_key(runtime);
+        auto key = ensure_runtime_server_signing_key(runtime);
         if (!key.has_value())
         {
             return std::nullopt;
@@ -437,6 +401,96 @@ namespace
     }
 
 } // namespace
+
+[[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
+    -> std::optional<database::PersistentServerSigningKey>
+{
+    auto constexpr key_id = std::string_view{"ed25519:auto"};
+    auto const& server_name = runtime.config.server().server_name;
+
+    if (!runtime.database.signing_secret_key.empty())
+    {
+        auto existing = database::find_server_signing_key(runtime.database.persistent_store, server_name, key_id);
+        if (existing.has_value())
+        {
+            return existing;
+        }
+    }
+
+    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+    if (!generate_random_signing_keypair(public_key, secret_key))
+    {
+        return std::nullopt;
+    }
+    auto key = database::PersistentServerSigningKey{
+        std::string{server_name},
+        std::string{key_id},
+        events::matrix_base64_from_bytes(
+            std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
+        32503680000000ULL,
+    };
+    if (!database::store_server_signing_key(runtime.database.persistent_store, key))
+    {
+        return std::nullopt;
+    }
+    runtime.database.signing_secret_key = std::vector<unsigned char>(secret_key.begin(), secret_key.end());
+    return key;
+}
+
+[[nodiscard]] auto publish_server_signing_keys(HomeserverRuntime& runtime) -> OperationResult
+{
+    auto key = ensure_runtime_server_signing_key(runtime);
+    if (!key.has_value())
+    {
+        return make_operation_result(false, {}, "server signing key unavailable", 500U);
+    }
+    if (runtime.database.signing_secret_key.size() != crypto_sign_SECRETKEYBYTES)
+    {
+        return make_operation_result(false, {}, "server signing secret unavailable", 500U);
+    }
+
+    auto verify_key = canonicaljson::Object{};
+    verify_key.push_back(canonicaljson::make_member("key", canonicaljson::Value{key->public_key}));
+    auto verify_keys = canonicaljson::Object{};
+    verify_keys.push_back(canonicaljson::make_member(key->key_id, canonicaljson::Value{std::move(verify_key)}));
+
+    auto response = canonicaljson::Object{};
+    response.push_back(canonicaljson::make_member("old_verify_keys", canonicaljson::Value{canonicaljson::Object{}}));
+    response.push_back(canonicaljson::make_member("server_name", canonicaljson::Value{key->server_name}));
+    response.push_back(canonicaljson::make_member(
+        "valid_until_ts", canonicaljson::Value{static_cast<std::int64_t>(key->valid_until_ts)}));
+    response.push_back(canonicaljson::make_member("verify_keys", canonicaljson::Value{std::move(verify_keys)}));
+
+    auto payload = canonicaljson::serialize_canonical(canonicaljson::Value{response});
+    if (payload.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return make_operation_result(false, {}, canonicaljson::canonical_json_error_name(payload.error), 500U);
+    }
+
+    auto signature = std::string(crypto_sign_BYTES, '\0');
+    if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
+                             reinterpret_cast<unsigned char const*>(payload.output.data()), payload.output.size(),
+                             runtime.database.signing_secret_key.data()) != 0)
+    {
+        return make_operation_result(false, {}, "server key response signing failed", 500U);
+    }
+
+    auto server_signatures = canonicaljson::Object{};
+    server_signatures.push_back(
+        canonicaljson::make_member(key->key_id, canonicaljson::Value{events::matrix_base64_from_bytes(signature)}));
+    auto signatures = canonicaljson::Object{};
+    signatures.push_back(
+        canonicaljson::make_member(key->server_name, canonicaljson::Value{std::move(server_signatures)}));
+    response.push_back(canonicaljson::make_member("signatures", canonicaljson::Value{std::move(signatures)}));
+
+    auto signed_response = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(response)});
+    if (signed_response.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return make_operation_result(false, {}, canonicaljson::canonical_json_error_name(signed_response.error), 500U);
+    }
+    return make_operation_result(true, std::move(signed_response.output));
+}
 
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
 {
