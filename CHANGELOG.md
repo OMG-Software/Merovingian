@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.55
+
+- Addressed PR #81 review feedback on federation server discovery:
+  - **Honor explicit ports.** A `server_name` such as `example.org:7443` now
+    resolves the host at the supplied port directly via A/AAAA, skipping both
+    `.well-known` and `_matrix-fed._tcp` SRV lookup. Previously SRV could
+    silently redirect federation traffic to a different host or port.
+  - **Fall back on invalid `.well-known` bodies.** A 200 response with
+    malformed JSON or a missing `m.server` member now continues into SRV and
+    direct resolution rather than failing closed, matching the Matrix
+    discovery algorithm.
+  - **SRV on the delegated host.** When `m.server` supplies a hostname without
+    an explicit port, discovery now attempts `_matrix-fed._tcp.<delegated>`
+    before defaulting to port 8448, so delegated SRV indirection works.
+  - **Bracket IPv6 literals in outbound URLs.** Federation outbound URLs now
+    bracket IPv6 host literals so the port separator is unambiguous; without
+    the brackets the URL was malformed and outbound transactions to IPv6-only
+    peers failed.
+- Bumped project and executable versions to `0.1.55`.
+
 ## 0.1.54
 
 - Added unauthenticated inbound `GET /_matrix/key/v2/server` handling through

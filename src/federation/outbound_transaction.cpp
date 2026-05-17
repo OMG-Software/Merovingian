@@ -20,7 +20,19 @@ namespace
     [[nodiscard]] auto build_url(OutboundCall const& call) -> std::string
     {
         auto url = std::string{"https://"};
+        // IPv6 literals contain colons that would collide with the port separator
+        // in the URL authority, so they must be bracketed per RFC 3986.
+        auto const needs_brackets =
+            call.resolved_host.find(':') != std::string::npos && call.resolved_host.front() != '[';
+        if (needs_brackets)
+        {
+            url += '[';
+        }
         url += call.resolved_host;
+        if (needs_brackets)
+        {
+            url += ']';
+        }
         // Always include the port so CURLOPT_RESOLVE entries match the URL
         // authority. Matrix federation defaults to 8448 anyway, so the URL
         // is rarely shorter without it.

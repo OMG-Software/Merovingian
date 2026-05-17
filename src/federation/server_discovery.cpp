@@ -41,6 +41,7 @@ namespace
     {
         std::string host{};
         std::uint16_t port{default_federation_port};
+        bool port_explicit{false};
     };
 
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
@@ -83,6 +84,7 @@ namespace
                 return std::nullopt;
             }
             auto port = default_port;
+            auto port_explicit = false;
             if (close + 1U < value.size())
             {
                 if (value[close + 1U] != ':')
@@ -95,8 +97,9 @@ namespace
                     return std::nullopt;
                 }
                 port = *parsed_port;
+                port_explicit = true;
             }
-            return HostPort{std::string{value.substr(1U, close - 1U)}, port};
+            return HostPort{std::string{value.substr(1U, close - 1U)}, port, port_explicit};
         }
 
         auto const colon = value.rfind(':');
@@ -111,10 +114,10 @@ namespace
             {
                 return std::nullopt;
             }
-            return HostPort{std::string{value.substr(0U, colon)}, *parsed_port};
+            return HostPort{std::string{value.substr(0U, colon)}, *parsed_port, true};
         }
 
-        return HostPort{std::string{value}, default_port};
+        return HostPort{std::string{value}, default_port, false};
     }
 
     [[nodiscard]] auto extract_host_and_port(std::string_view url) -> std::optional<HostPort>
@@ -483,7 +486,7 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
         result.reason = "server name is empty";
         return result;
     }
-    auto const direct_host_port = parse_host_port(server_name, default_federation_port);
+    auto direct_host_port = parse_host_port(server_name, default_federation_port);
     if (!direct_host_port.has_value() ||
         (!server_name_is_valid(direct_host_port->host) && !host_is_numeric_ip(direct_host_port->host)))
     {
@@ -491,28 +494,60 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
         return result;
     }
 
-    auto well_known = network.fetch_well_known(server_name, timeout_seconds);
-    if (well_known.found)
+    // Matrix spec step 1: IP literal in server_name resolves directly.
+    // Matrix spec step 2: explicit port (with non-IP host) resolves directly via A/AAAA,
+    // skipping both well-known and SRV so the operator's port choice is honored.
+    if (host_is_numeric_ip(direct_host_port->host) || direct_host_port->port_explicit)
     {
-        auto const delegated = extract_m_server(well_known.body);
-        auto host_port = delegated.has_value() ? parse_host_port(*delegated, default_federation_port) : std::nullopt;
-        if (!host_port.has_value())
-        {
-            result.reason = "well-known delegation is invalid";
-            return result;
-        }
-        result = resolve_destination(server_name, std::move(*host_port), network);
-        result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
-        return result;
+        return resolve_destination(server_name, std::move(*direct_host_port), network);
     }
 
+    // Matrix spec step 3: consult /.well-known/matrix/server delegation.
+    auto well_known = network.fetch_well_known(server_name, timeout_seconds);
+    if (well_known.found && well_known.ok)
+    {
+        auto const delegated = extract_m_server(well_known.body);
+        auto delegated_host_port =
+            delegated.has_value() ? parse_host_port(*delegated, default_federation_port) : std::nullopt;
+        if (delegated_host_port.has_value() &&
+            (server_name_is_valid(delegated_host_port->host) || host_is_numeric_ip(delegated_host_port->host)))
+        {
+            // Step 3a: delegated IP literal resolves directly with the delegated port.
+            // Step 3b: delegated host with an explicit port resolves directly.
+            if (host_is_numeric_ip(delegated_host_port->host) || delegated_host_port->port_explicit)
+            {
+                result = resolve_destination(server_name, std::move(*delegated_host_port), network);
+                result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
+                return result;
+            }
+            // Step 3c: delegated host without a port tries SRV on the delegated host first,
+            // then falls back to the delegated host on the default federation port.
+            auto srv_records =
+                sort_srv_records(network.lookup_srv(std::string{"_matrix-fed._tcp."} + delegated_host_port->host));
+            if (!srv_records.empty())
+            {
+                auto const& first = srv_records.front();
+                result = resolve_destination(server_name, HostPort{first.target, first.port, true}, network);
+                result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
+                return result;
+            }
+            result = resolve_destination(server_name, std::move(*delegated_host_port), network);
+            result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
+            return result;
+        }
+        // Malformed body or missing m.server: fall through to SRV + direct resolution
+        // on the original server name rather than failing closed.
+    }
+
+    // Matrix spec step 4: SRV lookup on the original server name.
     auto srv_records = sort_srv_records(network.lookup_srv(std::string{"_matrix-fed._tcp."} + direct_host_port->host));
     if (!srv_records.empty())
     {
         auto const& first = srv_records.front();
-        return resolve_destination(server_name, HostPort{first.target, first.port}, network);
+        return resolve_destination(server_name, HostPort{first.target, first.port, true}, network);
     }
 
+    // Matrix spec step 5: direct A/AAAA on the server name at the default port.
     return resolve_destination(server_name, std::move(*direct_host_port), network);
 }
 
