@@ -128,22 +128,33 @@ deployment milestone.
   PDU envelope extraction, `FederationRuntimeState::pdu_sink` and
   `edu_sink` hooks, classification and per-type content validation for
   `m.typing`, `m.receipt`, `m.presence`, `m.direct_to_device`, and
-  `m.device_list_update`, and structured `federation.pdu_state_conflict`
-  audit on state-resolution conflicts (deferred merge follow-up).
+  `m.device_list_update`. PDU state conflicts now flow through a
+  state-resolution v2 merge via `apply_state_resolution_v2` and a wired
+  `state_conflict_resolver`; merged forks count as appended and audit as
+  `federation.pdu_state_resolved`, while resolution failures retain the
+  original `federation.pdu_state_conflict` audit.
+- Federation membership and history endpoints: inbound `make_join`,
+  `make_leave`, `make_knock`, `send_join` (v1 + v2), `send_leave`
+  (v1 + v2), `send_knock`, `invite` (v1 + v2), and `backfill` are
+  dispatched through typed runtime hooks
+  (`membership_template_provider`, `membership_acceptor`,
+  `invite_handler`, `backfill_provider`). Unwired endpoints respond
+  `501 Not Implemented`. Outbound counterparts
+  (`make_outbound_make_membership`, `make_outbound_send_membership`,
+  `make_outbound_invite`, `make_outbound_backfill`) compose
+  `OutboundTransaction` records carrying the spec-defined targets,
+  query parameters, and v1/v2 invite body shapes.
 
 #### TODO
 
-1. Merge conflicting remote PDU state through state-resolution v2 instead of
-   logging `federation.pdu_state_conflict` and accepting the transaction.
-2. Implement federation make/send join, leave, invite, and backfill flows.
-3. Finish sync conformance: long polling, filters, populated presence,
+1. Finish sync conformance: long polling, filters, populated presence,
    account-data, device-list, to-device, and key-count surfaces, plus Matrix
    v1.18 fixtures.
-4. Add live PostgreSQL integration coverage and enforce separate runtime and
+2. Add live PostgreSQL integration coverage and enforce separate runtime and
    migration role grants.
-5. Run fuzz targets in CI for canonical JSON and HTTP transport before
+3. Run fuzz targets in CI for canonical JSON and HTTP transport before
    declaring Alpha.
-6. Replace placeholder hardening checks with fail-closed alpha deployment
+4. Replace placeholder hardening checks with fail-closed alpha deployment
    controls or explicitly documented alpha-only exceptions.
 
 ### Beta

@@ -48,6 +48,7 @@ shell = find_program('sh')
       'unit/test_event_authorization.cpp',
       'unit/test_events.cpp',
       'unit/test_federation_inbound_request.cpp',
+      'unit/test_federation_membership_endpoints.cpp',
       'unit/test_federation_security.cpp',
       'unit/test_federation_transactions.cpp',
       'unit/test_file_descriptor.cpp',
