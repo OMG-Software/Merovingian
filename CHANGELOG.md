@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.1.52
+
+- Addressed PR #79 review feedback from the automated reviewer:
+  - **Per-identity rate-limit buckets.** `normalized_bucket` now
+    prefixes the bucket key with the caller's access token so
+    authenticated endpoints quota each client independently. The
+    previous keying on method+target alone allowed a single bad
+    actor with a few requests to throttle every other client on
+    those endpoints. Unauthenticated routes (login, register,
+    /_matrix/client/versions, /_matrix/key/v2/server) still share a
+    global bucket per route; scoping those by remote IP is tracked
+    as a follow-up that needs `LocalHttpRequest` to carry a
+    `remote_addr` field.
+  - **Sync invite cap.** `rooms.invite` is now capped at
+    `rt.limits.max_sync_rooms`, matching the bound already applied
+    to `rooms.join`. A user with many pending invites can no longer
+    bypass the configured per-sync room limit.
+  - **Default sync hides left rooms.** `rooms.leave` stays as an
+    empty object for spec-shape completeness, but no left-room
+    payload is emitted until the filter parser exists and the
+    client opts in via `include_leave: true`. The previous code
+    surfaced left rooms unconditionally which contradicted Matrix
+    v1.18 default sync semantics.
+- BDD tests added:
+  - `Rate-limit buckets are scoped per access token to prevent
+    cross-user denial of service` — alice exhausts her bucket, bob
+    runs on his own and succeeds.
+  - `the response keeps rooms.leave as an empty object until
+    include_leave filter support lands`.
+  - `the invite section honors the room cap and does not bloat the
+    response`.
+
 ## 0.1.51
 
 - Added `GET /_matrix/client/versions` — the unauthenticated spec

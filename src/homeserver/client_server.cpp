@@ -435,28 +435,36 @@ namespace
     {
         auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         auto constexpr device_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+        // Prefix the bucket with the caller's access token so authenticated
+        // endpoints quota each client independently. Unauthenticated routes
+        // (login, register, versions, /_matrix/key/v2/server) carry an empty
+        // token and still share a global bucket per route; scoping those by
+        // remote IP needs `LocalHttpRequest` to grow a `remote_addr` field
+        // and is tracked as a follow-up alongside the federation discovery
+        // work in `docs/alpha-readiness.md`.
+        auto identity = req.access_token + '|';
         auto target = std::string_view{req.target};
         if (starts_with(target, room_prefix) && ends_with(target, "/join"))
         {
-            return req.method + " /_matrix/client/v3/rooms/{roomId}/join";
+            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/join";
         }
         if (starts_with(target, room_prefix) && ends_with(target, "/send"))
         {
-            return req.method + " /_matrix/client/v3/rooms/{roomId}/send";
+            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/send";
         }
         if (starts_with(target, room_prefix) && ends_with(target, "/state"))
         {
-            return req.method + " /_matrix/client/v3/rooms/{roomId}/state";
+            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/state";
         }
         if (starts_with(target, device_prefix))
         {
-            return req.method + " /_matrix/client/v3/devices/{deviceId}";
+            return identity + req.method + " /_matrix/client/v3/devices/{deviceId}";
         }
         if (trust_safety::match_reporting_api_route(req.method, target).matched)
         {
-            return req.method + " /_matrix/client/v3/trust-safety/{route}";
+            return identity + req.method + " /_matrix/client/v3/trust-safety/{route}";
         }
-        return req.method + ' ' + req.target;
+        return identity + req.method + ' ' + req.target;
     }
 
     // Per-bucket request limiter. The cap is the lower of the per-endpoint
@@ -617,37 +625,35 @@ namespace
                 })));
         }
 
-        // Walk PersistentMembership to surface invite and leave room categories.
-        // Matrix clients expect rooms.invite[<id>].invite_state.events and
-        // rooms.leave[<id>].timeline.events even when both arrays are empty,
-        // so emit the keys with empty payloads when the runtime has no
-        // populated state to attach yet.
+        // Walk PersistentMembership to surface the invite room category.
+        // Matrix clients expect `rooms.invite[<id>].invite_state.events`
+        // alongside `rooms.join`. The invite list is capped at the same
+        // `max_sync_rooms` bound as the join list so a user with a large
+        // number of pending invites cannot bloat the response or bypass
+        // the configured resource-control guard.
+        //
+        // `rooms.leave` stays as an empty key for spec-shape completeness.
+        // Per Matrix v1.18 default sync semantics, left rooms should only
+        // surface when the client passes `include_leave: true` in its
+        // room filter; the filter parser is still pending so leave rooms
+        // are intentionally suppressed by default rather than emitted
+        // unconditionally.
         auto invite_members = canonicaljson::Object{};
-        auto leave_members = canonicaljson::Object{};
+        auto invite_count = std::size_t{0U};
         for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
         {
-            if (membership.user_id != user)
+            if (membership.user_id != user || membership.membership != "invite")
             {
                 continue;
             }
-            if (membership.membership == "invite")
+            if (invite_count >= rt.limits.max_sync_rooms)
             {
-                invite_members.push_back(json_member(
-                    membership.room_id,
-                    json_obj({json_member("invite_state", json_obj({json_member("events", json_arr({}))}))})));
+                break;
             }
-            else if (membership.membership == "leave" || membership.membership == "ban")
-            {
-                leave_members.push_back(json_member(
-                    membership.room_id, json_obj({
-                                            json_member("timeline", json_obj({
-                                                                        json_member("events", json_arr({})),
-                                                                        json_member("limited", json_bool(false)),
-                                                                        json_member("event_count", json_int(0)),
-                                                                    })),
-                                            json_member("state", json_obj({json_member("events", json_arr({}))})),
-                                        })));
-            }
+            invite_members.push_back(
+                json_member(membership.room_id,
+                            json_obj({json_member("invite_state", json_obj({json_member("events", json_arr({}))}))})));
+            ++invite_count;
         }
 
         return json_serialize(json_obj({
@@ -655,7 +661,7 @@ namespace
             json_member("rooms", json_obj({
                                      json_member("join", json_obj(std::move(join_members))),
                                      json_member("invite", json_obj(std::move(invite_members))),
-                                     json_member("leave", json_obj(std::move(leave_members))),
+                                     json_member("leave", json_obj({})),
                                  })),
             // Matrix v1.18 top-level placeholders. Behaviour for these
             // surfaces lands later; emitting the keys keeps the response

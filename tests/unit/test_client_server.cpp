@@ -746,19 +746,49 @@ SCENARIO("Sync surfaces invite and leave room categories alongside Matrix-spec t
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
 
-            THEN("the response carries invite/leave room categories and Matrix-spec top-level keys")
+            THEN("the response carries the invite room category and Matrix-spec top-level keys")
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(response.body.find("\"invite\"") != std::string::npos);
                 REQUIRE(response.body.find("!invited_room:example.org") != std::string::npos);
                 REQUIRE(response.body.find("\"invite_state\"") != std::string::npos);
-                REQUIRE(response.body.find("\"leave\"") != std::string::npos);
-                REQUIRE(response.body.find("!left_room:example.org") != std::string::npos);
                 REQUIRE(response.body.find("\"account_data\"") != std::string::npos);
                 REQUIRE(response.body.find("\"presence\"") != std::string::npos);
                 REQUIRE(response.body.find("\"to_device\"") != std::string::npos);
                 REQUIRE(response.body.find("\"device_lists\"") != std::string::npos);
                 REQUIRE(response.body.find("\"device_one_time_keys_count\"") != std::string::npos);
+            }
+
+            THEN("the response keeps rooms.leave as an empty object until include_leave filter support lands")
+            {
+                REQUIRE(response.body.find("\"leave\":{}") != std::string::npos);
+                REQUIRE(response.body.find("!left_room:example.org") == std::string::npos);
+            }
+        }
+
+        WHEN("the user has more invite memberships than max_sync_rooms")
+        {
+            runtime.limits.max_sync_rooms = 2U;
+            runtime.homeserver.database.persistent_store.memberships.push_back(
+                {"!invite2:example.org", user_id, "invite", 0U});
+            runtime.homeserver.database.persistent_store.memberships.push_back(
+                {"!invite3:example.org", user_id, "invite", 0U});
+            runtime.homeserver.database.persistent_store.memberships.push_back(
+                {"!invite4:example.org", user_id, "invite", 0U});
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("the invite section honors the room cap and does not bloat the response")
+            {
+                REQUIRE(response.status == 200U);
+                // First two invites in iteration order should be present
+                // (the originally pushed `!invited_room` plus `!invite2`);
+                // later invites must be dropped by the cap.
+                REQUIRE(response.body.find("!invited_room:example.org") != std::string::npos);
+                REQUIRE(response.body.find("!invite2:example.org") != std::string::npos);
+                REQUIRE(response.body.find("!invite3:example.org") == std::string::npos);
+                REQUIRE(response.body.find("!invite4:example.org") == std::string::npos);
             }
         }
     }
@@ -816,6 +846,67 @@ SCENARIO("Client-server enforces per-endpoint rate limits with 429 M_LIMIT_EXCEE
             {
                 REQUIRE(versions_response.status == 200U);
                 REQUIRE_FALSE(merovingian::homeserver::is_matrix_error_response(versions_response));
+            }
+        }
+    }
+}
+
+SCENARIO("Rate-limit buckets are scoped per access token to prevent cross-user denial of service",
+         "[homeserver][client-server][rate-limit]")
+{
+    GIVEN("a started runtime with two registered, logged-in users")
+    {
+        // Register and log in both users with the default loose cap so the
+        // setup itself does not collide with the bucket. The tight per-user
+        // cap is applied after both users hold valid access tokens.
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const register_alice = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+        REQUIRE(register_alice.status == 200U);
+        auto const register_bob = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, R"({"username":"bob","password":"CorrectHorse7!"})"});
+        REQUIRE(register_bob.status == 200U);
+
+        auto const login_alice = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login_alice.status == 200U);
+        auto const alice_token = login_token(login_alice.body);
+
+        auto const login_bob = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login_bob.status == 200U);
+        auto const bob_token = login_token(login_bob.body);
+
+        runtime.limits.max_requests_per_bucket = 1U;
+        runtime.limits.rate_limit_window_requests = 64U;
+
+        WHEN("alice exhausts her authenticated bucket")
+        {
+            auto const alice_first = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/whoami", alice_token, {}});
+            auto const alice_second = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/whoami", alice_token, {}});
+            auto const bob_first = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/whoami", bob_token, {}});
+
+            THEN("alice's second request is 429 but bob's first request runs on his own bucket and succeeds")
+            {
+                REQUIRE(alice_first.status == 200U);
+                REQUIRE(alice_second.status == 429U);
+                REQUIRE(merovingian::homeserver::is_matrix_error_response(alice_second));
+                REQUIRE(bob_first.status == 200U);
             }
         }
     }
