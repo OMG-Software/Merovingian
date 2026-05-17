@@ -1,4 +1,5 @@
 federation_sources = files(
+  'dispatch_worker.cpp',
   'inbound_request.cpp',
   'outbound_transaction.cpp',
   'remote_key_cache.cpp',

@@ -43,6 +43,7 @@ shell = find_program('sh')
       'unit/test_crypto.cpp',
       'unit/test_database_backend_config.cpp',
       'unit/test_database_persistence.cpp',
+      'unit/test_dispatch_worker.cpp',
       'unit/test_event_auth_rules.cpp',
       'unit/test_event_authorization.cpp',
       'unit/test_events.cpp',
