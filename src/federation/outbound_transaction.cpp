@@ -2,7 +2,10 @@
 
 #include "merovingian/federation/outbound_transaction.hpp"
 
+#include "merovingian/federation/inbound_request.hpp"
+
 #include <cmath>
+#include <string>
 
 namespace merovingian::federation
 {
@@ -13,6 +16,42 @@ namespace
     constexpr auto base_retry_interval_ms = std::uint64_t{2000U};
     constexpr auto max_retry_interval_ms = std::uint64_t{300000U};
     constexpr auto max_consecutive_failures_before_circuit_open = std::uint32_t{3U};
+
+    [[nodiscard]] auto build_url(OutboundCall const& call) -> std::string
+    {
+        auto url = std::string{"https://"};
+        url += call.resolved_host;
+        // Always include the port so CURLOPT_RESOLVE entries match the URL
+        // authority. Matrix federation defaults to 8448 anyway, so the URL
+        // is rarely shorter without it.
+        url += ':';
+        url += std::to_string(call.resolved_port);
+        url += call.transaction.target;
+        return url;
+    }
+
+    [[nodiscard]] auto build_authorization_header(OutboundCall const& call) -> std::string
+    {
+        // X-Matrix authorization header per the Matrix federation spec. The
+        // signature is produced through the same primitive the inbound
+        // verifier uses so the project speaks a single signing scheme.
+        auto signature =
+            make_federation_signature(call.transaction.origin, call.key_id, call.verify_token, call.transaction.method,
+                                      call.transaction.target, call.origin_server_ts, call.transaction.body);
+        auto header = std::string{"X-Matrix origin=\""};
+        header += call.transaction.origin;
+        header += "\",key=\"";
+        header += call.key_id;
+        header += "\",sig=\"";
+        header += signature;
+        header += '"';
+        return header;
+    }
+
+    [[nodiscard]] auto status_is_success(std::uint16_t status) noexcept -> bool
+    {
+        return status >= 200U && status < 300U;
+    }
 
 } // namespace
 
@@ -53,6 +92,57 @@ auto destination_should_retry(FederationDestination const& destination, std::uin
         return false;
     }
     return true;
+}
+
+auto build_outbound_request(OutboundCall const& call) -> http::OutboundRequest
+{
+    auto request = http::OutboundRequest{};
+    request.method = call.transaction.method;
+    request.url = build_url(call);
+    request.body = call.transaction.body;
+    request.pinned_addresses = call.pinned_addresses;
+    request.connect_timeout_seconds = call.connect_timeout_seconds;
+    request.total_timeout_seconds = call.total_timeout_seconds;
+    request.headers.push_back(http::OutboundHeader{"Authorization", build_authorization_header(call)});
+    request.headers.push_back(http::OutboundHeader{"Content-Type", "application/json"});
+    return request;
+}
+
+auto apply_outbound_result(FederationDestination& destination, OutboundTransactionResult const& result,
+                           std::uint64_t now_ts) noexcept -> void
+{
+    if (result.sent && status_is_success(result.http_status))
+    {
+        destination.consecutive_failures = 0U;
+        destination.last_success_ts = now_ts;
+        destination.retry_after_ts = 0U;
+        destination.state = "ok";
+        return;
+    }
+    destination.consecutive_failures = destination.consecutive_failures + 1U;
+    destination.retry_after_ts = now_ts + compute_backoff(destination.consecutive_failures);
+    destination.state = "backoff";
+}
+
+auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall const& call,
+                                  FederationDestination& destination, std::uint64_t now_ts) -> OutboundTransactionResult
+{
+    if (!destination_should_retry(destination, now_ts))
+    {
+        return OutboundTransactionResult{false, std::uint16_t{0U}, std::string{}, std::string{"circuit_open"}};
+    }
+
+    auto const request = build_outbound_request(call);
+    auto const outcome = client.perform(request);
+
+    auto result = OutboundTransactionResult{};
+    result.sent = outcome.ok;
+    result.http_status = outcome.response.status;
+    result.response_body = outcome.response.body;
+    result.error = outcome.ok ? std::string{} : std::string{http::outbound_error_name(outcome.error)};
+
+    apply_outbound_result(destination, result, now_ts);
+    return result;
 }
 
 } // namespace merovingian::federation

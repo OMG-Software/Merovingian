@@ -8,6 +8,8 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -22,11 +24,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/value.hpp>
-#include <merovingian/homeserver/client_server.hpp>
-#include <merovingian/http/request.hpp>
 
 namespace merovingian::homeserver
 {
@@ -43,40 +40,63 @@ namespace
         return v.size() >= suffix.size() && v.substr(v.size() - suffix.size()) == suffix;
     }
 
-    [[nodiscard]] auto json_escape(std::string_view value) -> std::string
+    // Thin builder facade over the project's canonical JSON value model.
+    // Response paths construct a Value tree and hand it to serialize_canonical
+    // so escaping (including control characters as \u00XX) is handled by the
+    // shared, audit-friendly serializer instead of a per-call hand-rolled
+    // escaper. The canonical key ordering is a side effect; response bodies
+    // remain valid JSON and existing tests that match substrings continue to
+    // pass.
+    [[nodiscard]] auto json_str(std::string_view value) -> canonicaljson::Value
     {
-        auto out = std::string{};
-        for (auto const ch : value)
+        return canonicaljson::Value{std::string{value}};
+    }
+
+    [[nodiscard]] auto json_int(std::int64_t value) -> canonicaljson::Value
+    {
+        return canonicaljson::Value{value};
+    }
+
+    [[nodiscard]] auto json_bool(bool value) -> canonicaljson::Value
+    {
+        return canonicaljson::Value{value};
+    }
+
+    [[nodiscard]] auto json_arr(canonicaljson::Array items) -> canonicaljson::Value
+    {
+        return canonicaljson::Value{std::move(items)};
+    }
+
+    [[nodiscard]] auto json_obj(canonicaljson::Object members) -> canonicaljson::Value
+    {
+        return canonicaljson::Value{std::move(members)};
+    }
+
+    [[nodiscard]] auto json_member(std::string key, canonicaljson::Value value) -> canonicaljson::ObjectMember
+    {
+        return canonicaljson::make_member(std::move(key), std::move(value));
+    }
+
+    [[nodiscard]] auto json_serialize(canonicaljson::Value const& value) -> std::string
+    {
+        auto const result = canonicaljson::serialize_canonical(value);
+        return result.output;
+    }
+
+    // Embeds a pre-built JSON blob (e.g. a stored device key payload) inside
+    // a larger response value. The blob is parsed strictly through the
+    // canonical JSON parser so any escaping, structure, and UTF-8 issues
+    // surface here rather than going onto the wire. On parse failure the
+    // caller receives canonicaljson::Value{} (a null), which serializes to
+    // "null" and keeps the response body well-formed.
+    [[nodiscard]] auto json_embed_raw(std::string_view raw) -> canonicaljson::Value
+    {
+        auto result = canonicaljson::parse_lossless(raw);
+        if (result.error != canonicaljson::ParseError::none)
         {
-            switch (ch)
-            {
-            case '"':
-                out += "\\\"";
-                break;
-            case '\\':
-                out += "\\\\";
-                break;
-            case '\b':
-                out += "\\b";
-                break;
-            case '\f':
-                out += "\\f";
-                break;
-            case '\n':
-                out += "\\n";
-                break;
-            case '\r':
-                out += "\\r";
-                break;
-            case '\t':
-                out += "\\t";
-                break;
-            default:
-                out += ch;
-                break;
-            }
+            return canonicaljson::Value{};
         }
-        return out;
+        return std::move(result.value);
     }
 
     [[nodiscard]] auto resp(std::uint16_t status, std::string body) -> LocalHttpResponse
@@ -415,33 +435,56 @@ namespace
     {
         auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         auto constexpr device_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+        // Prefix the bucket with the caller's access token so authenticated
+        // endpoints quota each client independently. Unauthenticated routes
+        // (login, register, versions, /_matrix/key/v2/server) carry an empty
+        // token and still share a global bucket per route; scoping those by
+        // remote IP needs `LocalHttpRequest` to grow a `remote_addr` field
+        // and is tracked as a follow-up alongside the federation discovery
+        // work in `docs/01-progress-tracker.md`.
+        auto identity = req.access_token + '|';
         auto target = std::string_view{req.target};
         if (starts_with(target, room_prefix) && ends_with(target, "/join"))
         {
-            return req.method + " /_matrix/client/v3/rooms/{roomId}/join";
+            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/join";
         }
         if (starts_with(target, room_prefix) && ends_with(target, "/send"))
         {
-            return req.method + " /_matrix/client/v3/rooms/{roomId}/send";
+            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/send";
         }
         if (starts_with(target, room_prefix) && ends_with(target, "/state"))
         {
-            return req.method + " /_matrix/client/v3/rooms/{roomId}/state";
+            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/state";
         }
         if (starts_with(target, device_prefix))
         {
-            return req.method + " /_matrix/client/v3/devices/{deviceId}";
+            return identity + req.method + " /_matrix/client/v3/devices/{deviceId}";
         }
         if (trust_safety::match_reporting_api_route(req.method, target).matched)
         {
-            return req.method + " /_matrix/client/v3/trust-safety/{route}";
+            return identity + req.method + " /_matrix/client/v3/trust-safety/{route}";
         }
-        return req.method + ' ' + req.target;
+        return identity + req.method + ' ' + req.target;
     }
 
+    // Per-bucket request limiter. The cap is the lower of the per-endpoint
+    // `http::endpoint_default_rate_limit` quota (login and register 5,
+    // keys and devices 30, media 20, federation 120, default 60) and the
+    // runtime-configured `ClientApiLimits::max_requests_per_bucket` ceiling
+    // (which tests use to drive the limiter from a single request). The
+    // window length stays in request-count units via
+    // `ClientApiLimits::rate_limit_window_requests`; switching the window
+    // to wall-clock seconds is a follow-up that needs an injectable time
+    // source to remain unit-testable without sleeps.
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> bool
     {
         ++rt.request_clock;
+        auto const policy = http::endpoint_default_rate_limit(req.method, req.target);
+        if (!http::rate_limit_policy_is_valid(policy))
+        {
+            return false;
+        }
+        auto const max_requests = std::min(rt.limits.max_requests_per_bucket, policy.max_requests);
         auto const bucket = normalized_bucket(req);
         auto const it = std::ranges::find_if(rt.rate_limits, [&bucket](ClientRateLimitCounter const& c) {
             return c.bucket == bucket;
@@ -456,7 +499,7 @@ namespace
             it->count = 0U;
             it->window_start_request = rt.request_clock;
         }
-        if (it->count >= rt.limits.max_requests_per_bucket)
+        if (it->count >= max_requests)
         {
             return false;
         }
@@ -483,20 +526,19 @@ namespace
 
     [[nodiscard]] auto devices_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
     {
-        auto out = std::string{"{\"devices\":["};
-        auto first = true;
+        auto devices = canonicaljson::Array{};
         for (auto const& d : rt.devices)
         {
             if (d.user_id != user)
             {
                 continue;
             }
-            out += first ? "" : ",";
-            first = false;
-            out += "{\"device_id\":\"" + json_escape(d.device_id) + "\",\"display_name\":\"" +
-                   json_escape(d.display_name) + "\"}";
+            devices.push_back(json_obj({
+                json_member("device_id", json_str(d.device_id)),
+                json_member("display_name", json_str(d.display_name)),
+            }));
         }
-        return out + "]}";
+        return json_serialize(json_obj({json_member("devices", json_arr(std::move(devices)))}));
     }
 
     [[nodiscard]] auto joined(LocalRoom const& room, std::string_view user) -> bool
@@ -508,8 +550,7 @@ namespace
 
     [[nodiscard]] auto joined_rooms_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
     {
-        auto out = std::string{"{\"joined_rooms\":["};
-        auto first = true;
+        auto rooms = canonicaljson::Array{};
         auto count = std::size_t{0U};
         for (auto const& room : rt.homeserver.database.rooms)
         {
@@ -517,12 +558,10 @@ namespace
             {
                 continue;
             }
-            out += first ? "" : ",";
-            first = false;
             ++count;
-            out += "\"" + json_escape(room.room_id) + "\"";
+            rooms.push_back(json_str(room.room_id));
         }
-        return out + "]}";
+        return json_serialize(json_obj({json_member("joined_rooms", json_arr(std::move(rooms)))}));
     }
 
     [[nodiscard]] auto sync_json(ClientServerRuntime const& rt, std::string_view user, core::SyncRequest const& request)
@@ -534,10 +573,7 @@ namespace
 
         auto const next_token =
             sync::StreamToken{rt.homeserver.database.next_stream_ordering, rt.homeserver.database.next_stream_ordering};
-        auto out = std::string{"{\"next_batch\":\"" + sync::encode_stream_token(next_token) + "\""};
-
-        auto join_rooms = std::string{};
-        auto first_join = true;
+        auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
 
         for (auto const& room : rt.homeserver.database.rooms)
@@ -547,8 +583,7 @@ namespace
                 continue;
             }
             auto const member_count = room.members.size();
-            auto timeline_events = std::string{};
-            auto first_event = true;
+            auto timeline_events = canonicaljson::Array{};
             auto event_count = std::size_t{0U};
 
             for (auto const& event : rt.homeserver.database.persistent_store.events)
@@ -565,35 +600,82 @@ namespace
                 {
                     break;
                 }
-                if (!first_event)
-                {
-                    timeline_events += ",";
-                }
-                first_event = false;
-                timeline_events += "{\"event_id\":\"" + json_escape(event.event_id) + "\",\"sender\":\""
-                    + json_escape(event.sender_user_id) + "\"}";
+                timeline_events.push_back(json_obj({
+                    json_member("event_id", json_str(event.event_id)),
+                    json_member("sender", json_str(event.sender_user_id)),
+                }));
                 ++event_count;
             }
 
-            if (!first_join)
-            {
-                join_rooms += ",";
-            }
-            first_join = false;
             ++join_count;
 
             auto const limited =
                 rt.homeserver.database.persistent_store.events.size() > rt.limits.max_sync_events_per_room;
-            join_rooms += "\"" + json_escape(room.room_id) + "\":{\"timeline\":{\"events\":[";
-            join_rooms += timeline_events;
-            join_rooms += "],\"limited\":";
-            join_rooms += limited ? "true" : "false";
-            join_rooms += ",\"event_count\":" + std::to_string(event_count);
-            join_rooms += "},\"state\":{\"member_count\":" + std::to_string(member_count) + "}}";
+            join_members.push_back(json_member(
+                room.room_id,
+                json_obj({
+                    json_member("timeline",
+                                json_obj({
+                                    json_member("events", json_arr(std::move(timeline_events))),
+                                    json_member("limited", json_bool(limited)),
+                                    json_member("event_count", json_int(static_cast<std::int64_t>(event_count))),
+                                })),
+                    json_member("state", json_obj({json_member("member_count",
+                                                               json_int(static_cast<std::int64_t>(member_count)))})),
+                })));
         }
 
-        out += ",\"rooms\":{\"join\":{" + join_rooms + "}}}";
-        return out;
+        // Walk PersistentMembership to surface the invite room category.
+        // Matrix clients expect `rooms.invite[<id>].invite_state.events`
+        // alongside `rooms.join`. The invite list is capped at the same
+        // `max_sync_rooms` bound as the join list so a user with a large
+        // number of pending invites cannot bloat the response or bypass
+        // the configured resource-control guard.
+        //
+        // `rooms.leave` stays as an empty key for spec-shape completeness.
+        // Per Matrix v1.18 default sync semantics, left rooms should only
+        // surface when the client passes `include_leave: true` in its
+        // room filter; the filter parser is still pending so leave rooms
+        // are intentionally suppressed by default rather than emitted
+        // unconditionally.
+        auto invite_members = canonicaljson::Object{};
+        auto invite_count = std::size_t{0U};
+        for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
+        {
+            if (membership.user_id != user || membership.membership != "invite")
+            {
+                continue;
+            }
+            if (invite_count >= rt.limits.max_sync_rooms)
+            {
+                break;
+            }
+            invite_members.push_back(
+                json_member(membership.room_id,
+                            json_obj({json_member("invite_state", json_obj({json_member("events", json_arr({}))}))})));
+            ++invite_count;
+        }
+
+        return json_serialize(json_obj({
+            json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
+            json_member("rooms", json_obj({
+                                     json_member("join", json_obj(std::move(join_members))),
+                                     json_member("invite", json_obj(std::move(invite_members))),
+                                     json_member("leave", json_obj({})),
+                                 })),
+            // Matrix v1.18 top-level placeholders. Behaviour for these
+            // surfaces lands later; emitting the keys keeps the response
+            // shape spec-complete so clients can parse without falling back
+            // to defaults.
+            json_member("presence", json_obj({json_member("events", json_arr({}))})),
+            json_member("account_data", json_obj({json_member("events", json_arr({}))})),
+            json_member("to_device", json_obj({json_member("events", json_arr({}))})),
+            json_member("device_lists", json_obj({
+                                            json_member("changed", json_arr({})),
+                                            json_member("left", json_arr({})),
+                                        })),
+            json_member("device_one_time_keys_count", json_obj({})),
+        }));
     }
 
     [[nodiscard]] auto wrap(LocalHttpResponse const& r, std::string_view key) -> LocalHttpResponse
@@ -602,7 +684,7 @@ namespace
         {
             return err(r.status, "M_FORBIDDEN", r.body);
         }
-        return resp(200U, "{\"" + std::string{key} + "\":\"" + json_escape(r.body) + "\"}");
+        return resp(200U, json_serialize(json_obj({json_member(std::string{key}, json_str(r.body))})));
     }
 
     [[nodiscard]] auto key_api_success_body(auth::KeyApiEndpoint endpoint) -> std::string
@@ -718,8 +800,11 @@ namespace
         {
             return resp(200U, R"({"device_keys":{}})");
         }
-        return resp(200U, "{\"device_keys\":{\"" + json_escape(user) + "\":{\"" + json_escape(device_id) +
-                              "\":" + key->json + "}}}");
+        return resp(200U,
+                    json_serialize(json_obj({json_member(
+                        "device_keys", json_obj({json_member(std::string{user},
+                                                             json_obj({json_member(std::string{device_id},
+                                                                                   json_embed_raw(key->json))}))}))})));
     }
 
     [[nodiscard]] auto handle_key_claim(ClientServerRuntime& rt, std::string_view user, std::string_view device_id)
@@ -728,16 +813,28 @@ namespace
         auto& store = rt.homeserver.database.persistent_store;
         if (auto claimed = database::claim_one_time_key(store, user, device_id); claimed.has_value())
         {
-            return resp(200U, "{\"one_time_keys\":{\"" + json_escape(user) + "\":{\"" + json_escape(device_id) +
-                                  "\":{\"" + json_escape(claimed->key_id) + "\":" + claimed->json + "}}}}");
+            return resp(200U,
+                        json_serialize(json_obj({json_member(
+                            "one_time_keys",
+                            json_obj({json_member(
+                                std::string{user},
+                                json_obj({json_member(
+                                    std::string{device_id},
+                                    json_obj({json_member(claimed->key_id, json_embed_raw(claimed->json))}))}))}))})));
         }
         auto const fallback = database::find_fallback_key(store, user, device_id);
         if (!fallback.has_value())
         {
             return resp(200U, R"({"one_time_keys":{}})");
         }
-        return resp(200U, "{\"one_time_keys\":{\"" + json_escape(user) + "\":{\"" + json_escape(device_id) + "\":{\"" +
-                              json_escape(fallback->key_id) + "\":" + fallback->json + "}}}}");
+        return resp(200U,
+                    json_serialize(json_obj({json_member(
+                        "one_time_keys",
+                        json_obj({json_member(
+                            std::string{user},
+                            json_obj({json_member(
+                                std::string{device_id},
+                                json_obj({json_member(fallback->key_id, json_embed_raw(fallback->json))}))}))}))})));
     }
 
     [[nodiscard]] auto route_suffix(std::string_view target, std::string_view prefix) noexcept -> std::string_view
@@ -881,21 +978,21 @@ namespace
 
     [[nodiscard]] auto safety_reports_json(ClientServerRuntime const& rt) -> std::string
     {
-        auto out = std::string{"{\"reports\":["};
-        auto first = true;
+        auto reports = canonicaljson::Array{};
         for (auto const& event : rt.homeserver.database.persistent_store.audit_log)
         {
             if (!starts_with(event.event_type, "trust_safety."))
             {
                 continue;
             }
-            out += first ? "" : ",";
-            first = false;
-            out += "{\"event_type\":\"" + json_escape(event.event_type) + "\",\"actor\":\"" + json_escape(event.actor) +
-                   "\",\"target\":\"" + json_escape(event.target) + "\",\"reason\":\"" + json_escape(event.reason) +
-                   "\"}";
+            reports.push_back(json_obj({
+                json_member("event_type", json_str(event.event_type)),
+                json_member("actor", json_str(event.actor)),
+                json_member("target", json_str(event.target)),
+                json_member("reason", json_str(event.reason)),
+            }));
         }
-        return out + "]}";
+        return json_serialize(json_obj({json_member("reports", json_arr(std::move(reports)))}));
     }
 
     [[nodiscard]] auto handle_safety_report(ClientServerRuntime& rt, std::string_view user, LocalHttpRequest const& req)
@@ -971,7 +1068,10 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
 
 auto matrix_error(std::string_view errcode, std::string_view message) -> std::string
 {
-    return "{\"errcode\":\"" + json_escape(errcode) + "\",\"error\":\"" + json_escape(message) + "\"}";
+    return json_serialize(json_obj({
+        json_member("errcode", json_str(errcode)),
+        json_member("error", json_str(message)),
+    }));
 }
 
 auto is_matrix_error_response(LocalHttpResponse const& r) noexcept -> bool
@@ -1039,6 +1139,23 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         return err(429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
     }
 
+    // GET /_matrix/client/versions is the unauthenticated discovery endpoint
+    // most Matrix clients hit first. It must answer before any auth check so
+    // a fresh client can negotiate spec compatibility before it has a token.
+    if (req.method == "GET" && req.target == "/_matrix/client/versions")
+    {
+        auto versions = canonicaljson::Array{};
+        for (auto const& spec : {"v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9", "v1.10",
+                                 "v1.11", "v1.12", "v1.13", "v1.14", "v1.15", "v1.16", "v1.17", "v1.18"})
+        {
+            versions.push_back(json_str(spec));
+        }
+        return resp(200U, json_serialize(json_obj({
+                              json_member("versions", json_arr(std::move(versions))),
+                              json_member("unstable_features", json_obj({})),
+                          })));
+    }
+
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register")
     {
         auto const body = parse_register_body(req.body);
@@ -1047,7 +1164,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             return err(400U, "M_BAD_JSON", "registration body must be Matrix JSON");
         }
         auto const result = register_local_user(rt.homeserver, body->localpart, body->password);
-        return result.ok ? resp(200U, "{\"user_id\":\"" + json_escape(result.value) + "\"}")
+        return result.ok ? resp(200U, json_serialize(json_obj({json_member("user_id", json_str(result.value))})))
                          : err(result.status, "M_FORBIDDEN", result.reason);
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
@@ -1066,9 +1183,11 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             rt.devices.push_back({body->user_id, body->device_id, body->device_id});
         }
-        return resp(200U, "{\"access_token\":\"" + json_escape(result.value) + "\",\"user_id\":\"" +
-                              json_escape(body->user_id) + "\",\"device_id\":\"" + json_escape(body->device_id) +
-                              "\"}");
+        return resp(200U, json_serialize(json_obj({
+                              json_member("access_token", json_str(result.value)),
+                              json_member("user_id", json_str(body->user_id)),
+                              json_member("device_id", json_str(body->device_id)),
+                          })));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout")
     {
@@ -1083,7 +1202,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/whoami")
     {
-        return resp(200U, "{\"user_id\":\"" + json_escape(*user) + "\"}");
+        return resp(200U, json_serialize(json_obj({json_member("user_id", json_str(*user))})));
     }
     auto const key_route = auth::match_key_api_route(req.method, req.target);
     if (key_route.matched && key_route.route.endpoint != auth::KeyApiEndpoint::device_list_update)

@@ -7,6 +7,7 @@ RUN apt-get update \
         ca-certificates \
         clang \
         git \
+        libcurl4-openssl-dev \
         libsodium-dev \
         meson \
         ninja-build \
@@ -22,7 +23,7 @@ RUN meson setup build -Dbuild_tests=false -Dbuild_fuzz=false --prefix=/usr \
 FROM debian:trixie-slim
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates libsodium23 \
+    && apt-get install -y --no-install-recommends ca-certificates libcurl4 libsodium23 \
     && rm -rf /var/lib/apt/lists/* \
     && addgroup --system merovingian \
     && adduser --system --ingroup merovingian --home /var/lib/merovingian --no-create-home merovingian \

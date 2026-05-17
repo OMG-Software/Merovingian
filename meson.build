@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.1.45',
+  version: '0.1.53',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -25,6 +25,12 @@ yyjson_dep = dependency(
   required: false,
   fallback: ['yyjson', 'yyjson_dep'],
 )
+# libcurl drives the federation outbound HTTP client. The TLS backend is
+# whatever the system libcurl was built against; the OutboundClient
+# integration suite enforces consistent verification behavior across
+# Linux and BSD targets. A subprojects/curl.wrap fallback can be added
+# in a follow-up once a known-good WrapDB release is pinned.
+libcurl_dep = dependency('libcurl', version: '>=7.85.0', include_type: 'system')
 
 warning_flags = [
   '-Wall',

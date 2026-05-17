@@ -25,6 +25,7 @@ require_file docs/observability-audit.md
 require_file docs/trust-safety.md
 require_file docs/dependencies/index.md
 require_file docs/dependencies/catch2.md
+require_file docs/dependencies/libcurl.md
 require_file docs/dependencies/libsodium.md
 require_file docs/dependencies/openssl.md
 require_file docs/dependencies/postgresql-libpq.md

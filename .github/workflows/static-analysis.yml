@@ -25,6 +25,7 @@ jobs:
             clang \
             clang-tidy \
             catch2 \
+            libcurl4-openssl-dev \
             libpq-dev \
             libssl-dev \
             libsqlite3-dev \

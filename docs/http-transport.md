@@ -44,6 +44,57 @@ Not implemented yet:
 - HTTP/2
 - keep-alive (every connection currently sends `Connection: close`)
 
+## Outbound HTTP client
+
+`merovingian::http::OutboundClient` is the federation outbound HTTP boundary.
+
+The public surface comprises `OutboundRequest`, `OutboundResponse`,
+`OutboundResult`, `OutboundError`, the pure `validate_outbound_request`
+helper, and the `OutboundClient` class itself. Construction may throw
+`std::bad_alloc`; all other operations report failures through
+`OutboundResult` rather than exceptions.
+
+The validator enforces the security invariants that hold regardless of
+backend choice:
+
+- the request method must be a known token (`GET`, `POST`, `PUT`, `DELETE`)
+- the URL must be an absolute `https://` URL with a host segment
+- at least one address must be supplied in `pinned_addresses`; the client
+  does not resolve hostnames so the SSRF policy in
+  `merovingian::federation::security` remains the single source of truth
+
+`perform()` is libcurl-backed. Each request runs with the following
+non-negotiable defaults so federation traffic cannot regress its security
+posture:
+
+- `CURLOPT_SSL_VERIFYPEER = 1` — reject untrusted certificate chains
+- `CURLOPT_SSL_VERIFYHOST = 2` — require the certificate to match the URL host
+- `CURLOPT_FOLLOWLOCATION = 0` — redirects are refused
+- `CURLOPT_PROTOCOLS_STR = "https"` — no cleartext fallback
+- `CURLOPT_NOSIGNAL = 1` — signal-driven resolution disabled so timeouts
+  remain safe across threads
+- `CURLOPT_CONNECTTIMEOUT` and `CURLOPT_TIMEOUT` driven by the request
+  fields
+- `CURLOPT_RESOLVE` populated from `pinned_addresses` so the connection
+  is locked to addresses validated by the federation security policy
+
+The response body is captured up to `max_response_body_bytes`. Oversized
+responses abort the transfer and surface as `response_too_large`. A 3xx
+response surfaces as `redirect_rejected` with the status and headers
+preserved on the result for audit logging.
+
+libcurl error codes map onto `OutboundError`: TLS verification failures
+collapse to `tls_verification_failed`, connect/resolve failures to
+`connection_failed`, timeouts to `timeout`, and the catch-all is
+`network_error`.
+
+The TLS backend is whatever the system libcurl was built against. A
+per-platform integration suite (Linux, FreeBSD, OpenBSD) is wired up in
+slice 3 alongside the federation outbound transaction integration so
+backend drift surfaces in CI rather than at runtime. The
+`subprojects/curl.wrap` fallback is deferred until a known-good WrapDB
+release is pinned.
+
 ## TLS listener boundary
 
 TLS is a runtime listener boundary, not a replacement for the HTTP parser. The
