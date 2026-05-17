@@ -190,18 +190,33 @@ namespace
         }
     };
 
-    [[nodiscard]] auto public_key_from_material(std::string_view key_material) -> std::string
-    {
-        auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
-        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        if (!derive_federation_keypair(key_material, public_key, secret_key))
-        {
-            return {};
-        }
-        return std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()};
-    }
-
 } // namespace
+
+auto resolve_federation_public_key(FederationKeyRecord const& key) -> std::string
+{
+    if (!key.public_key_bytes.empty())
+    {
+        return key.public_key_bytes;
+    }
+    if (key.verify_token.empty() || sodium_init() < 0)
+    {
+        return {};
+    }
+    auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
+    if (crypto_generichash(seed.data(), seed.size(),
+                           reinterpret_cast<unsigned char const*>(key.verify_token.data()), key.verify_token.size(),
+                           nullptr, 0U) != 0)
+    {
+        return {};
+    }
+    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+    if (crypto_sign_seed_keypair(public_key.data(), secret_key.data(), seed.data()) != 0)
+    {
+        return {};
+    }
+    return std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()};
+}
 
 auto load_server_signing_key(std::string_view server_name, std::string_view key_id, std::string_view key_material)
     -> FederationSigningKey
@@ -260,7 +275,7 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
     auto const payload = federation_request_payload(request.origin, request.method, request.target,
                                                     request.origin_server_ts, request.body);
     auto const signature = events::matrix_bytes_from_base64(request.signature);
-    auto const public_key = public_key_from_material(key.verify_token);
+    auto const public_key = resolve_federation_public_key(key);
     if (!payload.has_value() || !crypto::ed25519_signature_shape_is_valid(crypto::Ed25519Signature{signature}) ||
         !crypto::ed25519_public_key_shape_is_valid(crypto::Ed25519PublicKey{public_key}) ||
         crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.data()),
@@ -334,7 +349,7 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
             {
                 return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
             }
-            auto const public_key = public_key_from_material(key->verify_token);
+            auto const public_key = resolve_federation_public_key(*key);
             auto verifier = FederationEd25519Verifier{};
             auto const verified =
                 events::verify_event_signature(parsed.value, *room_version, {std::string{expected_origin}, key->key_id},
@@ -402,10 +417,40 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         return {403U, server_policy.reason};
     }
     auto* remote = find_remote(runtime, request.origin);
+    if (remote == nullptr && runtime.remote_key_resolver)
+    {
+        // Unknown remote: try the injected resolver to discover, fetch, and
+        // verify the remote's published signing keys. The resolver caches
+        // through the persistent store, so subsequent requests see the new
+        // record without another network round-trip.
+        auto resolved = runtime.remote_key_resolver(request.origin, request.key_id);
+        if (resolved.has_value())
+        {
+            auto new_remote = FederationRemoteRuntime{};
+            new_remote.server_name = std::string{request.origin};
+            new_remote.signing_key = std::move(*resolved);
+            upsert_remote(runtime, std::move(new_remote));
+            remote = find_remote(runtime, request.origin);
+        }
+    }
     if (remote == nullptr)
     {
         audit_federation(runtime, "federation.rejected", request.origin, request.target, "remote is unknown");
         return {403U, "remote is unknown"};
+    }
+    // Known remote, but the cached key doesn't match the request key_id or
+    // has expired: try the resolver to refresh before falling back to the
+    // stored record. Federation peers rotate keys, so the cache must follow.
+    auto const cached_key_id_mismatches = remote->signing_key.key_id != request.key_id;
+    auto const cached_key_expired =
+        remote->signing_key.valid_until_ts != 0U && request.now_ts >= remote->signing_key.valid_until_ts;
+    if (runtime.remote_key_resolver && (cached_key_id_mismatches || cached_key_expired))
+    {
+        auto refreshed = runtime.remote_key_resolver(request.origin, request.key_id);
+        if (refreshed.has_value())
+        {
+            remote->signing_key = std::move(*refreshed);
+        }
     }
     auto const discovery = federation_discovery_policy(remote->discovery);
     if (!discovery.accepted)

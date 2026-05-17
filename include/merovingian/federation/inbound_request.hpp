@@ -8,6 +8,7 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -28,9 +29,23 @@ struct FederationKeyRecord final
 {
     std::string server_name{};
     std::string key_id{};
+    // Local-server signing material: hashed to derive the Ed25519 keypair
+    // used to sign outbound traffic. Empty for remote keys, where only the
+    // raw public key is known.
     std::string verify_token{};
     std::uint64_t valid_until_ts{0U};
+    // Raw Ed25519 public key bytes (32-byte string, not base64) used to
+    // verify signatures from remote servers. Empty for local-server records,
+    // which derive the public key from verify_token. Placed last so existing
+    // 4-field aggregate initializations remain valid.
+    std::string public_key_bytes{};
 };
+
+// Resolves the raw 32-byte Ed25519 public key for a key record. Prefers
+// public_key_bytes when populated (remote-cached key); falls back to the
+// verify_token-derived public key for the local-server case. Returns an
+// empty string when neither source is available.
+[[nodiscard]] auto resolve_federation_public_key(FederationKeyRecord const& key) -> std::string;
 
 struct SignedFederationRequest final
 {
@@ -71,12 +86,21 @@ struct FederationRemoteRuntime final
     RemoteServerRecord discovery{};
 };
 
+// On-demand resolver for remote federation keys. The resolver is responsible
+// for any discovery, network fetch, self-signature verification, and caching
+// — the federation core only consumes the returned key record. Returning
+// std::nullopt signals that the key could not be discovered/verified and
+// the request must be rejected.
+using RemoteKeyResolver =
+    std::function<std::optional<FederationKeyRecord>(std::string_view server_name, std::string_view key_id)>;
+
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
     std::vector<FederationRemoteRuntime> remotes{};
     std::vector<FederationAcceptedTransaction> accepted_transactions{};
     std::vector<observability::AuditLogEvent> audit_events{};
+    RemoteKeyResolver remote_key_resolver{};
 };
 
 struct FederationDecision final
