@@ -118,6 +118,13 @@ namespace
         });
     }
 
+    [[nodiscard]] auto federation_transaction_is_valid(PersistentFederationTransaction const& transaction) noexcept
+        -> bool
+    {
+        return !transaction.transaction_id.empty() && !transaction.server_name.empty() && !transaction.method.empty() &&
+               !transaction.target.empty() && !transaction.origin.empty() && !transaction.body.empty();
+    }
+
     [[nodiscard]] auto key_payload_is_valid(std::string_view json) noexcept -> bool
     {
         return !json.empty();
@@ -417,6 +424,95 @@ namespace
                                                        : std::optional<PersistentServerSigningKey>{*existing};
 }
 
+[[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
+    -> bool
+{
+    if (destination.server_name.empty() || destination.state.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement("upsert_federation_destination",
+                             "INSERT INTO federation_destinations VALUES ($1, $2, $3, $4, $5) ON CONFLICT "
+                             "(server_name) DO UPDATE SET state = $2, retry_after_ts = $3, last_success_ts = $4, "
+                             "consecutive_failures = $5",
+                             {public_value(destination.server_name), public_value(destination.state),
+                              public_value(std::to_string(destination.retry_after_ts)),
+                              public_value(std::to_string(destination.last_success_ts)),
+                              public_value(std::to_string(destination.consecutive_failures))})))
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.federation_destinations,
+                                               [&destination](PersistentFederationDestination const& current) {
+                                                   return current.server_name == destination.server_name;
+                                               });
+    if (existing != store.federation_destinations.end())
+    {
+        *existing = std::move(destination);
+        return true;
+    }
+    store.federation_destinations.push_back(std::move(destination));
+    return true;
+}
+
+[[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
+    -> bool
+{
+    if (!federation_transaction_is_valid(transaction))
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement(
+                "upsert_federation_transaction",
+                "INSERT INTO federation_transactions (transaction_id, server_name, json, method, target, origin, "
+                "origin_server_ts, body, retry_count, next_retry_ts) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, "
+                "$10) ON CONFLICT (transaction_id) DO UPDATE SET server_name = $2, json = $3, method = $4, target = "
+                "$5, origin = $6, origin_server_ts = $7, body = $8, retry_count = $9, next_retry_ts = $10",
+                {public_value(transaction.transaction_id), public_value(transaction.server_name),
+                 sensitive_value(transaction.body), public_value(transaction.method), public_value(transaction.target),
+                 public_value(transaction.origin), public_value(transaction.origin_server_ts),
+                 sensitive_value(transaction.body), public_value(std::to_string(transaction.retry_count)),
+                 public_value(std::to_string(transaction.next_retry_ts))})))
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.federation_transactions,
+                                               [&transaction](PersistentFederationTransaction const& current) {
+                                                   return current.transaction_id == transaction.transaction_id;
+                                               });
+    if (existing != store.federation_transactions.end())
+    {
+        *existing = std::move(transaction);
+        return true;
+    }
+    store.federation_transactions.push_back(std::move(transaction));
+    return true;
+}
+
+[[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool
+{
+    if (transaction_id.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(store, record_statement("delete_federation_transaction",
+                                                    "DELETE FROM federation_transactions WHERE transaction_id = $1",
+                                                    {public_value(transaction_id)})))
+    {
+        return false;
+    }
+    auto const [begin, end] = std::ranges::remove_if(
+        store.federation_transactions, [transaction_id](PersistentFederationTransaction const& transaction) {
+            return transaction.transaction_id == transaction_id;
+        });
+    store.federation_transactions.erase(begin, end);
+    return true;
+}
+
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool
 {
     if (room_exists(store, room.room_id))
@@ -468,12 +564,13 @@ namespace
                                                      {room.room_id,         false},
                                                      {room.creator_user_id, false}
     });
-    auto const membership_statement = record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2, $3, $4)",
-                                                       {
-                                                           {membership.room_id,                         false},
-                                                           {membership.user_id,                         false},
-                                                           {membership.membership,                      false},
-                                                           {std::to_string(membership.stream_ordering), false}
+    auto const membership_statement =
+        record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2, $3, $4)",
+                         {
+                             {membership.room_id,                         false},
+                             {membership.user_id,                         false},
+                             {membership.membership,                      false},
+                             {std::to_string(membership.stream_ordering), false}
     });
     auto const statements = std::vector<PreparedStatement>{room_statement, membership_statement};
     if (!commit_persistent_transaction(store, statements))

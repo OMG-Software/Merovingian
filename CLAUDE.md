@@ -1,5 +1,5 @@
 ## Project Overview
-The most secure Matrix Protocol homeserver ever created. Secure by design, implementation, and during runtime. Bulletproof.
+The most secure Matrix Protocol homeserver ever created. Secure by design, implementation, and during runtime. Bulletproof!
 
 ## Language & Stack
 - C++26
@@ -36,3 +36,5 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Record changes for each version in CHANGELOG.md
 - Ignore `.clwb` folder.
 - Always work in feature or bug branches, never main.
+- Prefer meson wraps over system installed libs.
+- Update docs\01-progress-tracker.md on each change, along with the other docs including CHANGELOG.

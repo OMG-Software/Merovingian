@@ -14,8 +14,38 @@ namespace
 
     [[nodiscard]] auto transaction_is_well_formed(OutboundTransaction const& transaction) noexcept -> bool
     {
-        return !transaction.destination.empty() && !transaction.method.empty() && !transaction.target.empty() &&
-               !transaction.origin.empty();
+        return !transaction.transaction_id.empty() && !transaction.destination.empty() && !transaction.method.empty() &&
+               !transaction.target.empty() && !transaction.origin.empty() && !transaction.body.empty();
+    }
+
+    [[nodiscard]] auto to_persistent_transaction(OutboundTransaction const& transaction)
+        -> database::PersistentFederationTransaction
+    {
+        return {transaction.transaction_id, transaction.destination, transaction.method,
+                transaction.target,         transaction.origin,      transaction.origin_server_ts,
+                transaction.body,           transaction.retry_count, transaction.next_retry_ts};
+    }
+
+    [[nodiscard]] auto to_outbound_transaction(database::PersistentFederationTransaction const& transaction)
+        -> OutboundTransaction
+    {
+        return {transaction.transaction_id, transaction.server_name, transaction.method,
+                transaction.target,         transaction.origin,      transaction.origin_server_ts,
+                transaction.body,           transaction.retry_count, transaction.next_retry_ts};
+    }
+
+    [[nodiscard]] auto to_persistent_destination(FederationDestination const& destination)
+        -> database::PersistentFederationDestination
+    {
+        return {destination.server_name, destination.state, destination.retry_after_ts, destination.last_success_ts,
+                destination.consecutive_failures};
+    }
+
+    [[nodiscard]] auto to_federation_destination(database::PersistentFederationDestination const& destination)
+        -> FederationDestination
+    {
+        return {destination.server_name, destination.retry_after_ts, destination.last_success_ts,
+                destination.consecutive_failures, destination.state};
     }
 
     [[nodiscard]] auto default_now_ms() -> std::uint64_t
@@ -33,12 +63,14 @@ namespace
 } // namespace
 
 DispatchWorker::DispatchWorker(DispatchWorkerConfig config, http::OutboundClient& client, DispatchResolver resolver,
-                               DispatchClock now_ms, DispatchSleep sleep_for)
+                               DispatchClock now_ms, DispatchSleep sleep_for,
+                               database::PersistentStore* persistent_store)
     : config_{std::move(config)}
     , client_{client}
     , resolver_{std::move(resolver)}
     , now_ms_{now_ms ? std::move(now_ms) : DispatchClock{default_now_ms}}
     , sleep_for_{sleep_for ? std::move(sleep_for) : DispatchSleep{default_sleep_for}}
+    , persistent_store_{persistent_store}
 {
 }
 
@@ -61,6 +93,11 @@ auto DispatchWorker::enqueue(OutboundTransaction transaction) -> bool
             return false;
         }
         if (config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth)
+        {
+            return false;
+        }
+        if (persistent_store_ != nullptr &&
+            !database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction)))
         {
             return false;
         }
@@ -142,11 +179,19 @@ auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, st
     transaction.retry_count += 1U;
     if (transaction.retry_count >= config_.max_retries)
     {
+        if (persistent_store_ != nullptr)
+        {
+            (void)database::delete_federation_transaction(*persistent_store_, transaction.transaction_id);
+        }
         auto lock = std::lock_guard{mutex_};
         ++summary_.dropped;
         return;
     }
     transaction.next_retry_ts = now_ts + compute_backoff(transaction.retry_count);
+    if (persistent_store_ != nullptr)
+    {
+        (void)database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction));
+    }
     {
         auto lock = std::lock_guard{mutex_};
         queue_.push_back(std::move(transaction));
@@ -182,6 +227,10 @@ auto DispatchWorker::run_once() -> bool
         result.sent = false;
         result.error = "discovery_failed";
         apply_outbound_result(destination, result, now);
+        if (persistent_store_ != nullptr)
+        {
+            (void)database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
+        }
         {
             auto lock = std::lock_guard{mutex_};
             ++summary_.failed;
@@ -204,6 +253,11 @@ auto DispatchWorker::run_once() -> bool
 
     if (result.sent && result.http_status >= 200U && result.http_status < 300U)
     {
+        if (persistent_store_ != nullptr)
+        {
+            (void)database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
+            (void)database::delete_federation_transaction(*persistent_store_, transaction.transaction_id);
+        }
         auto lock = std::lock_guard{mutex_};
         ++summary_.delivered;
         return true;
@@ -212,10 +266,18 @@ auto DispatchWorker::run_once() -> bool
         auto lock = std::lock_guard{mutex_};
         ++summary_.failed;
     }
+    if (persistent_store_ != nullptr)
+    {
+        (void)database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
+    }
     if (result.error == "circuit_open")
     {
         transaction.next_retry_ts = destination.retry_after_ts > now ? destination.retry_after_ts
                                                                      : now + compute_backoff(transaction.retry_count);
+        if (persistent_store_ != nullptr)
+        {
+            (void)database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction));
+        }
         {
             auto lock = std::lock_guard{mutex_};
             queue_.push_back(std::move(transaction));
@@ -226,6 +288,49 @@ auto DispatchWorker::run_once() -> bool
     }
     re_enqueue_with_backoff(std::move(transaction), now);
     return true;
+}
+
+auto DispatchWorker::replay_pending() -> std::size_t
+{
+    if (persistent_store_ == nullptr)
+    {
+        return 0U;
+    }
+    auto replayed = std::size_t{0U};
+    {
+        auto lock = std::lock_guard{mutex_};
+        for (auto const& destination : persistent_store_->federation_destinations)
+        {
+            auto existing =
+                std::ranges::find_if(destinations_, [&destination](DispatchDestinationSnapshot const& snapshot) {
+                    return snapshot.server_name == destination.server_name;
+                });
+            if (existing != destinations_.end())
+            {
+                existing->state = to_federation_destination(destination);
+                continue;
+            }
+            destinations_.push_back({destination.server_name, to_federation_destination(destination)});
+        }
+        for (auto const& transaction : persistent_store_->federation_transactions)
+        {
+            auto outbound = to_outbound_transaction(transaction);
+            if (!transaction_is_well_formed(outbound))
+            {
+                continue;
+            }
+            if (config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth)
+            {
+                break;
+            }
+            queue_.push_back(std::move(outbound));
+            ++summary_.enqueued;
+            ++summary_.pending;
+            ++replayed;
+        }
+    }
+    cv_.notify_one();
+    return replayed;
 }
 
 auto DispatchWorker::loop() -> void
@@ -242,8 +347,7 @@ auto DispatchWorker::loop() -> void
     }
     // Drain phase: shutdown was requested. Continue processing transactions
     // whose retry deadline is reached so in-flight work completes. Work
-    // still in backoff stays on the queue and is reported as pending in the
-    // summary — the persistent replay (item 2) takes responsibility for it.
+    // still in backoff stays pending and durable replay handles it next start.
     while (true)
     {
         if (!run_once())

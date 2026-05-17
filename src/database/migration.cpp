@@ -17,6 +17,7 @@ namespace
     constexpr auto e2ee_key_storage_schema_version = std::uint32_t{3U};
     constexpr auto signing_key_and_event_depth_schema_version = std::uint32_t{4U};
     constexpr auto stream_ordering_schema_version = std::uint32_t{5U};
+    constexpr auto federation_queue_schema_version = std::uint32_t{6U};
 
     [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table) -> PreparedStatement
     {
@@ -315,6 +316,82 @@ auto downgrade_stream_ordering_migration() -> MigrationStep
     };
 }
 
+auto federation_queue_migration() -> MigrationStep
+{
+    return {
+        federation_queue_schema_version,
+        "federation_queue_replay_columns",
+        {
+          {"federation_destinations_add_last_success_ts",
+             "ALTER TABLE federation_destinations ADD COLUMN last_success_ts TEXT NOT NULL DEFAULT '0'",
+             {}},
+          {"federation_destinations_add_consecutive_failures",
+             "ALTER TABLE federation_destinations ADD COLUMN consecutive_failures TEXT NOT NULL DEFAULT '0'",
+             {}},
+          {"federation_transactions_add_method",
+             "ALTER TABLE federation_transactions ADD COLUMN method TEXT NOT NULL DEFAULT 'PUT'",
+             {}},
+          {"federation_transactions_add_target",
+             "ALTER TABLE federation_transactions ADD COLUMN target TEXT NOT NULL DEFAULT ''",
+             {}},
+          {"federation_transactions_add_origin",
+             "ALTER TABLE federation_transactions ADD COLUMN origin TEXT NOT NULL DEFAULT ''",
+             {}},
+          {"federation_transactions_add_origin_server_ts",
+             "ALTER TABLE federation_transactions ADD COLUMN origin_server_ts TEXT NOT NULL DEFAULT ''",
+             {}},
+          {"federation_transactions_add_body",
+             "ALTER TABLE federation_transactions ADD COLUMN body TEXT NOT NULL DEFAULT ''",
+             {}},
+          {"federation_transactions_add_retry_count",
+             "ALTER TABLE federation_transactions ADD COLUMN retry_count TEXT NOT NULL DEFAULT '0'",
+             {}},
+          {"federation_transactions_add_next_retry_ts",
+             "ALTER TABLE federation_transactions ADD COLUMN next_retry_ts TEXT NOT NULL DEFAULT '0'",
+             {}},
+          },
+        MigrationDirection::upgrade,
+    };
+}
+
+auto downgrade_federation_queue_migration() -> MigrationStep
+{
+    return {
+        stream_ordering_schema_version,
+        "federation_queue_replay_columns_downgrade",
+        {
+          {"downgrade_federation_transactions_remove_next_retry_ts",
+             "ALTER TABLE federation_transactions RENAME TO federation_transactions",
+             {}},
+          {"downgrade_federation_transactions_remove_retry_count",
+             "ALTER TABLE federation_transactions RENAME TO federation_transactions",
+             {}},
+          {"downgrade_federation_transactions_remove_body",
+             "ALTER TABLE federation_transactions RENAME TO federation_transactions",
+             {}},
+          {"downgrade_federation_transactions_remove_origin_server_ts",
+             "ALTER TABLE federation_transactions RENAME TO federation_transactions",
+             {}},
+          {"downgrade_federation_transactions_remove_origin",
+             "ALTER TABLE federation_transactions RENAME TO federation_transactions",
+             {}},
+          {"downgrade_federation_transactions_remove_target",
+             "ALTER TABLE federation_transactions RENAME TO federation_transactions",
+             {}},
+          {"downgrade_federation_transactions_remove_method",
+             "ALTER TABLE federation_transactions RENAME TO federation_transactions",
+             {}},
+          {"downgrade_federation_destinations_remove_consecutive_failures",
+             "ALTER TABLE federation_destinations RENAME TO federation_destinations",
+             {}},
+          {"downgrade_federation_destinations_remove_last_success_ts",
+             "ALTER TABLE federation_destinations RENAME TO federation_destinations",
+             {}},
+          },
+        MigrationDirection::downgrade,
+    };
+}
+
 auto downgrade_initial_schema_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -328,15 +405,16 @@ auto downgrade_initial_schema_migration() -> MigrationStep
 
 auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {initial_schema_migration(), media_metadata_migration(), e2ee_key_storage_migration(),
-            signing_key_and_event_depth_migration(), stream_ordering_migration()};
+    return {initial_schema_migration(),   media_metadata_migration(),
+            e2ee_key_storage_migration(), signing_key_and_event_depth_migration(),
+            stream_ordering_migration(),  federation_queue_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
-    return {downgrade_initial_schema_migration(), downgrade_media_metadata_migration(),
+    return {downgrade_initial_schema_migration(),   downgrade_media_metadata_migration(),
             downgrade_e2ee_key_storage_migration(), downgrade_signing_key_and_event_depth_migration(),
-            downgrade_stream_ordering_migration()};
+            downgrade_stream_ordering_migration(),  downgrade_federation_queue_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan

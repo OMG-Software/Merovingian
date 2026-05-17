@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
@@ -161,6 +162,59 @@ SCENARIO("Dispatch worker re-enqueues transactions when the destination circuit 
                 REQUIRE(summary.failed >= 4U);
                 REQUIRE(summary.pending == 2U);
                 REQUIRE(summary.dropped == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Dispatch worker replays persisted queue rows with destination retry state",
+         "[federation][dispatch-worker][persistence]")
+{
+    GIVEN("a persistent store with a pending transaction and open destination circuit")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        REQUIRE(merovingian::database::store_federation_destination(
+            store, {"remote.example.org", "backoff", 5000U, 1000U, 3U}));
+        REQUIRE(merovingian::database::store_federation_transaction(
+            store, {"txn-1", "remote.example.org", "PUT", "/_matrix/federation/v1/send/txn-1", "origin.example.org",
+                    "1234", R"({"pdus":[]})", 1U, 0U}));
+
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view server_name) {
+            auto discovery = merovingian::federation::ServerDiscoveryResult{};
+            discovery.server_name = std::string{server_name};
+            discovery.resolved_host = std::string{server_name};
+            discovery.resolved_port = 8448U;
+            discovery.pinned_addresses = {"203.0.113.10"};
+            discovery.discovery_allowed = true;
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{std::move(discovery)};
+        }};
+        auto fake_now = std::make_shared<std::atomic<std::uint64_t>>(2000U);
+        auto now_ms = merovingian::federation::DispatchClock{[fake_now] {
+            return fake_now->load();
+        }};
+        auto config = worker_config();
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver),
+                                                              std::move(now_ms), {},     &store};
+
+        WHEN("the worker replays persisted rows after restart and runs before backoff expires")
+        {
+            auto const replayed = worker.replay_pending();
+            auto const ran = worker.run_once();
+
+            THEN("the pending transaction remains queued using the persisted circuit deadline")
+            {
+                REQUIRE(replayed == 1U);
+                REQUIRE(ran);
+                auto const summary = worker.summary();
+                REQUIRE(summary.enqueued == 1U);
+                REQUIRE(summary.failed == 1U);
+                REQUIRE(summary.pending == 1U);
+                REQUIRE(store.federation_transactions.size() == 1U);
+                REQUIRE(store.federation_transactions.front().next_retry_ts == 5000U);
+                REQUIRE(store.federation_destinations.front().consecutive_failures == 3U);
             }
         }
     }

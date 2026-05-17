@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.1.58
+
+- Persisted outbound federation queue state:
+  - Added durable store rows for federation destination retry state, including
+    `retry_after_ts`, `last_success_ts`, and `consecutive_failures`.
+  - Added durable outbound transaction rows with method, target, origin, body,
+    retry count, and next retry timestamp for restart replay.
+  - `DispatchWorker` can now replay pending rows from `PersistentStore`, persist
+    enqueue/retry state, and remove delivered or dropped transactions.
+  - Schema version `6` adds replay columns for existing federation queue tables.
+  - PostgreSQL startup now applies pending schema migrations before hydration
+    instead of recording new migrations during existing-schema bootstrap.
+- Added BDD coverage for SQLite-backed federation queue replay after restart and
+  dispatch worker replay of pending rows with destination backoff state.
+- Bumped project and executable versions to `0.1.58`.
+
 ## 0.1.57
 
 - Addressed PR #82 review feedback on alpha federation runtime hardening:

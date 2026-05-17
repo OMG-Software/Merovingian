@@ -54,6 +54,28 @@ struct PersistentServerSigningKey final
     std::uint64_t valid_until_ts{0U};
 };
 
+struct PersistentFederationDestination final
+{
+    std::string server_name{};
+    std::string state{"idle"};
+    std::uint64_t retry_after_ts{0U};
+    std::uint64_t last_success_ts{0U};
+    std::uint32_t consecutive_failures{0U};
+};
+
+struct PersistentFederationTransaction final
+{
+    std::string transaction_id{};
+    std::string server_name{};
+    std::string method{"PUT"};
+    std::string target{};
+    std::string origin{};
+    std::string origin_server_ts{};
+    std::string body{};
+    std::uint32_t retry_count{0U};
+    std::uint64_t next_retry_ts{0U};
+};
+
 struct PersistentRoom final
 {
     std::string room_id{};
@@ -211,6 +233,8 @@ struct PersistentStore final
     std::vector<PersistentDevice> devices{};
     std::vector<PersistentAccessToken> access_tokens{};
     std::vector<PersistentServerSigningKey> server_signing_keys{};
+    std::vector<PersistentFederationDestination> federation_destinations{};
+    std::vector<PersistentFederationTransaction> federation_transactions{};
     std::vector<PersistentRoom> rooms{};
     std::vector<PersistentMembership> memberships{};
     std::vector<PersistentEvent> events{};
@@ -253,6 +277,11 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool;
 [[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>;
+[[nodiscard]] auto store_federation_destination(PersistentStore& store, PersistentFederationDestination destination)
+    -> bool;
+[[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
+    -> bool;
+[[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool;
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
