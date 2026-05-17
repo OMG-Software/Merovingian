@@ -236,6 +236,10 @@ namespace
                    ? response(200U, admin_audit_summary(runtime))
                    : response(401U, "admin authentication required");
     }
+    if (request.method == "GET" && request.target == "/_matrix/key/v2/server")
+    {
+        return response_from_operation(publish_server_signing_keys(runtime));
+    }
     if (starts_with(request.target, "/_matrix/federation/"))
     {
         auto signed_request = parse_signed_federation_request(request);

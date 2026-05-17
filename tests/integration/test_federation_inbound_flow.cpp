@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
@@ -12,7 +13,11 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
+#include <variant>
 
 #include <sodium.h>
 
@@ -178,7 +183,118 @@ private:
     return signed_event.event_json;
 }
 
+[[nodiscard]] auto object_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
+    -> merovingian::canonicaljson::Value const*
+{
+    for (auto const& member : object)
+    {
+        if (member.key == key)
+        {
+            return member.value.get();
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] auto string_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
+    -> std::string const*
+{
+    auto const* value = object_member(object, key);
+    return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+}
+
+[[nodiscard]] auto integer_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
+    -> std::int64_t const*
+{
+    auto const* value = object_member(object, key);
+    return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
+}
+
+[[nodiscard]] auto object_member_as_object(merovingian::canonicaljson::Object const& object,
+                                           std::string_view key) noexcept -> merovingian::canonicaljson::Object const*
+{
+    auto const* value = object_member(object, key);
+    return value == nullptr ? nullptr : std::get_if<merovingian::canonicaljson::Object>(&value->storage());
+}
+
+[[nodiscard]] auto clone_without_signatures(merovingian::canonicaljson::Object const& object)
+    -> merovingian::canonicaljson::Object
+{
+    auto clone = merovingian::canonicaljson::Object{};
+    for (auto const& member : object)
+    {
+        if (member.key != "signatures")
+        {
+            clone.push_back(merovingian::canonicaljson::make_member(member.key, *member.value));
+        }
+    }
+    return clone;
+}
+
 } // namespace
+
+SCENARIO("Homeserver publishes its persisted self-signed federation key without request authentication",
+         "[integration][federation][keys]")
+{
+    GIVEN("a started runtime with no prior event signing")
+    {
+        auto started = merovingian::homeserver::start_runtime(federation_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("a remote homeserver fetches GET /_matrix/key/v2/server without Authorization")
+        {
+            auto const response =
+                merovingian::homeserver::handle_local_http_request(runtime, {"GET", "/_matrix/key/v2/server", {}, {}});
+
+            THEN("the response publishes the persisted Ed25519 verify key and a valid self-signature")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(object != nullptr);
+
+                auto const* server_name = string_member(*object, "server_name");
+                auto const* valid_until_ts = integer_member(*object, "valid_until_ts");
+                auto const* verify_keys = object_member_as_object(*object, "verify_keys");
+                auto const* signatures = object_member_as_object(*object, "signatures");
+                REQUIRE(server_name != nullptr);
+                REQUIRE(*server_name == "example.org");
+                REQUIRE(valid_until_ts != nullptr);
+                REQUIRE(*valid_until_ts > 0);
+                REQUIRE(verify_keys != nullptr);
+                REQUIRE(signatures != nullptr);
+
+                auto const* key_object = object_member_as_object(*verify_keys, "ed25519:auto");
+                REQUIRE(key_object != nullptr);
+                auto const* public_key = string_member(*key_object, "key");
+                REQUIRE(public_key != nullptr);
+                REQUIRE_FALSE(public_key->empty());
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.front().public_key == *public_key);
+
+                auto const* server_signatures = object_member_as_object(*signatures, "example.org");
+                REQUIRE(server_signatures != nullptr);
+                auto const* encoded_signature = string_member(*server_signatures, "ed25519:auto");
+                REQUIRE(encoded_signature != nullptr);
+
+                auto const payload = merovingian::canonicaljson::serialize_canonical(
+                    merovingian::canonicaljson::Value{clone_without_signatures(*object)});
+                auto const signature = merovingian::events::matrix_bytes_from_base64(*encoded_signature);
+                auto const public_key_bytes = merovingian::events::matrix_bytes_from_base64(*public_key);
+                REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(signature.size() == crypto_sign_BYTES);
+                REQUIRE(public_key_bytes.size() == crypto_sign_PUBLICKEYBYTES);
+                REQUIRE(crypto_sign_verify_detached(
+                            reinterpret_cast<unsigned char const*>(signature.data()),
+                            reinterpret_cast<unsigned char const*>(payload.output.data()), payload.output.size(),
+                            reinterpret_cast<unsigned char const*>(public_key_bytes.data())) == 0);
+                REQUIRE(response.body.find("secret") == std::string::npos);
+            }
+        }
+    }
+}
 
 SCENARIO("Homeserver routes signed inbound federation transactions through runtime policy", "[integration][federation]")
 {
