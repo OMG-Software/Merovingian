@@ -149,6 +149,119 @@ namespace
                                                                        origin, target, reason, "federation"));
     }
 
+    struct ParsedTransactionBody final
+    {
+        std::vector<std::string> pdus{};
+        std::vector<std::pair<std::string, std::string>> edus{}; // (edu_type, content_json)
+    };
+
+    [[nodiscard]] auto serialize_canonical_value(canonicaljson::Value const& value) -> std::string
+    {
+        auto const serialized = canonicaljson::serialize_canonical(value);
+        return serialized.error == canonicaljson::CanonicalJsonError::none ? serialized.output : std::string{};
+    }
+
+    [[nodiscard]] auto find_canonical_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto parse_transaction_body(std::string_view body) -> ParsedTransactionBody
+    {
+        // JSON-shaped Matrix transaction body: { "pdus": [...], "edus": [...] }.
+        // A JSON object without a top-level "pdus" key is treated as a single
+        // PDU envelope so existing test fixtures that submit one PDU per
+        // request continue to work.
+        if (!body.empty() && body.front() == '{')
+        {
+            auto const parsed = canonicaljson::parse_lossless(body);
+            if (parsed.error == canonicaljson::ParseError::none)
+            {
+                auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                if (root != nullptr)
+                {
+                    auto const* pdus_value = find_canonical_member(*root, "pdus");
+                    auto const* edus_value = find_canonical_member(*root, "edus");
+                    if (pdus_value != nullptr || edus_value != nullptr)
+                    {
+                        auto parsed_body = ParsedTransactionBody{};
+                        if (auto const* pdus_array = pdus_value == nullptr
+                                                         ? nullptr
+                                                         : std::get_if<canonicaljson::Array>(&pdus_value->storage());
+                            pdus_array != nullptr)
+                        {
+                            for (auto const& pdu_value : *pdus_array)
+                            {
+                                if (auto serialized = serialize_canonical_value(pdu_value); !serialized.empty())
+                                {
+                                    parsed_body.pdus.push_back(std::move(serialized));
+                                }
+                            }
+                        }
+                        if (auto const* edus_array = edus_value == nullptr
+                                                         ? nullptr
+                                                         : std::get_if<canonicaljson::Array>(&edus_value->storage());
+                            edus_array != nullptr)
+                        {
+                            for (auto const& edu_value : *edus_array)
+                            {
+                                auto const* edu_object = std::get_if<canonicaljson::Object>(&edu_value.storage());
+                                if (edu_object == nullptr)
+                                {
+                                    continue;
+                                }
+                                auto const* type_value = find_canonical_member(*edu_object, "edu_type");
+                                auto const* content_value = find_canonical_member(*edu_object, "content");
+                                if (type_value == nullptr || content_value == nullptr)
+                                {
+                                    continue;
+                                }
+                                auto const* type_text = std::get_if<std::string>(&type_value->storage());
+                                if (type_text == nullptr)
+                                {
+                                    continue;
+                                }
+                                auto content_canonical = serialize_canonical_value(*content_value);
+                                if (content_canonical.empty())
+                                {
+                                    continue;
+                                }
+                                parsed_body.edus.emplace_back(*type_text, std::move(content_canonical));
+                            }
+                        }
+                        return parsed_body;
+                    }
+                    // JSON object without pdus/edus envelope keys: treat as a
+                    // single PDU body (one-event-per-request fixture).
+                    auto single_pdu = ParsedTransactionBody{};
+                    single_pdu.pdus.emplace_back(body);
+                    return single_pdu;
+                }
+            }
+        }
+
+        // Legacy split: body is one or more semicolon-delimited PDUs with no
+        // EDUs. Kept for compatibility with internal test fixtures and
+        // existing inbound handler regression coverage.
+        auto legacy = ParsedTransactionBody{};
+        for (auto& field : split_fields(body, ';'))
+        {
+            if (!field.empty())
+            {
+                legacy.pdus.push_back(std::move(field));
+            }
+        }
+        return legacy;
+    }
+
     [[nodiscard]] auto pdu_is_authorized(FederationPdu const& pdu) -> bool
     {
         auto const* room_version = rooms::find_room_version_policy("12");
@@ -190,18 +303,33 @@ namespace
         }
     };
 
-    [[nodiscard]] auto public_key_from_material(std::string_view key_material) -> std::string
-    {
-        auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
-        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        if (!derive_federation_keypair(key_material, public_key, secret_key))
-        {
-            return {};
-        }
-        return std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()};
-    }
-
 } // namespace
+
+auto resolve_federation_public_key(FederationKeyRecord const& key) -> std::string
+{
+    if (!key.public_key_bytes.empty())
+    {
+        return key.public_key_bytes;
+    }
+    if (key.verify_token.empty() || sodium_init() < 0)
+    {
+        return {};
+    }
+    auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
+    if (crypto_generichash(seed.data(), seed.size(),
+                           reinterpret_cast<unsigned char const*>(key.verify_token.data()), key.verify_token.size(),
+                           nullptr, 0U) != 0)
+    {
+        return {};
+    }
+    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+    if (crypto_sign_seed_keypair(public_key.data(), secret_key.data(), seed.data()) != 0)
+    {
+        return {};
+    }
+    return std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()};
+}
 
 auto load_server_signing_key(std::string_view server_name, std::string_view key_id, std::string_view key_material)
     -> FederationSigningKey
@@ -260,7 +388,7 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
     auto const payload = federation_request_payload(request.origin, request.method, request.target,
                                                     request.origin_server_ts, request.body);
     auto const signature = events::matrix_bytes_from_base64(request.signature);
-    auto const public_key = public_key_from_material(key.verify_token);
+    auto const public_key = resolve_federation_public_key(key);
     if (!payload.has_value() || !crypto::ed25519_signature_shape_is_valid(crypto::Ed25519Signature{signature}) ||
         !crypto::ed25519_public_key_shape_is_valid(crypto::Ed25519PublicKey{public_key}) ||
         crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.data()),
@@ -334,7 +462,7 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
             {
                 return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
             }
-            auto const public_key = public_key_from_material(key->verify_token);
+            auto const public_key = resolve_federation_public_key(*key);
             auto verifier = FederationEd25519Verifier{};
             auto const verified =
                 events::verify_event_signature(parsed.value, *room_version, {std::string{expected_origin}, key->key_id},
@@ -402,10 +530,49 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         return {403U, server_policy.reason};
     }
     auto* remote = find_remote(runtime, request.origin);
+    if (remote == nullptr && runtime.remote_key_resolver)
+    {
+        // Unknown remote: try the injected resolver to discover, fetch, and
+        // verify the remote's published signing keys, then upsert a full
+        // runtime record so the discovery/trust policy checks below have
+        // something to validate against. The resolver caches through the
+        // persistent store, so subsequent requests see the new record
+        // without another network round-trip.
+        auto resolved = runtime.remote_key_resolver(request.origin, request.key_id);
+        if (resolved.has_value())
+        {
+            if (resolved->server_name.empty())
+            {
+                resolved->server_name = std::string{request.origin};
+            }
+            if (resolved->trust.reputation_score == 0U)
+            {
+                resolved->trust.reputation_score = 100U;
+            }
+            upsert_remote(runtime, std::move(*resolved));
+            remote = find_remote(runtime, request.origin);
+        }
+    }
     if (remote == nullptr)
     {
         audit_federation(runtime, "federation.rejected", request.origin, request.target, "remote is unknown");
         return {403U, "remote is unknown"};
+    }
+    // Known remote, but the cached key doesn't match the request key_id or
+    // has expired: try the resolver to refresh before falling back to the
+    // stored record. Federation peers rotate keys, so the cache must follow.
+    // We keep the existing discovery/trust state and only swap in the new
+    // signing key — discovery doesn't change just because a key rotated.
+    auto const cached_key_id_mismatches = remote->signing_key.key_id != request.key_id;
+    auto const cached_key_expired =
+        remote->signing_key.valid_until_ts != 0U && request.now_ts >= remote->signing_key.valid_until_ts;
+    if (runtime.remote_key_resolver && (cached_key_id_mismatches || cached_key_expired))
+    {
+        auto refreshed = runtime.remote_key_resolver(request.origin, request.key_id);
+        if (refreshed.has_value() && !refreshed->signing_key.public_key_bytes.empty())
+        {
+            remote->signing_key = std::move(refreshed->signing_key);
+        }
     }
     auto const discovery = federation_discovery_policy(remote->discovery);
     if (!discovery.accepted)
@@ -435,17 +602,15 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         return {200U, "accepted endpoint=" + std::string{federation_endpoint_name(route_match.route.endpoint)}};
     }
 
+    auto const parsed_body = parse_transaction_body(request.body);
     auto transaction = FederationTransaction{};
     transaction.origin = request.origin;
     transaction.transaction_id = transaction_id_from_send_target(request.target);
     transaction.byte_size = request.body.size();
-    auto const encoded_pdus = split_fields(request.body, ';');
-    for (auto const& encoded_pdu : encoded_pdus)
+    transaction.pdus = parsed_body.pdus;
+    for (auto const& [edu_type, edu_content] : parsed_body.edus)
     {
-        if (!encoded_pdu.empty())
-        {
-            transaction.pdus.push_back(encoded_pdu);
-        }
+        transaction.edus.push_back(edu_type);
     }
     auto const transaction_decision =
         validate_federation_transaction(transaction, runtime.config.max_transaction_bytes);
@@ -462,6 +627,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                          "transaction already accepted");
         return {200U, "duplicate transaction accepted"};
     }
+    auto pdus_appended = std::size_t{0U};
+    auto pdus_state_conflict = std::size_t{0U};
     for (auto const& encoded_pdu : transaction.pdus)
     {
         auto const pdu = parse_federation_pdu(encoded_pdu);
@@ -472,13 +639,89 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             audit_federation(runtime, "federation.rejected", request.origin, request.target, pdu_decision.reason);
             return {pdu_decision.status, pdu_decision.reason};
         }
+        if (!runtime.pdu_sink)
+        {
+            continue;
+        }
+        // PDU passed signature and auth checks; hand it to the ingestion
+        // sink for persistence. State-resolution conflicts log a structured
+        // warning and DO NOT abort the transaction — the Matrix spec requires
+        // that we accept the request and resolve state in a later pass.
+        auto envelope = parse_inbound_pdu_envelope(encoded_pdu);
+        if (!envelope.has_value())
+        {
+            audit_federation(runtime, "federation.pdu_envelope_unparseable", request.origin, request.target,
+                             "ingestion-skip");
+            continue;
+        }
+        auto const ingestion = runtime.pdu_sink(*envelope);
+        switch (ingestion.status)
+        {
+        case PduIngestionStatus::accepted:
+            ++pdus_appended;
+            break;
+        case PduIngestionStatus::rejected_state_conflict:
+            ++pdus_state_conflict;
+            audit_federation(runtime, "federation.pdu_state_conflict", request.origin, request.target,
+                             ingestion.reason);
+            break;
+        case PduIngestionStatus::rejected_auth:
+            audit_federation(runtime, "federation.pdu_rejected_auth", request.origin, request.target,
+                             ingestion.reason);
+            break;
+        case PduIngestionStatus::rejected_invalid:
+            audit_federation(runtime, "federation.pdu_rejected_invalid", request.origin, request.target,
+                             ingestion.reason);
+            break;
+        case PduIngestionStatus::internal_error:
+            audit_federation(runtime, "federation.pdu_internal_error", request.origin, request.target,
+                             ingestion.reason);
+            break;
+        }
     }
+
+    auto edus_dispatched = std::size_t{0U};
+    auto edus_dropped = std::size_t{0U};
+    for (auto const& [edu_type, edu_content] : parsed_body.edus)
+    {
+        auto envelope = parse_inbound_edu_envelope(edu_type, request.origin, edu_content);
+        if (!envelope.has_value())
+        {
+            ++edus_dropped;
+            continue;
+        }
+        if (!runtime.edu_sink)
+        {
+            ++edus_dispatched;
+            continue;
+        }
+        auto const disposition = runtime.edu_sink(*envelope);
+        if (disposition.status == EduDispositionStatus::accepted)
+        {
+            ++edus_dispatched;
+        }
+        else
+        {
+            ++edus_dropped;
+        }
+    }
+
     remote->trust.consecutive_failures = 0U;
     runtime.accepted_transactions.push_back(
         {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
     audit_federation(runtime, "federation.accepted", request.origin, request.target,
                      federation_route_audit_event(route_match.route, request.origin));
-    return {200U, "accepted pdus=" + std::to_string(transaction.pdus.size())};
+    if (!runtime.pdu_sink && !runtime.edu_sink && transaction.edus.empty())
+    {
+        return {200U, "accepted pdus=" + std::to_string(transaction.pdus.size())};
+    }
+    auto detail = "accepted pdus=" + std::to_string(transaction.pdus.size()) +
+                  " appended=" + std::to_string(pdus_appended) +
+                  " state_conflicts=" + std::to_string(pdus_state_conflict) +
+                  " edus=" + std::to_string(transaction.edus.size()) +
+                  " edus_dispatched=" + std::to_string(edus_dispatched) +
+                  " edus_dropped=" + std::to_string(edus_dropped);
+    return {200U, std::move(detail)};
 }
 
 auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string

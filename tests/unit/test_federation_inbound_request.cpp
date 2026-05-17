@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 #include <sodium.h>
 
@@ -280,6 +281,45 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
                 REQUIRE(runtime.accepted_transactions.front().transaction_id == "txn123");
                 REQUIRE(runtime.remotes.front().trust.consecutive_failures == 0U);
                 REQUIRE(merovingian::federation::federation_audit_is_safe(runtime));
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound federation seeds discovery state for remotes resolved on demand",
+         "[federation][inbound][transaction]")
+{
+    GIVEN("an unknown remote with an on-demand resolver that returns a full runtime record")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        runtime.remote_key_resolver =
+            [origin, key_id, token](
+                std::string_view server_name,
+                std::string_view request_key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            if (server_name != origin || request_key_id != key_id)
+            {
+                return std::nullopt;
+            }
+            return remote_for(origin, key_id, token);
+        };
+        auto const json_pdu = signed_json_pdu(origin, key_id, token);
+        auto const request = signed_request(origin, key_id, token, json_pdu);
+
+        WHEN("the first signed request from that remote is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the resolved discovery and signing state allow the transaction")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body == "accepted pdus=1");
+                REQUIRE(runtime.remotes.size() == 1U);
+                REQUIRE(runtime.remotes.front().discovery.resolved_addresses ==
+                        std::vector<std::string>{"203.0.113.10"});
+                REQUIRE(runtime.remotes.front().trust.reputation_score == 100U);
             }
         }
     }
