@@ -1,0 +1,228 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/federation/inbound_ingestion.hpp"
+
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/event_id.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
+
+#include <algorithm>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <utility>
+#include <variant>
+
+namespace merovingian::federation
+{
+namespace
+{
+
+    [[nodiscard]] auto find_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto extract_string(canonicaljson::Value const& value) -> std::optional<std::string>
+    {
+        auto const* text = std::get_if<std::string>(&value.storage());
+        return text == nullptr ? std::nullopt : std::optional<std::string>{*text};
+    }
+
+    [[nodiscard]] auto extract_integer(canonicaljson::Value const& value) -> std::optional<std::int64_t>
+    {
+        auto const* number = std::get_if<std::int64_t>(&value.storage());
+        return number == nullptr ? std::nullopt : std::optional<std::int64_t>{*number};
+    }
+
+    [[nodiscard]] auto extract_string_array(canonicaljson::Value const& value) -> std::vector<std::string>
+    {
+        auto out = std::vector<std::string>{};
+        auto const* array = std::get_if<canonicaljson::Array>(&value.storage());
+        if (array == nullptr)
+        {
+            return out;
+        }
+        for (auto const& entry : *array)
+        {
+            if (auto text = extract_string(entry); text.has_value())
+            {
+                out.push_back(std::move(*text));
+            }
+        }
+        return out;
+    }
+
+} // namespace
+
+auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<InboundPduEnvelope>
+{
+    if (pdu_json.empty() || pdu_json.front() != '{')
+    {
+        return std::nullopt;
+    }
+    auto const parsed = canonicaljson::parse_lossless(pdu_json);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return std::nullopt;
+    }
+    auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (root == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto envelope = events::parse_event_envelope(parsed.value);
+    if (!envelope.error.empty())
+    {
+        return std::nullopt;
+    }
+
+    // Room version is currently fixed to 12 in this codebase; the call into
+    // make_reference_hash_event_id needs the version policy to compute the
+    // canonical event identifier consistently with the local send path.
+    auto const* room_version_policy = rooms::find_room_version_policy("12");
+    if (room_version_policy == nullptr)
+    {
+        return std::nullopt;
+    }
+    auto const event_id_result = events::make_reference_hash_event_id(parsed.value, *room_version_policy);
+    if (event_id_result.event_id.empty())
+    {
+        return std::nullopt;
+    }
+
+    auto out = InboundPduEnvelope{};
+    out.event_id = event_id_result.event_id;
+    out.room_id = envelope.event.room_id;
+    out.room_version = "12";
+    out.sender = envelope.event.sender;
+    out.event_type = envelope.event.event_type;
+    if (!envelope.event.state_key.empty())
+    {
+        out.state_key = envelope.event.state_key;
+    }
+    out.origin_server_ts = envelope.event.origin_server_ts;
+    out.signatures = envelope.event.signatures;
+    out.json = std::string{pdu_json};
+
+    if (auto const* prev_value = find_member(*root, "prev_events"); prev_value != nullptr)
+    {
+        out.prev_event_ids = extract_string_array(*prev_value);
+    }
+    if (auto const* auth_value = find_member(*root, "auth_events"); auth_value != nullptr)
+    {
+        out.auth_event_ids = extract_string_array(*auth_value);
+    }
+    if (auto const* depth_value = find_member(*root, "depth"); depth_value != nullptr)
+    {
+        if (auto const depth = extract_integer(*depth_value); depth.has_value() && *depth >= 0)
+        {
+            out.depth = static_cast<std::uint64_t>(*depth);
+        }
+    }
+    return out;
+}
+
+auto classify_edu_type(std::string_view edu_type) noexcept -> EduType
+{
+    if (edu_type == "m.typing")
+    {
+        return EduType::typing;
+    }
+    if (edu_type == "m.receipt")
+    {
+        return EduType::receipt;
+    }
+    if (edu_type == "m.presence")
+    {
+        return EduType::presence;
+    }
+    if (edu_type == "m.direct_to_device")
+    {
+        return EduType::direct_to_device;
+    }
+    if (edu_type == "m.device_list_update")
+    {
+        return EduType::device_list_update;
+    }
+    return EduType::unknown;
+}
+
+auto edu_content_is_valid(EduType type, std::string_view content_json) -> bool
+{
+    if (content_json.empty())
+    {
+        return false;
+    }
+    auto const parsed = canonicaljson::parse_lossless(content_json);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return false;
+    }
+    auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (root == nullptr)
+    {
+        return false;
+    }
+
+    switch (type)
+    {
+    case EduType::typing:
+        // typing content: { room_id: string, user_id: string, typing: bool }.
+        return find_member(*root, "room_id") != nullptr && find_member(*root, "user_id") != nullptr &&
+               find_member(*root, "typing") != nullptr;
+    case EduType::receipt:
+        // receipt content: { <room_id>: { "m.read": { <user_id>: { ts } } } }.
+        return !root->empty();
+    case EduType::presence:
+        // presence content: { push: [ { user_id, presence } ] }.
+        return find_member(*root, "push") != nullptr;
+    case EduType::direct_to_device:
+        // to_device content: { sender, type, message_id, messages }.
+        return find_member(*root, "sender") != nullptr && find_member(*root, "type") != nullptr &&
+               find_member(*root, "messages") != nullptr;
+    case EduType::device_list_update:
+        // device_list_update content: { user_id, device_id, stream_id }.
+        return find_member(*root, "user_id") != nullptr && find_member(*root, "device_id") != nullptr &&
+               find_member(*root, "stream_id") != nullptr;
+    case EduType::unknown:
+        return false;
+    }
+    return false;
+}
+
+auto parse_inbound_edu_envelope(std::string_view edu_type, std::string_view origin, std::string_view content_json)
+    -> std::optional<InboundEduEnvelope>
+{
+    if (edu_type.empty() || origin.empty())
+    {
+        return std::nullopt;
+    }
+    auto const type = classify_edu_type(edu_type);
+    if (type == EduType::unknown)
+    {
+        return std::nullopt;
+    }
+    if (!edu_content_is_valid(type, content_json))
+    {
+        return std::nullopt;
+    }
+    auto out = InboundEduEnvelope{};
+    out.type = type;
+    out.edu_type = std::string{edu_type};
+    out.content_json = std::string{content_json};
+    out.origin = std::string{origin};
+    return out;
+}
+
+} // namespace merovingian::federation

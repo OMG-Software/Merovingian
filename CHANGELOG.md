@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.1.56
+
+- Alpha tracker items 1, 3, and 4 of the federation milestone:
+  - **Remote signing key fetch & cache.** New
+    `federation/remote_key_cache` module fetches
+    `GET /_matrix/key/v2/server` through the pinned
+    `http::OutboundClient`, self-verifies the canonical Matrix key
+    response with libsodium, persists keys to the existing
+    `server_signing_keys` table, and exposes a refresh-aware resolver
+    that plugs into `FederationRuntimeState::remote_key_resolver`.
+    `FederationKeyRecord` now carries a raw `public_key_bytes` field for
+    remote keys; `resolve_federation_public_key` chooses between the
+    cached bytes and the local-server `verify_token` derivation.
+  - **Outbound dispatch worker.** New
+    `federation/dispatch_worker` module provides a `DispatchWorker`
+    with a bounded mutex/condvar work queue, per-destination retry
+    state, configurable max-retries/backoff, injectable clock and
+    resolver hooks for deterministic tests, and a request_shutdown /
+    drain / join lifecycle. The worker composes
+    `perform_outbound_transaction` with `destination_should_retry` and
+    re-enqueues failures honoring `compute_backoff`.
+  - **Inbound PDU + EDU ingestion.** New
+    `federation/inbound_ingestion` module parses canonical-JSON PDUs
+    into ingestion envelopes (event id, room id, prev/auth events,
+    depth, signatures) and classifies/validates EDU content for
+    `m.typing`, `m.receipt`, `m.presence`, `m.direct_to_device`, and
+    `m.device_list_update`. `handle_inbound_federation_request` now
+    parses transaction bodies as `{ "pdus": [...], "edus": [...] }`
+    JSON (with backwards-compatible single-PDU and legacy semicolon
+    splits), drives an injected `PduSink` per accepted PDU, and an
+    injected `EduSink` per accepted EDU. State-resolution conflicts
+    surface as `federation.pdu_state_conflict` audit events and DO NOT
+    abort the transaction — deferred state merge is a follow-up.
+- BDD coverage for parse-and-verify (happy + tamper paths), cache
+  shape checks, the refresh-slack window, the dispatch worker retry /
+  drop / drain / queue-bound behavior, PDU envelope parsing, and EDU
+  classification + per-type content validation.
+- Bumped project and executable versions to `0.1.56`.
+
 ## 0.1.55
 
 - Addressed PR #81 review feedback on federation server discovery:

@@ -2,6 +2,7 @@
 #pragma once
 
 #include "merovingian/events/event.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/federation/transactions.hpp"
@@ -101,6 +102,12 @@ struct FederationRuntimeState final
     std::vector<FederationAcceptedTransaction> accepted_transactions{};
     std::vector<observability::AuditLogEvent> audit_events{};
     RemoteKeyResolver remote_key_resolver{};
+    // Optional ingestion hooks. When set, accepted PDUs are appended to the
+    // event graph via pdu_sink and accepted EDUs are routed to runtime
+    // surfaces (typing tracker, receipt store, etc.) via edu_sink. Both
+    // hooks are invoked from handle_inbound_federation_request.
+    PduSink pdu_sink{};
+    EduSink edu_sink{};
 };
 
 struct FederationDecision final

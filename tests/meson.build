@@ -58,6 +58,7 @@ shell = find_program('sh')
       'unit/test_http_rate_limit.cpp',
       'unit/test_http_request.cpp',
       'unit/test_http_request_limits.cpp',
+      'unit/test_inbound_ingestion.cpp',
       'unit/test_key_api.cpp',
       'unit/test_media_repository.cpp',
       'unit/test_media_security.cpp',

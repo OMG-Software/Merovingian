@@ -103,31 +103,39 @@ deployment milestone.
   object.
 - Response JSON: client-server responses use `canonicaljson::Value` and
   `serialize_canonical` instead of hand-rolled JSON string construction.
+- Remote signing key cache: outbound `GET /_matrix/key/v2/server` fetch
+  through the pinned `http::OutboundClient`, self-signature verification with
+  libsodium, persistence into `server_signing_keys` with `valid_until_ts`,
+  refresh-on-rotation, and an injectable
+  `FederationRuntimeState::remote_key_resolver` that wires the cache into
+  inbound request and PDU signature verification.
+- Outbound dispatch worker: bounded queue with per-destination retry
+  state, configurable max-retries/backoff, deterministic clock and
+  resolver injectables, and a request_shutdown / drain / join lifecycle
+  driving `perform_outbound_transaction` and honoring
+  `destination_should_retry`.
+- Inbound PDU + EDU ingestion: canonical-JSON transaction body parser,
+  PDU envelope extraction, `FederationRuntimeState::pdu_sink` and
+  `edu_sink` hooks, classification and per-type content validation for
+  `m.typing`, `m.receipt`, `m.presence`, `m.direct_to_device`, and
+  `m.device_list_update`, and structured `federation.pdu_state_conflict`
+  audit on state-resolution conflicts (deferred merge follow-up).
 
 #### TODO
 
-1. Fetch and cache remote signing keys through outbound
-   `GET /_matrix/key/v2/server`, verify the self-signed key response, persist
-   `valid_until_ts`, refresh on rotation, and wire the cache into inbound
-   verification.
-2. Persist outbound federation transactions and destination retry state, then
+1. Persist outbound federation transactions and destination retry state, then
    replay pending rows after restart.
-3. Add the outbound dispatch worker that discovers remote servers, builds
-   `OutboundCall`, invokes `perform_outbound_transaction`, honors
-   `destination_should_retry`, and drains on shutdown.
-4. Complete inbound `PUT /_matrix/federation/v1/send/{txnId}` PDU ingestion:
-   run auth rules for remote events, append accepted PDUs to the event graph,
-   apply state resolution when needed, and handle EDUs such as typing and
-   receipts.
-5. Implement federation make/send join, leave, invite, and backfill flows.
-6. Finish sync conformance: long polling, filters, populated presence,
+2. Merge conflicting remote PDU state through state-resolution v2 instead of
+   logging `federation.pdu_state_conflict` and accepting the transaction.
+3. Implement federation make/send join, leave, invite, and backfill flows.
+4. Finish sync conformance: long polling, filters, populated presence,
    account-data, device-list, to-device, and key-count surfaces, plus Matrix
    v1.18 fixtures.
-7. Add live PostgreSQL integration coverage and enforce separate runtime and
+5. Add live PostgreSQL integration coverage and enforce separate runtime and
    migration role grants.
-8. Run fuzz targets in CI for canonical JSON and HTTP transport before
+6. Run fuzz targets in CI for canonical JSON and HTTP transport before
    declaring Alpha.
-9. Replace placeholder hardening checks with fail-closed alpha deployment
+7. Replace placeholder hardening checks with fail-closed alpha deployment
    controls or explicitly documented alpha-only exceptions.
 
 ### Beta
