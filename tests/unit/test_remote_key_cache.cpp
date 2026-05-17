@@ -34,7 +34,8 @@ struct SignedKeyResponse final
 // for a freshly generated Ed25519 keypair. Mirrors the local server's
 // publish path so the verifier exercises the same canonical signing shape.
 [[nodiscard]] auto build_signed_key_response(std::string_view server_name, std::string_view key_id,
-                                              std::uint64_t valid_until_ts) -> SignedKeyResponse
+                                             std::uint64_t valid_until_ts, bool include_unsigned_extra_key = false)
+    -> SignedKeyResponse
 {
     REQUIRE(sodium_is_ready());
 
@@ -42,16 +43,28 @@ struct SignedKeyResponse final
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
     REQUIRE(crypto_sign_keypair(public_key.data(), secret_key.data()) == 0);
 
-    auto const public_key_base64 = merovingian::events::matrix_base64_from_bytes(std::string_view{
-        reinterpret_cast<char const*>(public_key.data()), public_key.size()});
+    auto const public_key_base64 = merovingian::events::matrix_base64_from_bytes(
+        std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()});
 
     auto verify_key_entry = merovingian::canonicaljson::Object{};
     verify_key_entry.push_back(
         merovingian::canonicaljson::make_member("key", merovingian::canonicaljson::Value{public_key_base64}));
     auto verify_keys = merovingian::canonicaljson::Object{};
-    verify_keys.push_back(
-        merovingian::canonicaljson::make_member(std::string{key_id},
-                                                merovingian::canonicaljson::Value{std::move(verify_key_entry)}));
+    verify_keys.push_back(merovingian::canonicaljson::make_member(
+        std::string{key_id}, merovingian::canonicaljson::Value{std::move(verify_key_entry)}));
+    if (include_unsigned_extra_key)
+    {
+        auto extra_public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+        auto extra_secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        REQUIRE(crypto_sign_keypair(extra_public_key.data(), extra_secret_key.data()) == 0);
+        auto const extra_public_key_base64 = merovingian::events::matrix_base64_from_bytes(
+            std::string_view{reinterpret_cast<char const*>(extra_public_key.data()), extra_public_key.size()});
+        auto extra_verify_key_entry = merovingian::canonicaljson::Object{};
+        extra_verify_key_entry.push_back(
+            merovingian::canonicaljson::make_member("key", merovingian::canonicaljson::Value{extra_public_key_base64}));
+        verify_keys.push_back(merovingian::canonicaljson::make_member(
+            "ed25519:unsigned", merovingian::canonicaljson::Value{std::move(extra_verify_key_entry)}));
+    }
 
     auto response = merovingian::canonicaljson::Object{};
     response.push_back(merovingian::canonicaljson::make_member(
@@ -68,8 +81,8 @@ struct SignedKeyResponse final
 
     auto signature = std::string(crypto_sign_BYTES, '\0');
     REQUIRE(crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
-                                 reinterpret_cast<unsigned char const*>(payload.output.data()),
-                                 payload.output.size(), secret_key.data()) == 0);
+                                 reinterpret_cast<unsigned char const*>(payload.output.data()), payload.output.size(),
+                                 secret_key.data()) == 0);
 
     auto server_signatures = merovingian::canonicaljson::Object{};
     server_signatures.push_back(merovingian::canonicaljson::make_member(
@@ -89,8 +102,7 @@ struct SignedKeyResponse final
 
 } // namespace
 
-SCENARIO("Remote key response parser accepts a valid self-signed payload",
-         "[federation][remote-key-cache][verify]")
+SCENARIO("Remote key response parser accepts a valid self-signed payload", "[federation][remote-key-cache][verify]")
 {
     GIVEN("a canonically signed key response from example.org")
     {
@@ -98,8 +110,8 @@ SCENARIO("Remote key response parser accepts a valid self-signed payload",
 
         WHEN("the response body is parsed and self-verified")
         {
-            auto const result = merovingian::federation::parse_and_verify_remote_key_response(signed_response.body,
-                                                                                              "example.org");
+            auto const result =
+                merovingian::federation::parse_and_verify_remote_key_response(signed_response.body, "example.org");
 
             THEN("verification succeeds and the verify key is exposed for caching")
             {
@@ -114,8 +126,28 @@ SCENARIO("Remote key response parser accepts a valid self-signed payload",
     }
 }
 
-SCENARIO("Remote key response parser rejects mismatched server name",
+SCENARIO("Remote key response parser rejects verify keys without matching self-signatures",
          "[federation][remote-key-cache][verify]")
+{
+    GIVEN("a canonically signed key response with an extra unsigned verify key")
+    {
+        auto const signed_response = build_signed_key_response("example.org", "ed25519:1", 2000000000000ULL, true);
+
+        WHEN("the response body is parsed and self-verified")
+        {
+            auto const result =
+                merovingian::federation::parse_and_verify_remote_key_response(signed_response.body, "example.org");
+
+            THEN("verification fails before any key is trusted")
+            {
+                REQUIRE_FALSE(result.ok);
+                REQUIRE(result.reason.find("unsigned verify key") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Remote key response parser rejects mismatched server name", "[federation][remote-key-cache][verify]")
 {
     GIVEN("a signed response advertising one server")
     {
@@ -151,8 +183,8 @@ SCENARIO("Remote key response parser rejects a tampered signature", "[federation
 
         WHEN("the tampered response is verified")
         {
-            auto const result = merovingian::federation::parse_and_verify_remote_key_response(signed_response.body,
-                                                                                              "example.org");
+            auto const result =
+                merovingian::federation::parse_and_verify_remote_key_response(signed_response.body, "example.org");
 
             THEN("verification fails closed")
             {
@@ -193,17 +225,16 @@ SCENARIO("Remote key cache persists and retrieves verified keys", "[federation][
     {
         auto open_result = merovingian::database::open_persistent_store();
         REQUIRE(open_result.ok);
-        auto const signed_response =
-            build_signed_key_response("real.example.org", "ed25519:auto", 2000000000000ULL);
-        auto const parsed = merovingian::federation::parse_and_verify_remote_key_response(signed_response.body,
-                                                                                          "real.example.org");
+        auto const signed_response = build_signed_key_response("real.example.org", "ed25519:auto", 2000000000000ULL);
+        auto const parsed =
+            merovingian::federation::parse_and_verify_remote_key_response(signed_response.body, "real.example.org");
         REQUIRE(parsed.ok);
 
         WHEN("the parsed response is cached and retrieved")
         {
             REQUIRE(merovingian::federation::cache_remote_server_keys(open_result.store, parsed.response));
-            auto const found = merovingian::federation::find_cached_remote_key(open_result.store, "real.example.org",
-                                                                               "ed25519:auto");
+            auto const found =
+                merovingian::federation::find_cached_remote_key(open_result.store, "real.example.org", "ed25519:auto");
 
             THEN("the FederationKeyRecord carries the raw public key bytes and expiry")
             {
@@ -218,8 +249,7 @@ SCENARIO("Remote key cache persists and retrieves verified keys", "[federation][
     }
 }
 
-SCENARIO("Remote key refresh threshold respects expiry and slack",
-         "[federation][remote-key-cache][refresh]")
+SCENARIO("Remote key refresh threshold respects expiry and slack", "[federation][remote-key-cache][refresh]")
 {
     // Implementation uses a 5-minute slack window (300_000 ms).
     auto constexpr slack_ms = std::uint64_t{5U * 60U * 1000U};
@@ -285,16 +315,15 @@ SCENARIO("Remote key resolver caches the first fetch and serves later requests f
         REQUIRE(open_result.ok);
         auto const signed_response =
             build_signed_key_response("federated.example.org", "ed25519:auto", 9'999'999'999'999ULL);
-        auto const parsed = merovingian::federation::parse_and_verify_remote_key_response(
-            signed_response.body, "federated.example.org");
+        auto const parsed = merovingian::federation::parse_and_verify_remote_key_response(signed_response.body,
+                                                                                          "federated.example.org");
         REQUIRE(parsed.ok);
         REQUIRE(merovingian::federation::cache_remote_server_keys(open_result.store, parsed.response));
 
         WHEN("the resolver is asked for a known cached server/key pair")
         {
             auto const found = merovingian::federation::find_cached_remote_key(open_result.store,
-                                                                                "federated.example.org",
-                                                                                "ed25519:auto");
+                                                                               "federated.example.org", "ed25519:auto");
 
             THEN("the cached record is returned without any network hooks being touched")
             {

@@ -21,8 +21,7 @@ namespace
     [[nodiscard]] auto default_now_ms() -> std::uint64_t
     {
         return static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(
-                std::chrono::system_clock::now().time_since_epoch())
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
                 .count());
     }
 
@@ -80,7 +79,9 @@ auto DispatchWorker::start() -> void
     {
         return;
     }
-    thread_ = std::thread{[this] { loop(); }};
+    thread_ = std::thread{[this] {
+        loop();
+    }};
 }
 
 auto DispatchWorker::request_shutdown() noexcept -> void
@@ -211,13 +212,19 @@ auto DispatchWorker::run_once() -> bool
         auto lock = std::lock_guard{mutex_};
         ++summary_.failed;
     }
-    // Don't requeue a circuit-open result on the spot: the destination
-    // already says "wait until retry_after_ts", so we surface the failure
-    // and let the next enqueue or external retry trigger reattempt.
-    if (result.error != "circuit_open")
+    if (result.error == "circuit_open")
     {
-        re_enqueue_with_backoff(std::move(transaction), now);
+        transaction.next_retry_ts = destination.retry_after_ts > now ? destination.retry_after_ts
+                                                                     : now + compute_backoff(transaction.retry_count);
+        {
+            auto lock = std::lock_guard{mutex_};
+            queue_.push_back(std::move(transaction));
+            ++summary_.pending;
+        }
+        cv_.notify_one();
+        return true;
     }
+    re_enqueue_with_backoff(std::move(transaction), now);
     return true;
 }
 

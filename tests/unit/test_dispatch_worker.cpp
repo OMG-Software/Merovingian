@@ -44,14 +44,14 @@ namespace
 
 } // namespace
 
-SCENARIO("Dispatch worker rejects malformed transactions at enqueue time",
-         "[federation][dispatch-worker][enqueue]")
+SCENARIO("Dispatch worker rejects malformed transactions at enqueue time", "[federation][dispatch-worker][enqueue]")
 {
     GIVEN("a dispatch worker bound to a real OutboundClient instance")
     {
         auto client = merovingian::http::OutboundClient{};
-        auto resolver = merovingian::federation::DispatchResolver{
-            [](std::string_view) { return std::optional<merovingian::federation::ServerDiscoveryResult>{}; }};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
         auto worker = merovingian::federation::DispatchWorker{worker_config(), client, std::move(resolver), {}, {}};
 
         WHEN("a transaction without destination is enqueued")
@@ -77,14 +77,17 @@ SCENARIO("Dispatch worker re-enqueues when discovery fails and stops after max r
         auto client = merovingian::http::OutboundClient{};
         // Resolver returns nullopt: run_once never touches the OutboundClient
         // for this path, so the test stays hermetic.
-        auto resolver = merovingian::federation::DispatchResolver{
-            [](std::string_view) { return std::optional<merovingian::federation::ServerDiscoveryResult>{}; }};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
         auto fake_now = std::make_shared<std::atomic<std::uint64_t>>(0U);
-        auto now_ms = merovingian::federation::DispatchClock{[fake_now] { return fake_now->load(); }};
+        auto now_ms = merovingian::federation::DispatchClock{[fake_now] {
+            return fake_now->load();
+        }};
         auto config = worker_config();
         config.max_retries = 3U;
-        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver),
-                                                              std::move(now_ms), {}};
+        auto worker = merovingian::federation::DispatchWorker{
+            std::move(config), client, std::move(resolver), std::move(now_ms), {}};
 
         WHEN("a transaction is enqueued and run_once is driven explicitly")
         {
@@ -109,13 +112,68 @@ SCENARIO("Dispatch worker re-enqueues when discovery fails and stops after max r
     }
 }
 
+SCENARIO("Dispatch worker re-enqueues transactions when the destination circuit is open",
+         "[federation][dispatch-worker][retry]")
+{
+    GIVEN("a worker with an open destination circuit and queued work")
+    {
+        auto client = merovingian::http::OutboundClient{};
+        auto fake_now = std::make_shared<std::atomic<std::uint64_t>>(0U);
+        auto resolver_allows = std::make_shared<std::atomic_bool>(false);
+        auto resolver = merovingian::federation::DispatchResolver{[resolver_allows](std::string_view server_name) {
+            if (!resolver_allows->load())
+            {
+                return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+            }
+            auto discovery = merovingian::federation::ServerDiscoveryResult{};
+            discovery.server_name = std::string{server_name};
+            discovery.resolved_host = std::string{server_name};
+            discovery.resolved_port = 8448U;
+            discovery.pinned_addresses = {"203.0.113.10"};
+            discovery.discovery_allowed = true;
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{std::move(discovery)};
+        }};
+        auto now_ms = merovingian::federation::DispatchClock{[fake_now] {
+            return fake_now->load();
+        }};
+        auto config = worker_config();
+        config.max_retries = 8U;
+        auto worker = merovingian::federation::DispatchWorker{
+            std::move(config), client, std::move(resolver), std::move(now_ms), {}};
+
+        WHEN("prior failures open the circuit before another transaction is ready")
+        {
+            REQUIRE(worker.enqueue(sample_transaction("remote.example.org")));
+            for (auto attempt = 0U; attempt < 3U; ++attempt)
+            {
+                fake_now->store(fake_now->load() + 600000ULL);
+                REQUIRE(worker.run_once());
+            }
+            resolver_allows->store(true);
+            auto second = sample_transaction("remote.example.org");
+            second.transaction_id = "txn-2";
+            REQUIRE(worker.enqueue(std::move(second)));
+            REQUIRE(worker.run_once());
+
+            THEN("the circuit-open transaction stays pending for retry instead of being discarded")
+            {
+                auto const summary = worker.summary();
+                REQUIRE(summary.failed >= 4U);
+                REQUIRE(summary.pending == 2U);
+                REQUIRE(summary.dropped == 0U);
+            }
+        }
+    }
+}
+
 SCENARIO("Dispatch worker respects shutdown after drain", "[federation][dispatch-worker][shutdown]")
 {
     GIVEN("a worker thread driving a queue with one persistently failing transaction")
     {
         auto client = merovingian::http::OutboundClient{};
-        auto resolver = merovingian::federation::DispatchResolver{
-            [](std::string_view) { return std::optional<merovingian::federation::ServerDiscoveryResult>{}; }};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
         auto fake_now = std::make_shared<std::atomic<std::uint64_t>>(0U);
         auto now_ms = merovingian::federation::DispatchClock{[fake_now] {
             fake_now->fetch_add(600000ULL);
@@ -150,8 +208,9 @@ SCENARIO("Dispatch worker enforces queue depth", "[federation][dispatch-worker][
     GIVEN("a worker with a queue depth of 2")
     {
         auto client = merovingian::http::OutboundClient{};
-        auto resolver = merovingian::federation::DispatchResolver{
-            [](std::string_view) { return std::optional<merovingian::federation::ServerDiscoveryResult>{}; }};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
         auto config = worker_config();
         config.max_queue_depth = 2U;
         auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver), {}, {}};

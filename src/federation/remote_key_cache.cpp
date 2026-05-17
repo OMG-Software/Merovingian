@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -149,8 +150,7 @@ namespace
         {
             return std::nullopt;
         }
-        auto const* server_signatures_object =
-            std::get_if<canonicaljson::Object>(&server_signatures_value->storage());
+        auto const* server_signatures_object = std::get_if<canonicaljson::Object>(&server_signatures_value->storage());
         if (server_signatures_object == nullptr)
         {
             return std::nullopt;
@@ -220,29 +220,23 @@ auto parse_and_verify_remote_key_response(std::string_view body, std::string_vie
         return {false, {}, "response cannot be re-serialized canonically"};
     }
 
-    // At least one signature under signatures.<server_name>.<key_id> must
-    // verify against the corresponding verify_keys.<key_id> public key. The
-    // Matrix spec requires the response to be signed by *every* listed key.
-    auto verified_at_least_one = false;
-    for (auto const& [signature_key_id, signature_base64] : parsed->server_signatures)
+    // Every verify_keys entry must have its own valid self-signature. A single
+    // valid signature proves the payload shape, but not provenance for an
+    // additional key listed without a matching signature.
+    for (auto const& verify_key : parsed->verify_keys)
     {
-        auto const verify_key_iterator =
-            std::ranges::find_if(parsed->verify_keys, [&signature_key_id](RemoteVerifyKey const& verify_key) {
-                return verify_key.key_id == signature_key_id;
+        auto const signature_iterator =
+            std::ranges::find_if(parsed->server_signatures, [&verify_key](auto const& signature) {
+                return signature.first == verify_key.key_id;
             });
-        if (verify_key_iterator == parsed->verify_keys.end())
+        if (signature_iterator == parsed->server_signatures.end())
         {
-            continue;
+            return {false, {}, "response included unsigned verify key " + verify_key.key_id};
         }
-        if (!verify_one_signature(canonical.output, signature_base64, verify_key_iterator->public_key_base64))
+        if (!verify_one_signature(canonical.output, signature_iterator->second, verify_key.public_key_base64))
         {
-            return {false, {}, "response signature failed verification for key " + signature_key_id};
+            return {false, {}, "response signature failed verification for key " + verify_key.key_id};
         }
-        verified_at_least_one = true;
-    }
-    if (!verified_at_least_one)
-    {
-        return {false, {}, "response did not include a verifiable self-signature"};
     }
 
     auto response = RemoteKeyResponse{};
@@ -374,32 +368,71 @@ auto find_any_cached_remote_key(database::PersistentStore const& store, std::str
     return std::nullopt;
 }
 
+namespace
+{
+
+    [[nodiscard]] auto default_wall_clock_ms() -> std::uint64_t
+    {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    }
+
+    [[nodiscard]] auto build_remote_runtime(std::string_view server_name, FederationKeyRecord signing_key,
+                                            ServerDiscoveryResult discovery) -> FederationRemoteRuntime
+    {
+        auto runtime = FederationRemoteRuntime{};
+        runtime.server_name = std::string{server_name};
+        runtime.signing_key = std::move(signing_key);
+        runtime.discovery.server_name = std::string{server_name};
+        runtime.discovery.resolved_host = std::move(discovery.resolved_host);
+        runtime.discovery.well_known_host =
+            discovery.well_known_host.empty() ? runtime.discovery.resolved_host : std::move(discovery.well_known_host);
+        runtime.discovery.resolved_addresses = std::move(discovery.pinned_addresses);
+        runtime.discovery.tls_required = discovery.tls_required;
+        runtime.trust.reputation_score = 100U;
+        return runtime;
+    }
+
+} // namespace
+
 auto make_persistent_remote_key_resolver(database::PersistentStore& store, http::OutboundClient& client,
                                          ServerDiscoveryNetwork& network, std::uint32_t timeout_seconds,
                                          RemoteKeyClock now_ms) -> RemoteKeyResolver
 {
-    return [&store, &client, &network, timeout_seconds, now_ms = std::move(now_ms)](
-               std::string_view server_name, std::string_view key_id) -> std::optional<FederationKeyRecord> {
-        auto const now = now_ms ? now_ms() : std::uint64_t{0U};
-        auto cached = find_cached_remote_key(store, server_name, key_id);
-        if (cached.has_value() && !remote_key_needs_refresh(cached->valid_until_ts, now))
+    // Fall back to the real wall clock when the caller passes an empty
+    // callback. Returning 0 from a missing clock made every cached key look
+    // fresh and prevented refresh-on-expiry from ever firing.
+    auto clock = now_ms ? std::move(now_ms) : RemoteKeyClock{default_wall_clock_ms};
+    return [&store, &client, &network, timeout_seconds, clock = std::move(clock)](
+               std::string_view server_name, std::string_view key_id) -> std::optional<FederationRemoteRuntime> {
+        auto const now = clock();
+        auto cached_key = find_cached_remote_key(store, server_name, key_id);
+        auto const discovery = discover_server(server_name, network, timeout_seconds);
+        if (cached_key.has_value() && !remote_key_needs_refresh(cached_key->valid_until_ts, now) &&
+            discovery.discovery_allowed)
         {
-            return cached;
+            return build_remote_runtime(server_name, std::move(*cached_key), discovery);
         }
         auto const fetched = fetch_remote_server_keys(client, network, server_name, timeout_seconds);
         if (fetched.ok)
         {
             (void)cache_remote_server_keys(store, fetched.response);
             auto refreshed = find_cached_remote_key(store, server_name, key_id);
-            if (refreshed.has_value())
+            if (refreshed.has_value() && discovery.discovery_allowed)
             {
-                return refreshed;
+                return build_remote_runtime(server_name, std::move(*refreshed), discovery);
             }
         }
-        // Fall back to the (possibly expired) cached entry rather than failing
-        // outright — a stale key still lets the caller distinguish "we have
-        // history with this server" from "we have never heard of it".
-        return cached;
+        // Fall back to the (possibly expired) cached entry — a stale key still
+        // lets the caller distinguish "we have history with this server" from
+        // "we have never heard of it". Discovery must still succeed: a remote
+        // we cannot reach SSRF-safely should not be admitted.
+        if (cached_key.has_value() && discovery.discovery_allowed)
+        {
+            return build_remote_runtime(server_name, std::move(*cached_key), discovery);
+        }
+        return std::nullopt;
     };
 }
 

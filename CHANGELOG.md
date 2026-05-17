@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.1.57
+
+- Addressed PR #82 review feedback on alpha federation runtime hardening:
+  - Unknown inbound remotes resolved through `remote_key_resolver` now upsert a
+    full `FederationRemoteRuntime`, including discovery state, before the
+    SSRF/TLS policy runs.
+  - Remote key responses now reject any `verify_keys` entry without a matching
+    valid self-signature, so unsigned extra keys are not cached as trusted.
+  - The persistent remote-key resolver uses the real wall clock when no
+    injectable clock is supplied, preventing expired cached keys from being
+    treated as permanently fresh.
+  - Dispatch worker `circuit_open` results are requeued for the destination's
+    retry deadline instead of being dropped.
+- Added BDD regression coverage for unsigned remote verify keys, on-demand
+  inbound remote discovery seeding, and circuit-open dispatch requeue behavior.
+- Bumped project and executable versions to `0.1.57`.
+
 ## 0.1.56
 
 - Alpha tracker items 1, 3, and 4 of the federation milestone:

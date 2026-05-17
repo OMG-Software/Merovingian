@@ -533,16 +533,23 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     if (remote == nullptr && runtime.remote_key_resolver)
     {
         // Unknown remote: try the injected resolver to discover, fetch, and
-        // verify the remote's published signing keys. The resolver caches
-        // through the persistent store, so subsequent requests see the new
-        // record without another network round-trip.
+        // verify the remote's published signing keys, then upsert a full
+        // runtime record so the discovery/trust policy checks below have
+        // something to validate against. The resolver caches through the
+        // persistent store, so subsequent requests see the new record
+        // without another network round-trip.
         auto resolved = runtime.remote_key_resolver(request.origin, request.key_id);
         if (resolved.has_value())
         {
-            auto new_remote = FederationRemoteRuntime{};
-            new_remote.server_name = std::string{request.origin};
-            new_remote.signing_key = std::move(*resolved);
-            upsert_remote(runtime, std::move(new_remote));
+            if (resolved->server_name.empty())
+            {
+                resolved->server_name = std::string{request.origin};
+            }
+            if (resolved->trust.reputation_score == 0U)
+            {
+                resolved->trust.reputation_score = 100U;
+            }
+            upsert_remote(runtime, std::move(*resolved));
             remote = find_remote(runtime, request.origin);
         }
     }
@@ -554,15 +561,17 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     // Known remote, but the cached key doesn't match the request key_id or
     // has expired: try the resolver to refresh before falling back to the
     // stored record. Federation peers rotate keys, so the cache must follow.
+    // We keep the existing discovery/trust state and only swap in the new
+    // signing key — discovery doesn't change just because a key rotated.
     auto const cached_key_id_mismatches = remote->signing_key.key_id != request.key_id;
     auto const cached_key_expired =
         remote->signing_key.valid_until_ts != 0U && request.now_ts >= remote->signing_key.valid_until_ts;
     if (runtime.remote_key_resolver && (cached_key_id_mismatches || cached_key_expired))
     {
         auto refreshed = runtime.remote_key_resolver(request.origin, request.key_id);
-        if (refreshed.has_value())
+        if (refreshed.has_value() && !refreshed->signing_key.public_key_bytes.empty())
         {
-            remote->signing_key = std::move(*refreshed);
+            remote->signing_key = std::move(refreshed->signing_key);
         }
     }
     auto const discovery = federation_discovery_policy(remote->discovery);

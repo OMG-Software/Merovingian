@@ -87,13 +87,15 @@ struct FederationRemoteRuntime final
     RemoteServerRecord discovery{};
 };
 
-// On-demand resolver for remote federation keys. The resolver is responsible
+// On-demand resolver for remote federation peers. The resolver is responsible
 // for any discovery, network fetch, self-signature verification, and caching
-// — the federation core only consumes the returned key record. Returning
-// std::nullopt signals that the key could not be discovered/verified and
-// the request must be rejected.
+// — the federation core only consumes the returned record. The returned
+// runtime carries both the verified signing key and the resolved discovery
+// state so the inbound bootstrap path can pass the SSRF/TLS policy on the
+// first request from a previously-unknown remote. Returning std::nullopt
+// signals that resolution failed and the request must be rejected.
 using RemoteKeyResolver =
-    std::function<std::optional<FederationKeyRecord>(std::string_view server_name, std::string_view key_id)>;
+    std::function<std::optional<FederationRemoteRuntime>(std::string_view server_name, std::string_view key_id)>;
 
 struct FederationRuntimeState final
 {
