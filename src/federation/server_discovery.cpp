@@ -363,7 +363,7 @@ namespace
                 }
                 auto const* data = ns_rr_rdata(record);
                 auto const data_length = ns_rr_rdlen(record);
-                if (data_length < 7U)
+                if (data_length < 7)
                 {
                     continue;
                 }
