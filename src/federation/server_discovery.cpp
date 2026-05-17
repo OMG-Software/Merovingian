@@ -20,12 +20,14 @@
 #include <variant>
 #include <vector>
 
+#include <sys/socket.h>
+#include <sys/types.h>
+
 #include <arpa/inet.h>
 #include <arpa/nameser.h>
 #include <netdb.h>
+#include <netinet/in.h>
 #include <resolv.h>
-#include <sys/socket.h>
-#include <sys/types.h>
 
 namespace merovingian::federation
 {
