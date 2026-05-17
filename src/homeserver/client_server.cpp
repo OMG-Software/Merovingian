@@ -9,6 +9,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -434,33 +435,56 @@ namespace
     {
         auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         auto constexpr device_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+        // Prefix the bucket with the caller's access token so authenticated
+        // endpoints quota each client independently. Unauthenticated routes
+        // (login, register, versions, /_matrix/key/v2/server) carry an empty
+        // token and still share a global bucket per route; scoping those by
+        // remote IP needs `LocalHttpRequest` to grow a `remote_addr` field
+        // and is tracked as a follow-up alongside the federation discovery
+        // work in `docs/alpha-readiness.md`.
+        auto identity = req.access_token + '|';
         auto target = std::string_view{req.target};
         if (starts_with(target, room_prefix) && ends_with(target, "/join"))
         {
-            return req.method + " /_matrix/client/v3/rooms/{roomId}/join";
+            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/join";
         }
         if (starts_with(target, room_prefix) && ends_with(target, "/send"))
         {
-            return req.method + " /_matrix/client/v3/rooms/{roomId}/send";
+            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/send";
         }
         if (starts_with(target, room_prefix) && ends_with(target, "/state"))
         {
-            return req.method + " /_matrix/client/v3/rooms/{roomId}/state";
+            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/state";
         }
         if (starts_with(target, device_prefix))
         {
-            return req.method + " /_matrix/client/v3/devices/{deviceId}";
+            return identity + req.method + " /_matrix/client/v3/devices/{deviceId}";
         }
         if (trust_safety::match_reporting_api_route(req.method, target).matched)
         {
-            return req.method + " /_matrix/client/v3/trust-safety/{route}";
+            return identity + req.method + " /_matrix/client/v3/trust-safety/{route}";
         }
-        return req.method + ' ' + req.target;
+        return identity + req.method + ' ' + req.target;
     }
 
+    // Per-bucket request limiter. The cap is the lower of the per-endpoint
+    // `http::endpoint_default_rate_limit` quota (login and register 5,
+    // keys and devices 30, media 20, federation 120, default 60) and the
+    // runtime-configured `ClientApiLimits::max_requests_per_bucket` ceiling
+    // (which tests use to drive the limiter from a single request). The
+    // window length stays in request-count units via
+    // `ClientApiLimits::rate_limit_window_requests`; switching the window
+    // to wall-clock seconds is a follow-up that needs an injectable time
+    // source to remain unit-testable without sleeps.
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> bool
     {
         ++rt.request_clock;
+        auto const policy = http::endpoint_default_rate_limit(req.method, req.target);
+        if (!http::rate_limit_policy_is_valid(policy))
+        {
+            return false;
+        }
+        auto const max_requests = std::min(rt.limits.max_requests_per_bucket, policy.max_requests);
         auto const bucket = normalized_bucket(req);
         auto const it = std::ranges::find_if(rt.rate_limits, [&bucket](ClientRateLimitCounter const& c) {
             return c.bucket == bucket;
@@ -475,7 +499,7 @@ namespace
             it->count = 0U;
             it->window_start_request = rt.request_clock;
         }
-        if (it->count >= rt.limits.max_requests_per_bucket)
+        if (it->count >= max_requests)
         {
             return false;
         }
@@ -601,9 +625,56 @@ namespace
                 })));
         }
 
+        // Walk PersistentMembership to surface the invite room category.
+        // Matrix clients expect `rooms.invite[<id>].invite_state.events`
+        // alongside `rooms.join`. The invite list is capped at the same
+        // `max_sync_rooms` bound as the join list so a user with a large
+        // number of pending invites cannot bloat the response or bypass
+        // the configured resource-control guard.
+        //
+        // `rooms.leave` stays as an empty key for spec-shape completeness.
+        // Per Matrix v1.18 default sync semantics, left rooms should only
+        // surface when the client passes `include_leave: true` in its
+        // room filter; the filter parser is still pending so leave rooms
+        // are intentionally suppressed by default rather than emitted
+        // unconditionally.
+        auto invite_members = canonicaljson::Object{};
+        auto invite_count = std::size_t{0U};
+        for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
+        {
+            if (membership.user_id != user || membership.membership != "invite")
+            {
+                continue;
+            }
+            if (invite_count >= rt.limits.max_sync_rooms)
+            {
+                break;
+            }
+            invite_members.push_back(
+                json_member(membership.room_id,
+                            json_obj({json_member("invite_state", json_obj({json_member("events", json_arr({}))}))})));
+            ++invite_count;
+        }
+
         return json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
-            json_member("rooms", json_obj({json_member("join", json_obj(std::move(join_members)))})),
+            json_member("rooms", json_obj({
+                                     json_member("join", json_obj(std::move(join_members))),
+                                     json_member("invite", json_obj(std::move(invite_members))),
+                                     json_member("leave", json_obj({})),
+                                 })),
+            // Matrix v1.18 top-level placeholders. Behaviour for these
+            // surfaces lands later; emitting the keys keeps the response
+            // shape spec-complete so clients can parse without falling back
+            // to defaults.
+            json_member("presence", json_obj({json_member("events", json_arr({}))})),
+            json_member("account_data", json_obj({json_member("events", json_arr({}))})),
+            json_member("to_device", json_obj({json_member("events", json_arr({}))})),
+            json_member("device_lists", json_obj({
+                                            json_member("changed", json_arr({})),
+                                            json_member("left", json_arr({})),
+                                        })),
+            json_member("device_one_time_keys_count", json_obj({})),
         }));
     }
 
@@ -1066,6 +1137,23 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     if (!allow(rt, req))
     {
         return err(429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
+    }
+
+    // GET /_matrix/client/versions is the unauthenticated discovery endpoint
+    // most Matrix clients hit first. It must answer before any auth check so
+    // a fresh client can negotiate spec compatibility before it has a token.
+    if (req.method == "GET" && req.target == "/_matrix/client/versions")
+    {
+        auto versions = canonicaljson::Array{};
+        for (auto const& spec : {"v1.1", "v1.2", "v1.3", "v1.4", "v1.5", "v1.6", "v1.7", "v1.8", "v1.9", "v1.10",
+                                 "v1.11", "v1.12", "v1.13", "v1.14", "v1.15", "v1.16", "v1.17", "v1.18"})
+        {
+            versions.push_back(json_str(spec));
+        }
+        return resp(200U, json_serialize(json_obj({
+                              json_member("versions", json_arr(std::move(versions))),
+                              json_member("unstable_features", json_obj({})),
+                          })));
     }
 
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register")

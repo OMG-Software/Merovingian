@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.1.52
+
+- Addressed PR #79 review feedback from the automated reviewer:
+  - **Per-identity rate-limit buckets.** `normalized_bucket` now
+    prefixes the bucket key with the caller's access token so
+    authenticated endpoints quota each client independently. The
+    previous keying on method+target alone allowed a single bad
+    actor with a few requests to throttle every other client on
+    those endpoints. Unauthenticated routes (login, register,
+    /_matrix/client/versions, /_matrix/key/v2/server) still share a
+    global bucket per route; scoping those by remote IP is tracked
+    as a follow-up that needs `LocalHttpRequest` to carry a
+    `remote_addr` field.
+  - **Sync invite cap.** `rooms.invite` is now capped at
+    `rt.limits.max_sync_rooms`, matching the bound already applied
+    to `rooms.join`. A user with many pending invites can no longer
+    bypass the configured per-sync room limit.
+  - **Default sync hides left rooms.** `rooms.leave` stays as an
+    empty object for spec-shape completeness, but no left-room
+    payload is emitted until the filter parser exists and the
+    client opts in via `include_leave: true`. The previous code
+    surfaced left rooms unconditionally which contradicted Matrix
+    v1.18 default sync semantics.
+- BDD tests added:
+  - `Rate-limit buckets are scoped per access token to prevent
+    cross-user denial of service` — alice exhausts her bucket, bob
+    runs on his own and succeeds.
+  - `the response keeps rooms.leave as an empty object until
+    include_leave filter support lands`.
+  - `the invite section honors the room cap and does not bloat the
+    response`.
+
+## 0.1.51
+
+- Added `GET /_matrix/client/versions` — the unauthenticated spec
+  discovery endpoint every Matrix client hits before login. Responds
+  before the auth check with a `versions` array (v1.1 through v1.18)
+  and an empty `unstable_features` object.
+- Expanded `sync_json` to a Matrix v1.18-spec-complete response shape.
+  `rooms.invite` and `rooms.leave` are now populated by walking
+  `PersistentMembership` for entries matching the requesting user.
+  Each invite carries an empty `invite_state.events`; each leave
+  carries an empty `timeline` and `state`. Top-level `presence`,
+  `account_data`, `to_device`, `device_lists`, and
+  `device_one_time_keys_count` keys are emitted with empty payloads
+  so clients can parse the response without falling back to spec
+  defaults. The behaviour for those surfaces lands in later changes;
+  the shape stays stable.
+- Rate-limit enforcement now uses per-endpoint policies. `allow()` in
+  `client_server.cpp` consults `http::endpoint_default_rate_limit` for
+  the request's method and target, so login and register carry the
+  tight 5-request quota, key and device APIs carry 30, media APIs 20,
+  federation APIs 120, and the default falls back to 60. The runtime
+  `ClientApiLimits::max_requests_per_bucket` acts as a ceiling on top
+  of the policy so tests can drive the limiter from a single request.
+  Quota breach returns 429 `M_LIMIT_EXCEEDED`. Window length stays in
+  request-count units; switching the window to wall-clock seconds is
+  deferred until an injectable time source is in place for tests.
+- Added BDD coverage in `tests/unit/test_client_server.cpp`:
+  unauthenticated /versions; sync surfacing invite/leave room
+  categories plus the new top-level stubs; per-endpoint rate-limit
+  enforcement (sixth registration in the window returns 429
+  M_LIMIT_EXCEEDED, while another endpoint runs on its own bucket).
+
 ## 0.1.50
 
 - Refreshed `docs/progress.md` Federation row evidence and production-gap
