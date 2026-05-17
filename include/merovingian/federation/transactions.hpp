@@ -11,8 +11,12 @@ namespace merovingian::federation
 enum class FederationEndpoint
 {
     transaction,
+    make_join,
     send_join,
+    make_leave,
     send_leave,
+    make_knock,
+    send_knock,
     invite,
     backfill,
     edu,

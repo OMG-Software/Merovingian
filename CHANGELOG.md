@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.1.60
+
+- Replaced the federation PDU state-conflict log-and-accept path with a
+  state-resolution v2 merge:
+  - `PduIngestionResult` now carries an optional `PduStateConflictContext`
+    (room version + two conflicting state groups) that the sink populates on
+    `rejected_state_conflict`.
+  - `FederationRuntimeState::state_conflict_resolver` invokes
+    `apply_state_resolution_v2` to merge the forks through Matrix
+    state-resolution v2 and commit the result through a caller-supplied
+    `ResolvedStateApplier`.
+  - Successful merges count toward `pdus_appended`, emit a
+    `federation.pdu_state_resolved` audit, and surface a
+    `state_resolved=N` field in the transaction response. Failed merges
+    fall back to the original `federation.pdu_state_conflict` audit and
+    no longer count the PDU as accepted.
+- Added inbound + outbound federation membership and history endpoints:
+  - Inbound: `GET /_matrix/federation/v1/make_join|make_leave|make_knock`,
+    `PUT /_matrix/federation/v{1,2}/send_join|send_leave`,
+    `PUT /_matrix/federation/v1/send_knock`,
+    `PUT /_matrix/federation/v{1,2}/invite/{roomId}/{eventId}`, and
+    `GET /_matrix/federation/v1/backfill/{roomId}`. Each endpoint is
+    dispatched through a typed hook on `FederationRuntimeState`
+    (`membership_template_provider`, `membership_acceptor`,
+    `invite_handler`, `backfill_provider`); endpoints without a wired
+    hook return `501 Not Implemented` instead of pretending to succeed.
+  - Outbound: `make_outbound_make_membership`,
+    `make_outbound_send_membership`, `make_outbound_invite` (v1 and v2
+    body shapes), and `make_outbound_backfill` produce
+    `OutboundTransaction` records ready for `perform_outbound_transaction`
+    and the dispatch worker.
+  - `match_federation_route` now strips query strings, recognises the v1
+    `send_join` / `send_leave` paths, and matches the new `make_*`,
+    `send_knock`, and backfill routes including any `?ver=`, `?v=`, or
+    `?limit=` query.
+- `RuntimeFederationConfig` now carries `server_name`, surfaced into the
+  backfill response so peers can attribute returned PDUs.
+- Added BDD coverage for membership-path parsing, backfill query parsing,
+  outbound helper composition, inbound `make_join` and `backfill`
+  dispatch, fail-closed 501 behaviour when hooks are absent, and the
+  state-resolution v2 merge helper.
+- Bumped project and executable versions to `0.1.60`.
+
 ## 0.1.59
 
 - Addressed PR #83 review feedback on the persistent outbound federation queue:

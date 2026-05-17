@@ -22,6 +22,11 @@ struct RuntimeFederationConfig final
     std::vector<std::string> deny_ip_ranges{};
     std::uint64_t max_transaction_bytes{0U};
     std::uint32_t remote_timeout_seconds{0U};
+    // Local server name (e.g. "matrix.example.org"). Surfaced into outbound
+    // federation traffic and into response bodies that include the issuing
+    // server's identity (notably the backfill response). Mirrors
+    // `config::Config::server_name`.
+    std::string server_name{};
 };
 
 struct FederationServerPolicyDecision final

@@ -41,6 +41,7 @@ auto make_runtime_federation_config(config::Config const& config) -> RuntimeFede
         config.security().federation.deny_ip_ranges,
         max_transaction_size.valid ? max_transaction_size.bytes : 0U,
         remote_timeout.valid ? remote_timeout.seconds : 0U,
+        config.server().server_name,
     };
 }
 

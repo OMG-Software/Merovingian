@@ -25,8 +25,20 @@ SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites,
                 merovingian::federation::match_federation_route("GET", "/_matrix/federation/v1/backfill/!room:event");
             auto const edu = merovingian::federation::match_federation_route(
                 "PUT", "/_matrix/federation/v1/send_edu/m.typing/txn123");
+            auto const make_join = merovingian::federation::match_federation_route(
+                "GET", "/_matrix/federation/v1/make_join/!room:example.org/@alice:matrix.example.org");
+            auto const make_leave = merovingian::federation::match_federation_route(
+                "GET", "/_matrix/federation/v1/make_leave/!room:example.org/@alice:matrix.example.org");
+            auto const make_knock = merovingian::federation::match_federation_route(
+                "GET", "/_matrix/federation/v1/make_knock/!room:example.org/@alice:matrix.example.org");
+            auto const send_knock = merovingian::federation::match_federation_route(
+                "PUT", "/_matrix/federation/v1/send_knock/!room:event/$event");
+            auto const send_join_v1 = merovingian::federation::match_federation_route(
+                "PUT", "/_matrix/federation/v1/send_join/!room:event/$event");
+            auto const backfill_with_query = merovingian::federation::match_federation_route(
+                "GET", "/_matrix/federation/v1/backfill/!room:event?v=$evt&limit=10");
 
-            THEN("all Milestone 12 federation endpoints are represented")
+            THEN("all Milestone 12 federation endpoints are represented including make/send and knock")
             {
                 REQUIRE(transaction.matched);
                 REQUIRE(send_join.matched);
@@ -34,12 +46,28 @@ SCENARIO("Federation route scaffold covers transactions, joins, leaves, invites,
                 REQUIRE(invite.matched);
                 REQUIRE(backfill.matched);
                 REQUIRE(edu.matched);
+                REQUIRE(make_join.matched);
+                REQUIRE(make_leave.matched);
+                REQUIRE(make_knock.matched);
+                REQUIRE(send_knock.matched);
+                REQUIRE(send_join_v1.matched);
+                REQUIRE(backfill_with_query.matched);
                 REQUIRE(transaction.route.endpoint == merovingian::federation::FederationEndpoint::transaction);
                 REQUIRE(send_join.route.endpoint == merovingian::federation::FederationEndpoint::send_join);
+                REQUIRE(send_join_v1.route.endpoint == merovingian::federation::FederationEndpoint::send_join);
+                REQUIRE(make_join.route.endpoint == merovingian::federation::FederationEndpoint::make_join);
+                REQUIRE(make_leave.route.endpoint == merovingian::federation::FederationEndpoint::make_leave);
+                REQUIRE(make_knock.route.endpoint == merovingian::federation::FederationEndpoint::make_knock);
+                REQUIRE(send_knock.route.endpoint == merovingian::federation::FederationEndpoint::send_knock);
                 REQUIRE(edu.route.endpoint == merovingian::federation::FederationEndpoint::edu);
                 REQUIRE(transaction.route.requires_request_signature);
                 REQUIRE(send_join.route.requires_event_signatures);
                 REQUIRE_FALSE(edu.route.requires_event_signatures);
+                // make_* and backfill never carry signed event bodies — only
+                // send_* and invite do.
+                REQUIRE_FALSE(make_join.route.requires_event_signatures);
+                REQUIRE_FALSE(backfill.route.requires_event_signatures);
+                REQUIRE(send_knock.route.requires_event_signatures);
             }
         }
     }

@@ -327,14 +327,29 @@ SCENARIO("Inbound federation seeds discovery state for remotes resolved on deman
 
 SCENARIO("Inbound federation handles non-transaction endpoints without PDU validation", "[federation][inbound][routes]")
 {
-    GIVEN("a runtime with a signed legacy v1 invite request")
+    GIVEN("a runtime with a signed v1 invite request and an invite handler")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
-        auto request = signed_request(origin, key_id, token, "invite-body-without-pdus");
+        // v1 invite body IS the bare signed event — the handler echoes it
+        // back as the response payload. The shape is valid canonical JSON
+        // so parse_invite_body succeeds without a v2 envelope.
+        auto const invite_event_json = std::string{
+            R"({"type":"m.room.member","state_key":"@alice:matrix.example.org","sender":"@alice:matrix.example.org",)"
+            R"("room_id":"!room1:example.org","content":{"membership":"invite"}})"};
+        auto invite_seen = std::make_shared<bool>(false);
+        runtime.invite_handler = [invite_seen](merovingian::federation::InviteRequest const& request) {
+            *invite_seen = true;
+            auto result = merovingian::federation::InviteAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            result.signed_event_json = request.invite_event_json;
+            return result;
+        };
+        auto request = signed_request(origin, key_id, token, invite_event_json);
         request.target = "/_matrix/federation/v1/invite/!room1:example.org/$event1:example.org";
         request.signature = merovingian::federation::make_federation_signature(
             origin, key_id, token, request.method, request.target, request.origin_server_ts, request.body);
@@ -343,10 +358,10 @@ SCENARIO("Inbound federation handles non-transaction endpoints without PDU valid
         {
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
-            THEN("it is accepted as an invite endpoint rather than transaction-validated")
+            THEN("the invite handler runs and produces a 200 response without transaction-validating the body")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "accepted endpoint=invite");
+                REQUIRE(*invite_seen);
                 REQUIRE(runtime.accepted_transactions.empty());
             }
         }

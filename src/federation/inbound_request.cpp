@@ -9,6 +9,7 @@
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
+#include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
@@ -276,6 +277,304 @@ namespace
         request.power_level = {50, 0};
         auto const decision = events::authorize_event(*room_version, request);
         return decision.allowed;
+    }
+
+    [[nodiscard]] auto serialize_response_object(canonicaljson::Object object) -> std::string
+    {
+        auto const out = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(object)});
+        return out.error == canonicaljson::CanonicalJsonError::none ? out.output : std::string{};
+    }
+
+    [[nodiscard]] auto build_array_value(std::vector<std::string> const& canonical_json_entries) -> canonicaljson::Value
+    {
+        auto array = canonicaljson::Array{};
+        for (auto const& entry : canonical_json_entries)
+        {
+            auto parsed = canonicaljson::parse_lossless(entry);
+            if (parsed.error == canonicaljson::ParseError::none)
+            {
+                array.push_back(std::move(parsed.value));
+            }
+        }
+        return canonicaljson::Value{std::move(array)};
+    }
+
+    [[nodiscard]] auto parse_supported_versions(std::string_view target) -> std::vector<std::string>
+    {
+        auto versions = std::vector<std::string>{};
+        auto const q_position = target.find('?');
+        if (q_position == std::string_view::npos)
+        {
+            return versions;
+        }
+        auto query = target.substr(q_position + 1U);
+        while (!query.empty())
+        {
+            auto const amp = query.find('&');
+            auto const segment = query.substr(0U, amp);
+            auto const eq = segment.find('=');
+            auto const key = segment.substr(0U, eq);
+            if (key == "ver" && eq != std::string_view::npos)
+            {
+                auto value = segment.substr(eq + 1U);
+                if (!value.empty())
+                {
+                    versions.emplace_back(value);
+                }
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query = query.substr(amp + 1U);
+        }
+        return versions;
+    }
+
+    [[nodiscard]] auto build_make_template_response(MembershipEventTemplate const& tmpl) -> std::string
+    {
+        auto event = canonicaljson::Object{};
+        event.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+        event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{tmpl.user_id}));
+        event.push_back(canonicaljson::make_member("sender", canonicaljson::Value{tmpl.user_id}));
+        event.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{tmpl.room_id}));
+        event.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(tmpl.depth)}));
+        auto content_value = canonicaljson::Value{};
+        auto content_parsed = canonicaljson::parse_lossless(tmpl.content_json);
+        if (content_parsed.error == canonicaljson::ParseError::none)
+        {
+            content_value = std::move(content_parsed.value);
+        }
+        else
+        {
+            auto content_obj = canonicaljson::Object{};
+            content_obj.push_back(canonicaljson::make_member("membership", canonicaljson::Value{tmpl.membership}));
+            content_value = canonicaljson::Value{std::move(content_obj)};
+        }
+        event.push_back(canonicaljson::make_member("content", std::move(content_value)));
+        auto prev_array = canonicaljson::Array{};
+        for (auto const& prev : tmpl.prev_events)
+        {
+            prev_array.push_back(canonicaljson::Value{prev});
+        }
+        event.push_back(canonicaljson::make_member("prev_events", canonicaljson::Value{std::move(prev_array)}));
+        auto auth_array = canonicaljson::Array{};
+        for (auto const& auth : tmpl.auth_events)
+        {
+            auth_array.push_back(canonicaljson::Value{auth});
+        }
+        event.push_back(canonicaljson::make_member("auth_events", canonicaljson::Value{std::move(auth_array)}));
+
+        auto response = canonicaljson::Object{};
+        response.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{tmpl.room_version}));
+        response.push_back(canonicaljson::make_member("event", canonicaljson::Value{std::move(event)}));
+        return serialize_response_object(std::move(response));
+    }
+
+    [[nodiscard]] auto handle_make_membership(FederationRuntimeState& runtime, SignedFederationRequest const& request,
+                                              FederationRoute const& route) -> FederationResponse
+    {
+        if (!runtime.membership_template_provider)
+        {
+            return {501U, "make_* not implemented"};
+        }
+        auto const params = parse_membership_path(route.endpoint, request.target);
+        if (!params.has_value())
+        {
+            return {400U, "membership path is malformed"};
+        }
+        auto const supported = parse_supported_versions(request.target);
+        auto const tmpl =
+            runtime.membership_template_provider(route.endpoint, params->room_id, params->subject, supported);
+        if (!tmpl.has_value())
+        {
+            return {404U, "membership template unavailable"};
+        }
+        if (!tmpl->reason.empty())
+        {
+            return {400U, tmpl->reason};
+        }
+        auto body = build_make_template_response(*tmpl);
+        if (body.empty())
+        {
+            return {500U, "failed to serialize membership template"};
+        }
+        return {200U, std::move(body)};
+    }
+
+    [[nodiscard]] auto handle_send_membership(FederationRuntimeState& runtime, SignedFederationRequest const& request,
+                                              FederationRoute const& route) -> FederationResponse
+    {
+        if (!runtime.membership_acceptor)
+        {
+            return {501U, "send_* not implemented"};
+        }
+        auto const params = parse_membership_path(route.endpoint, request.target);
+        if (!params.has_value())
+        {
+            return {400U, "membership path is malformed"};
+        }
+        auto envelope = parse_inbound_pdu_envelope(request.body);
+        if (!envelope.has_value())
+        {
+            return {400U, "membership event body is not a valid PDU envelope"};
+        }
+        if (envelope->room_id != params->room_id)
+        {
+            return {400U, "membership event room_id does not match path"};
+        }
+        auto const acceptance =
+            runtime.membership_acceptor(route.endpoint, params->room_id, params->subject, *envelope);
+        if (!acceptance.accepted)
+        {
+            return {acceptance.status == 0U ? std::uint16_t{400U} : acceptance.status, acceptance.reason};
+        }
+        // Matrix v2 send_join/send_leave/send_knock responses are a JSON object
+        // with `auth_chain` and `state` arrays of signed PDUs. v1 send_join
+        // historically used a [status, body] tuple; we always emit the v2 shape
+        // which the v1 path tolerates because clients ignore unknown wrappers.
+        auto response = canonicaljson::Object{};
+        response.push_back(canonicaljson::make_member("auth_chain", build_array_value(acceptance.auth_chain_json)));
+        response.push_back(canonicaljson::make_member("state", build_array_value(acceptance.state_json)));
+        auto body = serialize_response_object(std::move(response));
+        if (body.empty())
+        {
+            return {500U, "failed to serialize membership response"};
+        }
+        return {200U, std::move(body)};
+    }
+
+    [[nodiscard]] auto handle_invite(FederationRuntimeState& runtime, SignedFederationRequest const& request,
+                                     FederationRoute const& route) -> FederationResponse
+    {
+        if (!runtime.invite_handler)
+        {
+            return {501U, "invite not implemented"};
+        }
+        auto const params = parse_membership_path(FederationEndpoint::send_join, request.target);
+        // parse_membership_path covers /v2/invite as well because the suffix
+        // layout (roomId/eventId) is identical; reuse the helper but fall back
+        // to a manual split if it returns nullopt.
+        auto room_id = std::string{};
+        auto event_id = std::string{};
+        if (params.has_value())
+        {
+            room_id = params->room_id;
+            event_id = params->subject;
+        }
+        else
+        {
+            auto const path = request.target.substr(0U, request.target.find('?'));
+            auto invite_prefix = std::string_view{};
+            if (route.path_template == "/_matrix/federation/v2/invite/{roomId}/{eventId}")
+            {
+                invite_prefix = "/_matrix/federation/v2/invite/";
+            }
+            else
+            {
+                invite_prefix = "/_matrix/federation/v1/invite/";
+            }
+            if (path.size() <= invite_prefix.size() || path.substr(0U, invite_prefix.size()) != invite_prefix)
+            {
+                return {400U, "invite path is malformed"};
+            }
+            auto const remainder = path.substr(invite_prefix.size());
+            auto const slash = remainder.find('/');
+            if (slash == std::string_view::npos || slash == 0U || slash + 1U >= remainder.size())
+            {
+                return {400U, "invite path is malformed"};
+            }
+            room_id = std::string{remainder.substr(0U, slash)};
+            event_id = std::string{remainder.substr(slash + 1U)};
+        }
+        auto invite_request =
+            parse_invite_body(request.body, room_id, event_id, FederationEndpoint::invite);
+        if (!invite_request.has_value())
+        {
+            return {400U, "invite body is malformed"};
+        }
+        auto const result = runtime.invite_handler(*invite_request);
+        if (!result.accepted)
+        {
+            return {result.status == 0U ? std::uint16_t{400U} : result.status, result.reason};
+        }
+        if (route.path_template == "/_matrix/federation/v2/invite/{roomId}/{eventId}")
+        {
+            auto response = canonicaljson::Object{};
+            auto signed_event_value = canonicaljson::Value{};
+            auto parsed_event = canonicaljson::parse_lossless(result.signed_event_json);
+            if (parsed_event.error == canonicaljson::ParseError::none)
+            {
+                signed_event_value = std::move(parsed_event.value);
+            }
+            response.push_back(canonicaljson::make_member("event", std::move(signed_event_value)));
+            auto body = serialize_response_object(std::move(response));
+            return {200U, body.empty() ? std::string{"{}"} : std::move(body)};
+        }
+        // v1 invite response is the bare event JSON wrapped in [200, event].
+        // Modern peers accept the bare event; emit it directly.
+        return {200U, result.signed_event_json};
+    }
+
+    [[nodiscard]] auto handle_backfill(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.backfill_provider)
+        {
+            return {501U, "backfill not implemented"};
+        }
+        auto parsed = parse_backfill_query(request.target);
+        if (!parsed.has_value())
+        {
+            return {400U, "backfill query is malformed"};
+        }
+        auto const result = runtime.backfill_provider(*parsed);
+        if (!result.accepted)
+        {
+            return {result.status == 0U ? std::uint16_t{500U} : result.status, result.reason};
+        }
+        auto response = canonicaljson::Object{};
+        response.push_back(canonicaljson::make_member("origin", canonicaljson::Value{runtime.config.server_name}));
+        response.push_back(canonicaljson::make_member(
+            "origin_server_ts", canonicaljson::Value{static_cast<std::int64_t>(request.origin_server_ts)}));
+        response.push_back(canonicaljson::make_member("pdus", build_array_value(result.pdus_json)));
+        auto body = serialize_response_object(std::move(response));
+        if (body.empty())
+        {
+            return {500U, "failed to serialize backfill response"};
+        }
+        return {200U, std::move(body)};
+    }
+
+    [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
+                                                         SignedFederationRequest const& request,
+                                                         FederationRoute const& route,
+                                                         FederationRemoteRuntime& remote) -> FederationResponse
+    {
+        (void)remote; // remote trust accounting is handled by the caller.
+        switch (route.endpoint)
+        {
+        case FederationEndpoint::make_join:
+        case FederationEndpoint::make_leave:
+        case FederationEndpoint::make_knock:
+            return handle_make_membership(runtime, request, route);
+        case FederationEndpoint::send_join:
+        case FederationEndpoint::send_leave:
+        case FederationEndpoint::send_knock:
+            return handle_send_membership(runtime, request, route);
+        case FederationEndpoint::invite:
+            return handle_invite(runtime, request, route);
+        case FederationEndpoint::backfill:
+            return handle_backfill(runtime, request);
+        case FederationEndpoint::edu:
+            // Plain send_edu requests have always been a 200 stub; ingestion
+            // happens through the transaction path which carries EDUs.
+            return {200U,
+                    "accepted endpoint=" + std::string{federation_endpoint_name(route.endpoint)}};
+        case FederationEndpoint::transaction:
+            return {500U, "transaction endpoint mis-dispatched"};
+        }
+        return {500U, "unknown endpoint"};
     }
 
     class FederationEd25519Verifier final : public crypto::Ed25519Provider
@@ -596,10 +895,20 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     }
     if (route_match.route.endpoint != FederationEndpoint::transaction)
     {
-        remote->trust.consecutive_failures = 0U;
-        audit_federation(runtime, "federation.accepted", request.origin, request.target,
-                         federation_route_audit_event(route_match.route, request.origin));
-        return {200U, "accepted endpoint=" + std::string{federation_endpoint_name(route_match.route.endpoint)}};
+        auto const non_transaction_response =
+            dispatch_non_transaction_endpoint(runtime, request, route_match.route, *remote);
+        if (non_transaction_response.status >= 200U && non_transaction_response.status < 300U)
+        {
+            remote->trust.consecutive_failures = 0U;
+            audit_federation(runtime, "federation.accepted", request.origin, request.target,
+                             federation_route_audit_event(route_match.route, request.origin));
+        }
+        else
+        {
+            audit_federation(runtime, "federation.rejected", request.origin, request.target,
+                             non_transaction_response.body);
+        }
+        return non_transaction_response;
     }
 
     auto const parsed_body = parse_transaction_body(request.body);
@@ -629,6 +938,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     }
     auto pdus_appended = std::size_t{0U};
     auto pdus_state_conflict = std::size_t{0U};
+    auto pdus_state_resolved = std::size_t{0U};
     for (auto const& encoded_pdu : transaction.pdus)
     {
         auto const pdu = parse_federation_pdu(encoded_pdu);
@@ -644,9 +954,11 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             continue;
         }
         // PDU passed signature and auth checks; hand it to the ingestion
-        // sink for persistence. State-resolution conflicts log a structured
-        // warning and DO NOT abort the transaction — the Matrix spec requires
-        // that we accept the request and resolve state in a later pass.
+        // sink for persistence. State-resolution conflicts are no longer
+        // silently logged: when the sink surfaces a state_conflict context
+        // and a `state_conflict_resolver` is wired, we run state-res v2 to
+        // merge the forks. Successful merges are audited as
+        // `federation.pdu_state_resolved` and counted as accepted.
         auto envelope = parse_inbound_pdu_envelope(encoded_pdu);
         if (!envelope.has_value())
         {
@@ -661,10 +973,33 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             ++pdus_appended;
             break;
         case PduIngestionStatus::rejected_state_conflict:
-            ++pdus_state_conflict;
-            audit_federation(runtime, "federation.pdu_state_conflict", request.origin, request.target,
-                             ingestion.reason);
+        {
+            auto merged = false;
+            if (runtime.state_conflict_resolver && ingestion.state_conflict.has_value())
+            {
+                auto const resolution = runtime.state_conflict_resolver(*ingestion.state_conflict);
+                if (resolution.status == PduIngestionStatus::accepted)
+                {
+                    merged = true;
+                    ++pdus_appended;
+                    ++pdus_state_resolved;
+                    audit_federation(runtime, "federation.pdu_state_resolved", request.origin, request.target,
+                                     resolution.reason);
+                }
+                else if (!resolution.reason.empty())
+                {
+                    audit_federation(runtime, "federation.pdu_state_conflict", request.origin, request.target,
+                                     resolution.reason);
+                }
+            }
+            if (!merged)
+            {
+                ++pdus_state_conflict;
+                audit_federation(runtime, "federation.pdu_state_conflict", request.origin, request.target,
+                                 ingestion.reason);
+            }
             break;
+        }
         case PduIngestionStatus::rejected_auth:
             audit_federation(runtime, "federation.pdu_rejected_auth", request.origin, request.target,
                              ingestion.reason);
@@ -718,6 +1053,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     auto detail = "accepted pdus=" + std::to_string(transaction.pdus.size()) +
                   " appended=" + std::to_string(pdus_appended) +
                   " state_conflicts=" + std::to_string(pdus_state_conflict) +
+                  " state_resolved=" + std::to_string(pdus_state_resolved) +
                   " edus=" + std::to_string(transaction.edus.size()) +
                   " edus_dispatched=" + std::to_string(edus_dispatched) +
                   " edus_dropped=" + std::to_string(edus_dropped);

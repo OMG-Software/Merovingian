@@ -2,6 +2,7 @@
 #pragma once
 
 #include "merovingian/events/event.hpp"
+#include "merovingian/events/state_resolution.hpp"
 
 #include <cstdint>
 #include <functional>
@@ -42,17 +43,59 @@ enum class PduIngestionStatus : std::uint8_t
     internal_error,
 };
 
+// Context surfaced by the sink when an incoming PDU forks the room's
+// resolved state. Carries the room version, the resolved state before
+// the PDU, and the state map proposed by the PDU's prev_events ancestry.
+// The federation core hands this to `state_conflict_resolver` to attempt
+// a merge through state-resolution v2 rather than silently accepting the
+// transaction with the conflict logged.
+struct PduStateConflictContext final
+{
+    std::string room_version{};
+    InboundPduEnvelope incoming_pdu{};
+    // Two state groups: index 0 is the room's currently resolved state,
+    // index 1 is the candidate state the incoming PDU's chain proposes.
+    std::vector<events::StateGroup> state_groups{};
+};
+
 struct PduIngestionResult final
 {
     PduIngestionStatus status{PduIngestionStatus::internal_error};
     std::string reason{};
+    // Populated only when status == rejected_state_conflict and the sink
+    // could build a resolution context. Empty otherwise, including for
+    // accepted PDUs or non-conflict rejections.
+    std::optional<PduStateConflictContext> state_conflict{};
 };
 
 // Production sink: appends the PDU to the persistent store after running
 // final consistency checks. State-conflict cases return
-// rejected_state_conflict so the caller can log a structured warning and
-// return 200 per the deferred state-resolution policy.
+// rejected_state_conflict and SHOULD populate `state_conflict` so the
+// federation core can run state-resolution v2 to merge the forks before
+// dropping the PDU on the floor.
 using PduSink = std::function<PduIngestionResult(InboundPduEnvelope const&)>;
+
+// Resolver invoked on rejected_state_conflict. Returns either accepted
+// (the resolver merged the forks via state-res v2 and applied the result)
+// or rejected_state_conflict (resolution failed; the PDU is dropped and
+// the original conflict is audited).
+using StateConflictResolver = std::function<PduIngestionResult(PduStateConflictContext const&)>;
+
+// Runs Matrix state-resolution v2 against the two state groups in
+// `context` and returns the merged state. On success the federation
+// core calls the resolver's persistence path through `apply_resolved`;
+// `apply_resolved` is invoked once with the resolved state so the
+// caller (production: the runtime; tests: a fake) can commit the merge
+// before the federation handler counts the PDU as accepted.
+//
+// Returns the resolution result so callers can audit. The returned
+// PduIngestionResult mirrors what the federation handler will record:
+// `accepted` when state-res succeeded and `apply_resolved` returned true,
+// `rejected_state_conflict` otherwise.
+using ResolvedStateApplier = std::function<bool(std::vector<events::StateEventReference> const&)>;
+
+[[nodiscard]] auto apply_state_resolution_v2(PduStateConflictContext const& context,
+                                             ResolvedStateApplier const& apply_resolved) -> PduIngestionResult;
 
 enum class EduType : std::uint8_t
 {
