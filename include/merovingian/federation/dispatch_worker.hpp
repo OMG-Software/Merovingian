@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -77,7 +79,7 @@ struct DispatchWorkerSummary final
 //   - `start` spawns one background thread that drains the queue.
 //   - `request_shutdown` signals the loop to stop pulling new work and to
 //     exit after the in-flight attempt completes. The remaining queue is
-//     left intact for persistent replay (item 2 in the alpha tracker).
+//     left intact; persisted queue rows can be replayed by the next worker.
 //   - `drain` is the cooperative variant: the loop keeps pulling until the
 //     queue is empty *and* shutdown has been requested. Tests use this to
 //     synchronize against a known set of enqueues.
@@ -93,7 +95,8 @@ class DispatchWorker final
 {
 public:
     DispatchWorker(DispatchWorkerConfig config, http::OutboundClient& client, DispatchResolver resolver,
-                   DispatchClock now_ms, DispatchSleep sleep_for);
+                   DispatchClock now_ms, DispatchSleep sleep_for,
+                   database::PersistentStore* persistent_store = nullptr);
     ~DispatchWorker();
 
     DispatchWorker(DispatchWorker const&) = delete;
@@ -103,7 +106,7 @@ public:
 
     // Adds a transaction to the pending queue. Returns false if the queue
     // is at capacity, the worker has shut down, or the transaction is
-    // malformed (missing destination/target/origin/body limits).
+    // malformed (missing transaction id, destination, target, origin, or body).
     [[nodiscard]] auto enqueue(OutboundTransaction transaction) -> bool;
 
     auto start() -> void;
@@ -116,6 +119,7 @@ public:
     // thread uses the same path internally.
     [[nodiscard]] auto run_once() -> bool;
 
+    [[nodiscard]] auto replay_pending() -> std::size_t;
     [[nodiscard]] auto summary() const noexcept -> DispatchWorkerSummary;
 
 private:
@@ -123,16 +127,24 @@ private:
     auto take_next(OutboundTransaction& out) -> bool;
     auto re_enqueue_with_backoff(OutboundTransaction transaction, std::uint64_t now_ts) -> void;
     auto find_or_create_destination(std::string_view server_name) -> FederationDestination&;
+    // Promote replay-overflow rows into the active queue while capacity allows.
+    // Caller must hold mutex_. Returns the number of rows promoted.
+    auto top_up_replay_locked() -> std::size_t;
 
     DispatchWorkerConfig config_{};
     http::OutboundClient& client_;
     DispatchResolver resolver_{};
     DispatchClock now_ms_{};
     DispatchSleep sleep_for_{};
+    database::PersistentStore* persistent_store_{nullptr};
 
     mutable std::mutex mutex_{};
     std::condition_variable cv_{};
     std::deque<OutboundTransaction> queue_{};
+    // Durable rows that didn't fit under max_queue_depth at replay time.
+    // Drained into queue_ as in-flight work completes so backlog larger than
+    // the in-memory cap is not stranded until the next restart.
+    std::deque<OutboundTransaction> pending_replay_{};
     std::vector<DispatchDestinationSnapshot> destinations_{};
     DispatchWorkerSummary summary_{};
 

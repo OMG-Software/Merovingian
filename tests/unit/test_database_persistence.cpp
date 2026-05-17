@@ -262,17 +262,17 @@ SCENARIO("Database migration runner applies versioned upgrade and downgrade path
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 5U);
+                REQUIRE(upgrade_plan.steps.size() == 6U);
                 REQUIRE(upgrade_plan.steps.front().version == 1U);
-                REQUIRE(upgrade_plan.steps.back().version == 5U);
+                REQUIRE(upgrade_plan.steps.back().version == 6U);
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 5U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 6U);
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 5U);
+                REQUIRE(downgrade_plan.steps.size() == 6U);
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -302,13 +302,13 @@ SCENARIO("Database migration runner upgrades existing media schemas with metadat
             {
                 REQUIRE(media_plan.current_version == 1U);
                 REQUIRE(media_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(media_plan.steps.size() == 4U);
+                REQUIRE(media_plan.steps.size() == 5U);
                 REQUIRE(media_plan.steps.front().name == "media_metadata_columns");
                 REQUIRE(media_plan.steps.front().statements.size() == 3U);
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 5U);
+                REQUIRE(upgraded.state.version == 6U);
                 REQUIRE(upgraded.state.applied_migrations[1U].name == "media_metadata_columns");
-                REQUIRE(upgraded.state.applied_migrations.back().name == "stream_ordering_and_membership_columns");
+                REQUIRE(upgraded.state.applied_migrations.back().name == "federation_queue_replay_columns");
                 REQUIRE(compatible.valid);
             }
         }
@@ -544,6 +544,65 @@ SCENARIO("Persistent store records server signing keys and event DAG metadata", 
     }
 }
 
+SCENARIO("Persistent store replays outbound federation queue state after restart",
+         "[database][persistence][federation]")
+{
+    GIVEN("a SQLite persistent store with destination retry state and a pending outbound transaction")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        auto destination = merovingian::database::PersistentFederationDestination{};
+        destination.server_name = "remote.example.org";
+        destination.state = "backoff";
+        destination.retry_after_ts = 5000U;
+        destination.last_success_ts = 1000U;
+        destination.consecutive_failures = 3U;
+
+        auto transaction = merovingian::database::PersistentFederationTransaction{};
+        transaction.transaction_id = "txn-1";
+        transaction.server_name = "remote.example.org";
+        transaction.method = "PUT";
+        transaction.target = "/_matrix/federation/v1/send/txn-1";
+        transaction.origin = "origin.example.org";
+        transaction.origin_server_ts = "1234";
+        transaction.body = R"({"pdus":[]})";
+        transaction.retry_count = 2U;
+        transaction.next_retry_ts = 5000U;
+
+        WHEN("the rows are stored and the database is reopened")
+        {
+            auto const destination_ok = merovingian::database::store_federation_destination(store, destination);
+            auto const transaction_ok = merovingian::database::store_federation_transaction(store, transaction);
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("destination retry state and pending transaction details are hydrated for replay")
+            {
+                REQUIRE(destination_ok);
+                REQUIRE(transaction_ok);
+                REQUIRE(reopened.store.federation_destinations.size() == 1U);
+                REQUIRE(reopened.store.federation_transactions.size() == 1U);
+                REQUIRE(reopened.store.federation_destinations.front().server_name == "remote.example.org");
+                REQUIRE(reopened.store.federation_destinations.front().state == "backoff");
+                REQUIRE(reopened.store.federation_destinations.front().retry_after_ts == 5000U);
+                REQUIRE(reopened.store.federation_destinations.front().last_success_ts == 1000U);
+                REQUIRE(reopened.store.federation_destinations.front().consecutive_failures == 3U);
+                REQUIRE(reopened.store.federation_transactions.front().transaction_id == "txn-1");
+                REQUIRE(reopened.store.federation_transactions.front().server_name == "remote.example.org");
+                REQUIRE(reopened.store.federation_transactions.front().body == R"({"pdus":[]})");
+                REQUIRE(reopened.store.federation_transactions.front().retry_count == 2U);
+                REQUIRE(reopened.store.federation_transactions.front().next_retry_ts == 5000U);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
 SCENARIO("Persistent store records durable server-blind E2EE key state", "[database][persistence][key-api]")
 {
     GIVEN("an opened persistent store")
@@ -742,7 +801,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             THEN("required Matrix storage areas have table-specific definitions")
             {
                 REQUIRE(tables.size() == 37U);
-                REQUIRE(merovingian::database::current_schema_version() == 5U);
+                REQUIRE(merovingian::database::current_schema_version() == 6U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);

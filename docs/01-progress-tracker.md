@@ -86,10 +86,10 @@ deployment milestone.
   current-schema bootstrap, fail-closed hydration, busy timeout, runtime
   hydration, write-through users/devices/tokens/rooms/events/E2EE
   keys/media/audit/admin rows, SQLite rollback coverage, PostgreSQL RAII
-  connection/result boundary, PostgreSQL schema bootstrap/hydration/write-through
-  path, migration file loading, offline migrator scaffold, database role
-  separation, durable trust-and-safety rows, and restart-survival integration
-  coverage exist.
+  connection/result boundary, PostgreSQL schema bootstrap/pending-migration
+  hydration/write-through path, migration file loading, offline migrator
+  scaffold, database role separation, durable trust-and-safety rows, and
+  restart-survival integration coverage exist.
 - Observability and audit: structured logging, health snapshots, safe metrics
   summaries, redaction helpers, durable audit events, admin health/metrics/audit
   runtime endpoints, and client-server audit persistence exist.
@@ -115,7 +115,15 @@ deployment milestone.
   resolver injectables, and a request_shutdown / drain / join lifecycle
   driving `perform_outbound_transaction`, honoring
   `destination_should_retry`, and requeueing circuit-open transactions for
-  the destination retry deadline.
+  the destination retry deadline. Pending outbound transactions and destination
+  retry state are persisted to `federation_transactions` and
+  `federation_destinations`, then replayed into a restarted worker; shutdown
+  leaves backoff-delayed rows durable for the next start. All
+  `PersistentStore` mutations from the worker are serialised under the worker
+  mutex, durable persistence failures on the retry/delivery paths are treated
+  as hard failures rather than silent drops, and replay parks rows beyond
+  `max_queue_depth` in an overflow buffer that drains into the active queue
+  as in-flight work completes.
 - Inbound PDU + EDU ingestion: canonical-JSON transaction body parser,
   PDU envelope extraction, `FederationRuntimeState::pdu_sink` and
   `edu_sink` hooks, classification and per-type content validation for
@@ -125,19 +133,17 @@ deployment milestone.
 
 #### TODO
 
-1. Persist outbound federation transactions and destination retry state, then
-   replay pending rows after restart.
-2. Merge conflicting remote PDU state through state-resolution v2 instead of
+1. Merge conflicting remote PDU state through state-resolution v2 instead of
    logging `federation.pdu_state_conflict` and accepting the transaction.
-3. Implement federation make/send join, leave, invite, and backfill flows.
-4. Finish sync conformance: long polling, filters, populated presence,
+2. Implement federation make/send join, leave, invite, and backfill flows.
+3. Finish sync conformance: long polling, filters, populated presence,
    account-data, device-list, to-device, and key-count surfaces, plus Matrix
    v1.18 fixtures.
-5. Add live PostgreSQL integration coverage and enforce separate runtime and
+4. Add live PostgreSQL integration coverage and enforce separate runtime and
    migration role grants.
-6. Run fuzz targets in CI for canonical JSON and HTTP transport before
+5. Run fuzz targets in CI for canonical JSON and HTTP transport before
    declaring Alpha.
-7. Replace placeholder hardening checks with fail-closed alpha deployment
+6. Replace placeholder hardening checks with fail-closed alpha deployment
    controls or explicitly documented alpha-only exceptions.
 
 ### Beta
@@ -225,8 +231,7 @@ be published as production releases while any blocking gate remains open.
 
 ## Immediate priority order
 
-1. Persist the outbound transaction queue with replay on restart, merge
-   conflicting remote PDU state through state-resolution v2, and complete
+1. Merge conflicting remote PDU state through state-resolution v2 and complete
    make/send join, leave, invite, and backfill flows.
 2. Add live PostgreSQL integration coverage and runtime/migration role grants.
 3. Finish sync long polling, filters, populated top-level sync surfaces, and
@@ -248,9 +253,9 @@ be published as production releases while any blocking gate remains open.
 | Authentication and sessions | `runtime-wired` | LibSodium password hashing, CSPRNG access tokens, durable token hashes, SQLite/PostgreSQL hydration into runtime sessions, client-server register/login/logout/whoami/device routes, policy checks, durable audit events, and restart-survival coverage | Add refresh-token rotation, registration tokens, explicit admin bootstrap controls, account recovery controls, global logout, and Matrix conformance fixtures. |
 | E2EE key APIs | `runtime-wired` | Key API route/planning boundary, authenticated client-server runtime dispatch for upload/query/claim/cross-signing/signature/backup route shapes, durable device/one-time/fallback/cross-signing/signature/backup storage, one-time-key consumption, fallback-key reuse, server-blind payload redaction, audit records, and SQLite restart coverage | Add Matrix device-list stream semantics, full key-count algorithms, complete backup version/session retrieval/deletion, Matrix v1.18 semantics, and conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Strict canonical JSON parser boundary, deterministic serializer, event envelope, content hashes, reference-hash event IDs, redacted signing payloads, Base64 Ed25519 signature attachment/verification, persisted runtime signing key, signed runtime event JSON, durable event DAG rows, room-version-aware redaction, v6+ auth rules, state resolution v2, incremental sync with stream tokens and `since`, Matrix-shaped sync responses with `rooms.join`, `rooms.invite`, `rooms.leave`, and top-level `presence`, `account_data`, `to_device`, `device_lists`, and `device_one_time_keys_count` keys, encrypted-room policy, local room flow, and restart-survival integration coverage | Add sync long polling and filters, real payloads for presence/device/to-device/account-data surfaces, restricted join rule evaluation, third-party invite auth, and broader Matrix v1.18 room-version conformance fixtures. |
-| Federation | `runtime-wired` | Runtime federation listener dispatch through the local router, inbound transaction scaffold, unauthenticated inbound `GET /_matrix/key/v2/server` key publication with a canonical self-signed response, SSRF/TLS policy checks, trust-state logic, duplicate handling, canonical JSON Ed25519 request verification, JSON PDU event-signature verification for known and discovered remote keys, signed-request integration coverage, server discovery with HTTPS well-known fetch, DNS SRV, A/AAAA resolution, IPv6 pins, private/loopback rejection, remote key fetch/cache with every listed verify key self-signed, outbound transaction types with exponential backoff and circuit breaker policy, `merovingian::http::OutboundClient`, `perform_outbound_transaction` wiring, `DispatchWorker` bounded retry queue, X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, circuit-breaker short-circuit before network I/O, circuit-open requeue, inbound PDU/EDU ingestion hooks, and per-platform TLS integration coverage | Durable transaction queue persistence with replay, remote PDU state merge, joins/invites/backfill, TLS-bound origin validation, key rotation, and conformance coverage. |
+| Federation | `runtime-wired` | Runtime federation listener dispatch through the local router, inbound transaction scaffold, unauthenticated inbound `GET /_matrix/key/v2/server` key publication with a canonical self-signed response, SSRF/TLS policy checks, trust-state logic, duplicate handling, canonical JSON Ed25519 request verification, JSON PDU event-signature verification for known and discovered remote keys, signed-request integration coverage, server discovery with HTTPS well-known fetch, DNS SRV, A/AAAA resolution, IPv6 pins, private/loopback rejection, remote key fetch/cache with every listed verify key self-signed, outbound transaction types with exponential backoff and circuit breaker policy, `merovingian::http::OutboundClient`, `perform_outbound_transaction` wiring, `DispatchWorker` bounded retry queue, durable queue/destination persistence with restart replay, X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, circuit-breaker short-circuit before network I/O, circuit-open requeue, inbound PDU/EDU ingestion hooks, and per-platform TLS integration coverage | Remote PDU state merge, joins/invites/backfill, TLS-bound origin validation, key rotation, and conformance coverage. |
 | Media repository | `runtime-wired` | Runtime media routes for authenticated local upload/download, MIME policy, quarantine/release/remove, LibSodium digest, metrics, audit, persistent metadata writes, and integration coverage | Add sandboxed processing worker, remote fetch, AV hook boundary, thumbnailing, decompression limits, and durable blob storage. |
-| Database persistence | `runtime-wired` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, fail-closed hydration, busy timeout, runtime hydration, write-through users/devices/tokens/rooms/events/E2EE keys/media/audit/admin rows, SQLite transaction rollback, atomic runtime helpers, dependency reviews, PostgreSQL RAII connection/result boundary, PostgreSQL schema bootstrap/hydration/write-through path, migration-file loading, offline migrator scaffold, database role separation, durable trust-and-safety rows, and restart-survival integration coverage | Add live PostgreSQL integration tests, enforce runtime/migration grants through separate PostgreSQL users, and full persistence for federation queues, account data, policy rules, and media blob metadata. |
+| Database persistence | `runtime-wired` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, fail-closed hydration, busy timeout, runtime hydration, write-through users/devices/tokens/rooms/events/E2EE keys/media/audit/admin rows, SQLite transaction rollback, atomic runtime helpers, dependency reviews, PostgreSQL RAII connection/result boundary, PostgreSQL schema bootstrap/pending-migration hydration/write-through path, migration-file loading, offline migrator scaffold, database role separation, durable trust-and-safety rows, and restart-survival integration coverage | Add live PostgreSQL integration tests, enforce runtime/migration grants through separate PostgreSQL users, and persistence for account data, policy rules, and media blob metadata. |
 | Observability and audit | `runtime-wired` | Structured logging, health snapshots, safe metrics summaries, redaction helpers, durable audit events, admin health/metrics/audit runtime endpoints, and client-server action audit persistence | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
 | Trust and safety | `runtime-wired` | Policy engine for registration, accounts, invites, federation, media, reports, and admin review routes, runtime client event reporting, admin safety report listing/review, durable policy audit rows, and durable admin action rows | Add Matrix v1.18 conformance fixtures, policy server transport integration, durable policy-rule management, and richer moderation workflows. |
 | Runtime hardening | `scaffolded` | Systemd/OpenRC/rc.d packaging, hardening plan, and self-check surfaces | Enforce fail-closed controls, implement seccomp/AppArmor/Landlock notes or profiles, OpenBSD pledge/unveil, and FreeBSD Capsicum where practical. |
@@ -309,12 +314,12 @@ local router until those surfaces have production adapters.
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
 | Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (inbound) | `partial` | Inbound transaction handling is runtime-wired through federation listener local-router dispatch with request policy, duplicate handling, canonical JSON request-signature verification, JSON PDU event-signature verification for known and on-demand discovered keys, PDU/EDU parsing, sink hooks, and conflict audit. Needs PDU insertion into the durable room event graph, state-conflict merge, joins/backfill, and richer EDU side effects. |
-| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (outbound) | `partial` | `perform_outbound_transaction` composes the libcurl-backed `merovingian::http::OutboundClient` with X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, and circuit-breaker short-circuit through `destination_should_retry`. `DispatchWorker` now provides a bounded in-memory retry queue and requeues circuit-open transactions for the destination retry deadline. Per-platform TLS integration coverage exercises valid round-trip, hostname mismatch, untrusted self-signed, and 3xx rejection. Needs durable queue persistence and replay on restart. |
+| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (outbound) | `partial` | `perform_outbound_transaction` composes the libcurl-backed `merovingian::http::OutboundClient` with X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, and circuit-breaker short-circuit through `destination_should_retry`. `DispatchWorker` provides a bounded retry queue, requeues circuit-open transactions for the destination retry deadline, persists pending rows and destination retry state, and replays pending rows after restart. Per-platform TLS integration coverage exercises valid round-trip, hostname mismatch, untrusted self-signed, and 3xx rejection. Needs production runtime wiring to start the replay worker and Matrix conformance coverage. |
 | Joins/leaves/invites | Federation join, leave, invite, and backfill flows | `scaffolded` | Route planning exists for selected federation surfaces. Full make/send join, leave, invite, and backfill behavior is not implemented. |
 | Server discovery | Well-known, DNS, TLS, and key discovery | `partial` | Server discovery now fetches `https://<server>/.well-known/matrix/server` through the pinned outbound client, parses `m.server`, falls back to `_matrix-fed._tcp.<host>` SRV records, resolves A/AAAA addresses, handles public IPv6 pins, rejects private/loopback IPv4 and IPv6 addresses before exposing the pin set to `OutboundClient`, and feeds remote key fetch/cache for on-demand inbound verification. Needs TLS-bound origin validation, richer Matrix edge-case fixtures, and live network conformance coverage. |
 | Signing verification | Request and event signatures | `partial` | Federation requests verify canonical JSON Ed25519 signatures, and JSON PDUs verify Matrix event signatures against known or on-demand discovered remote key material with CI-covered event-ID API linkage. Remote server-key responses must self-sign every listed verify key before caching. Outbound requests are signed through the shared `make_federation_signature` primitive. Needs TLS-bound origin validation, room-version-specific verification, persisted federation key rotation, and inclusion of the destination server name in the X-Matrix payload to match newer Matrix spec versions. |
 | Key publication | `GET /_matrix/key/v2/server` (inbound) | `partial` | The local router answers unauthenticated key fetches with the persisted runtime Ed25519 verify key, `valid_until_ts`, empty `old_verify_keys`, and a canonical self-signature verified by integration coverage. Needs key rotation, multiple active/old keys, production adapter routing, and Matrix federation conformance fixtures. |
-| Federation queues | Outbound federation and retry/backoff | `partial` | `OutboundClient` is wired through `perform_outbound_transaction` with retry-state mutation via `apply_outbound_result`, circuit-breaker short-circuit via `destination_should_retry`, and an in-memory `DispatchWorker` that retries discovery and delivery failures without dropping circuit-open transactions. Needs durable persistence of pending transactions to `federation_transactions` and restart replay. |
+| Federation queues | Outbound federation and retry/backoff | `partial` | `OutboundClient` is wired through `perform_outbound_transaction` with retry-state mutation via `apply_outbound_result`, circuit-breaker short-circuit via `destination_should_retry`, and a `DispatchWorker` that retries discovery and delivery failures without dropping circuit-open transactions. Pending transactions persist to `federation_transactions`, destination retry state persists to `federation_destinations`, and bounded worker replay hydrates both after restart. Needs production runtime worker startup and live federation delivery coverage. |
 
 ### Server administration and operations
 

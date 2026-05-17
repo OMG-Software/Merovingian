@@ -1,5 +1,50 @@
 # Changelog
 
+## 0.1.59
+
+- Addressed PR #83 review feedback on the persistent outbound federation queue:
+  - Serialised all `PersistentStore` mutations from the dispatch worker under
+    the worker mutex. Persisting queue/destination state previously raced with
+    `enqueue()` and corrupted the shared backing vectors.
+  - PostgreSQL bootstrap now detects the Merovingian schema by probing for the
+    `schema_migrations` table rather than any table in `public`, so a shared
+    database with unrelated tables still initialises Merovingian's schema
+    instead of failing later in `load_schema_state`.
+  - Treat `delete_federation_transaction` failure after a successful HTTP send
+    as a transport failure: the durable row stays in storage and the
+    transaction is re-enqueued for retry instead of being silently re-sent on
+    the next restart.
+  - Treat `delete_federation_transaction` failure when dropping a max-retry
+    row as a hard failure: the row is left in durable storage and surfaced as
+    failed, so the next start replays it instead of silently dropping.
+  - Treat `store_federation_transaction` failure on the retry/circuit-open
+    paths as a hard failure: the in-memory transaction is not re-queued when
+    durable state cannot be updated, preventing divergence between durable
+    retry state and the live queue.
+  - `replay_pending()` now parks rows beyond `max_queue_depth` in an internal
+    overflow buffer and promotes them into the active queue as in-flight work
+    completes, so a backlog larger than the in-memory cap is no longer
+    stranded until the next restart.
+- Added BDD coverage for replay overflow promotion under a bounded
+  `max_queue_depth`.
+- Bumped project and executable versions to `0.1.59`.
+
+## 0.1.58
+
+- Persisted outbound federation queue state:
+  - Added durable store rows for federation destination retry state, including
+    `retry_after_ts`, `last_success_ts`, and `consecutive_failures`.
+  - Added durable outbound transaction rows with method, target, origin, body,
+    retry count, and next retry timestamp for restart replay.
+  - `DispatchWorker` can now replay pending rows from `PersistentStore`, persist
+    enqueue/retry state, and remove delivered or dropped transactions.
+  - Schema version `6` adds replay columns for existing federation queue tables.
+  - PostgreSQL startup now applies pending schema migrations before hydration
+    instead of recording new migrations during existing-schema bootstrap.
+- Added BDD coverage for SQLite-backed federation queue replay after restart and
+  dispatch worker replay of pending rows with destination backoff state.
+- Bumped project and executable versions to `0.1.58`.
+
 ## 0.1.57
 
 - Addressed PR #82 review feedback on alpha federation runtime hardening:

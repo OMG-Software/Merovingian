@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
@@ -161,6 +162,123 @@ SCENARIO("Dispatch worker re-enqueues transactions when the destination circuit 
                 REQUIRE(summary.failed >= 4U);
                 REQUIRE(summary.pending == 2U);
                 REQUIRE(summary.dropped == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Dispatch worker replays persisted queue rows with destination retry state",
+         "[federation][dispatch-worker][persistence]")
+{
+    GIVEN("a persistent store with a pending transaction and open destination circuit")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        REQUIRE(merovingian::database::store_federation_destination(
+            store, {"remote.example.org", "backoff", 5000U, 1000U, 3U}));
+        REQUIRE(merovingian::database::store_federation_transaction(
+            store, {"txn-1", "remote.example.org", "PUT", "/_matrix/federation/v1/send/txn-1", "origin.example.org",
+                    "1234", R"({"pdus":[]})", 1U, 0U}));
+
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view server_name) {
+            auto discovery = merovingian::federation::ServerDiscoveryResult{};
+            discovery.server_name = std::string{server_name};
+            discovery.resolved_host = std::string{server_name};
+            discovery.resolved_port = 8448U;
+            discovery.pinned_addresses = {"203.0.113.10"};
+            discovery.discovery_allowed = true;
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{std::move(discovery)};
+        }};
+        auto fake_now = std::make_shared<std::atomic<std::uint64_t>>(2000U);
+        auto now_ms = merovingian::federation::DispatchClock{[fake_now] {
+            return fake_now->load();
+        }};
+        auto config = worker_config();
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver),
+                                                              std::move(now_ms), {},     &store};
+
+        WHEN("the worker replays persisted rows after restart and runs before backoff expires")
+        {
+            auto const replayed = worker.replay_pending();
+            auto const ran = worker.run_once();
+
+            THEN("the pending transaction remains queued using the persisted circuit deadline")
+            {
+                REQUIRE(replayed == 1U);
+                REQUIRE(ran);
+                auto const summary = worker.summary();
+                REQUIRE(summary.enqueued == 1U);
+                REQUIRE(summary.failed == 1U);
+                REQUIRE(summary.pending == 1U);
+                REQUIRE(store.federation_transactions.size() == 1U);
+                REQUIRE(store.federation_transactions.front().next_retry_ts == 5000U);
+                REQUIRE(store.federation_destinations.front().consecutive_failures == 3U);
+            }
+        }
+    }
+}
+
+SCENARIO("Dispatch worker keeps replay overflow durable and drains it as queue space frees up",
+         "[federation][dispatch-worker][persistence]")
+{
+    GIVEN("a persistent store holding more pending rows than the worker's max queue depth")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+        // Two pending rows, max_queue_depth == 1. The first row goes into the
+        // active queue; the second must be parked in pending_replay_ and
+        // promoted as soon as the active queue drains. Both have already
+        // exhausted their retry deadline (next_retry_ts == 0).
+        REQUIRE(merovingian::database::store_federation_transaction(
+            store, {"txn-1", "remote.example.org", "PUT", "/_matrix/federation/v1/send/txn-1", "origin.example.org",
+                    "1234", R"({"pdus":[]})", 0U, 0U}));
+        REQUIRE(merovingian::database::store_federation_transaction(
+            store, {"txn-2", "remote.example.org", "PUT", "/_matrix/federation/v1/send/txn-2", "origin.example.org",
+                    "1234", R"({"pdus":[]})", 0U, 0U}));
+
+        auto client = merovingian::http::OutboundClient{};
+        auto resolver = merovingian::federation::DispatchResolver{[](std::string_view) {
+            // Resolver always reports discovery failure: run_once never touches
+            // the OutboundClient and the transactions cycle back through
+            // re_enqueue_with_backoff, which drops them at max_retries.
+            return std::optional<merovingian::federation::ServerDiscoveryResult>{};
+        }};
+        auto fake_now = std::make_shared<std::atomic<std::uint64_t>>(0U);
+        auto now_ms = merovingian::federation::DispatchClock{[fake_now] {
+            return fake_now->load();
+        }};
+        auto config = worker_config();
+        config.max_queue_depth = 1U;
+        config.max_retries = 1U;
+        auto worker = merovingian::federation::DispatchWorker{std::move(config), client, std::move(resolver),
+                                                              std::move(now_ms), {},     &store};
+
+        WHEN("the worker replays and drains the active queue")
+        {
+            auto const replayed = worker.replay_pending();
+            // First run drops txn-1 (one retry past max). Removing it frees
+            // a queue slot which top_up_replay_locked() must promote with the
+            // parked overflow row before run_once returns.
+            fake_now->store(600000ULL);
+            auto const first_run = worker.run_once();
+            fake_now->store(1200000ULL);
+            auto const second_run = worker.run_once();
+
+            THEN("the overflow row is promoted from durable storage as space frees")
+            {
+                REQUIRE(replayed == 1U);
+                REQUIRE(first_run);
+                REQUIRE(second_run);
+                auto const summary = worker.summary();
+                // Both rows were enqueued (one at replay, one promoted) and
+                // both terminally dropped after max_retries.
+                REQUIRE(summary.enqueued == 2U);
+                REQUIRE(summary.dropped == 2U);
+                REQUIRE(summary.pending == 0U);
+                REQUIRE(store.federation_transactions.empty());
             }
         }
     }

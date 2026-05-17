@@ -261,6 +261,24 @@ namespace
         return connection.execute({std::move(name), std::move(sql), {}});
     }
 
+    // Returns whether the Merovingian schema specifically has been bootstrapped,
+    // detected by the presence of the `schema_migrations` ledger. Looking only
+    // at "any table in public" misclassifies shared databases that hold
+    // unrelated tables and would skip bootstrap, then fail downstream when
+    // `schema_migrations` turns out to be missing.
+    [[nodiscard]] auto merovingian_schema_is_initialized(PostgresqlConnection& connection) -> std::optional<bool>
+    {
+        auto tables = query_rows(
+            connection, "postgresql_detect_merovingian_schema",
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name = "
+            "'schema_migrations' LIMIT 1");
+        if (!tables.ok)
+        {
+            return std::nullopt;
+        }
+        return !tables.rows.empty();
+    }
+
     [[nodiscard]] auto text_is_true(std::string_view value) noexcept -> bool
     {
         return value == "true";
@@ -342,6 +360,41 @@ namespace
             }
         }
 
+        auto federation_destinations =
+            query_rows(connection, "postgresql_load_federation_destinations",
+                       "SELECT server_name, state, retry_after_ts, last_success_ts, consecutive_failures FROM "
+                       "federation_destinations ORDER BY server_name");
+        if (!federation_destinations.ok)
+        {
+            return false;
+        }
+        for (auto const& row : federation_destinations.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                store.federation_destinations.push_back({row[0], row[1], parse_u64(row[2]), parse_u64(row[3]),
+                                                         static_cast<std::uint32_t>(parse_u64(row[4]))});
+            }
+        }
+
+        auto federation_transactions =
+            query_rows(connection, "postgresql_load_federation_transactions",
+                       "SELECT transaction_id, server_name, method, target, origin, origin_server_ts, body, "
+                       "retry_count, next_retry_ts FROM federation_transactions ORDER BY transaction_id");
+        if (!federation_transactions.ok)
+        {
+            return false;
+        }
+        for (auto const& row : federation_transactions.rows)
+        {
+            if (row.size() >= 9U)
+            {
+                store.federation_transactions.push_back({row[0], row[1], row[2], row[3], row[4], row[5], row[6],
+                                                         static_cast<std::uint32_t>(parse_u64(row[7])),
+                                                         parse_u64(row[8])});
+            }
+        }
+
         auto rooms = query_rows(connection, "postgresql_load_rooms",
                                 "SELECT room_id, creator_user_id FROM rooms ORDER BY room_id");
         if (!rooms.ok)
@@ -356,8 +409,9 @@ namespace
             }
         }
 
-        auto memberships = query_rows(connection, "postgresql_load_membership",
-                                      "SELECT room_id, user_id, membership, stream_ordering FROM membership ORDER BY room_id, user_id");
+        auto memberships = query_rows(
+            connection, "postgresql_load_membership",
+            "SELECT room_id, user_id, membership, stream_ordering FROM membership ORDER BY room_id, user_id");
         if (!memberships.ok)
         {
             return false;
@@ -370,8 +424,9 @@ namespace
             }
         }
 
-        auto events = query_rows(connection, "postgresql_load_events",
-                                 "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM events ORDER BY event_id");
+        auto events = query_rows(
+            connection, "postgresql_load_events",
+            "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM events ORDER BY event_id");
         if (!events.ok)
         {
             return false;
@@ -652,6 +707,32 @@ namespace
         return state;
     }
 
+    [[nodiscard]] auto apply_pending_migrations(PostgresqlConnection& connection, SchemaState state)
+        -> std::optional<SchemaState>
+    {
+        auto const plan = migration_plan_for(state);
+        auto const validation = migration_plan_is_valid(plan);
+        if (!validation.valid)
+        {
+            return std::nullopt;
+        }
+        for (auto const& step : plan.steps)
+        {
+            auto statements = step.statements;
+            statements.push_back(migration_record_statement(step.version, step.name));
+            if (!connection.execute_transaction(statements))
+            {
+                return std::nullopt;
+            }
+        }
+        auto applied = apply_migration_plan(std::move(state), plan);
+        if (!applied.ok)
+        {
+            return std::nullopt;
+        }
+        return std::move(applied.state);
+    }
+
 } // namespace
 
 struct PostgresqlConnectionHandle final
@@ -723,6 +804,7 @@ auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
     statements.push_back(migration_record_statement(3U, "e2ee_key_storage"));
     statements.push_back(migration_record_statement(4U, "signing_key_and_event_depth"));
     statements.push_back(migration_record_statement(5U, "stream_ordering_and_membership_columns"));
+    statements.push_back(migration_record_statement(6U, "federation_queue_replay_columns"));
     return statements;
 }
 
@@ -761,10 +843,18 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     }
 
     auto& connection = opened.connection;
-    auto const bootstrap = postgresql_schema_bootstrap_statements();
-    if (!connection.execute_transaction(bootstrap))
+    auto const has_schema = merovingian_schema_is_initialized(connection);
+    if (!has_schema.has_value())
     {
-        return {false, "unable to initialize PostgreSQL schema", {}};
+        return {false, "unable to inspect PostgreSQL schema", {}};
+    }
+    if (!*has_schema)
+    {
+        auto const bootstrap = postgresql_schema_bootstrap_statements();
+        if (!connection.execute_transaction(bootstrap))
+        {
+            return {false, "unable to initialize PostgreSQL schema", {}};
+        }
     }
 
     auto schema = load_schema_state(connection);
@@ -778,6 +868,15 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     store.backend = PersistentStoreBackend::postgresql;
     store.postgresql_conninfo = std::string{conninfo};
     store.schema = std::move(*schema);
+    if (store.schema.version < current_schema_version())
+    {
+        auto migrated = apply_pending_migrations(connection, store.schema);
+        if (!migrated.has_value())
+        {
+            return {false, "unable to migrate PostgreSQL schema", {}};
+        }
+        store.schema = std::move(*migrated);
+    }
     if (!load_persistent_rows(connection, store))
     {
         return {false, "unable to hydrate PostgreSQL persistent rows", {}};

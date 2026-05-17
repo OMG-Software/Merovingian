@@ -10,7 +10,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{5U};
+    constexpr auto schema_version = std::uint32_t{6U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -83,9 +83,13 @@ namespace
                               "remote_media",            "server_name TEXT NOT NULL, media_id TEXT NOT NULL, content_type TEXT NOT NULL, size_bytes "
                             "TEXT NOT NULL, quarantined TEXT NOT NULL, PRIMARY KEY (server_name, media_id)"         },
         SchemaTableDefinition{"federation_destinations",
-                              "server_name TEXT PRIMARY KEY, state TEXT NOT NULL, retry_after_ts TEXT NOT NULL"                                                  },
+                              "server_name TEXT PRIMARY KEY, state TEXT NOT NULL, retry_after_ts TEXT NOT NULL, "
+                              "last_success_ts TEXT NOT NULL, consecutive_failures TEXT NOT NULL"                                                                },
         SchemaTableDefinition{"federation_transactions",
-                              "transaction_id TEXT PRIMARY KEY, server_name TEXT NOT NULL, json TEXT NOT NULL"                                                   },
+                              "transaction_id TEXT PRIMARY KEY, server_name TEXT NOT NULL, json TEXT NOT NULL, "
+                              "method TEXT NOT NULL, target TEXT NOT NULL, origin TEXT NOT NULL, "
+                              "origin_server_ts TEXT NOT NULL, body TEXT NOT NULL, retry_count TEXT NOT NULL, "
+                              "next_retry_ts TEXT NOT NULL"                                                                                                      },
         SchemaTableDefinition{"rate_limits",             "scope TEXT NOT NULL, key TEXT NOT NULL, count TEXT NOT NULL, reset_ts "
                                              "TEXT NOT NULL, PRIMARY KEY (scope, key)"                               },
         SchemaTableDefinition{"audit_log",               "category TEXT NOT NULL, event_type TEXT NOT NULL, actor TEXT NOT NULL, "
