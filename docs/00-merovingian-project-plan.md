@@ -160,7 +160,7 @@ the-merovingian/
   docs/
     architecture.md
     threat-model.md
-    protocol-coverage.md
+    01-progress-tracker.md
     crypto-boundaries.md
     hardening-guide.md
     federation-security.md
@@ -1652,7 +1652,7 @@ netbsd:
 Maintain:
 
 ```text
-docs/protocol-coverage.md
+docs/01-progress-tracker.md
 ```
 
 For every endpoint:
@@ -1762,8 +1762,8 @@ known limitations
 ## 37. Milestone plan
 
 Historical note: this numbered milestone plan is retained as an original project
-planning sketch. Current progress is tracked by capability in `docs/progress.md`,
-and Matrix v1.18 coverage is tracked in `docs/protocol-coverage.md`.
+planning sketch. Current progress, readiness, and Matrix v1.18 coverage are
+tracked in `docs/01-progress-tracker.md`.
 
 ### Milestone 0: skeleton and hardening foundation
 
@@ -1943,7 +1943,7 @@ tests/meson.build
 
 docs/threat-model.md
 docs/architecture.md
-docs/protocol-coverage.md
+docs/01-progress-tracker.md
 docs/crypto-boundaries.md
 docs/hardening-guide.md
 docs/platform-support.md

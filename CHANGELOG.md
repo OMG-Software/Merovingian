@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.45
+
+- Consolidated production readiness, alpha/beta/production milestone tracking,
+  capability progress, and Matrix v1.18 protocol coverage into
+  `docs/01-progress-tracker.md`.
+- Updated release-readiness checks and project documentation links to use the
+  consolidated tracker.
+- Removed the superseded progress, protocol coverage, and production readiness
+  tracker documents.
+
 ## 0.1.44
 
 - Fixed `store_room_with_membership` inserting only 2 columns into the 4-column
