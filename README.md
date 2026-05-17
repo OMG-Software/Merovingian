@@ -108,7 +108,7 @@ See:
 - `config/merovingian.conf.example`
 - `docs/configuration.md`
 - `docs/media-repository.md`
-- `docs/01-production-readiness.md`
+- `docs/01-progress-tracker.md`
 - `docs/security-review-checklist.md`
 
 ## Developer environment
@@ -121,9 +121,7 @@ See:
 
 See:
 
-- `docs/progress.md`
-- `docs/protocol-coverage.md`
-- `docs/01-production-readiness.md`
+- `docs/01-progress-tracker.md`
 
 ## Test standards
 
@@ -136,6 +134,8 @@ See:
 
 Prototype homeserver with packaging and release-readiness gates in progress.
 The bootstrap binary now opens TCP listeners and serves HTTP/1.1 requests
-through the local router; TLS and persistent storage are still pending.
+through the local router. TLS, local persistence, and the supported local
+Matrix slices are runtime-wired; full Matrix conformance, outbound federation,
+hardening, and release gates remain pending.
 Do not deploy as a production Matrix homeserver until
-`docs/01-production-readiness.md` has no blocking gates.
+`docs/01-progress-tracker.md` has no blocking gates.

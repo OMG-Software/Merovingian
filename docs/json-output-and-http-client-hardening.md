@@ -344,5 +344,5 @@ land as their own version bump on a dedicated branch.
   the OutboundClient suite on each supported platform to catch backend
   drift.
 - BSD runtime dependency on libcurl: acceptable for the packaging targets
-  in `docs/01-production-readiness.md`.
+  in `docs/01-progress-tracker.md`.
 - Sequencing: Phase B before Phase A.

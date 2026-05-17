@@ -441,7 +441,7 @@ namespace
         // token and still share a global bucket per route; scoping those by
         // remote IP needs `LocalHttpRequest` to grow a `remote_addr` field
         // and is tracked as a follow-up alongside the federation discovery
-        // work in `docs/alpha-readiness.md`.
+        // work in `docs/01-progress-tracker.md`.
         auto identity = req.access_token + '|';
         auto target = std::string_view{req.target};
         if (starts_with(target, room_prefix) && ends_with(target, "/join"))

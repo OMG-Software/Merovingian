@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.53
+
+- Consolidated production readiness, alpha/beta/production milestone tracking,
+  alpha readiness, capability progress, and Matrix v1.18 protocol coverage
+  into `docs/01-progress-tracker.md`.
+- Updated release-readiness checks and project documentation links to use the
+  consolidated tracker.
+- Removed the superseded progress, protocol coverage, and production readiness
+  tracker documents, including the alpha-readiness roadmap added on `main`.
+
 ## 0.1.52
 
 - Addressed PR #79 review feedback from the automated reviewer:
