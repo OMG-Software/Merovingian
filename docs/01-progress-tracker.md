@@ -158,14 +158,25 @@ deployment milestone.
   segment so `next_batch` covers all surfaces. A Complement-style
   JSON fixture (`tests/fixtures/complement/sync_v1_18.json`) drives
   the spec shape end-to-end.
+- Live PostgreSQL integration coverage with runtime/migration role
+  enforcement: a dedicated GitHub Actions workflow
+  (`.github/workflows/postgres-integration.yml`) starts a PostgreSQL 16
+  service, provisions `merovingian_migration` (DDL) and
+  `merovingian_runtime` (DML-only) roles via default privileges, and
+  runs live integration scenarios that assert schema bootstrap reaches
+  `current_schema_version`, persisted rows survive a close/reopen, and
+  a runtime-role session is denied `CREATE TABLE`. The
+  `PostgresqlConnection` API exposes `set_postgresql_role`,
+  `reset_postgresql_role`, and `current_postgresql_user` so runtime
+  callers can switch identities within a single connection; role names
+  are validated against PostgreSQL identifier shape before being
+  interpolated.
 
 #### TODO
 
-1. Add live PostgreSQL integration coverage and enforce separate runtime and
-   migration role grants.
-2. Run fuzz targets in CI for canonical JSON and HTTP transport before
+1. Run fuzz targets in CI for canonical JSON and HTTP transport before
    declaring Alpha.
-3. Replace placeholder hardening checks with fail-closed alpha deployment
+2. Replace placeholder hardening checks with fail-closed alpha deployment
    controls or explicitly documented alpha-only exceptions.
 
 ### Beta

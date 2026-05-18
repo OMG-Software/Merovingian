@@ -57,4 +57,20 @@ struct PostgresqlConnectionOpenResult final
 [[nodiscard]] auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnectionOpenResult;
 [[nodiscard]] auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentStoreOpenResult;
 
+// Switch the session role on `connection` to `role_name`. Returns false if
+// the connection is not open or `SET ROLE` fails (e.g. the current login
+// role is not a member of the target role). Role names are quoted with
+// PostgreSQL identifier rules so a malicious caller cannot inject SQL.
+[[nodiscard]] auto set_postgresql_role(PostgresqlConnection& connection, std::string_view role_name) -> bool;
+
+// Resets the session role to the connecting login role via `RESET ROLE`.
+// Useful in tests that switch to a restricted runtime role and need to
+// return to the bootstrapping migration role.
+[[nodiscard]] auto reset_postgresql_role(PostgresqlConnection& connection) -> bool;
+
+// Returns the value of CURRENT_USER on `connection`. Empty when the
+// connection is not open or the query fails. Used by tests that need to
+// assert role switching took effect.
+[[nodiscard]] auto current_postgresql_user(PostgresqlConnection& connection) -> std::string;
+
 } // namespace merovingian::database

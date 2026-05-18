@@ -1,0 +1,102 @@
+name: PostgreSQL integration
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'claude/**'
+      - 'codex/**'
+  pull_request:
+    branches:
+      - main
+      - master
+  schedule:
+    - cron: "47 2 * * 1"
+
+jobs:
+
+  postgres-integration:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+      # The bootstrapping superuser creates the schema; live integration
+      # tests connect through this URI. The migration and runtime roles
+      # below get exposed to the test binary through separate env vars so
+      # the role-enforcement scenario can exercise the grant policy.
+      MEROVINGIAN_TEST_POSTGRESQL_URI: postgresql://merovingian_test:test-password@127.0.0.1:5432/merovingian_test
+      MEROVINGIAN_TEST_POSTGRESQL_MIGRATION_ROLE: merovingian_migration
+      MEROVINGIAN_TEST_POSTGRESQL_RUNTIME_ROLE: merovingian_runtime
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: merovingian_test
+          POSTGRES_PASSWORD: test-password
+          POSTGRES_DB: merovingian_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U merovingian_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            catch2 \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            libsodium-dev \
+            pkg-config \
+            postgresql-client
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade meson ninja
+
+      - name: Provision migration and runtime roles
+        env:
+          PGHOST: 127.0.0.1
+          PGPORT: '5432'
+          PGUSER: merovingian_test
+          PGPASSWORD: test-password
+          PGDATABASE: merovingian_test
+        run: |
+          # Two roles share the test database. The migration role owns the
+          # schema and carries DDL grants; the runtime role only has DML on
+          # the schema-owned tables. The connecting login user is a member
+          # of both roles so `SET ROLE` can switch identities within one
+          # session. The login user's default role is the migration role,
+          # so every fresh connection starts able to bootstrap schema and
+          # any table it creates is owned by the migration role.
+          psql -v ON_ERROR_STOP=1 <<'SQL'
+            CREATE ROLE merovingian_migration NOLOGIN;
+            CREATE ROLE merovingian_runtime NOLOGIN;
+            GRANT merovingian_migration TO merovingian_test;
+            GRANT merovingian_runtime TO merovingian_test;
+            GRANT CREATE, USAGE ON SCHEMA public TO merovingian_migration;
+            GRANT USAGE ON SCHEMA public TO merovingian_runtime;
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_migration IN SCHEMA public
+              GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO merovingian_runtime;
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_migration IN SCHEMA public
+              GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO merovingian_runtime;
+            ALTER ROLE merovingian_test SET ROLE merovingian_migration;
+          SQL
+
+      - name: Build
+        run: sh scripts/build-linux.sh --builddir build
+
+      - name: Run live PostgreSQL integration tests
+        run: ./build/tests/merovingian-integration-tests "[database][postgresql][integration]"
