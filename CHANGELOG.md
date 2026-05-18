@@ -1,9 +1,8 @@
 # Changelog
 
-## 0.2.0
+## 0.1.64
 
-- Closed the remaining two Alpha TODOs from `docs/01-progress-tracker.md`
-  and cut the alpha minor release.
+- Closed the remaining two Alpha TODOs from `docs/01-progress-tracker.md`.
 - Added a dedicated fuzz CI gate
   (`.github/workflows/fuzz.yml`) that builds the canonical JSON and HTTP
   transport harnesses with `-fsanitize=fuzzer,address,undefined` and runs
@@ -59,7 +58,7 @@
 - Added `docs/release-process.md` and updated the progress tracker plus
   security review checklist to document the alpha prerelease path and the
   production release gaps that still remain.
-- Bumped project and executable versions to `0.2.0`.
+- Bumped project and executable versions to `0.1.64`.
 
 ## 0.1.63
 

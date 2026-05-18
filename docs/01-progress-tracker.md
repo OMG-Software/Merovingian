@@ -193,7 +193,8 @@ deployment milestone.
 
 #### TODO
 
-_None — all Alpha gates are closed. Alpha is cut at `0.2.0`._
+_None — all Alpha gates are closed. The alpha release itself remains a
+separate operator decision once this branch is approved._
 
 ### Beta
 
@@ -284,7 +285,7 @@ be published as production releases while any blocking gate remains open.
 
 ## Immediate priority order
 
-Alpha (`0.2.0`) is cut. Beta priorities take over from here:
+With the Alpha gates closed, Beta priorities take over from here:
 
 1. Complete Matrix v1.18 conformance for client-server endpoints currently
    marked `partial` — promote them to `covered` with conformance fixtures.
