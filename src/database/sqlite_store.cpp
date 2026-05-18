@@ -225,20 +225,11 @@ namespace
             }
         }
 
+        // The schema lands at v1 in its final shape — there are no historic
+        // database deployments to upgrade, so only the initial migration
+        // record needs to be present.
         return execute_sql(connection,
-                           "INSERT OR IGNORE INTO schema_migrations VALUES ('1', 'initial_schema', 'upgrade')") &&
-               execute_sql(
-                   connection,
-                   "INSERT OR IGNORE INTO schema_migrations VALUES ('2', 'media_metadata_columns', 'upgrade')") &&
-               execute_sql(connection,
-                           "INSERT OR IGNORE INTO schema_migrations VALUES ('3', 'e2ee_key_storage', 'upgrade')") &&
-               execute_sql(
-                   connection,
-                   "INSERT OR IGNORE INTO schema_migrations VALUES ('4', 'signing_key_and_event_depth', 'upgrade')") &&
-               execute_sql(connection, "INSERT OR IGNORE INTO schema_migrations VALUES ('5', "
-                                       "'stream_ordering_and_membership_columns', 'upgrade')") &&
-               execute_sql(connection, "INSERT OR IGNORE INTO schema_migrations VALUES ('6', "
-                                       "'federation_queue_replay_columns', 'upgrade')");
+                           "INSERT OR IGNORE INTO schema_migrations VALUES ('1', 'initial_schema', 'upgrade')");
     }
 
     auto apply_pending_migrations(sqlite3& connection, SchemaState state) -> std::optional<SchemaState>

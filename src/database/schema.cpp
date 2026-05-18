@@ -10,7 +10,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{7U};
+    constexpr auto schema_version = std::uint32_t{1U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",
@@ -52,8 +52,12 @@ namespace
                               "room_id TEXT NOT NULL, user_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, "
                               "event_id TEXT NOT NULL DEFAULT '', stream_ordering TEXT NOT NULL DEFAULT '0', "
                               "PRIMARY KEY (room_id, user_id)"                                                                                                   },
-        SchemaTableDefinition{
-                              "account_data",            "user_id TEXT NOT NULL, event_type TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, event_type)"},
+        SchemaTableDefinition{"account_data",
+                              "user_id TEXT NOT NULL, event_type TEXT NOT NULL, json TEXT NOT NULL, stream_id TEXT "
+                              "NOT NULL DEFAULT '0', PRIMARY KEY (user_id, event_type)"                                                                            },
+        SchemaTableDefinition{"room_account_data",
+                              "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, stream_id TEXT "
+                              "NOT NULL DEFAULT '0', json TEXT NOT NULL, PRIMARY KEY (user_id, room_id, event_type)"                                               },
         SchemaTableDefinition{
                               "push_rules",              "user_id TEXT NOT NULL, rule_id TEXT NOT NULL, json TEXT NOT NULL, PRIMARY KEY (user_id, rule_id)"      },
         SchemaTableDefinition{
@@ -98,6 +102,18 @@ namespace
                                               "action TEXT NOT NULL, reason TEXT NOT NULL"                          },
         SchemaTableDefinition{"admin_actions",
                               "admin_user_id TEXT NOT NULL, action TEXT NOT NULL, target TEXT NOT NULL"                                                          },
+        SchemaTableDefinition{"to_device_messages",
+                              "stream_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, target_user_id TEXT NOT NULL, "
+                              "target_device_id TEXT NOT NULL DEFAULT '', message_type TEXT NOT NULL, content TEXT "
+                              "NOT NULL, PRIMARY KEY (stream_id, target_user_id, target_device_id)"                                                                },
+        SchemaTableDefinition{"device_list_changes",
+                              "stream_id TEXT NOT NULL, observer_user_id TEXT NOT NULL, "
+                              "subject_user_id TEXT NOT NULL, change_type TEXT NOT NULL DEFAULT 'changed', "
+                              "PRIMARY KEY (stream_id, observer_user_id, subject_user_id)"                                                                         },
+        SchemaTableDefinition{"presence_state",
+                              "user_id TEXT PRIMARY KEY, stream_id TEXT NOT NULL DEFAULT '0', presence TEXT NOT NULL "
+                              "DEFAULT 'offline', status_msg TEXT NOT NULL DEFAULT '', last_active_ago TEXT NOT NULL "
+                              "DEFAULT '0', currently_active TEXT NOT NULL DEFAULT 'false'"                                                                        },
     };
 
 } // namespace

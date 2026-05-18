@@ -264,7 +264,8 @@ SCENARIO("Database migration plans are contiguous and direction-aware", "[databa
     }
 }
 
-SCENARIO("Database migration runner applies versioned upgrade and downgrade paths", "[database][migration]")
+SCENARIO("Database migration runner applies the initial schema and the matching explicit downgrade",
+         "[database][migration]")
 {
     GIVEN("an empty schema state")
     {
@@ -279,63 +280,30 @@ SCENARIO("Database migration runner applies versioned upgrade and downgrade path
             auto const downgrade_plan = merovingian::database::migration_plan_between(upgraded.state.version, 0U);
             auto const downgraded = merovingian::database::apply_migration_plan(upgraded.state, downgrade_plan);
 
-            THEN("schema state is derived from migration statements and can be downgraded "
-                 "explicitly")
+            THEN("the single initial-schema step deploys the final table inventory and is reversible")
             {
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 7U);
+                // The schema lives at v1 in its final shape; there are no
+                // historic DBs to migrate, so the upgrade plan is exactly
+                // the initial-schema step.
+                REQUIRE(upgrade_plan.steps.size() == 1U);
                 REQUIRE(upgrade_plan.steps.front().version == 1U);
-                REQUIRE(upgrade_plan.steps.back().version == 7U);
+                REQUIRE(upgrade_plan.steps.front().name == "initial_schema");
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 7U);
-                // Schema v7 adds four sync-surface tables on top of the
-                // initial inventory: room_account_data, to_device_messages,
-                // device_list_changes, and presence_state.
-                REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size() + 4U);
+                REQUIRE(upgraded.state.version == 1U);
+                REQUIRE(upgraded.state.applied_migrations.size() == 1U);
+                REQUIRE(upgraded.state.applied_migrations.front().name == "initial_schema");
+                REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size());
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 7U);
+                REQUIRE(downgrade_plan.steps.size() == 1U);
+                REQUIRE(downgrade_plan.steps.front().name == "drop_initial_schema");
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
-            }
-        }
-    }
-}
-
-SCENARIO("Database migration runner upgrades existing media schemas with metadata columns",
-         "[database][migration][media]")
-{
-    GIVEN("a version one schema state with the original media table")
-    {
-        auto version_one_state = merovingian::database::SchemaState{};
-        auto const initial_plan = merovingian::database::migration_plan_between(0U, 1U);
-        auto const initialized = merovingian::database::apply_migration_plan(version_one_state, initial_plan);
-        REQUIRE(initialized.ok);
-        version_one_state = initialized.state;
-
-        WHEN("the current migration plan is applied")
-        {
-            auto const media_plan = merovingian::database::migration_plan_for(version_one_state);
-            auto const upgraded = merovingian::database::apply_migration_plan(version_one_state, media_plan);
-            auto const compatible = merovingian::database::schema_state_is_compatible(upgraded.state);
-
-            THEN("a dedicated media metadata migration records the schema upgrade")
-            {
-                REQUIRE(media_plan.current_version == 1U);
-                REQUIRE(media_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(media_plan.steps.size() == 6U);
-                REQUIRE(media_plan.steps.front().name == "media_metadata_columns");
-                REQUIRE(media_plan.steps.front().statements.size() == 3U);
-                REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 7U);
-                REQUIRE(upgraded.state.applied_migrations[1U].name == "media_metadata_columns");
-                REQUIRE(upgraded.state.applied_migrations.back().name == "sync_surfaces_tables");
-                REQUIRE(compatible.valid);
             }
         }
     }
@@ -736,9 +704,11 @@ SCENARIO("PostgreSQL schema bootstrap exposes current schema statements", "[data
         {
             auto const statements = merovingian::database::postgresql_schema_bootstrap_statements();
 
-            THEN("the bootstrap can create every core table and record current migrations")
+            THEN("the bootstrap can create every core table and record the initial migration")
             {
-                REQUIRE(statements.size() >= merovingian::database::initial_schema_tables().size() + 2U);
+                // One CREATE TABLE per core table plus one INSERT-on-conflict
+                // row that records the initial_schema migration ledger entry.
+                REQUIRE(statements.size() == merovingian::database::initial_schema_tables().size() + 1U);
                 REQUIRE(statements.front().name == "postgresql_create_schema_migrations");
                 REQUIRE(statements.front().sql.find("CREATE TABLE IF NOT EXISTS schema_migrations") == 0U);
                 REQUIRE(statements.back().sql.find("ON CONFLICT") != std::string::npos);
@@ -792,16 +762,16 @@ SCENARIO("Offline migrator plans require migration database role", "[database][m
 
         WHEN("migrator plans are built")
         {
-            auto const runtime_plan = merovingian::database::build_offline_migration_plan(runtime_config, 0U, 2U, {});
+            auto const runtime_plan = merovingian::database::build_offline_migration_plan(runtime_config, 0U, 1U, {});
             auto const migration_plan =
-                merovingian::database::build_offline_migration_plan(migration_config, 0U, 2U, {});
+                merovingian::database::build_offline_migration_plan(migration_config, 0U, 1U, {});
 
             THEN("only the migration role may run schema changes")
             {
                 REQUIRE_FALSE(runtime_plan.ok);
                 REQUIRE(runtime_plan.reason == "database migration requires database.role=migration");
                 REQUIRE(migration_plan.ok);
-                REQUIRE(migration_plan.plan.target_version == 2U);
+                REQUIRE(migration_plan.plan.target_version == 1U);
             }
         }
     }
@@ -826,8 +796,11 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
 
             THEN("required Matrix storage areas have table-specific definitions")
             {
-                REQUIRE(tables.size() == 37U);
-                REQUIRE(merovingian::database::current_schema_version() == 7U);
+                // 41 = the 37 baseline tables plus four sync-surface tables
+                // (room_account_data, to_device_messages, device_list_changes,
+                // presence_state) folded into the initial schema.
+                REQUIRE(tables.size() == 41U);
+                REQUIRE(merovingian::database::current_schema_version() == 1U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);

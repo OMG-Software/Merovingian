@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.1.63
+
+- Consolidated the database schema into a single initial deploy. There
+  are no live Merovingian databases to upgrade, so the assumption that
+  each schema change needed a per-version migration step was wrong.
+  - `current_schema_version` is now `1` and `initial_schema` is the
+    only migration in the catalog. The previous v2–v7 upgrade and
+    downgrade helpers are removed.
+  - `core_tables` carries every column added by the retired v2–v7
+    migrations (event depth/stream ordering, server-signing key
+    composite primary key, federation queue replay columns, media
+    metadata digest/hash, `account_data.stream_id`) plus the four
+    sync-surface tables (`room_account_data`, `to_device_messages`,
+    `device_list_changes`, `presence_state`). Total core table count
+    is 41.
+  - SQLite + PostgreSQL bootstrap statements record only the
+    `initial_schema` migration row; the pre-populated v2–v6 ledger
+    rows are gone.
+  - Tests updated: schema-state upgrade asserts a 1-step plan ending
+    at version `1`, the schema inventory counts `41` tables, and the
+    persistent-homeserver flow expects a single `initial_schema`
+    migration record. The "migration runner upgrades existing media
+    schemas" scenario is removed; with no historic shapes to upgrade
+    from, there is nothing to assert.
+- Bumped project and executable versions to `0.1.63`.
+
 ## 0.1.62
 
 - Added live PostgreSQL integration coverage and runtime/migration role

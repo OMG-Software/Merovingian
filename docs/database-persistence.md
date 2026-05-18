@@ -15,10 +15,11 @@ remaining work before PostgreSQL-backed production operation.
 - Validated execution helper that rejects invalid statements before they reach an executor.
 - Migration step and migration plan models.
 - Contiguous upgrade and explicit downgrade migration-plan validation.
-- Initial schema table inventory covering the Matrix storage areas from the project plan.
-- Media metadata schema migration from version `1` to version `2`.
-- E2EE key storage schema migration from version `2` to version `3`.
-- Signing key and event depth schema migration from version `3` to version `4`.
+- Initial schema deployed at version `1` in its final shape: 41 core
+  tables covering every Matrix storage area from the project plan. There
+  are no live databases to upgrade, so historical per-version migrations
+  have been collapsed into the single `initial_schema` step. Future schema
+  changes will add their own forward migrations.
 - SQLite RAII wrappers around database connections and prepared statements.
 - SQLite current-schema bootstrap for new database files.
 - SQLite row hydration for users, devices, access tokens, rooms, memberships,
