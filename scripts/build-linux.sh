@@ -94,6 +94,13 @@ check_command() {
     command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"
 }
 
+check_pkg_config_module() {
+    if [ "$dry_run" -eq 1 ]; then
+        return
+    fi
+    "$pkg_config" --exists "$1" || fail "missing pkg-config module: $1"
+}
+
 while [ "$#" -gt 0 ]; do
     case "$1" in
         --builddir)

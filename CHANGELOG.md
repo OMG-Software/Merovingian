@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.69
+
+- Fixed CI failure caused by missing `check_pkg_config_module` function in
+  `scripts/build-linux.sh`. The function is now defined and verifies that
+  required pkg-config modules (e.g. openssl) are available before the build
+  proceeds.
+- Bumped project and executable versions to `0.1.69`.
+
 ## 0.1.68
 
 - Fixed the critical registration audit finding by enforcing configured
