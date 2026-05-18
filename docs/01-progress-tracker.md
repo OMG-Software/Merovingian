@@ -106,6 +106,9 @@ deployment milestone.
   release-readiness gate.
 - Direct runtime dependencies now resolve through committed source-pinned Meson
   wraps for libsodium, libcurl, libpq, SQLite, OpenSSL, Catch2, and yyjson.
+  The OpenSSL wrap exports system include directories (`is_system: true`) and
+  disables `werror` so that its C-style casts and assembly files do not trigger
+  the parent project's strict C++ warning policy.
 - Client discovery: unauthenticated `GET /_matrix/client/versions` returns
   supported versions `v1.1` through `v1.18` with an empty `unstable_features`
   object.

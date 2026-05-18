@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.1.71
+
+- Fixed OpenSSL fallback subproject compilation failures on CI by:
+  - Adding `werror=false` to the OpenSSL subproject's default options so the
+    parent project's `werror=true` does not leak into the C subproject and
+    cause `-Wunused-command-line-argument` errors on assembly files.
+  - Using `is_system: true` include directories for the OpenSSL exported
+    dependencies so that consuming C++ code gets `-isystem` flags instead of
+    `-I`, suppressing `-Wold-style-cast` warnings from OpenSSL's C-style
+    casts.
+- Bumped project and executable versions to `0.1.71`.
+
 ## 0.1.70
 
 - Trimmed carriage returns when reading registration token files so CRLF
