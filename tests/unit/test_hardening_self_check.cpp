@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <string>
 
 SCENARIO("Startup hardening self-check reports stable baseline checks", "[platform][hardening]")
@@ -37,24 +38,70 @@ SCENARIO("Startup hardening self-check reports stable baseline checks", "[platfo
     }
 }
 
-SCENARIO("Unimplemented runtime hardening checks remain unknown", "[platform][hardening]")
+SCENARIO("Runtime hardening checks deferred for alpha carry documented exceptions", "[platform][hardening]")
 {
-    GIVEN("the unknown hardening status")
+    GIVEN("the alpha exception hardening status")
     {
-        auto constexpr unknown = merovingian::platform::HardeningStatus::unknown;
+        auto constexpr alpha_exception = merovingian::platform::HardeningStatus::alpha_exception;
 
         WHEN("the startup hardening self-check runs")
         {
             auto const self_check = merovingian::platform::run_startup_hardening_self_check();
 
-            THEN("unimplemented runtime checks are reported as unknown")
+            THEN("placeholder runtime checks are tagged alpha_exception with a non-empty note")
             {
-                REQUIRE(self_check.checks()[6].status == unknown);
-                REQUIRE(self_check.checks()[7].status == unknown);
-                REQUIRE(self_check.checks()[8].status == unknown);
-                REQUIRE(self_check.checks()[9].status == unknown);
-                REQUIRE(self_check.checks()[10].status == unknown);
-                REQUIRE(self_check.checks()[11].status == unknown);
+                auto const& checks = self_check.checks();
+                auto const deferred_indices = {6U, 7U, 8U, 9U, 10U, 11U};
+                for (auto const index : deferred_indices)
+                {
+                    REQUIRE(checks[index].status == alpha_exception);
+                    REQUIRE_FALSE(checks[index].note.empty());
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Hardening self-check fails closed for production while accepting alpha", "[platform][hardening]")
+{
+    GIVEN("a startup hardening self-check report")
+    {
+        auto const self_check = merovingian::platform::run_startup_hardening_self_check();
+
+        WHEN("the report is queried for production readiness")
+        {
+            THEN("alpha_exception entries block production readiness")
+            {
+                REQUIRE_FALSE(self_check.is_production_ready());
+                REQUIRE(self_check.production_blocker_count() > 0U);
+            }
+
+            AND_THEN("the report still permits alpha operation")
+            {
+                REQUIRE(self_check.is_alpha_ready());
+            }
+        }
+    }
+}
+
+SCENARIO("Production-blocking hardening checks expose their documented notes", "[platform][hardening]")
+{
+    GIVEN("a startup hardening self-check report")
+    {
+        auto const self_check = merovingian::platform::run_startup_hardening_self_check();
+
+        WHEN("production blockers are collected")
+        {
+            auto const blockers = self_check.production_blockers();
+
+            THEN("each blocker references the alpha exception documentation")
+            {
+                REQUIRE_FALSE(blockers.empty());
+                for (auto const& blocker : blockers)
+                {
+                    REQUIRE(blocker.status == merovingian::platform::HardeningStatus::alpha_exception);
+                    REQUIRE(blocker.note.find("docs/hardening-alpha-exceptions.md") != std::string::npos);
+                }
             }
         }
     }
@@ -86,18 +133,22 @@ SCENARIO("Hardening status names are stable for startup logs", "[platform][harde
         auto constexpr enabled = merovingian::platform::HardeningStatus::enabled;
         auto constexpr disabled = merovingian::platform::HardeningStatus::disabled;
         auto constexpr unknown = merovingian::platform::HardeningStatus::unknown;
+        auto constexpr alpha_exception = merovingian::platform::HardeningStatus::alpha_exception;
 
         WHEN("the status names are requested")
         {
             auto const enabled_name = std::string{merovingian::platform::hardening_status_name(enabled)};
             auto const disabled_name = std::string{merovingian::platform::hardening_status_name(disabled)};
             auto const unknown_name = std::string{merovingian::platform::hardening_status_name(unknown)};
+            auto const alpha_exception_name =
+                std::string{merovingian::platform::hardening_status_name(alpha_exception)};
 
             THEN("the diagnostic names are stable")
             {
                 REQUIRE(enabled_name == "enabled");
                 REQUIRE(disabled_name == "disabled");
                 REQUIRE(unknown_name == "unknown");
+                REQUIRE(alpha_exception_name == "alpha_exception");
             }
         }
     }

@@ -1,0 +1,71 @@
+name: fuzz
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'claude/**'
+      - 'codex/**'
+  pull_request:
+    branches:
+      - main
+      - master
+  schedule:
+    # Weekly extended fuzz run on Sunday at 02:11 UTC. The duration override
+    # is applied to the scheduled job below.
+    - cron: "11 2 * * 0"
+
+jobs:
+  fuzz-targets:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            llvm \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            libsodium-dev \
+            pkg-config
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade meson ninja
+
+      - name: Resolve fuzz duration
+        id: duration
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "seconds=900" >> "$GITHUB_OUTPUT"
+          else
+            echo "seconds=120" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and run canonical JSON + HTTP transport fuzz targets
+        run: sh scripts/run-fuzz-targets.sh --builddir build-fuzz --duration "${{ steps.duration.outputs.seconds }}"
+
+      - name: Upload fuzz corpora and crash artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: merovingian-fuzz-corpora-${{ github.sha }}
+          path: |
+            build-fuzz/fuzz-corpus/**
+            crash-*
+            leak-*
+            timeout-*
+          if-no-files-found: ignore
+          retention-days: 14

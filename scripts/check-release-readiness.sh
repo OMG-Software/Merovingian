@@ -23,6 +23,7 @@ require_file docs/security-review-checklist.md
 require_file docs/build-warning-policy.md
 require_file docs/observability-audit.md
 require_file docs/trust-safety.md
+require_file docs/hardening-alpha-exceptions.md
 require_file docs/dependencies/index.md
 require_file docs/dependencies/catch2.md
 require_file docs/dependencies/libcurl.md
