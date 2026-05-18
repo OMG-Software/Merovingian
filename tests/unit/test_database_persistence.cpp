@@ -262,17 +262,20 @@ SCENARIO("Database migration runner applies versioned upgrade and downgrade path
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(upgrade_plan.steps.size() == 6U);
+                REQUIRE(upgrade_plan.steps.size() == 7U);
                 REQUIRE(upgrade_plan.steps.front().version == 1U);
-                REQUIRE(upgrade_plan.steps.back().version == 6U);
+                REQUIRE(upgrade_plan.steps.back().version == 7U);
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
-                REQUIRE(upgraded.state.applied_migrations.size() == 6U);
-                REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size());
+                REQUIRE(upgraded.state.applied_migrations.size() == 7U);
+                // Schema v7 adds four sync-surface tables on top of the
+                // initial inventory: room_account_data, to_device_messages,
+                // device_list_changes, and presence_state.
+                REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size() + 4U);
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);
-                REQUIRE(downgrade_plan.steps.size() == 6U);
+                REQUIRE(downgrade_plan.steps.size() == 7U);
                 REQUIRE(downgraded.ok);
                 REQUIRE(downgraded.state.version == 0U);
                 REQUIRE(downgraded.state.tables.empty());
@@ -302,13 +305,13 @@ SCENARIO("Database migration runner upgrades existing media schemas with metadat
             {
                 REQUIRE(media_plan.current_version == 1U);
                 REQUIRE(media_plan.target_version == merovingian::database::current_schema_version());
-                REQUIRE(media_plan.steps.size() == 5U);
+                REQUIRE(media_plan.steps.size() == 6U);
                 REQUIRE(media_plan.steps.front().name == "media_metadata_columns");
                 REQUIRE(media_plan.steps.front().statements.size() == 3U);
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 6U);
+                REQUIRE(upgraded.state.version == 7U);
                 REQUIRE(upgraded.state.applied_migrations[1U].name == "media_metadata_columns");
-                REQUIRE(upgraded.state.applied_migrations.back().name == "federation_queue_replay_columns");
+                REQUIRE(upgraded.state.applied_migrations.back().name == "sync_surfaces_tables");
                 REQUIRE(compatible.valid);
             }
         }
@@ -801,7 +804,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             THEN("required Matrix storage areas have table-specific definitions")
             {
                 REQUIRE(tables.size() == 37U);
-                REQUIRE(merovingian::database::current_schema_version() == 6U);
+                REQUIRE(merovingian::database::current_schema_version() == 7U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);

@@ -119,6 +119,13 @@ struct LocalHttpResponse final
                                     std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>;
+// Returns the active session for a presented access token, including the
+// device id that was bound at login time. Used by surfaces that scope
+// per-device state (e.g. /sync's to_device, OTK counts, fallback keys)
+// so the response is keyed on the actual authenticating session rather
+// than the first device registered for the user.
+[[nodiscard]] auto authenticated_session(HomeserverRuntime const& runtime, std::string_view access_token)
+    -> std::optional<LocalSession>;
 [[nodiscard]] auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>;
 [[nodiscard]] auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;

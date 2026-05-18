@@ -222,6 +222,60 @@ struct PersistentAdminAction final
     std::string target{};
 };
 
+// Matrix account-data row. Per-room account data is identified by a
+// non-empty `room_id`; an empty `room_id` denotes global account data.
+// The runtime keeps both classes in the same in-memory collection;
+// they are persisted to separate backend tables (`account_data` /
+// `room_account_data`) because the v1 schema's primary key on
+// `account_data` did not include `room_id`.
+struct PersistentAccountData final
+{
+    std::string user_id{};
+    std::string room_id{};
+    std::string event_type{};
+    std::string content_json{};
+    std::uint64_t stream_id{0U};
+};
+
+// Pending to-device message. Sender pushes the row at send time; the
+// recipient's /sync drain advances `stream_id` past the row and the row
+// is then removed. `stream_id` is monotonic across the server and reused
+// as the sync next_batch token field for to-device.
+struct PersistentToDeviceMessage final
+{
+    std::uint64_t stream_id{0U};
+    std::string sender_user_id{};
+    std::string target_user_id{};
+    std::string target_device_id{};
+    std::string message_type{};
+    std::string content_json{};
+};
+
+// Device-list change observed by a syncing user. `change_type` is
+// "changed" or "left" per the Matrix spec. `observer_user_id` is the
+// local user whose /sync will surface this change; `subject_user_id`
+// is the user whose device list changed.
+struct PersistentDeviceListChange final
+{
+    std::uint64_t stream_id{0U};
+    std::string observer_user_id{};
+    std::string subject_user_id{};
+    std::string change_type{"changed"};
+};
+
+// Presence state for a Matrix user. Stored as the latest authoritative
+// snapshot; the sync stream surfaces rows whose `stream_id` exceeds the
+// caller's since-token.
+struct PersistentPresence final
+{
+    std::uint64_t stream_id{0U};
+    std::string user_id{};
+    std::string presence{"offline"};
+    std::string status_msg{};
+    std::int64_t last_active_ago{0};
+    bool currently_active{false};
+};
+
 struct PersistentStore final
 {
     bool open{false};
@@ -253,7 +307,16 @@ struct PersistentStore final
     std::vector<PersistentRemoteMedia> remote_media{};
     std::vector<PersistentAuditEvent> audit_log{};
     std::vector<PersistentAdminAction> admin_actions{};
+    std::vector<PersistentAccountData> account_data{};
+    std::vector<PersistentToDeviceMessage> to_device_messages{};
+    std::vector<PersistentDeviceListChange> device_list_changes{};
+    std::vector<PersistentPresence> presence_states{};
     std::vector<PreparedStatement> prepared_statements{};
+    // Monotonic stream id used by /sync surfaces (to_device, device_list
+    // changes, presence). Incremented before each new row is persisted so
+    // the row's stream_id strictly exceeds every previous one and clients
+    // can compare against the since-token.
+    std::uint64_t next_sync_stream_id{0U};
 };
 
 struct PersistentStoreOpenResult final
@@ -309,6 +372,21 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto store_remote_media(PersistentStore& store, PersistentRemoteMedia media) -> bool;
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool;
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool;
+[[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
+[[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool;
+[[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
+                                            std::string_view device_id, std::uint64_t since_stream_id)
+    -> std::vector<PersistentToDeviceMessage>;
+[[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool;
+[[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
+// Sets `store.next_sync_stream_id` to the maximum stream_id observed
+// across every sync-surface row already loaded into memory (account_data,
+// room account_data, to_device_messages, device_list_changes,
+// presence_state). Backend hydration paths call this after populating
+// the in-memory mirrors so a process restart preserves the monotonic
+// invariant that next_sync_stream_id is strictly greater than every
+// stream id a client has ever seen.
+auto restore_sync_stream_id(PersistentStore& store) -> void;
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool;
 
 namespace detail

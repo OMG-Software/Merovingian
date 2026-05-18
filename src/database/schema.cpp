@@ -10,7 +10,7 @@ namespace merovingian::database
 namespace
 {
 
-    constexpr auto schema_version = std::uint32_t{6U};
+    constexpr auto schema_version = std::uint32_t{7U};
 
     constexpr auto core_tables = std::array{
         SchemaTableDefinition{"schema_migrations",

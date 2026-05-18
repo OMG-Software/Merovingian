@@ -1083,6 +1083,212 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool
+{
+    if (data.user_id.empty() || data.event_type.empty())
+    {
+        return false;
+    }
+    store.next_sync_stream_id += 1U;
+    data.stream_id = store.next_sync_stream_id;
+    // Per-room rows go to the dedicated `room_account_data` table whose
+    // primary key includes room_id. Global rows continue to use the
+    // legacy `account_data` table whose PK is (user_id, event_type).
+    auto const statement =
+        data.room_id.empty()
+            ? record_statement(
+                  "upsert_account_data",
+                  "INSERT INTO account_data (user_id, event_type, json, stream_id) VALUES ($1, $2, $3, $4) "
+                  "ON CONFLICT (user_id, event_type) DO UPDATE SET json = $3, stream_id = $4",
+                  {public_value(data.user_id), public_value(data.event_type), sensitive_value(data.content_json),
+                   public_value(std::to_string(data.stream_id))})
+            : record_statement(
+                  "upsert_room_account_data",
+                  "INSERT INTO room_account_data (user_id, room_id, event_type, stream_id, json) VALUES ($1, "
+                  "$2, $3, $4, $5) ON CONFLICT (user_id, room_id, event_type) DO UPDATE SET stream_id = $4, "
+                  "json = $5",
+                  {public_value(data.user_id), public_value(data.room_id), public_value(data.event_type),
+                   public_value(std::to_string(data.stream_id)), sensitive_value(data.content_json)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    auto const existing =
+        std::ranges::find_if(store.account_data, [&data](PersistentAccountData const& current) {
+            return current.user_id == data.user_id && current.room_id == data.room_id &&
+                   current.event_type == data.event_type;
+        });
+    if (existing != store.account_data.end())
+    {
+        *existing = std::move(data);
+        return true;
+    }
+    store.account_data.push_back(std::move(data));
+    return true;
+}
+
+[[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool
+{
+    if (message.sender_user_id.empty() || message.target_user_id.empty() || message.message_type.empty() ||
+        message.content_json.empty())
+    {
+        return false;
+    }
+    store.next_sync_stream_id += 1U;
+    message.stream_id = store.next_sync_stream_id;
+    if (!record_and_persist(
+            store, record_statement("insert_to_device_message",
+                                    "INSERT INTO to_device_messages (stream_id, sender_user_id, target_user_id, "
+                                    "target_device_id, message_type, content) VALUES ($1, $2, $3, $4, $5, $6)",
+                                    {public_value(std::to_string(message.stream_id)),
+                                     public_value(message.sender_user_id), public_value(message.target_user_id),
+                                     public_value(message.target_device_id), public_value(message.message_type),
+                                     sensitive_value(message.content_json)})))
+    {
+        return false;
+    }
+    store.to_device_messages.push_back(std::move(message));
+    return true;
+}
+
+[[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
+                                            std::string_view device_id, std::uint64_t since_stream_id)
+    -> std::vector<PersistentToDeviceMessage>
+{
+    auto drained = std::vector<PersistentToDeviceMessage>{};
+    for (auto const& message : store.to_device_messages)
+    {
+        if (message.target_user_id != user_id || message.stream_id <= since_stream_id)
+        {
+            continue;
+        }
+        // Empty target_device_id or "*" means broadcast to all this user's
+        // devices; otherwise the message is addressed to a specific device.
+        if (!message.target_device_id.empty() && message.target_device_id != "*" &&
+            message.target_device_id != device_id)
+        {
+            continue;
+        }
+        drained.push_back(message);
+    }
+    // Delete the delivered rows from both the in-memory mirror and the
+    // backing store so the queue stays bounded. Broadcast (`*`) rows
+    // remain in storage until every observing device has drained them;
+    // we leave them behind here so the next device's /sync still sees
+    // them. The deletion is scoped by stream_id so concurrent senders
+    // can't race a row in between drain and delete.
+    for (auto const& message : drained)
+    {
+        auto const targeted_device =
+            !message.target_device_id.empty() && message.target_device_id != "*";
+        if (!targeted_device)
+        {
+            continue;
+        }
+        (void)record_and_persist(
+            store, record_statement(
+                       "delete_to_device_message",
+                       "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
+                       "target_device_id = $3",
+                       {public_value(std::to_string(message.stream_id)), public_value(message.target_user_id),
+                        public_value(message.target_device_id)}));
+        auto const [first, last] = std::ranges::remove_if(
+            store.to_device_messages, [&message](PersistentToDeviceMessage const& candidate) {
+                return candidate.stream_id == message.stream_id &&
+                       candidate.target_user_id == message.target_user_id &&
+                       candidate.target_device_id == message.target_device_id;
+            });
+        store.to_device_messages.erase(first, last);
+    }
+    return drained;
+}
+
+[[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool
+{
+    if (change.observer_user_id.empty() || change.subject_user_id.empty())
+    {
+        return false;
+    }
+    if (change.change_type != "changed" && change.change_type != "left")
+    {
+        return false;
+    }
+    store.next_sync_stream_id += 1U;
+    change.stream_id = store.next_sync_stream_id;
+    if (!record_and_persist(
+            store,
+            record_statement("insert_device_list_change",
+                             "INSERT INTO device_list_changes (stream_id, observer_user_id, subject_user_id, "
+                             "change_type) VALUES ($1, $2, $3, $4)",
+                             {public_value(std::to_string(change.stream_id)), public_value(change.observer_user_id),
+                              public_value(change.subject_user_id), public_value(change.change_type)})))
+    {
+        return false;
+    }
+    store.device_list_changes.push_back(std::move(change));
+    return true;
+}
+
+[[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool
+{
+    if (state.user_id.empty() || state.presence.empty())
+    {
+        return false;
+    }
+    store.next_sync_stream_id += 1U;
+    state.stream_id = store.next_sync_stream_id;
+    if (!record_and_persist(
+            store, record_statement(
+                       "upsert_presence",
+                       "INSERT INTO presence_state (user_id, stream_id, presence, status_msg, last_active_ago, "
+                       "currently_active) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (user_id) DO UPDATE SET "
+                       "stream_id = $2, presence = $3, status_msg = $4, last_active_ago = $5, currently_active = $6",
+                       {public_value(state.user_id), public_value(std::to_string(state.stream_id)),
+                        public_value(state.presence), public_value(state.status_msg),
+                        public_value(std::to_string(state.last_active_ago)),
+                        public_value(state.currently_active ? "true" : "false")})))
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(
+        store.presence_states, [&state](PersistentPresence const& current) { return current.user_id == state.user_id; });
+    if (existing != store.presence_states.end())
+    {
+        *existing = std::move(state);
+        return true;
+    }
+    store.presence_states.push_back(std::move(state));
+    return true;
+}
+
+auto restore_sync_stream_id(PersistentStore& store) -> void
+{
+    auto observed = store.next_sync_stream_id;
+    auto const consider = [&observed](std::uint64_t candidate) noexcept {
+        if (candidate > observed)
+        {
+            observed = candidate;
+        }
+    };
+    for (auto const& row : store.account_data)
+    {
+        consider(row.stream_id);
+    }
+    for (auto const& row : store.to_device_messages)
+    {
+        consider(row.stream_id);
+    }
+    for (auto const& row : store.device_list_changes)
+    {
+        consider(row.stream_id);
+    }
+    for (auto const& row : store.presence_states)
+    {
+        consider(row.stream_id);
+    }
+    store.next_sync_stream_id = observed;
+}
+
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool
 {
     for (auto const& statement : store.prepared_statements)

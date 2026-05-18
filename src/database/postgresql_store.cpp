@@ -663,6 +663,112 @@ namespace
                 store.admin_actions.push_back({row[0], row[1], row[2]});
             }
         }
+
+        auto account_data = query_rows(connection, "postgresql_load_account_data",
+                                       "SELECT user_id, event_type, json, stream_id FROM account_data ORDER "
+                                       "BY stream_id");
+        if (!account_data.ok)
+        {
+            return false;
+        }
+        for (auto const& row : account_data.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                auto entry = PersistentAccountData{};
+                entry.user_id = row[0];
+                entry.event_type = row[1];
+                entry.content_json = row[2];
+                entry.stream_id = parse_u64(row[3]);
+                store.account_data.push_back(std::move(entry));
+            }
+        }
+
+        auto room_account_data = query_rows(connection, "postgresql_load_room_account_data",
+                                            "SELECT user_id, room_id, event_type, stream_id, json FROM "
+                                            "room_account_data ORDER BY stream_id");
+        if (!room_account_data.ok)
+        {
+            return false;
+        }
+        for (auto const& row : room_account_data.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                auto entry = PersistentAccountData{};
+                entry.user_id = row[0];
+                entry.room_id = row[1];
+                entry.event_type = row[2];
+                entry.stream_id = parse_u64(row[3]);
+                entry.content_json = row[4];
+                store.account_data.push_back(std::move(entry));
+            }
+        }
+
+        auto to_device = query_rows(connection, "postgresql_load_to_device_messages",
+                                    "SELECT stream_id, sender_user_id, target_user_id, target_device_id, "
+                                    "message_type, content FROM to_device_messages ORDER BY stream_id");
+        if (!to_device.ok)
+        {
+            return false;
+        }
+        for (auto const& row : to_device.rows)
+        {
+            if (row.size() >= 6U)
+            {
+                auto entry = PersistentToDeviceMessage{};
+                entry.stream_id = parse_u64(row[0]);
+                entry.sender_user_id = row[1];
+                entry.target_user_id = row[2];
+                entry.target_device_id = row[3];
+                entry.message_type = row[4];
+                entry.content_json = row[5];
+                store.to_device_messages.push_back(std::move(entry));
+            }
+        }
+
+        auto device_list_changes =
+            query_rows(connection, "postgresql_load_device_list_changes",
+                       "SELECT stream_id, observer_user_id, subject_user_id, change_type FROM "
+                       "device_list_changes ORDER BY stream_id");
+        if (!device_list_changes.ok)
+        {
+            return false;
+        }
+        for (auto const& row : device_list_changes.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                auto entry = PersistentDeviceListChange{};
+                entry.stream_id = parse_u64(row[0]);
+                entry.observer_user_id = row[1];
+                entry.subject_user_id = row[2];
+                entry.change_type = row[3];
+                store.device_list_changes.push_back(std::move(entry));
+            }
+        }
+
+        auto presence = query_rows(connection, "postgresql_load_presence_state",
+                                   "SELECT user_id, stream_id, presence, status_msg, last_active_ago, "
+                                   "currently_active FROM presence_state ORDER BY stream_id");
+        if (!presence.ok)
+        {
+            return false;
+        }
+        for (auto const& row : presence.rows)
+        {
+            if (row.size() >= 6U)
+            {
+                auto entry = PersistentPresence{};
+                entry.user_id = row[0];
+                entry.stream_id = parse_u64(row[1]);
+                entry.presence = row[2];
+                entry.status_msg = row[3];
+                entry.last_active_ago = static_cast<std::int64_t>(parse_u64(row[4]));
+                entry.currently_active = text_is_true(row[5]);
+                store.presence_states.push_back(std::move(entry));
+            }
+        }
         return true;
     }
 
@@ -881,6 +987,7 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     {
         return {false, "unable to hydrate PostgreSQL persistent rows", {}};
     }
+    restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);
     if (!compatibility.valid)

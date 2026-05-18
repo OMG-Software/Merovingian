@@ -64,18 +64,23 @@ namespace
 
 auto encode_stream_token(StreamToken token) -> std::string
 {
-    return encode_component(token.event_ordering) + "_" + encode_component(token.membership_ordering);
+    return encode_component(token.event_ordering) + "_" + encode_component(token.membership_ordering) + "_" +
+           encode_component(token.sync_stream_id);
 }
 
 auto decode_stream_token(std::string_view encoded) -> std::optional<StreamToken>
 {
-    auto const separator = encoded.find('_');
-    if (separator == std::string_view::npos)
+    auto const first_separator = encoded.find('_');
+    if (first_separator == std::string_view::npos)
     {
         return std::nullopt;
     }
-    auto const event_part = encoded.substr(0U, separator);
-    auto const membership_part = encoded.substr(separator + 1U);
+    auto const event_part = encoded.substr(0U, first_separator);
+    auto const remainder = encoded.substr(first_separator + 1U);
+    auto const second_separator = remainder.find('_');
+    auto const membership_part = remainder.substr(0U, second_separator);
+    auto const sync_part = second_separator == std::string_view::npos ? std::string_view{}
+                                                                       : remainder.substr(second_separator + 1U);
     if (event_part.empty() || membership_part.empty())
     {
         return std::nullopt;
@@ -86,7 +91,17 @@ auto decode_stream_token(std::string_view encoded) -> std::optional<StreamToken>
     {
         return std::nullopt;
     }
-    return StreamToken{*event_ordering, *membership_ordering};
+    auto sync_stream_id = std::uint64_t{0U};
+    if (!sync_part.empty())
+    {
+        auto const decoded = decode_component(sync_part);
+        if (!decoded.has_value())
+        {
+            return std::nullopt;
+        }
+        sync_stream_id = *decoded;
+    }
+    return StreamToken{*event_ordering, *membership_ordering, sync_stream_id};
 }
 
 auto is_valid_stream_token(std::string_view encoded) noexcept -> bool

@@ -18,6 +18,7 @@ namespace
     constexpr auto signing_key_and_event_depth_schema_version = std::uint32_t{4U};
     constexpr auto stream_ordering_schema_version = std::uint32_t{5U};
     constexpr auto federation_queue_schema_version = std::uint32_t{6U};
+    constexpr auto sync_surfaces_schema_version = std::uint32_t{7U};
 
     [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table) -> PreparedStatement
     {
@@ -392,6 +393,67 @@ auto downgrade_federation_queue_migration() -> MigrationStep
     };
 }
 
+auto sync_surfaces_migration() -> MigrationStep
+{
+    // v7 adds the sync-surface persistence. Account-data is split:
+    //   - `account_data` keeps its v1 (user_id, event_type) primary key
+    //     for global rows and gains a `stream_id` column.
+    //   - `room_account_data` is a new table for per-room rows keyed by
+    //     (user_id, room_id, event_type) with its own `stream_id`.
+    // Both surfaces drive incremental /sync by stream id.
+    return {
+        sync_surfaces_schema_version,
+        "sync_surfaces_tables",
+        {
+            {"account_data_add_stream_id",
+             "ALTER TABLE account_data ADD COLUMN stream_id TEXT NOT NULL DEFAULT '0'",
+             {}},
+            {"create_room_account_data",
+             "CREATE TABLE room_account_data (user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT "
+             "NOT NULL, stream_id TEXT NOT NULL DEFAULT '0', json TEXT NOT NULL, PRIMARY KEY (user_id, "
+             "room_id, event_type))",
+             {}},
+            {"create_to_device_messages",
+             "CREATE TABLE to_device_messages (stream_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, "
+             "target_user_id TEXT NOT NULL, target_device_id TEXT NOT NULL DEFAULT '', message_type TEXT NOT "
+             "NULL, content TEXT NOT NULL, PRIMARY KEY (stream_id, target_user_id, target_device_id))",
+             {}},
+            {"create_device_list_changes",
+             "CREATE TABLE device_list_changes (stream_id TEXT NOT NULL, observer_user_id TEXT NOT NULL, "
+             "subject_user_id TEXT NOT NULL, change_type TEXT NOT NULL DEFAULT 'changed', PRIMARY KEY "
+             "(stream_id, observer_user_id, subject_user_id))",
+             {}},
+            {"create_presence_state",
+             "CREATE TABLE presence_state (user_id TEXT PRIMARY KEY, stream_id TEXT NOT NULL DEFAULT '0', "
+             "presence TEXT NOT NULL DEFAULT 'offline', status_msg TEXT NOT NULL DEFAULT '', last_active_ago "
+             "TEXT NOT NULL DEFAULT '0', currently_active TEXT NOT NULL DEFAULT 'false')",
+             {}},
+        },
+        MigrationDirection::upgrade,
+    };
+}
+
+auto downgrade_sync_surfaces_migration() -> MigrationStep
+{
+    // Down-migrate v7 → v6 by dropping the four new tables. SQLite < 3.35
+    // cannot drop the `stream_id` column from `account_data`; it survives
+    // harmlessly because its default ('0') matches the legacy semantics
+    // and v6 readers ignore the extra column. We deliberately omit any
+    // self-rename no-op here — renaming a table to its own name is an
+    // error on SQLite/PostgreSQL and would abort the rollback.
+    return {
+        federation_queue_schema_version,
+        "sync_surfaces_tables_downgrade",
+        {
+            {"drop_presence_state", "DROP TABLE presence_state", {}},
+            {"drop_device_list_changes", "DROP TABLE device_list_changes", {}},
+            {"drop_to_device_messages", "DROP TABLE to_device_messages", {}},
+            {"drop_room_account_data", "DROP TABLE room_account_data", {}},
+        },
+        MigrationDirection::downgrade,
+    };
+}
+
 auto downgrade_initial_schema_migration() -> MigrationStep
 {
     auto statements = std::vector<PreparedStatement>{};
@@ -407,14 +469,16 @@ auto upgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {initial_schema_migration(),   media_metadata_migration(),
             e2ee_key_storage_migration(), signing_key_and_event_depth_migration(),
-            stream_ordering_migration(),  federation_queue_migration()};
+            stream_ordering_migration(),  federation_queue_migration(),
+            sync_surfaces_migration()};
 }
 
 auto downgrade_migration_catalog() -> std::vector<MigrationStep>
 {
     return {downgrade_initial_schema_migration(),   downgrade_media_metadata_migration(),
             downgrade_e2ee_key_storage_migration(), downgrade_signing_key_and_event_depth_migration(),
-            downgrade_stream_ordering_migration(),  downgrade_federation_queue_migration()};
+            downgrade_stream_ordering_migration(),  downgrade_federation_queue_migration(),
+            downgrade_sync_surfaces_migration()};
 }
 
 auto migration_plan_between(std::uint32_t current_version, std::uint32_t target_version) -> MigrationPlan

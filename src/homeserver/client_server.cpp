@@ -12,15 +12,20 @@
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/sync/stream_token.hpp"
+#include "merovingian/sync/sync_filter.hpp"
+#include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -564,15 +569,236 @@ namespace
         return json_serialize(json_obj({json_member("joined_rooms", json_arr(std::move(rooms)))}));
     }
 
-    [[nodiscard]] auto sync_json(ClientServerRuntime const& rt, std::string_view user, core::SyncRequest const& request)
-        -> std::string
+    [[nodiscard]] auto otk_algorithm(std::string_view key_id) noexcept -> std::string
+    {
+        auto const colon = key_id.find(':');
+        return colon == std::string_view::npos ? std::string{key_id} : std::string{key_id.substr(0U, colon)};
+    }
+
+    [[nodiscard]] auto parse_event_json_object(std::string_view encoded) -> canonicaljson::Value
+    {
+        if (encoded.empty() || encoded.front() != '{')
+        {
+            return canonicaljson::Value{canonicaljson::Object{}};
+        }
+        auto parsed = canonicaljson::parse_lossless(encoded);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return canonicaljson::Value{canonicaljson::Object{}};
+        }
+        return std::move(parsed.value);
+    }
+
+    [[nodiscard]] auto build_to_device_events_array(database::PersistentStore& store, std::string_view user,
+                                                    std::string_view device_id, std::uint64_t since_sync_stream_id,
+                                                    std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
+    {
+        auto events = canonicaljson::Array{};
+        auto const drained = database::drain_to_device_messages(store, user, device_id, since_sync_stream_id);
+        for (auto const& message : drained)
+        {
+            auto event = canonicaljson::Object{};
+            event.push_back(json_member("type", json_str(message.message_type)));
+            event.push_back(json_member("sender", json_str(message.sender_user_id)));
+            event.push_back(json_member("content", parse_event_json_object(message.content_json)));
+            events.push_back(canonicaljson::Value{std::move(event)});
+            if (message.stream_id > max_observed_stream_id)
+            {
+                max_observed_stream_id = message.stream_id;
+            }
+        }
+        return events;
+    }
+
+    [[nodiscard]] auto build_device_list_arrays(database::PersistentStore const& store, std::string_view user,
+                                                std::uint64_t since_sync_stream_id,
+                                                std::uint64_t& max_observed_stream_id)
+        -> std::pair<canonicaljson::Array, canonicaljson::Array>
+    {
+        auto changed = canonicaljson::Array{};
+        auto left = canonicaljson::Array{};
+        for (auto const& change : store.device_list_changes)
+        {
+            if (change.observer_user_id != user || change.stream_id <= since_sync_stream_id)
+            {
+                continue;
+            }
+            if (change.change_type == "left")
+            {
+                left.push_back(json_str(change.subject_user_id));
+            }
+            else
+            {
+                changed.push_back(json_str(change.subject_user_id));
+            }
+            if (change.stream_id > max_observed_stream_id)
+            {
+                max_observed_stream_id = change.stream_id;
+            }
+        }
+        return {std::move(changed), std::move(left)};
+    }
+
+    [[nodiscard]] auto build_presence_events(database::PersistentStore const& store, sync::EventTypeFilter const& filter,
+                                             std::string_view user, std::uint64_t since_sync_stream_id,
+                                             std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
+    {
+        auto events = canonicaljson::Array{};
+        auto emitted = std::size_t{0U};
+        for (auto const& presence : store.presence_states)
+        {
+            if (presence.user_id == user || presence.stream_id <= since_sync_stream_id)
+            {
+                continue;
+            }
+            if (!sync::event_passes_filter(filter, "m.presence", presence.user_id))
+            {
+                continue;
+            }
+            if (filter.limit != 0U && emitted >= filter.limit)
+            {
+                break;
+            }
+            auto content = canonicaljson::Object{};
+            content.push_back(json_member("presence", json_str(presence.presence)));
+            if (!presence.status_msg.empty())
+            {
+                content.push_back(json_member("status_msg", json_str(presence.status_msg)));
+            }
+            content.push_back(json_member("last_active_ago", json_int(presence.last_active_ago)));
+            content.push_back(json_member("currently_active", json_bool(presence.currently_active)));
+            auto event = canonicaljson::Object{};
+            event.push_back(json_member("type", json_str(std::string{"m.presence"})));
+            event.push_back(json_member("sender", json_str(presence.user_id)));
+            event.push_back(json_member("content", canonicaljson::Value{std::move(content)}));
+            events.push_back(canonicaljson::Value{std::move(event)});
+            ++emitted;
+            if (presence.stream_id > max_observed_stream_id)
+            {
+                max_observed_stream_id = presence.stream_id;
+            }
+        }
+        return events;
+    }
+
+    [[nodiscard]] auto build_account_data_events(database::PersistentStore const& store,
+                                                 sync::EventTypeFilter const& filter, std::string_view user,
+                                                 std::string_view room_scope, std::uint64_t since_sync_stream_id,
+                                                 std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
+    {
+        auto events = canonicaljson::Array{};
+        auto emitted = std::size_t{0U};
+        for (auto const& data : store.account_data)
+        {
+            if (data.user_id != user || data.room_id != room_scope)
+            {
+                continue;
+            }
+            // Incremental /sync: only surface account-data rows whose
+            // stream_id strictly exceeds the caller's since token. Initial
+            // sync (since_sync_stream_id == 0) returns everything.
+            if (data.stream_id <= since_sync_stream_id)
+            {
+                continue;
+            }
+            if (!sync::event_passes_filter(filter, data.event_type, user))
+            {
+                continue;
+            }
+            if (filter.limit != 0U && emitted >= filter.limit)
+            {
+                break;
+            }
+            auto event = canonicaljson::Object{};
+            event.push_back(json_member("type", json_str(data.event_type)));
+            event.push_back(json_member("content", parse_event_json_object(data.content_json)));
+            events.push_back(canonicaljson::Value{std::move(event)});
+            ++emitted;
+            if (data.stream_id > max_observed_stream_id)
+            {
+                max_observed_stream_id = data.stream_id;
+            }
+        }
+        return events;
+    }
+
+    [[nodiscard]] auto build_otk_counts(database::PersistentStore const& store, std::string_view user,
+                                        std::string_view device_id) -> canonicaljson::Object
+    {
+        auto counts = std::unordered_map<std::string, std::int64_t>{};
+        for (auto const& key : store.one_time_keys)
+        {
+            if (key.user_id != user || key.device_id != device_id)
+            {
+                continue;
+            }
+            counts[otk_algorithm(key.key_id)] += 1;
+        }
+        auto out = canonicaljson::Object{};
+        for (auto const& [algorithm, count] : counts)
+        {
+            out.push_back(json_member(algorithm, json_int(count)));
+        }
+        return out;
+    }
+
+    [[nodiscard]] auto build_fallback_key_types(database::PersistentStore const& store, std::string_view user,
+                                                std::string_view device_id) -> canonicaljson::Array
+    {
+        auto types = std::vector<std::string>{};
+        for (auto const& key : store.fallback_keys)
+        {
+            if (key.user_id != user || key.device_id != device_id)
+            {
+                continue;
+            }
+            auto const algorithm = otk_algorithm(key.key_id);
+            if (std::ranges::find(types, algorithm) == types.end())
+            {
+                types.push_back(algorithm);
+            }
+        }
+        auto out = canonicaljson::Array{};
+        for (auto const& algorithm : types)
+        {
+            out.push_back(json_str(algorithm));
+        }
+        return out;
+    }
+
+    [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
+                                 core::SyncRequest const& request) -> std::string
     {
         auto const since_token =
             request.since.has_value() ? sync::decode_stream_token(*request.since) : std::optional<sync::StreamToken>{};
         auto const since_ordering = since_token.has_value() ? since_token->event_ordering : std::uint64_t{0U};
+        auto const since_sync_stream_id =
+            since_token.has_value() ? since_token->sync_stream_id : std::uint64_t{0U};
+        auto const filter = request.filter.has_value() ? sync::parse_filter_argument(*request.filter) : sync::SyncFilter{};
+        auto& store = rt.homeserver.database.persistent_store;
 
-        auto const next_token =
-            sync::StreamToken{rt.homeserver.database.next_stream_ordering, rt.homeserver.database.next_stream_ordering};
+        // Long-poll: when the caller passes `timeout` and there's nothing
+        // new to deliver, block until the SyncNotifier fires or the timeout
+        // expires. The check is "is anything past since visible?"; we wake
+        // when the store's sync stream id advances OR a new event appears
+        // in the timeline ordering, both of which the mutator helpers below
+        // publish through `ensure_sync_notifier(rt).publish(...)`.
+        if (request.timeout.has_value() && *request.timeout > 0U)
+        {
+            auto& notifier = ensure_sync_notifier(rt);
+            auto const has_timeline_advance = rt.homeserver.database.next_stream_ordering - 1U > since_ordering;
+            auto const has_sync_advance = store.next_sync_stream_id > since_sync_stream_id;
+            if (!has_timeline_advance && !has_sync_advance)
+            {
+                auto const observed_id = notifier.current_stream_id();
+                if (observed_id <= since_sync_stream_id)
+                {
+                    (void)notifier.wait_for_change(since_sync_stream_id, std::chrono::milliseconds{*request.timeout});
+                }
+            }
+        }
+
+        auto max_observed_sync_stream_id = since_sync_stream_id;
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
 
@@ -582,11 +808,19 @@ namespace
             {
                 continue;
             }
+            if (filter.present && !sync::room_passes_filter(filter.room, room.room_id))
+            {
+                continue;
+            }
             auto const member_count = room.members.size();
             auto timeline_events = canonicaljson::Array{};
             auto event_count = std::size_t{0U};
+            auto const timeline_cap =
+                filter.room.timeline.limit != 0U
+                    ? std::min(filter.room.timeline.limit, rt.limits.max_sync_events_per_room)
+                    : rt.limits.max_sync_events_per_room;
 
-            for (auto const& event : rt.homeserver.database.persistent_store.events)
+            for (auto const& event : store.events)
             {
                 if (event.room_id != room.room_id)
                 {
@@ -596,7 +830,16 @@ namespace
                 {
                     continue;
                 }
-                if (event_count >= rt.limits.max_sync_events_per_room)
+                if (!sync::event_passes_filter(filter.room.timeline, std::string_view{}, event.sender_user_id))
+                {
+                    // Event type isn't surfaced on PersistentEvent yet; the
+                    // sender filter is the only meaningful per-event predicate
+                    // until events expose their type. Passing an empty string
+                    // for event_type makes `event_passes_filter` apply the
+                    // sender rules without requiring a type match.
+                    continue;
+                }
+                if (event_count >= timeline_cap)
                 {
                     break;
                 }
@@ -609,8 +852,9 @@ namespace
 
             ++join_count;
 
-            auto const limited =
-                rt.homeserver.database.persistent_store.events.size() > rt.limits.max_sync_events_per_room;
+            auto const limited = store.events.size() > timeline_cap;
+            auto room_account_data = build_account_data_events(store, filter.room.account_data, user, room.room_id,
+                                                                since_sync_stream_id, max_observed_sync_stream_id);
             join_members.push_back(json_member(
                 room.room_id,
                 json_obj({
@@ -622,59 +866,83 @@ namespace
                                 })),
                     json_member("state", json_obj({json_member("member_count",
                                                                json_int(static_cast<std::int64_t>(member_count)))})),
+                    json_member("account_data",
+                                json_obj({json_member("events", json_arr(std::move(room_account_data)))})),
+                    json_member("ephemeral", json_obj({json_member("events", json_arr({}))})),
                 })));
         }
 
-        // Walk PersistentMembership to surface the invite room category.
-        // Matrix clients expect `rooms.invite[<id>].invite_state.events`
-        // alongside `rooms.join`. The invite list is capped at the same
-        // `max_sync_rooms` bound as the join list so a user with a large
-        // number of pending invites cannot bloat the response or bypass
-        // the configured resource-control guard.
-        //
-        // `rooms.leave` stays as an empty key for spec-shape completeness.
-        // Per Matrix v1.18 default sync semantics, left rooms should only
-        // surface when the client passes `include_leave: true` in its
-        // room filter; the filter parser is still pending so leave rooms
-        // are intentionally suppressed by default rather than emitted
-        // unconditionally.
+        // Invite list. `rooms.leave` is suppressed unless the filter opts in
+        // via `include_leave: true`; we now actually honour that flag.
         auto invite_members = canonicaljson::Object{};
+        auto leave_members = canonicaljson::Object{};
         auto invite_count = std::size_t{0U};
-        for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
+        auto leave_count = std::size_t{0U};
+        for (auto const& membership : store.memberships)
         {
-            if (membership.user_id != user || membership.membership != "invite")
+            if (membership.user_id != user)
             {
                 continue;
             }
-            if (invite_count >= rt.limits.max_sync_rooms)
+            if (filter.present && !sync::room_passes_filter(filter.room, membership.room_id))
             {
-                break;
+                continue;
             }
-            invite_members.push_back(
-                json_member(membership.room_id,
-                            json_obj({json_member("invite_state", json_obj({json_member("events", json_arr({}))}))})));
-            ++invite_count;
+            if (membership.membership == "invite")
+            {
+                if (invite_count < rt.limits.max_sync_rooms)
+                {
+                    invite_members.push_back(json_member(
+                        membership.room_id,
+                        json_obj({json_member("invite_state", json_obj({json_member("events", json_arr({}))}))})));
+                    ++invite_count;
+                }
+            }
+            else if (membership.membership == "leave" && filter.room.include_leave)
+            {
+                if (leave_count < rt.limits.max_sync_rooms)
+                {
+                    leave_members.push_back(json_member(
+                        membership.room_id,
+                        json_obj({json_member("timeline", json_obj({json_member("events", json_arr({}))}))})));
+                    ++leave_count;
+                }
+            }
         }
+
+        auto to_device_events = build_to_device_events_array(store, user, device_id, since_sync_stream_id,
+                                                             max_observed_sync_stream_id);
+        auto [device_changed, device_left] =
+            build_device_list_arrays(store, user, since_sync_stream_id, max_observed_sync_stream_id);
+        auto presence_events =
+            build_presence_events(store, filter.presence, user, since_sync_stream_id, max_observed_sync_stream_id);
+        auto global_account_data = build_account_data_events(store, filter.account_data, user, std::string_view{},
+                                                              since_sync_stream_id, max_observed_sync_stream_id);
+        auto otk_counts = build_otk_counts(store, user, device_id);
+        auto fallback_key_types = build_fallback_key_types(store, user, device_id);
+
+        auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, store.next_sync_stream_id);
+        auto const next_token = sync::StreamToken{rt.homeserver.database.next_stream_ordering,
+                                                  rt.homeserver.database.next_stream_ordering,
+                                                  advanced_sync_stream_id};
 
         return json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
             json_member("rooms", json_obj({
                                      json_member("join", json_obj(std::move(join_members))),
                                      json_member("invite", json_obj(std::move(invite_members))),
-                                     json_member("leave", json_obj({})),
+                                     json_member("leave", json_obj(std::move(leave_members))),
                                  })),
-            // Matrix v1.18 top-level placeholders. Behaviour for these
-            // surfaces lands later; emitting the keys keeps the response
-            // shape spec-complete so clients can parse without falling back
-            // to defaults.
-            json_member("presence", json_obj({json_member("events", json_arr({}))})),
-            json_member("account_data", json_obj({json_member("events", json_arr({}))})),
-            json_member("to_device", json_obj({json_member("events", json_arr({}))})),
+            json_member("presence", json_obj({json_member("events", json_arr(std::move(presence_events)))})),
+            json_member("account_data",
+                        json_obj({json_member("events", json_arr(std::move(global_account_data)))})),
+            json_member("to_device", json_obj({json_member("events", json_arr(std::move(to_device_events)))})),
             json_member("device_lists", json_obj({
-                                            json_member("changed", json_arr({})),
-                                            json_member("left", json_arr({})),
+                                            json_member("changed", json_arr(std::move(device_changed))),
+                                            json_member("left", json_arr(std::move(device_left))),
                                         })),
-            json_member("device_one_time_keys_count", json_obj({})),
+            json_member("device_one_time_keys_count", canonicaljson::Value{std::move(otk_counts)}),
+            json_member("device_unused_fallback_key_types", json_arr(std::move(fallback_key_types))),
         }));
     }
 
@@ -1254,8 +1522,15 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     auto constexpr sync_prefix = std::string_view{"/_matrix/client/v3/sync"};
     if (req.method == "GET" && starts_with(req.target, sync_prefix))
     {
+        // Resolve the session bound to the access token so we key the
+        // per-device sync surfaces (to_device, OTK count, fallback keys)
+        // on the device that actually issued the request rather than
+        // whichever device happens to be first in `rt.devices`.
+        auto const session = authenticated_session(rt.homeserver, req.access_token);
+        auto const device_id = session.has_value() ? session->device_id : std::string{};
         auto const sync_request = merovingian::core::parse_query_params(req.target);
-        return resp(200U, sync_json(rt, *user, sync_request));
+        auto response_body = sync_json(rt, *user, device_id, sync_request);
+        return resp(200U, std::move(response_body));
     }
 
     auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
@@ -1303,6 +1578,61 @@ auto key_api_record_count(ClientServerRuntime const& rt, std::string_view user) 
     return static_cast<std::size_t>(std::ranges::count_if(rt.key_api_records, [user](ClientKeyApiRecord const& record) {
         return record.user_id == user;
     }));
+}
+
+auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&
+{
+    if (!runtime.sync_notifier)
+    {
+        runtime.sync_notifier = std::make_unique<sync::SyncNotifier>();
+    }
+    runtime.sync_notifier->publish(runtime.homeserver.database.persistent_store.next_sync_stream_id);
+    return *runtime.sync_notifier;
+}
+
+auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentToDeviceMessage message) -> bool
+{
+    auto const stored =
+        database::enqueue_to_device_message(runtime.homeserver.database.persistent_store, std::move(message));
+    if (stored)
+    {
+        (void)ensure_sync_notifier(runtime);
+    }
+    return stored;
+}
+
+auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change) -> bool
+{
+    auto const stored =
+        database::record_device_list_change(runtime.homeserver.database.persistent_store, std::move(change));
+    if (stored)
+    {
+        (void)ensure_sync_notifier(runtime);
+    }
+    return stored;
+}
+
+auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool
+{
+    auto const stored = database::upsert_presence(runtime.homeserver.database.persistent_store, std::move(state));
+    if (stored)
+    {
+        (void)ensure_sync_notifier(runtime);
+    }
+    return stored;
+}
+
+auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool
+{
+    // store_account_data advances next_sync_stream_id before persisting,
+    // so the ensure_sync_notifier publish below wakes any long-poll
+    // /sync waiter that was parked at a since_token below the new row.
+    auto const stored = database::store_account_data(runtime.homeserver.database.persistent_store, std::move(data));
+    if (stored)
+    {
+        (void)ensure_sync_notifier(runtime);
+    }
+    return stored;
 }
 
 auto run_client_server_flow(config::Config const& config) -> OperationResult
