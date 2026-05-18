@@ -997,6 +997,80 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     return {true, {}, std::move(store)};
 }
 
+namespace
+{
+
+    [[nodiscard]] auto identifier_is_safe(std::string_view name) noexcept -> bool
+    {
+        if (name.empty() || name.size() > 63U)
+        {
+            return false;
+        }
+        if (!((name.front() >= 'a' && name.front() <= 'z') || (name.front() >= 'A' && name.front() <= 'Z') ||
+              name.front() == '_'))
+        {
+            return false;
+        }
+        for (auto const character : name)
+        {
+            auto const allowed = (character >= 'a' && character <= 'z') ||
+                                 (character >= 'A' && character <= 'Z') ||
+                                 (character >= '0' && character <= '9') || character == '_';
+            if (!allowed)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+} // namespace
+
+auto set_postgresql_role(PostgresqlConnection& connection, std::string_view role_name) -> bool
+{
+    if (!connection.open() || !identifier_is_safe(role_name))
+    {
+        return false;
+    }
+    // Identifier safety is enforced above, so quoting with double quotes is
+    // sufficient. We deliberately do NOT pass role through a $1 parameter:
+    // SET ROLE does not accept a parameter form in PostgreSQL, only an
+    // inline identifier or NONE.
+    auto const sql = "SET ROLE \"" + std::string{role_name} + "\"";
+    auto const result = connection.execute({"set_postgresql_role", sql, {}});
+    return result.ok;
+}
+
+auto reset_postgresql_role(PostgresqlConnection& connection) -> bool
+{
+    if (!connection.open())
+    {
+        return false;
+    }
+    // SET ROLE NONE restores the authenticated session_user. `RESET ROLE`
+    // would instead reapply the connection-time role configuration,
+    // including any `ALTER ROLE ... SET ROLE` defaults, which keeps an
+    // elevated role active when callers expect to drop back to the
+    // login identity.
+    auto const result = connection.execute({"reset_postgresql_role", "SET ROLE NONE", {}});
+    return result.ok;
+}
+
+auto current_postgresql_user(PostgresqlConnection& connection) -> std::string
+{
+    if (!connection.open())
+    {
+        return {};
+    }
+    auto const result =
+        connection.execute({"postgresql_current_user", "SELECT CURRENT_USER::text", {}});
+    if (!result.ok || result.rows.empty() || result.rows.front().empty())
+    {
+        return {};
+    }
+    return result.rows.front().front();
+}
+
 namespace detail
 {
 

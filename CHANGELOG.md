@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.1.62
+
+- Added live PostgreSQL integration coverage and runtime/migration role
+  enforcement:
+  - New GitHub Actions workflow
+    `.github/workflows/postgres-integration.yml` starts a PostgreSQL 16
+    service, provisions a `merovingian_migration` role with DDL grants and
+    a `merovingian_runtime` role with default DML privileges granted on
+    tables owned by the migration role, and runs the live
+    integration scenarios in
+    `tests/integration/test_postgresql_persistence_flow.cpp`.
+  - New BDD scenarios in the live PG test file: schema reaches
+    `current_schema_version` after bootstrap, persisted rows survive a
+    close/reopen cycle, and a runtime-role session is denied DDL
+    (`CREATE TABLE`).
+  - Added PostgreSQL role helpers `set_postgresql_role`,
+    `reset_postgresql_role`, and `current_postgresql_user` on
+    `merovingian::database::PostgresqlConnection`. Role names are
+    validated against PostgreSQL identifier shape before being
+    interpolated, so the API is safe with operator-supplied role names.
+- Documented the runtime/migration role grant layout in
+  `docs/database-persistence.md` and moved "runtime/migration role grants
+  enforced by actual database users" out of the deferred list.
+- Bumped project and executable versions to `0.1.62`.
+
 ## 0.1.61
 
 - Finished Matrix v1.18 `/sync` conformance for the alpha:

@@ -85,6 +85,29 @@ SCENARIO("Database statement validation enforces prepared statement shape", "[da
     }
 }
 
+SCENARIO("Database statement validation allows SET and RESET role switching SQL", "[database]")
+{
+    GIVEN("SET ROLE and RESET ROLE statements with no placeholders")
+    {
+        auto const set_role = merovingian::database::PreparedStatement{
+            "set_postgresql_role", R"(SET ROLE "merovingian_runtime")", {}};
+        auto const reset_role =
+            merovingian::database::PreparedStatement{"reset_postgresql_role", "RESET ROLE", {}};
+
+        WHEN("each statement is validated")
+        {
+            auto const set_result = merovingian::database::prepared_statement_is_valid(set_role);
+            auto const reset_result = merovingian::database::prepared_statement_is_valid(reset_role);
+
+            THEN("the boundary accepts both as legal session-config statements")
+            {
+                REQUIRE(set_result.valid);
+                REQUIRE(reset_result.valid);
+            }
+        }
+    }
+}
+
 SCENARIO("Database statement validation enforces placeholder arity", "[database]")
 {
     GIVEN("statements with matching and mismatched placeholder arity")

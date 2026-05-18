@@ -56,6 +56,23 @@ remaining work before PostgreSQL-backed production operation.
   current-schema upgrade coverage separately tracks schema-version bumps.
 - Integration coverage proving SQLite users, sessions, rooms, and events survive
   a homeserver runtime restart.
+- Live PostgreSQL integration coverage: a dedicated GitHub Actions workflow
+  (`.github/workflows/postgres-integration.yml`) starts a PostgreSQL 16
+  service, provisions a `merovingian_migration` role with DDL grants and a
+  `merovingian_runtime` role with table-level DML grants, and runs the
+  live integration scenarios at
+  `tests/integration/test_postgresql_persistence_flow.cpp`. Scenarios
+  assert: schema is bootstrapped to `current_schema_version`, previously
+  persisted rows survive a close/reopen, and a runtime-role session is
+  denied DDL.
+- PostgreSQL role helpers (`set_postgresql_role`, `reset_postgresql_role`,
+  `current_postgresql_user`) in
+  [postgresql_store.hpp](../include/merovingian/database/postgresql_store.hpp)
+  let runtime callers switch identities inside a single connection. Role
+  names are validated against PostgreSQL identifier shape (alphanumeric
+  plus underscore, ≤ 63 chars) before being interpolated into the
+  `SET ROLE` statement, so the API is safe to call with operator-supplied
+  role names.
 
 ## Security posture
 
@@ -92,19 +109,13 @@ The boundary provides these guarantees:
 
 These remain deferred:
 
-- Full PostgreSQL integration tests against a running temporary server.
-- Runtime/migration role grants enforced by actual database users.
-- PostgreSQL-backed federation queues, policy rules, account data, push rules, and
+- PostgreSQL-backed federation queues, policy rules, push rules, and
   full media repository blob metadata hydration.
-- SQLite-backed federation queues, policy-rule management, account data, push rules, and
+- SQLite-backed federation queues, policy-rule management, push rules, and
   full media repository blob metadata hydration.
 
 ## Next starting points
 
-1. Add full SQL migration integration tests with temporary SQLite and
-   PostgreSQL databases.
-2. Enforce runtime/migration role grants with separate PostgreSQL users.
-3. Extend transaction helpers across federation queues, policy actions, and
+1. Extend transaction helpers across federation queues, policy actions, and
    media metadata once those rows are runtime-wired.
-4. Persist account data, push rules, federation queues, and media blob
-   metadata.
+2. Persist push rules, federation queues, and media blob metadata.
