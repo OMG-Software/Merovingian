@@ -74,13 +74,16 @@ jobs:
           PGPASSWORD: test-password
           PGDATABASE: merovingian_test
         run: |
-          # Two roles share the test database. The migration role owns the
-          # schema and carries DDL grants; the runtime role only has DML on
-          # the schema-owned tables. The connecting login user is a member
-          # of both roles so `SET ROLE` can switch identities within one
-          # session. The login user's default role is the migration role,
-          # so every fresh connection starts able to bootstrap schema and
-          # any table it creates is owned by the migration role.
+          # Two roles share the test database. The migration role carries
+          # DDL grants on `public`; the runtime role has DML-only grants
+          # through ALTER DEFAULT PRIVILEGES. The connecting login user is
+          # a member of both roles and bootstraps the schema as itself, so
+          # SET ROLE from the login user (via the test helper) can pick
+          # either sibling role. We deliberately do NOT set a default role
+          # on the login user — once a session has SET ROLE down to the
+          # migration role, PostgreSQL won't let it SET ROLE to a sibling
+          # runtime role, which is exactly what the role-enforcement test
+          # needs to exercise.
           psql -v ON_ERROR_STOP=1 <<'SQL'
             CREATE ROLE merovingian_migration NOLOGIN;
             CREATE ROLE merovingian_runtime NOLOGIN;
@@ -88,11 +91,12 @@ jobs:
             GRANT merovingian_runtime TO merovingian_test;
             GRANT CREATE, USAGE ON SCHEMA public TO merovingian_migration;
             GRANT USAGE ON SCHEMA public TO merovingian_runtime;
-            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_migration IN SCHEMA public
+            -- Tables created by the login user inherit these grants so the
+            -- runtime role can read/write rows the test bootstrap created.
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_test IN SCHEMA public
               GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO merovingian_runtime;
-            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_migration IN SCHEMA public
+            ALTER DEFAULT PRIVILEGES FOR ROLE merovingian_test IN SCHEMA public
               GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO merovingian_runtime;
-            ALTER ROLE merovingian_test SET ROLE merovingian_migration;
           SQL
 
       - name: Build
