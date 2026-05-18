@@ -171,13 +171,30 @@ deployment milestone.
   callers can switch identities within a single connection; role names
   are validated against PostgreSQL identifier shape before being
   interpolated.
+- Fuzz targets run in CI for canonical JSON and HTTP transport. A
+  dedicated GitHub Actions workflow (`.github/workflows/fuzz.yml`)
+  builds the harnesses with `-fsanitize=fuzzer,address,undefined` and
+  runs each target for a bounded duration (120s per push, 900s on the
+  Sunday scheduled run). `tests/fuzz/meson.build` enforces the
+  libFuzzer flag set, and `scripts/run-fuzz-targets.sh` makes the same
+  gate runnable locally. Findings, crash inputs, and corpora are
+  uploaded as workflow artifacts.
+- Fail-closed alpha hardening controls. `HardeningStatus::alpha_exception`
+  and a `note` field replace the prior `unknown` placeholders in
+  `run_startup_hardening_self_check`. `HardeningSelfCheck` exposes
+  `production_blockers()`, `production_blocker_count()`,
+  `is_production_ready()`, and `is_alpha_ready()`. `merovingian-server`
+  refuses to start when any check reports `disabled`, logs
+  alpha-exception checks at warning level with a documented note, and
+  prints a `production_ready=…/alpha_ready=…` readiness summary. The
+  deferred controls and their beta/production retirement plans are
+  documented in `docs/hardening-alpha-exceptions.md`, which the
+  release-readiness script requires.
 
 #### TODO
 
-1. Run fuzz targets in CI for canonical JSON and HTTP transport before
-   declaring Alpha.
-2. Replace placeholder hardening checks with fail-closed alpha deployment
-   controls or explicitly documented alpha-only exceptions.
+_None — all Alpha gates are closed. The alpha release itself remains a
+separate operator decision once this branch is approved._
 
 ### Beta
 
@@ -231,6 +248,10 @@ be published as production releases while any blocking gate remains open.
   `packaging/rc.d/merovingian`, and `Dockerfile`.
 - Release-readiness script exists and rejects missing required release files or
   known unsafe legacy hashing primitives.
+- Alpha prerelease publishing exists: `.github/workflows/release.yml` builds
+  hardened Linux and FreeBSD tarballs for `v*-alpha*` tags, runs tests and
+  release-readiness gates, emits SHA-256 checksum files, and publishes a
+  GitHub prerelease.
 - CodeQL, coverage, sanitizer, static-analysis, and Linux CI jobs install
   LibSodium development headers before configuring Meson.
 
@@ -264,15 +285,21 @@ be published as production releases while any blocking gate remains open.
 
 ## Immediate priority order
 
-1. Merge conflicting remote PDU state through state-resolution v2 and complete
-   make/send join, leave, invite, and backfill flows.
-2. Add live PostgreSQL integration coverage and runtime/migration role grants.
-3. Finish sync long polling, filters, populated top-level sync surfaces, and
-   Matrix v1.18 conformance fixtures.
-4. Keep the protocol coverage tables in this file up to date with every
-   endpoint change.
-5. Promote CI from build/test checks to capability gates with conformance,
-   fuzzing, platform, packaging, and release evidence.
+With the Alpha gates closed, Beta priorities take over from here:
+
+1. Complete Matrix v1.18 conformance for client-server endpoints currently
+   marked `partial` — promote them to `covered` with conformance fixtures.
+2. Wire federation joins/leaves/invites/backfill into the durable room event
+   graph and ingest remote PDUs through state-resolution v2 end to end.
+3. Retire one hardening alpha exception per minor release — start with the
+   ELF program-header probe (linker hardening / RELRO) and Linux
+   seccomp-bpf filter. Update `docs/hardening-alpha-exceptions.md` when an
+   exception lands.
+4. Persist account data, policy rules, and media blob metadata; add the
+   sandboxed media processing worker boundary.
+5. Promote CI from build/test checks to full capability gates with
+   conformance, fuzzing (already gated), platform, packaging, and signed
+   release evidence.
 
 ## Capability ledger
 
@@ -291,10 +318,10 @@ be published as production releases while any blocking gate remains open.
 | Database persistence | `runtime-wired` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, fail-closed hydration, busy timeout, runtime hydration, write-through users/devices/tokens/rooms/events/E2EE keys/media/audit/admin rows, SQLite transaction rollback, atomic runtime helpers, dependency reviews, PostgreSQL RAII connection/result boundary, PostgreSQL schema bootstrap/pending-migration hydration/write-through path, migration-file loading, offline migrator scaffold, database role separation, durable trust-and-safety rows, and restart-survival integration coverage | Add live PostgreSQL integration tests, enforce runtime/migration grants through separate PostgreSQL users, and persistence for account data, policy rules, and media blob metadata. |
 | Observability and audit | `runtime-wired` | Structured logging, health snapshots, safe metrics summaries, redaction helpers, durable audit events, admin health/metrics/audit runtime endpoints, and client-server action audit persistence | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
 | Trust and safety | `runtime-wired` | Policy engine for registration, accounts, invites, federation, media, reports, and admin review routes, runtime client event reporting, admin safety report listing/review, durable policy audit rows, and durable admin action rows | Add Matrix v1.18 conformance fixtures, policy server transport integration, durable policy-rule management, and richer moderation workflows. |
-| Runtime hardening | `scaffolded` | Systemd/OpenRC/rc.d packaging, hardening plan, and self-check surfaces | Enforce fail-closed controls, implement seccomp/AppArmor/Landlock notes or profiles, OpenBSD pledge/unveil, and FreeBSD Capsicum where practical. |
+| Runtime hardening | `integrated` | Systemd/OpenRC/rc.d packaging, hardening plan, startup self-check with `HardeningStatus::alpha_exception` + documented notes, `merovingian-server` refusing to bind when any control reports `disabled`, alpha-only exceptions enumerated in `docs/hardening-alpha-exceptions.md`, and release-readiness gating on the new doc | Implement the in-process probes that retire each documented alpha exception: ELF program-header probe for linker/RELRO status, Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Linux and FreeBSD CI, setup-command planning for OpenBSD and NetBSD | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
-| Fuzzing and conformance | `scaffolded` | Canonical JSON and HTTP fuzz targets can be built | Run fuzz targets in CI, add corpus management, Matrix conformance suite, property tests, load tests, and chaos tests. |
-| Supply chain and release | `scaffolded` | Release-readiness script and packaging skeletons exist | Add SBOM, dependency pinning policy, license review, artifact signing, checksums, provenance, and reproducible build notes. |
+| Fuzzing and conformance | `integrated` | Canonical JSON and HTTP fuzz targets build with `-fsanitize=fuzzer,address,undefined`, the `fuzz` GitHub Actions workflow runs each target for a bounded duration on every push (and longer on a Sunday schedule), and crash inputs/corpora are uploaded as artifacts | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
+| Supply chain and release | `scaffolded` | Release-readiness script, packaging skeletons, the alpha hardening exceptions documentation, and a tag-driven alpha prerelease workflow that builds hardened Linux/FreeBSD tarballs and publishes SHA-256 checksums exist | Add SBOM, dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
 
 ## Matrix v1.18 protocol coverage
 
@@ -454,8 +481,12 @@ meson compile -C build
 meson test -C build --print-errorlogs
 sh scripts/reject-unsafe.sh
 sh scripts/check-release-readiness.sh
+git tag v<version>-alpha.1
+git push origin v<version>-alpha.1
 ```
 
 These commands are the minimum release evidence path. The release operator must
 also record dependency versions, test logs, sanitizer logs, fuzz target names,
-package checksums, and artifact signatures in release notes.
+package checksums, and artifact signatures in release notes. Tags matching
+`v*-alpha*` trigger `.github/workflows/release.yml`, which builds hardened
+Linux and FreeBSD tarballs and publishes them as a GitHub prerelease.

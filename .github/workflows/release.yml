@@ -1,0 +1,181 @@
+name: alpha-release
+
+on:
+  push:
+    tags:
+      - 'v*-alpha*'
+
+jobs:
+  linux-alpha-package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang \
+            catch2 \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libssl-dev \
+            libsqlite3-dev \
+            libsodium-dev \
+            pkg-config
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade meson ninja
+
+      - name: Build hardened Linux package
+        run: sh scripts/build-linux.sh --builddir build-linux-release --profile hardened
+
+      - name: Validate phase 1 configuration gates
+        run: bash scripts/validate-phase1-config.sh build-linux-release
+
+      - name: Reject unsafe allocation patterns
+        run: bash scripts/reject-unsafe.sh
+
+      - name: Check release readiness metadata
+        run: sh scripts/check-release-readiness.sh
+
+      - name: Stage Linux alpha package
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          package_root="merovingian-${tag}-linux-x86_64"
+          mkdir -p "${package_root}/bin" \
+            "${package_root}/config" \
+            "${package_root}/docs" \
+            "${package_root}/packaging/systemd" \
+            "${package_root}/packaging/openrc" \
+            "${package_root}/packaging/rc.d"
+          cp build-linux-release/src/merovingian-server "${package_root}/bin/"
+          cp build-linux-release/src/merovingian-db-migrate "${package_root}/bin/"
+          cp config/merovingian.conf.example "${package_root}/config/"
+          cp LICENSE README.md "${package_root}/"
+          cp docs/01-progress-tracker.md docs/configuration.md docs/release-process.md docs/security-review-checklist.md "${package_root}/docs/"
+          cp packaging/systemd/merovingian.service "${package_root}/packaging/systemd/"
+          cp packaging/openrc/merovingian "${package_root}/packaging/openrc/"
+          cp packaging/rc.d/merovingian "${package_root}/packaging/rc.d/"
+          tar -czf "${package_root}.tar.gz" "${package_root}"
+          sha256sum "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"
+
+      - name: Upload Linux alpha package
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-release-linux-${{ github.ref_name }}
+          path: |
+            merovingian-${{ github.ref_name }}-linux-x86_64.tar.gz
+            merovingian-${{ github.ref_name }}-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  freebsd-alpha-package:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build hardened FreeBSD package
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          run: |
+            tag="${GITHUB_REF_NAME}"
+            pkg install -y meson ninja llvm catch2 pkgconf git libsodium postgresql16-client openssl sqlite3 curl python3
+            sh scripts/build-bsd.sh --builddir build-freebsd-release --profile hardened
+            sh scripts/check-release-readiness.sh
+            package_root="merovingian-${tag}-freebsd-x86_64"
+            mkdir -p "${package_root}/bin" \
+              "${package_root}/config" \
+              "${package_root}/docs" \
+              "${package_root}/packaging/systemd" \
+              "${package_root}/packaging/openrc" \
+              "${package_root}/packaging/rc.d"
+            cp build-freebsd-release/src/merovingian-server "${package_root}/bin/"
+            cp build-freebsd-release/src/merovingian-db-migrate "${package_root}/bin/"
+            cp config/merovingian.conf.example "${package_root}/config/"
+            cp LICENSE README.md "${package_root}/"
+            cp docs/01-progress-tracker.md docs/configuration.md docs/release-process.md docs/security-review-checklist.md "${package_root}/docs/"
+            cp packaging/systemd/merovingian.service "${package_root}/packaging/systemd/"
+            cp packaging/openrc/merovingian "${package_root}/packaging/openrc/"
+            cp packaging/rc.d/merovingian "${package_root}/packaging/rc.d/"
+            tar -czf "${package_root}.tar.gz" "${package_root}"
+            digest="$(sha256 -q "${package_root}.tar.gz")"
+            printf '%s  %s\n' "${digest}" "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"
+
+      - name: Upload FreeBSD alpha package
+        uses: actions/upload-artifact@v4
+        with:
+          name: alpha-release-freebsd-${{ github.ref_name }}
+          path: |
+            merovingian-${{ github.ref_name }}-freebsd-x86_64.tar.gz
+            merovingian-${{ github.ref_name }}-freebsd-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  publish-alpha-release:
+    needs:
+      - linux-alpha-package
+      - freebsd-alpha-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download Linux alpha package
+        uses: actions/download-artifact@v4
+        with:
+          name: alpha-release-linux-${{ github.ref_name }}
+          path: release-assets/linux
+
+      - name: Download FreeBSD alpha package
+        uses: actions/download-artifact@v4
+        with:
+          name: alpha-release-freebsd-${{ github.ref_name }}
+          path: release-assets/freebsd
+
+      - name: Write release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          ## Alpha package assets
+
+          This tag publishes hardened-profile alpha packages built by GitHub Actions.
+
+          Included assets:
+
+          - Linux x86_64 tarball and SHA-256 checksum
+          - FreeBSD x86_64 tarball and SHA-256 checksum
+
+          Validation performed by this workflow:
+
+          - hardened Linux and FreeBSD builds
+          - full Meson test suites on both platforms
+          - phase 1 configuration validation on Linux
+          - unsafe-source gate
+          - release-readiness metadata gate
+
+          This is an alpha pre-release. SBOM generation, dependency/license reports,
+          and artifact signing remain tracked production work in docs/01-progress-tracker.md.
+          EOF
+
+      - name: Publish GitHub alpha release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: release-notes.md
+          fail_on_unmatched_files: true
+          files: |
+            release-assets/linux/*
+            release-assets/freebsd/*
+          prerelease: true

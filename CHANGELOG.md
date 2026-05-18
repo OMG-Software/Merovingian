@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.1.64
+
+- Closed the remaining two Alpha TODOs from `docs/01-progress-tracker.md`.
+- Added a dedicated fuzz CI gate
+  (`.github/workflows/fuzz.yml`) that builds the canonical JSON and HTTP
+  transport harnesses with `-fsanitize=fuzzer,address,undefined` and runs
+  each target for a bounded duration per push (120s) or scheduled run
+  (900s on Sundays). Findings, crash inputs, and corpora are uploaded as
+  workflow artifacts.
+  - `tests/fuzz/meson.build` now applies the libFuzzer compile and link
+    arguments and refuses to configure with `build_fuzz=true` when the
+    compiler does not understand `-fsanitize=fuzzer`.
+  - New `scripts/run-fuzz-targets.sh` wraps the build and time-bounded
+    execution so the same gate can be run locally.
+- Replaced placeholder hardening checks with fail-closed alpha controls
+  and explicitly documented alpha-only exceptions.
+  - Added `HardeningStatus::alpha_exception` and a `note` field on
+    `HardeningCheck` carrying the deferred-control reason and a
+    reference to `docs/hardening-alpha-exceptions.md`.
+  - `HardeningSelfCheck` exposes `production_blockers()`,
+    `production_blocker_count()`, `is_production_ready()`, and
+    `is_alpha_ready()`. Production readiness fails closed while any
+    `alpha_exception`, `disabled`, or `unknown` check remains.
+  - `run_startup_hardening_self_check` tags every previously-`unknown`
+    placeholder (linker hardening, RELRO, seccomp, pledge/unveil,
+    capsicum, privilege drop, filesystem restrictions, core dump
+    policy) as `alpha_exception` with a documented note. Compile-time
+    SSP / FORTIFY / PIE probes become `alpha_exception` when the
+    toolchain does not advertise the relevant macro, so every blocker
+    now carries a documented note.
+  - `merovingian-server` refuses to bind listeners (exit code
+    `runtime_start_error`) when any hardening check reports
+    `disabled`, and logs alpha-exception checks at warning level with
+    a `production_ready=false alpha_ready=true` readiness summary.
+  - New `docs/hardening-alpha-exceptions.md` enumerates each deferred
+    control, the operator-side mitigation during alpha, and the
+    beta/production retirement plan. The release-readiness script
+    requires the new doc.
+  - Smoke test updated to expect the new `alpha_exception` status and
+    readiness summary in startup logs.
+- Added tag-driven alpha prerelease publishing.
+  - New GitHub Actions workflow `.github/workflows/release.yml` triggers on
+    `v*-alpha*` tags, builds Linux and FreeBSD packages with the hardened
+    profile, runs the normal build/test gates, generates SHA-256 checksum
+    files, and publishes a GitHub prerelease.
+  - The release package now carries both `merovingian-server` and
+    `merovingian-db-migrate` alongside the checked config, release docs,
+    packaging scaffolds, `README.md`, and `LICENSE`.
+  - Added the tooling regression test
+    `tests/tooling/test_release_workflow.py` and registered it in
+    `tests/meson.build` so the alpha workflow contract is checked by the test
+    suite.
+  - `scripts/check-release-readiness.sh` now requires
+    `.github/workflows/release.yml` and `docs/release-process.md` so the
+    publication path cannot silently disappear.
+- Added `docs/release-process.md` and updated the progress tracker plus
+  security review checklist to document the alpha prerelease path and the
+  production release gaps that still remain.
+- Bumped project and executable versions to `0.1.64`.
+
 ## 0.1.63
 
 - Consolidated the database schema into a single initial deploy. There

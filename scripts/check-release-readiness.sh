@@ -19,10 +19,12 @@ require_file packaging/systemd/merovingian.service
 require_file packaging/openrc/merovingian
 require_file packaging/rc.d/merovingian
 require_file docs/01-progress-tracker.md
+require_file docs/release-process.md
 require_file docs/security-review-checklist.md
 require_file docs/build-warning-policy.md
 require_file docs/observability-audit.md
 require_file docs/trust-safety.md
+require_file docs/hardening-alpha-exceptions.md
 require_file docs/dependencies/index.md
 require_file docs/dependencies/catch2.md
 require_file docs/dependencies/libcurl.md
@@ -35,6 +37,7 @@ require_file scripts/build-linux.sh
 require_file scripts/build-bsd.sh
 require_file scripts/build-wsl.ps1
 require_file scripts/wsl-setup.sh
+require_file .github/workflows/release.yml
 
 if grep -R "password-hash:v1" src include >/dev/null 2>&1; then
     fail "production sources still contain legacy password-hash:v1"

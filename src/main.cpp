@@ -35,7 +35,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.1.63"};
+constexpr auto version = std::string_view{"0.1.64"};
 
 struct BootstrapConfigResult final
 {
@@ -410,9 +410,21 @@ auto log_startup_summary(BootstrapConfigResult const& result) -> void
     LOG_INFO("Startup hardening checks: " + std::to_string(hardening_self_check.count()));
     for (auto const& check : hardening_self_check.checks())
     {
-        LOG_INFO("Hardening self-check: " + check.name + "=" +
-                 merovingian::platform::hardening_status_name(check.status));
+        auto const status_name = std::string{merovingian::platform::hardening_status_name(check.status)};
+        auto const suffix = check.note.empty() ? std::string{} : (" note=" + check.note);
+        if (check.status == merovingian::platform::HardeningStatus::alpha_exception)
+        {
+            LOG_WARNING("Hardening self-check: " + check.name + "=" + status_name + suffix);
+        }
+        else
+        {
+            LOG_INFO("Hardening self-check: " + check.name + "=" + status_name + suffix);
+        }
     }
+    LOG_INFO("Hardening readiness: production_ready=" +
+             std::string{hardening_self_check.is_production_ready() ? "true" : "false"} +
+             " alpha_ready=" + std::string{hardening_self_check.is_alpha_ready() ? "true" : "false"} +
+             " production_blockers=" + std::to_string(hardening_self_check.production_blocker_count()));
     LOG_INFO(merovingian::database::database_summary(runtime_database));
     LOG_INFO(merovingian::federation::federation_summary(runtime_federation));
     LOG_INFO(merovingian::media::media_summary(runtime_media));
@@ -583,6 +595,16 @@ struct ListenerBinding final
 
 [[nodiscard]] auto run_server(BootstrapConfigResult const& result) -> int
 {
+    // Fail closed when a hardening control is explicitly disabled. Documented
+    // alpha exceptions are still permitted; production gating happens at
+    // release-readiness time. See docs/hardening-alpha-exceptions.md.
+    auto const hardening_self_check = merovingian::platform::run_startup_hardening_self_check();
+    if (!hardening_self_check.is_alpha_ready())
+    {
+        LOG_CRITICAL("Startup refused: hardening self-check reports a disabled control");
+        return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+    }
+
     auto runtime_result = merovingian::homeserver::start_client_server(result.parsed.config);
     if (!runtime_result.started)
     {
