@@ -1047,7 +1047,12 @@ auto reset_postgresql_role(PostgresqlConnection& connection) -> bool
     {
         return false;
     }
-    auto const result = connection.execute({"reset_postgresql_role", "RESET ROLE", {}});
+    // SET ROLE NONE restores the authenticated session_user. `RESET ROLE`
+    // would instead reapply the connection-time role configuration,
+    // including any `ALTER ROLE ... SET ROLE` defaults, which keeps an
+    // elevated role active when callers expect to drop back to the
+    // login identity.
+    auto const result = connection.execute({"reset_postgresql_role", "SET ROLE NONE", {}});
     return result.ok;
 }
 

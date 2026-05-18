@@ -85,6 +85,12 @@ jobs:
           # runtime role, which is exactly what the role-enforcement test
           # needs to exercise.
           psql -v ON_ERROR_STOP=1 <<'SQL'
+            -- Strip the legacy public-CREATE grant before provisioning roles.
+            -- PostgreSQL <= 14 leaves CREATE on schema public granted to
+            -- PUBLIC, which would let the runtime role execute DDL and
+            -- defeat the role-enforcement assertion. Postgres 15+ already
+            -- ships without this grant; the revoke is a no-op there.
+            REVOKE CREATE ON SCHEMA public FROM PUBLIC;
             CREATE ROLE merovingian_migration NOLOGIN;
             CREATE ROLE merovingian_runtime NOLOGIN;
             GRANT merovingian_migration TO merovingian_test;
