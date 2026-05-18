@@ -43,6 +43,8 @@ Use this checklist for every release candidate.
 
 ## Release evidence
 
+- Alpha tags matching `v*-alpha*` publish hardened Linux and FreeBSD tarballs
+  plus SHA-256 checksum files through `.github/workflows/release.yml`.
 - CI passed normal, sanitizer, static-analysis, BSD, fuzz, and release-readiness
   workflows.
 - Dependency and license reports are attached.

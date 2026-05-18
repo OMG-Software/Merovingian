@@ -231,6 +231,10 @@ be published as production releases while any blocking gate remains open.
   `packaging/rc.d/merovingian`, and `Dockerfile`.
 - Release-readiness script exists and rejects missing required release files or
   known unsafe legacy hashing primitives.
+- Alpha prerelease publishing exists: `.github/workflows/release.yml` builds
+  hardened Linux and FreeBSD tarballs for `v*-alpha*` tags, runs tests and
+  release-readiness gates, emits SHA-256 checksum files, and publishes a
+  GitHub prerelease.
 - CodeQL, coverage, sanitizer, static-analysis, and Linux CI jobs install
   LibSodium development headers before configuring Meson.
 
@@ -294,7 +298,7 @@ be published as production releases while any blocking gate remains open.
 | Runtime hardening | `scaffolded` | Systemd/OpenRC/rc.d packaging, hardening plan, and self-check surfaces | Enforce fail-closed controls, implement seccomp/AppArmor/Landlock notes or profiles, OpenBSD pledge/unveil, and FreeBSD Capsicum where practical. |
 | Platform support | `integrated` | Linux and FreeBSD CI, setup-command planning for OpenBSD and NetBSD | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `scaffolded` | Canonical JSON and HTTP fuzz targets can be built | Run fuzz targets in CI, add corpus management, Matrix conformance suite, property tests, load tests, and chaos tests. |
-| Supply chain and release | `scaffolded` | Release-readiness script and packaging skeletons exist | Add SBOM, dependency pinning policy, license review, artifact signing, checksums, provenance, and reproducible build notes. |
+| Supply chain and release | `scaffolded` | Release-readiness script, packaging skeletons, and a tag-driven alpha prerelease workflow that builds hardened Linux/FreeBSD tarballs and publishes SHA-256 checksums exist | Add SBOM, dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
 
 ## Matrix v1.18 protocol coverage
 
@@ -454,8 +458,12 @@ meson compile -C build
 meson test -C build --print-errorlogs
 sh scripts/reject-unsafe.sh
 sh scripts/check-release-readiness.sh
+git tag v<version>-alpha.1
+git push origin v<version>-alpha.1
 ```
 
 These commands are the minimum release evidence path. The release operator must
 also record dependency versions, test logs, sanitizer logs, fuzz target names,
-package checksums, and artifact signatures in release notes.
+package checksums, and artifact signatures in release notes. Tags matching
+`v*-alpha*` trigger `.github/workflows/release.yml`, which builds hardened
+Linux and FreeBSD tarballs and publishes them as a GitHub prerelease.

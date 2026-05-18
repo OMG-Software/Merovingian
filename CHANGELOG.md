@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.2.0
+
+- Added tag-driven alpha prerelease publishing.
+  - New GitHub Actions workflow `.github/workflows/release.yml` triggers on
+    `v*-alpha*` tags, builds Linux and FreeBSD packages with the hardened
+    profile, runs the normal build/test gates, generates SHA-256 checksum
+    files, and publishes a GitHub prerelease.
+  - The release package now carries both `merovingian-server` and
+    `merovingian-db-migrate` alongside the checked config, release docs,
+    packaging scaffolds, `README.md`, and `LICENSE`.
+  - Added the tooling regression test
+    `tests/tooling/test_release_workflow.py` and registered it in
+    `tests/meson.build` so the alpha workflow contract is checked by the test
+    suite.
+  - `scripts/check-release-readiness.sh` now requires
+    `.github/workflows/release.yml` and `docs/release-process.md` so the
+    publication path cannot silently disappear.
+- Added `docs/release-process.md` and updated the progress tracker plus
+  security review checklist to document the alpha prerelease path and the
+  production release gaps that still remain.
+- Bumped project and executable versions to `0.2.0`.
+
 ## 0.1.63
 
 - Consolidated the database schema into a single initial deploy. There
