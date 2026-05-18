@@ -247,6 +247,10 @@ be published as production releases while any blocking gate remains open.
   `packaging/rc.d/merovingian`, and `Dockerfile`.
 - Release-readiness script exists and rejects missing required release files or
   known unsafe legacy hashing primitives.
+- Alpha prerelease publishing exists: `.github/workflows/release.yml` builds
+  hardened Linux and FreeBSD tarballs for `v*-alpha*` tags, runs tests and
+  release-readiness gates, emits SHA-256 checksum files, and publishes a
+  GitHub prerelease.
 - CodeQL, coverage, sanitizer, static-analysis, and Linux CI jobs install
   LibSodium development headers before configuring Meson.
 
@@ -316,7 +320,7 @@ Alpha (`0.2.0`) is cut. Beta priorities take over from here:
 | Runtime hardening | `integrated` | Systemd/OpenRC/rc.d packaging, hardening plan, startup self-check with `HardeningStatus::alpha_exception` + documented notes, `merovingian-server` refusing to bind when any control reports `disabled`, alpha-only exceptions enumerated in `docs/hardening-alpha-exceptions.md`, and release-readiness gating on the new doc | Implement the in-process probes that retire each documented alpha exception: ELF program-header probe for linker/RELRO status, Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Linux and FreeBSD CI, setup-command planning for OpenBSD and NetBSD | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `integrated` | Canonical JSON and HTTP fuzz targets build with `-fsanitize=fuzzer,address,undefined`, the `fuzz` GitHub Actions workflow runs each target for a bounded duration on every push (and longer on a Sunday schedule), and crash inputs/corpora are uploaded as artifacts | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
-| Supply chain and release | `scaffolded` | Release-readiness script and packaging skeletons exist | Add SBOM, dependency pinning policy, license review, artifact signing, checksums, provenance, and reproducible build notes. |
+| Supply chain and release | `scaffolded` | Release-readiness script, packaging skeletons, the alpha hardening exceptions documentation, and a tag-driven alpha prerelease workflow that builds hardened Linux/FreeBSD tarballs and publishes SHA-256 checksums exist | Add SBOM, dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
 
 ## Matrix v1.18 protocol coverage
 
@@ -476,8 +480,12 @@ meson compile -C build
 meson test -C build --print-errorlogs
 sh scripts/reject-unsafe.sh
 sh scripts/check-release-readiness.sh
+git tag v<version>-alpha.1
+git push origin v<version>-alpha.1
 ```
 
 These commands are the minimum release evidence path. The release operator must
 also record dependency versions, test logs, sanitizer logs, fuzz target names,
-package checksums, and artifact signatures in release notes.
+package checksums, and artifact signatures in release notes. Tags matching
+`v*-alpha*` trigger `.github/workflows/release.yml`, which builds hardened
+Linux and FreeBSD tarballs and publishes them as a GitHub prerelease.

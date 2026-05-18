@@ -25,6 +25,12 @@ shell = find_program('sh')
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_rewrite_merovingian_includes.py'],
   )
 
+  test(
+    'release-workflow-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_release_workflow.py'],
+  )
+
   unit_tests = executable(
     'merovingian-unit-tests',
     sources: files(
