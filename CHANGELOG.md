@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.70
+
+- Trimmed carriage returns when reading registration token files so CRLF
+  token files compare equal to LF token files, preventing reproducible
+  "registration token rejected" failures on Windows-edited config.
+- Restored `pkg-config` to the `setup-dev-env.sh` preflight command checks
+  so the environment check catches missing pkg-config before the build
+  wrappers fail.
+- Bumped project and executable versions to `0.1.70`.
+
 ## 0.1.69
 
 - Fixed CI failure caused by missing `check_pkg_config_module` function in

@@ -237,7 +237,7 @@ check_command() {
 check_environment() {
     status=0
 
-    for command_name in c++ git meson ninja perl bison flex; do
+    for command_name in c++ git meson ninja perl bison flex pkg-config; do
         check_command "$command_name" || status=1
     done
 

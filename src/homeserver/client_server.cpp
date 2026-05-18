@@ -336,6 +336,11 @@ namespace
         auto input = std::ifstream{config.security().registration.token_file};
         auto token = std::string{};
         std::getline(input, token);
+        // Trim trailing CR so CRLF token files compare equal to LF token files.
+        if (!token.empty() && token.back() == '\r')
+        {
+            token.pop_back();
+        }
         return token;
     }
 
