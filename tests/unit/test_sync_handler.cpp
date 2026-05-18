@@ -217,6 +217,56 @@ SCENARIO("Sync filter limits the timeline events and applies room include/exclud
     }
 }
 
+SCENARIO("Incremental sync drops account_data that predates the since token and drains to_device once",
+         "[sync][handler][incremental]")
+{
+    GIVEN("Alice's runtime with a global account-data row and a to_device message")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+        auto const device_id = first_device_id_for(rt, alice_id);
+        REQUIRE(merovingian::homeserver::set_account_data(
+            rt, {alice_id, "", "m.tag", R"({"tags":{"u.fav":{}}})", 0U}));
+        REQUIRE(merovingian::homeserver::push_to_device_message(
+            rt, {0U, "@bob:example.org", alice_id, device_id, "m.room_key", R"({"k":"v"})"}));
+
+        WHEN("Alice issues an initial /sync, captures next_batch, and immediately re-syncs with since=next_batch")
+        {
+            auto const first_response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+            REQUIRE(first_response.status == 200U);
+            auto const first_body = parse_body(first_response.body);
+            auto const* first_root = as_object(first_body);
+            auto const next_batch = std::get<std::string>(json_member(*first_root, "next_batch")->storage());
+
+            auto const second_response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", std::string{"/_matrix/client/v3/sync?since="} + next_batch, token, {}});
+
+            THEN("the second sync's account_data and to_device arrays are empty")
+            {
+                REQUIRE(second_response.status == 200U);
+                auto const second_body = parse_body(second_response.body);
+                auto const* second_root = as_object(second_body);
+                auto const* account_data = as_object(*json_member(*second_root, "account_data"));
+                auto const* ad_events = as_array(*json_member(*account_data, "events"));
+                REQUIRE(ad_events != nullptr);
+                REQUIRE(ad_events->empty());
+
+                auto const* to_device = as_object(*json_member(*second_root, "to_device"));
+                auto const* td_events = as_array(*json_member(*to_device, "events"));
+                REQUIRE(td_events != nullptr);
+                REQUIRE(td_events->empty());
+
+                // The drained to_device row is also physically removed from
+                // the queue so it cannot resurface on a third sync.
+                REQUIRE(rt.homeserver.database.persistent_store.to_device_messages.empty());
+            }
+        }
+    }
+}
+
 SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the notifier",
          "[sync][handler][long-poll]")
 {

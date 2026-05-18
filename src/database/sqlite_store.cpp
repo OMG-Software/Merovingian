@@ -425,10 +425,70 @@ namespace
                              store.audit_log.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
                                                         column_text(row, 3), column_text(row, 4)});
                          }) &&
-               load_rows(
-                   connection, "SELECT admin_user_id, action, target FROM admin_actions", [&store](sqlite3_stmt& row) {
-                       store.admin_actions.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
-                   });
+               load_rows(connection, "SELECT admin_user_id, action, target FROM admin_actions",
+                         [&store](sqlite3_stmt& row) {
+                             store.admin_actions.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, event_type, json, stream_id FROM account_data ORDER BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentAccountData{};
+                             entry.user_id = column_text(row, 0);
+                             entry.event_type = column_text(row, 1);
+                             entry.content_json = column_text(row, 2);
+                             entry.stream_id = parse_u64(column_text(row, 3));
+                             store.account_data.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, room_id, event_type, stream_id, json FROM room_account_data ORDER "
+                         "BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentAccountData{};
+                             entry.user_id = column_text(row, 0);
+                             entry.room_id = column_text(row, 1);
+                             entry.event_type = column_text(row, 2);
+                             entry.stream_id = parse_u64(column_text(row, 3));
+                             entry.content_json = column_text(row, 4);
+                             store.account_data.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT stream_id, sender_user_id, target_user_id, target_device_id, message_type, "
+                         "content FROM to_device_messages ORDER BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentToDeviceMessage{};
+                             entry.stream_id = parse_u64(column_text(row, 0));
+                             entry.sender_user_id = column_text(row, 1);
+                             entry.target_user_id = column_text(row, 2);
+                             entry.target_device_id = column_text(row, 3);
+                             entry.message_type = column_text(row, 4);
+                             entry.content_json = column_text(row, 5);
+                             store.to_device_messages.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT stream_id, observer_user_id, subject_user_id, change_type FROM "
+                         "device_list_changes ORDER BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentDeviceListChange{};
+                             entry.stream_id = parse_u64(column_text(row, 0));
+                             entry.observer_user_id = column_text(row, 1);
+                             entry.subject_user_id = column_text(row, 2);
+                             entry.change_type = column_text(row, 3);
+                             store.device_list_changes.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, stream_id, presence, status_msg, last_active_ago, currently_active "
+                         "FROM presence_state ORDER BY stream_id",
+                         [&store](sqlite3_stmt& row) {
+                             auto entry = PersistentPresence{};
+                             entry.user_id = column_text(row, 0);
+                             entry.stream_id = parse_u64(column_text(row, 1));
+                             entry.presence = column_text(row, 2);
+                             entry.status_msg = column_text(row, 3);
+                             entry.last_active_ago = static_cast<std::int64_t>(parse_u64(column_text(row, 4)));
+                             entry.currently_active = text_is_true(column_text(row, 5));
+                             store.presence_states.push_back(std::move(entry));
+                         });
     }
 
     [[nodiscard]] auto bind_statement_parameters(sqlite3_stmt& statement, PreparedStatement const& prepared) -> bool
@@ -521,6 +581,7 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     {
         return {false, "unable to hydrate SQLite rows", {}};
     }
+    restore_sync_stream_id(store);
 
     auto compatibility = validate_persistent_store(store);
     if (!compatibility.valid)

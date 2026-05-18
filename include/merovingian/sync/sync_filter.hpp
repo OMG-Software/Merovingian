@@ -52,7 +52,10 @@ struct SyncFilter final
 
 // Applies the EventType include/exclude rules. Returns true when the event
 // should be kept. `event_type` and `sender` are matched against the
-// allow/deny lists; empty lists mean "no restriction".
+// allow/deny lists; empty lists mean "no restriction". When `event_type`
+// is empty the caller is signalling that the type is not yet surfaced
+// (e.g. a stored event whose JSON has not been re-parsed), and the type
+// allow/deny predicates are skipped while sender predicates still apply.
 [[nodiscard]] auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_type,
                                        std::string_view sender) noexcept -> bool;
 

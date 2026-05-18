@@ -273,6 +273,22 @@ auto authenticated_user(HomeserverRuntime const& runtime, std::string_view acces
     return session->user_id;
 }
 
+auto authenticated_session(HomeserverRuntime const& runtime, std::string_view access_token)
+    -> std::optional<LocalSession>
+{
+    auto const token_hash = hash_token(access_token);
+    if (!token_hash.has_value())
+    {
+        return std::nullopt;
+    }
+    auto const* session = find_session(runtime.database, *token_hash);
+    if (session == nullptr || find_user(runtime.database, session->user_id) == nullptr)
+    {
+        return std::nullopt;
+    }
+    return *session;
+}
+
 auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>
 {

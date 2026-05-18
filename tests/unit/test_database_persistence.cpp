@@ -268,10 +268,10 @@ SCENARIO("Database migration runner applies versioned upgrade and downgrade path
                 REQUIRE(upgraded.ok);
                 REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
                 REQUIRE(upgraded.state.applied_migrations.size() == 7U);
-                // Schema v7 adds three sync-surface tables on top of the
-                // initial inventory: to_device_messages, device_list_changes,
-                // and presence_state.
-                REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size() + 3U);
+                // Schema v7 adds four sync-surface tables on top of the
+                // initial inventory: room_account_data, to_device_messages,
+                // device_list_changes, and presence_state.
+                REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size() + 4U);
                 REQUIRE(compatible.valid);
                 REQUIRE(second_plan.steps.empty());
                 REQUIRE(downgrade_plan.direction == merovingian::database::MigrationDirection::downgrade);

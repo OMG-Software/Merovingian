@@ -683,13 +683,21 @@ namespace
 
     [[nodiscard]] auto build_account_data_events(database::PersistentStore const& store,
                                                  sync::EventTypeFilter const& filter, std::string_view user,
-                                                 std::string_view room_scope) -> canonicaljson::Array
+                                                 std::string_view room_scope, std::uint64_t since_sync_stream_id,
+                                                 std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
         auto emitted = std::size_t{0U};
         for (auto const& data : store.account_data)
         {
             if (data.user_id != user || data.room_id != room_scope)
+            {
+                continue;
+            }
+            // Incremental /sync: only surface account-data rows whose
+            // stream_id strictly exceeds the caller's since token. Initial
+            // sync (since_sync_stream_id == 0) returns everything.
+            if (data.stream_id <= since_sync_stream_id)
             {
                 continue;
             }
@@ -706,6 +714,10 @@ namespace
             event.push_back(json_member("content", parse_event_json_object(data.content_json)));
             events.push_back(canonicaljson::Value{std::move(event)});
             ++emitted;
+            if (data.stream_id > max_observed_stream_id)
+            {
+                max_observed_stream_id = data.stream_id;
+            }
         }
         return events;
     }
@@ -754,8 +766,8 @@ namespace
         return out;
     }
 
-    [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, core::SyncRequest const& request)
-        -> std::string
+    [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
+                                 core::SyncRequest const& request) -> std::string
     {
         auto const since_token =
             request.since.has_value() ? sync::decode_stream_token(*request.since) : std::optional<sync::StreamToken>{};
@@ -763,8 +775,6 @@ namespace
         auto const since_sync_stream_id =
             since_token.has_value() ? since_token->sync_stream_id : std::uint64_t{0U};
         auto const filter = request.filter.has_value() ? sync::parse_filter_argument(*request.filter) : sync::SyncFilter{};
-
-        auto const device_id = first_device_id(rt, user);
         auto& store = rt.homeserver.database.persistent_store;
 
         // Long-poll: when the caller passes `timeout` and there's nothing
@@ -843,7 +853,8 @@ namespace
             ++join_count;
 
             auto const limited = store.events.size() > timeline_cap;
-            auto room_account_data = build_account_data_events(store, filter.room.account_data, user, room.room_id);
+            auto room_account_data = build_account_data_events(store, filter.room.account_data, user, room.room_id,
+                                                                since_sync_stream_id, max_observed_sync_stream_id);
             join_members.push_back(json_member(
                 room.room_id,
                 json_obj({
@@ -905,7 +916,8 @@ namespace
             build_device_list_arrays(store, user, since_sync_stream_id, max_observed_sync_stream_id);
         auto presence_events =
             build_presence_events(store, filter.presence, user, since_sync_stream_id, max_observed_sync_stream_id);
-        auto global_account_data = build_account_data_events(store, filter.account_data, user, std::string_view{});
+        auto global_account_data = build_account_data_events(store, filter.account_data, user, std::string_view{},
+                                                              since_sync_stream_id, max_observed_sync_stream_id);
         auto otk_counts = build_otk_counts(store, user, device_id);
         auto fallback_key_types = build_fallback_key_types(store, user, device_id);
 
@@ -1510,8 +1522,14 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     auto constexpr sync_prefix = std::string_view{"/_matrix/client/v3/sync"};
     if (req.method == "GET" && starts_with(req.target, sync_prefix))
     {
+        // Resolve the session bound to the access token so we key the
+        // per-device sync surfaces (to_device, OTK count, fallback keys)
+        // on the device that actually issued the request rather than
+        // whichever device happens to be first in `rt.devices`.
+        auto const session = authenticated_session(rt.homeserver, req.access_token);
+        auto const device_id = session.has_value() ? session->device_id : std::string{};
         auto const sync_request = merovingian::core::parse_query_params(req.target);
-        auto response_body = sync_json(rt, *user, sync_request);
+        auto response_body = sync_json(rt, *user, device_id, sync_request);
         return resp(200U, std::move(response_body));
     }
 
@@ -1606,14 +1624,12 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence sta
 
 auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool
 {
+    // store_account_data advances next_sync_stream_id before persisting,
+    // so the ensure_sync_notifier publish below wakes any long-poll
+    // /sync waiter that was parked at a since_token below the new row.
     auto const stored = database::store_account_data(runtime.homeserver.database.persistent_store, std::move(data));
     if (stored)
     {
-        // Global/per-room account_data also affects /sync state; bump the
-        // notifier so a long-poll wakes. The store helper does not currently
-        // advance next_sync_stream_id, so the publish below uses the stream
-        // id at the time of the call and the sync handler still surfaces
-        // the new account-data event via the room/global walk above.
         (void)ensure_sync_notifier(runtime);
     }
     return stored;

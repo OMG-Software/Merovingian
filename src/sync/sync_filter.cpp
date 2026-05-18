@@ -203,13 +203,20 @@ auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_t
     auto const contains = [](std::vector<std::string> const& list, std::string_view value) noexcept -> bool {
         return std::ranges::any_of(list, [value](std::string const& candidate) { return candidate == value; });
     };
-    if (!filter.types.empty() && !contains(filter.types, event_type))
+    // Skip type predicates entirely when the caller hasn't supplied the
+    // event type. The timeline walker currently passes an empty type for
+    // stored PersistentEvent rows whose JSON we don't re-parse, and
+    // applying types/not_types in that case would reject every event.
+    if (!event_type.empty())
     {
-        return false;
-    }
-    if (!filter.not_types.empty() && contains(filter.not_types, event_type))
-    {
-        return false;
+        if (!filter.types.empty() && !contains(filter.types, event_type))
+        {
+            return false;
+        }
+        if (!filter.not_types.empty() && contains(filter.not_types, event_type))
+        {
+            return false;
+        }
     }
     if (!filter.senders.empty() && !contains(filter.senders, sender))
     {

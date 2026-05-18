@@ -222,14 +222,19 @@ struct PersistentAdminAction final
     std::string target{};
 };
 
-// Global Matrix account-data row. Per-room account data is identified by
-// a non-empty `room_id`; an empty `room_id` denotes global account data.
+// Matrix account-data row. Per-room account data is identified by a
+// non-empty `room_id`; an empty `room_id` denotes global account data.
+// The runtime keeps both classes in the same in-memory collection;
+// they are persisted to separate backend tables (`account_data` /
+// `room_account_data`) because the v1 schema's primary key on
+// `account_data` did not include `room_id`.
 struct PersistentAccountData final
 {
     std::string user_id{};
     std::string room_id{};
     std::string event_type{};
     std::string content_json{};
+    std::uint64_t stream_id{0U};
 };
 
 // Pending to-device message. Sender pushes the row at send time; the
@@ -374,6 +379,14 @@ struct PersistentStoreOpenResult final
     -> std::vector<PersistentToDeviceMessage>;
 [[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool;
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
+// Sets `store.next_sync_stream_id` to the maximum stream_id observed
+// across every sync-surface row already loaded into memory (account_data,
+// room account_data, to_device_messages, device_list_changes,
+// presence_state). Backend hydration paths call this after populating
+// the in-memory mirrors so a process restart preserves the monotonic
+// invariant that next_sync_stream_id is strictly greater than every
+// stream id a client has ever seen.
+auto restore_sync_stream_id(PersistentStore& store) -> void;
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool;
 
 namespace detail

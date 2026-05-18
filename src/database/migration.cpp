@@ -395,12 +395,23 @@ auto downgrade_federation_queue_migration() -> MigrationStep
 
 auto sync_surfaces_migration() -> MigrationStep
 {
+    // v7 adds the sync-surface persistence. Account-data is split:
+    //   - `account_data` keeps its v1 (user_id, event_type) primary key
+    //     for global rows and gains a `stream_id` column.
+    //   - `room_account_data` is a new table for per-room rows keyed by
+    //     (user_id, room_id, event_type) with its own `stream_id`.
+    // Both surfaces drive incremental /sync by stream id.
     return {
         sync_surfaces_schema_version,
         "sync_surfaces_tables",
         {
-            {"account_data_add_room_id",
-             "ALTER TABLE account_data ADD COLUMN room_id TEXT NOT NULL DEFAULT ''",
+            {"account_data_add_stream_id",
+             "ALTER TABLE account_data ADD COLUMN stream_id TEXT NOT NULL DEFAULT '0'",
+             {}},
+            {"create_room_account_data",
+             "CREATE TABLE room_account_data (user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT "
+             "NOT NULL, stream_id TEXT NOT NULL DEFAULT '0', json TEXT NOT NULL, PRIMARY KEY (user_id, "
+             "room_id, event_type))",
              {}},
             {"create_to_device_messages",
              "CREATE TABLE to_device_messages (stream_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, "
@@ -424,6 +435,12 @@ auto sync_surfaces_migration() -> MigrationStep
 
 auto downgrade_sync_surfaces_migration() -> MigrationStep
 {
+    // Down-migrate v7 → v6 by dropping the four new tables. SQLite < 3.35
+    // cannot drop the `stream_id` column from `account_data`; it survives
+    // harmlessly because its default ('0') matches the legacy semantics
+    // and v6 readers ignore the extra column. We deliberately omit any
+    // self-rename no-op here — renaming a table to its own name is an
+    // error on SQLite/PostgreSQL and would abort the rollback.
     return {
         federation_queue_schema_version,
         "sync_surfaces_tables_downgrade",
@@ -431,14 +448,7 @@ auto downgrade_sync_surfaces_migration() -> MigrationStep
             {"drop_presence_state", "DROP TABLE presence_state", {}},
             {"drop_device_list_changes", "DROP TABLE device_list_changes", {}},
             {"drop_to_device_messages", "DROP TABLE to_device_messages", {}},
-            // SQLite < 3.35 cannot DROP COLUMN. The account_data room_id
-            // column survives the downgrade harmlessly because its default
-            // is '' which matches the legacy global account-data semantics.
-            // The ALTER mirror is a virtual no-op so the schema state
-            // tracker still records v7 → v6 progression.
-            {"account_data_drop_room_id_noop",
-             "ALTER TABLE account_data RENAME TO account_data",
-             {}},
+            {"drop_room_account_data", "DROP TABLE room_account_data", {}},
         },
         MigrationDirection::downgrade,
     };

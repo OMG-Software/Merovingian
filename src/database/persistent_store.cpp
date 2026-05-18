@@ -1089,12 +1089,27 @@ namespace
     {
         return false;
     }
-    if (!record_and_persist(
-            store, record_statement("upsert_account_data",
-                                    "INSERT INTO account_data (user_id, room_id, event_type, json) VALUES ($1, $2, "
-                                    "$3, $4) ON CONFLICT (user_id, room_id, event_type) DO UPDATE SET json = $4",
-                                    {public_value(data.user_id), public_value(data.room_id),
-                                     public_value(data.event_type), sensitive_value(data.content_json)})))
+    store.next_sync_stream_id += 1U;
+    data.stream_id = store.next_sync_stream_id;
+    // Per-room rows go to the dedicated `room_account_data` table whose
+    // primary key includes room_id. Global rows continue to use the
+    // legacy `account_data` table whose PK is (user_id, event_type).
+    auto const statement =
+        data.room_id.empty()
+            ? record_statement(
+                  "upsert_account_data",
+                  "INSERT INTO account_data (user_id, event_type, json, stream_id) VALUES ($1, $2, $3, $4) "
+                  "ON CONFLICT (user_id, event_type) DO UPDATE SET json = $3, stream_id = $4",
+                  {public_value(data.user_id), public_value(data.event_type), sensitive_value(data.content_json),
+                   public_value(std::to_string(data.stream_id))})
+            : record_statement(
+                  "upsert_room_account_data",
+                  "INSERT INTO room_account_data (user_id, room_id, event_type, stream_id, json) VALUES ($1, "
+                  "$2, $3, $4, $5) ON CONFLICT (user_id, room_id, event_type) DO UPDATE SET stream_id = $4, "
+                  "json = $5",
+                  {public_value(data.user_id), public_value(data.room_id), public_value(data.event_type),
+                   public_value(std::to_string(data.stream_id)), sensitive_value(data.content_json)});
+    if (!record_and_persist(store, statement))
     {
         return false;
     }
@@ -1156,6 +1171,35 @@ namespace
         }
         drained.push_back(message);
     }
+    // Delete the delivered rows from both the in-memory mirror and the
+    // backing store so the queue stays bounded. Broadcast (`*`) rows
+    // remain in storage until every observing device has drained them;
+    // we leave them behind here so the next device's /sync still sees
+    // them. The deletion is scoped by stream_id so concurrent senders
+    // can't race a row in between drain and delete.
+    for (auto const& message : drained)
+    {
+        auto const targeted_device =
+            !message.target_device_id.empty() && message.target_device_id != "*";
+        if (!targeted_device)
+        {
+            continue;
+        }
+        (void)record_and_persist(
+            store, record_statement(
+                       "delete_to_device_message",
+                       "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
+                       "target_device_id = $3",
+                       {public_value(std::to_string(message.stream_id)), public_value(message.target_user_id),
+                        public_value(message.target_device_id)}));
+        auto const [first, last] = std::ranges::remove_if(
+            store.to_device_messages, [&message](PersistentToDeviceMessage const& candidate) {
+                return candidate.stream_id == message.stream_id &&
+                       candidate.target_user_id == message.target_user_id &&
+                       candidate.target_device_id == message.target_device_id;
+            });
+        store.to_device_messages.erase(first, last);
+    }
     return drained;
 }
 
@@ -1215,6 +1259,34 @@ namespace
     }
     store.presence_states.push_back(std::move(state));
     return true;
+}
+
+auto restore_sync_stream_id(PersistentStore& store) -> void
+{
+    auto observed = store.next_sync_stream_id;
+    auto const consider = [&observed](std::uint64_t candidate) noexcept {
+        if (candidate > observed)
+        {
+            observed = candidate;
+        }
+    };
+    for (auto const& row : store.account_data)
+    {
+        consider(row.stream_id);
+    }
+    for (auto const& row : store.to_device_messages)
+    {
+        consider(row.stream_id);
+    }
+    for (auto const& row : store.device_list_changes)
+    {
+        consider(row.stream_id);
+    }
+    for (auto const& row : store.presence_states)
+    {
+        consider(row.stream_id);
+    }
+    store.next_sync_stream_id = observed;
 }
 
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool
