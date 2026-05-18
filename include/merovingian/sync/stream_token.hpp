@@ -14,6 +14,11 @@ struct StreamToken final
 {
     std::uint64_t event_ordering{0U};
     std::uint64_t membership_ordering{0U};
+    // Stream id covering the to_device, device_lists, and presence
+    // surfaces. Encoded as a third underscore-separated hex component
+    // appended to the token; tokens without this component decode with
+    // `sync_stream_id == 0`.
+    std::uint64_t sync_stream_id{0U};
 };
 
 [[nodiscard]] auto encode_stream_token(StreamToken token) -> std::string;

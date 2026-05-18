@@ -1,0 +1,55 @@
+{
+  "name": "v1.18 /sync shape conformance",
+  "description": "Complement-style fixture exercising the documented v1.18 sync surfaces. Alice registers and logs in, then issues an initial /sync. The response must carry every Matrix v1.18 top-level key and the rooms.join container.",
+  "steps": [
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/register",
+      "body": {"username": "alice", "password": "CorrectHorse7!"},
+      "expect_status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "body": {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+        "password": "CorrectHorse7!",
+        "device_id": "DEVICE1"
+      },
+      "expect_status": 200,
+      "save_string": {"alice_token": "access_token"}
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/sync",
+      "auth_from": "alice_token",
+      "expect_status": 200,
+      "expect_keys_present": [
+        "next_batch",
+        "rooms",
+        "rooms.join",
+        "rooms.invite",
+        "rooms.leave",
+        "presence",
+        "presence.events",
+        "account_data",
+        "account_data.events",
+        "to_device",
+        "to_device.events",
+        "device_lists",
+        "device_lists.changed",
+        "device_lists.left",
+        "device_one_time_keys_count",
+        "device_unused_fallback_key_types"
+      ]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/sync?filter={\"room\":{\"timeline\":{\"limit\":1}}}",
+      "auth_from": "alice_token",
+      "expect_status": 200,
+      "expect_keys_present": ["next_batch", "rooms.join"]
+    }
+  ]
+}

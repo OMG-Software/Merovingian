@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/sync/sync_notifier.hpp"
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -56,7 +59,28 @@ struct ClientServerRuntime final
     std::vector<ClientKeyApiRecord> key_api_records{};
     std::vector<ClientRateLimitCounter> rate_limits{};
     std::uint64_t request_clock{0U};
+    // Shared pointer so the runtime stays movable while still owning the
+    // notifier (SyncNotifier holds a mutex and condvar). Default-constructed
+    // runtimes leave it null; sync_json and the mutators below lazily install
+    // an instance the first time something sync-relevant happens, so legacy
+    // callers that never touch /sync are unaffected.
+    std::shared_ptr<sync::SyncNotifier> sync_notifier{};
 };
+
+// Convenience accessor that lazily attaches a SyncNotifier to the runtime
+// and republishes the persistent store's current sync stream id. Called by
+// the mutators below and the sync handler.
+[[nodiscard]] auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&;
+
+// Sync surface mutators. Each enqueues the row through the persistent
+// store and bumps the SyncNotifier so a parked /sync request can wake.
+// Returns true on success, false if the store rejected the row.
+[[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime,
+                                          database::PersistentToDeviceMessage message) -> bool;
+[[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime,
+                                             database::PersistentDeviceListChange change) -> bool;
+[[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
+[[nodiscard]] auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool;
 
 struct ClientServerStartResult final
 {

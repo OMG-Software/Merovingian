@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.1.61
+
+- Finished Matrix v1.18 `/sync` conformance for the alpha:
+  - Long polling now blocks on a `SyncNotifier` until a sync-relevant
+    stream id advance (to-device, device-list change, presence, or
+    account-data) or the request's `timeout` elapses.
+  - Sync filter parser (`merovingian::sync::parse_filter_argument`)
+    consumes inline JSON filters covering room include/exclude lists,
+    `timeline.limit`, `senders`/`not_senders`, `types`/`not_types`,
+    and `include_leave`. Filter ids are tolerated but ignored until
+    server-side filter storage lands.
+  - `presence.events` populated from the new `presence_state` table,
+    keyed by per-user latest state and a monotonic stream id.
+  - `account_data.events` populated for both the global scope and per
+    joined room from the upgraded `account_data` table (now includes
+    a `room_id` column added by schema migration v7).
+  - `device_lists.changed` / `device_lists.left` populated from a new
+    `device_list_changes` table observed by the syncing user.
+  - `to_device.events` drains the new `to_device_messages` queue,
+    addressing per-device or broadcast (`*`) targets and advancing the
+    next-batch token's `sync_stream_id` past delivered rows.
+  - `device_one_time_keys_count` reports per-algorithm OTK counts for
+    the syncing device; `device_unused_fallback_key_types` exposes the
+    matching fallback-key algorithm set.
+- `StreamToken` gained a third `sync_stream_id` component so the
+  next-batch encoding covers the new surfaces. Legacy two-segment
+  tokens decode with `sync_stream_id == 0` for backwards compatibility.
+- Schema bumped to v7 (`sync_surfaces_tables` migration): adds
+  `room_id` to `account_data` and creates `to_device_messages`,
+  `device_list_changes`, and `presence_state` tables.
+- Added typed mutator helpers on `ClientServerRuntime`
+  (`push_to_device_message`, `record_device_list_change`,
+  `set_presence`, `set_account_data`) that publish through the
+  notifier so long-polling sync waiters wake when sync-relevant state
+  changes.
+- Added BDD coverage for filter parsing, notifier wake/timeout
+  semantics, and the populated sync response shape.
+- Added a Complement-style integration fixture
+  (`tests/fixtures/complement/sync_v1_18.json`) driven by a JSON
+  runner; asserts the v1.18 sync response carries every documented
+  top-level key.
+- Bumped project and executable versions to `0.1.61`.
+
 ## 0.1.60
 
 - Replaced the federation PDU state-conflict log-and-accept path with a

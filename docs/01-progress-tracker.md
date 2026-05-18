@@ -144,17 +144,28 @@ deployment milestone.
   `make_outbound_invite`, `make_outbound_backfill`) compose
   `OutboundTransaction` records carrying the spec-defined targets,
   query parameters, and v1/v2 invite body shapes.
+- Sync v1.18 conformance: `GET /_matrix/client/v3/sync` now populates
+  every documented top-level key. `presence.events`,
+  `account_data.events` (global and per joined room),
+  `to_device.events`, `device_lists.changed` / `.left`,
+  `device_one_time_keys_count`, and `device_unused_fallback_key_types`
+  read from the persistent store. Long polling blocks on a
+  `SyncNotifier` until a sync-relevant `next_sync_stream_id` advance.
+  The `filter` query parameter accepts inline JSON filters covering
+  room include/exclude lists, timeline limit/sender/type predicates,
+  and `include_leave`. Schema v7 (`sync_surfaces_tables`) adds the
+  backing rows. `StreamToken` carries a third `sync_stream_id`
+  segment so `next_batch` covers all surfaces. A Complement-style
+  JSON fixture (`tests/fixtures/complement/sync_v1_18.json`) drives
+  the spec shape end-to-end.
 
 #### TODO
 
-1. Finish sync conformance: long polling, filters, populated presence,
-   account-data, device-list, to-device, and key-count surfaces, plus Matrix
-   v1.18 fixtures.
-2. Add live PostgreSQL integration coverage and enforce separate runtime and
+1. Add live PostgreSQL integration coverage and enforce separate runtime and
    migration role grants.
-3. Run fuzz targets in CI for canonical JSON and HTTP transport before
+2. Run fuzz targets in CI for canonical JSON and HTTP transport before
    declaring Alpha.
-4. Replace placeholder hardening checks with fail-closed alpha deployment
+3. Replace placeholder hardening checks with fail-closed alpha deployment
    controls or explicitly documented alpha-only exceptions.
 
 ### Beta
