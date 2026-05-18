@@ -9,4 +9,6 @@ __pycache__/
 /subprojects/libsodium-1.0.20/
 /subprojects/postgresql-18.0/
 /subprojects/catch2/
+/subprojects/curl-8.12.1/
+/subprojects/sqlite-amalgamation-3530100/
 /subprojects/packagecache/

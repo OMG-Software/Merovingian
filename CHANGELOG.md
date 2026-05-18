@@ -3,13 +3,14 @@
 ## 0.1.71
 
 - Fixed OpenSSL fallback subproject compilation failures on CI by:
-  - Adding `werror=false` to the OpenSSL subproject's default options so the
-    parent project's `werror=true` does not leak into the C subproject and
-    cause `-Wunused-command-line-argument` errors on assembly files.
-  - Using `is_system: true` include directories for the OpenSSL exported
-    dependencies so that consuming C++ code gets `-isystem` flags instead of
-    `-I`, suppressing `-Wold-style-cast` warnings from OpenSSL's C-style
-    casts.
+  - Passing `default_options: ['werror=false']` to the OpenSSL dependency
+    declaration so the parent project's `werror=true` does not leak into the
+    C subproject and cause `-Wunused-command-line-argument` errors on
+    assembly files.
+  - Using `include_type: 'system'` (already present) for the OpenSSL
+    dependency so that consuming C++ code gets `-isystem` flags, suppressing
+    `-Wold-style-cast` warnings from OpenSSL's C-style casts.
+- Added auto-extracted subproject directories to `.gitignore`.
 - Bumped project and executable versions to `0.1.71`.
 
 ## 0.1.70
