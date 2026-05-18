@@ -59,12 +59,13 @@ struct ClientServerRuntime final
     std::vector<ClientKeyApiRecord> key_api_records{};
     std::vector<ClientRateLimitCounter> rate_limits{};
     std::uint64_t request_clock{0U};
-    // Shared pointer so the runtime stays movable while still owning the
-    // notifier (SyncNotifier holds a mutex and condvar). Default-constructed
-    // runtimes leave it null; sync_json and the mutators below lazily install
-    // an instance the first time something sync-relevant happens, so legacy
+    // Owning pointer to the long-poll notifier. SyncNotifier holds a mutex
+    // and condition_variable so it can't be copied or moved by value; a
+    // unique_ptr keeps the runtime movable. Default-constructed runtimes
+    // leave it null; sync_json and the mutators below lazily install an
+    // instance the first time something sync-relevant happens, so legacy
     // callers that never touch /sync are unaffected.
-    std::shared_ptr<sync::SyncNotifier> sync_notifier{};
+    std::unique_ptr<sync::SyncNotifier> sync_notifier{};
 };
 
 // Convenience accessor that lazily attaches a SyncNotifier to the runtime

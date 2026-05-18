@@ -1566,7 +1566,7 @@ auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&
 {
     if (!runtime.sync_notifier)
     {
-        runtime.sync_notifier = std::make_shared<sync::SyncNotifier>();
+        runtime.sync_notifier = std::make_unique<sync::SyncNotifier>();
     }
     runtime.sync_notifier->publish(runtime.homeserver.database.persistent_store.next_sync_stream_id);
     return *runtime.sync_notifier;
