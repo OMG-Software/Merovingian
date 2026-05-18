@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -37,7 +38,7 @@ namespace
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
-    security.registration.enabled = true;
+    merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
@@ -347,7 +348,7 @@ SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS 
             REQUIRE(SSL_set_fd(client_tls.get(), client_socket.native_handle()) == 1);
             REQUIRE(SSL_connect(client_tls.get()) == 1);
 
-            auto const body = std::string{R"({"username":"tlsalice","password":"CorrectHorse7!"})"};
+            auto const body = merovingian::tests::registration_json("tlsalice", "CorrectHorse7!");
             auto const request = "POST /_matrix/client/v3/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: " +
                                  std::to_string(body.size()) + "\r\n\r\n" + body;
             REQUIRE(send_all_tls(*client_tls, request));
@@ -393,7 +394,7 @@ SCENARIO("merovingian-server routes client listener traffic through the Matrix J
                                                     merovingian::homeserver::HttpDispatchMode::client_server);
             }};
 
-            auto const body = std::string{R"({"username":"alice","password":"CorrectHorse7!"})"};
+            auto const body = merovingian::tests::registration_json("alice", "CorrectHorse7!");
             auto const request = "POST /_matrix/client/v3/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: " +
                                  std::to_string(body.size()) + "\r\n\r\n" + body;
 

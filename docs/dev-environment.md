@@ -16,28 +16,24 @@ The script supports these package managers:
 - BSD: `pkg`, `pkg_add`, `pkgin`
 
 The package set intentionally avoids Boost. It installs C++ toolchains, Meson,
-Ninja, pkg-config/pkgconf, Git, Python, libsodium, PostgreSQL client headers,
-SQLite, TLS headers, libcurl headers, Catch2, clang tooling, and cppcheck.
-`yyjson` is used for
-strict JSON parsing; Meson uses a pinned wrap fallback when the host does not
-provide a `yyjson` pkg-config module. The fallback exposes yyjson headers as
-system includes so Merovingian's warning-as-error policy applies to project
-code without turning third-party C inline headers into CI blockers. C++ sources
-include a project-owned adapter rather than `yyjson.h` directly.
+Ninja, pkg-config/pkgconf, Git, Python, Perl, Bison, Flex, M4, TLS headers,
+Catch2, clang tooling, and cppcheck. Merovingian now pins libsodium, libcurl,
+libpq, SQLite, OpenSSL, Catch2, and yyjson through committed Meson wraps so the
+default build path does not depend on host copies of those libraries. `yyjson`
+is used for strict JSON parsing; its wrap exposes third-party headers as system
+includes so warning-as-error still applies to project code rather than inline C
+headers from the dependency checkout. C++ sources include a project-owned
+adapter rather than `yyjson.h` directly.
 
 CI runs clang-tidy on changed C++ translation units with parallel per-file log
 groups and timeouts. Headers are analyzed transitively through the Meson compile
 database instead of being invoked as standalone clang-tidy inputs.
 The unsafe source gate is a Bash script and must be run with `bash`, matching
 CI, because it relies on strict shell options and portable grep behavior.
-OpenSSL is the selected TLS provider and is resolved through Meson as a system
-dependency with a pinned WrapDB fallback. When the host provides OpenSSL, its
-headers remain system includes so Merovingian's warning-as-error policy applies
-to project code rather than third-party headers. When fallback downloads are
-enabled, Meson can build the pinned OpenSSL wrap from
-`subprojects/openssl.wrap`.
-libpq is also included as a system dependency so PostgreSQL platform headers do
-not bypass third-party warning isolation.
+OpenSSL is the selected TLS provider and is pinned through
+`subprojects/openssl.wrap`. The Linux, BSD, and WSL wrappers now run Meson with
+`--wrap-mode=forcefallback` by default, so clean builds resolve the committed
+source-pinned subprojects rather than host copies of those libraries.
 Dependency reviews live under `docs/dependencies/`; new direct dependencies
 should add or update a review there before they are wired into Meson.
 
@@ -56,11 +52,11 @@ export PATH="$HOME/.local/bin:$PATH"
 sh scripts/build-linux.sh --builddir build-wsl
 ```
 
-The WSL setup script installs the compiler, linker, PostgreSQL/SQLite/OpenSSL
-and LibSodium headers, Catch2, clang tooling, cppcheck, and a current
-Meson/Ninja virtual environment. The virtual environment is used because the
-distribution Meson in Ubuntu 24.04 is too old to configure the repo's C++26
-build.
+The WSL setup script installs the compiler, linker, Perl/Bison/Flex toolchain
+needed by the wrapped third-party sources, OpenSSL headers, Catch2, clang
+tooling, cppcheck, and a current Meson/Ninja virtual environment. The virtual
+environment is used because the distribution Meson in Ubuntu 24.04 is too old
+to configure the repo's C++26 build.
 
 Project-owned headers should use quoted includes. Use the rewrite helper to
 convert angle-bracket Merovingian includes in source trees:
@@ -130,8 +126,8 @@ in `wsl -l -v`:
 powershell -ExecutionPolicy Bypass -File scripts\build-wsl.ps1 -Distro Ubuntu-24.04
 ```
 
-Both wrappers use Meson wrap fallback mode by default so the pinned Catch2
-subproject can be fetched when the system package is unavailable.
+Both wrappers use Meson `forcefallback` mode by default so the pinned
+dependency wraps are used even when the host has system copies installed.
 
 Meson launches repository shell-based source gates through `sh`, which keeps
 WSL builds on `/mnt/c` independent of Windows executable-bit metadata.

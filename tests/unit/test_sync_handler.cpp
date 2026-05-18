@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
@@ -22,7 +23,7 @@ namespace
 [[nodiscard]] auto sync_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
-    security.registration.enabled = true;
+    merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
@@ -61,8 +62,7 @@ namespace
     return std::get_if<merovingian::canonicaljson::Object>(&value.storage());
 }
 
-[[nodiscard]] auto as_array(merovingian::canonicaljson::Value const& value)
-    -> merovingian::canonicaljson::Array const*
+[[nodiscard]] auto as_array(merovingian::canonicaljson::Value const& value) -> merovingian::canonicaljson::Array const*
 {
     return std::get_if<merovingian::canonicaljson::Array>(&value.storage());
 }
@@ -71,10 +71,13 @@ namespace
     -> std::pair<std::string, std::string>
 {
     auto const reg = merovingian::homeserver::handle_client_server_request(
-        rt, {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+        rt,
+        {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("alice", "CorrectHorse7!")});
     REQUIRE(reg.status == 200U);
     auto const login = merovingian::homeserver::handle_client_server_request(
-        rt, {"POST", "/_matrix/client/v3/login", {},
+        rt, {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},)"
              R"("password":"CorrectHorse7!","device_id":"DEVICE1"})"});
     REQUIRE(login.status == 200U);
@@ -83,8 +86,8 @@ namespace
     return {user_id, token};
 }
 
-[[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt,
-                                       std::string_view user) -> std::string
+[[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt, std::string_view user)
+    -> std::string
 {
     auto const it = std::ranges::find_if(rt.devices, [user](merovingian::homeserver::ClientDevice const& d) {
         return d.user_id == user;
@@ -102,8 +105,7 @@ namespace
 
 } // namespace
 
-SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key counts",
-         "[sync][handler][surfaces]")
+SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key counts", "[sync][handler][surfaces]")
 {
     GIVEN("a registered Alice with sync surfaces pre-populated")
     {
@@ -114,14 +116,12 @@ SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key
         auto const device_id = first_device_id_for(rt, alice_id);
         auto& store = rt.homeserver.database.persistent_store;
 
-        REQUIRE(merovingian::homeserver::set_account_data(
-            rt, {alice_id, "", "m.tag", R"({"tags":{"u.fav":{}}})"}));
+        REQUIRE(merovingian::homeserver::set_account_data(rt, {alice_id, "", "m.tag", R"({"tags":{"u.fav":{}}})"}));
         REQUIRE(merovingian::homeserver::push_to_device_message(
             rt, {0U, "@bob:example.org", alice_id, device_id, "m.room_key", R"({"session":"abc"})"}));
-        REQUIRE(merovingian::homeserver::record_device_list_change(
-            rt, {0U, alice_id, "@bob:example.org", "changed"}));
-        REQUIRE(merovingian::homeserver::set_presence(
-            rt, {0U, "@charlie:example.org", "online", "Coding!", 1000, true}));
+        REQUIRE(merovingian::homeserver::record_device_list_change(rt, {0U, alice_id, "@bob:example.org", "changed"}));
+        REQUIRE(
+            merovingian::homeserver::set_presence(rt, {0U, "@charlie:example.org", "online", "Coding!", 1000, true}));
         REQUIRE(merovingian::database::store_one_time_key(
             store, {alice_id, device_id, "signed_curve25519:AAA", R"({"key":"x"})"}));
         REQUIRE(merovingian::database::store_one_time_key(
@@ -183,8 +183,7 @@ SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key
     }
 }
 
-SCENARIO("Sync filter limits the timeline events and applies room include/exclude lists",
-         "[sync][handler][filter]")
+SCENARIO("Sync filter limits the timeline events and applies room include/exclude lists", "[sync][handler][filter]")
 {
     GIVEN("Alice's runtime with a created room")
     {
@@ -227,8 +226,7 @@ SCENARIO("Incremental sync drops account_data that predates the since token and 
         auto& rt = started.runtime;
         auto const [alice_id, token] = register_and_login(rt);
         auto const device_id = first_device_id_for(rt, alice_id);
-        REQUIRE(merovingian::homeserver::set_account_data(
-            rt, {alice_id, "", "m.tag", R"({"tags":{"u.fav":{}}})", 0U}));
+        REQUIRE(merovingian::homeserver::set_account_data(rt, {alice_id, "", "m.tag", R"({"tags":{"u.fav":{}}})", 0U}));
         REQUIRE(merovingian::homeserver::push_to_device_message(
             rt, {0U, "@bob:example.org", alice_id, device_id, "m.room_key", R"({"k":"v"})"}));
 

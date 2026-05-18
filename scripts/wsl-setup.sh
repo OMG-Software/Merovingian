@@ -98,7 +98,7 @@ case "${ID:-}" in
         ;;
 esac
 
-packages="build-essential clang lld python3 python3-venv pkg-config git libsodium-dev libpq-dev libsqlite3-dev libssl-dev libcurl4-openssl-dev catch2 clang-format clang-tidy cppcheck"
+packages="build-essential clang lld python3 python3-venv pkg-config git perl bison flex m4 libssl-dev catch2 clang-format clang-tidy cppcheck"
 
 run sudo apt-get update
 # shellcheck disable=SC2086

@@ -20,6 +20,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -123,6 +124,7 @@ namespace
     {
         std::string localpart{};
         std::string password{};
+        std::string registration_token{};
     };
 
     struct MatrixLoginBody final
@@ -314,7 +316,44 @@ namespace
         {
             return std::nullopt;
         }
-        return MatrixRegisterBody{*username, *password};
+        auto const* token = string_member(*object, "token");
+        if (auto const* auth = object_member_object(*object, "auth"); auth != nullptr)
+        {
+            if (auto const* auth_token = string_member(*auth, "token"); auth_token != nullptr)
+            {
+                token = auth_token;
+            }
+        }
+        return MatrixRegisterBody{*username, *password, token == nullptr ? std::string{} : *token};
+    }
+
+    [[nodiscard]] auto configured_registration_token(config::Config const& config) -> std::string
+    {
+        if (!config.security().registration.require_token || config.security().registration.token_file.empty())
+        {
+            return {};
+        }
+        auto input = std::ifstream{config.security().registration.token_file};
+        auto token = std::string{};
+        std::getline(input, token);
+        return token;
+    }
+
+    [[nodiscard]] auto registration_request_body(config::Config const& config, std::string_view username,
+                                                 std::string_view password) -> std::string
+    {
+        auto members = canonicaljson::Object{
+            json_member("username", json_str(username)),
+            json_member("password", json_str(password)),
+        };
+        if (auto token = configured_registration_token(config); !token.empty())
+        {
+            members.push_back(json_member("auth", json_obj({
+                                                      json_member("type", json_str("m.login.registration_token")),
+                                                      json_member("token", json_str(token)),
+                                                  })));
+        }
+        return json_serialize(json_obj(std::move(members)));
     }
 
     [[nodiscard]] auto matrix_user_id(std::string_view server_name, std::string_view user) -> std::string
@@ -639,9 +678,10 @@ namespace
         return {std::move(changed), std::move(left)};
     }
 
-    [[nodiscard]] auto build_presence_events(database::PersistentStore const& store, sync::EventTypeFilter const& filter,
-                                             std::string_view user, std::uint64_t since_sync_stream_id,
-                                             std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
+    [[nodiscard]] auto build_presence_events(database::PersistentStore const& store,
+                                             sync::EventTypeFilter const& filter, std::string_view user,
+                                             std::uint64_t since_sync_stream_id, std::uint64_t& max_observed_stream_id)
+        -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
         auto emitted = std::size_t{0U};
@@ -772,9 +812,9 @@ namespace
         auto const since_token =
             request.since.has_value() ? sync::decode_stream_token(*request.since) : std::optional<sync::StreamToken>{};
         auto const since_ordering = since_token.has_value() ? since_token->event_ordering : std::uint64_t{0U};
-        auto const since_sync_stream_id =
-            since_token.has_value() ? since_token->sync_stream_id : std::uint64_t{0U};
-        auto const filter = request.filter.has_value() ? sync::parse_filter_argument(*request.filter) : sync::SyncFilter{};
+        auto const since_sync_stream_id = since_token.has_value() ? since_token->sync_stream_id : std::uint64_t{0U};
+        auto const filter =
+            request.filter.has_value() ? sync::parse_filter_argument(*request.filter) : sync::SyncFilter{};
         auto& store = rt.homeserver.database.persistent_store;
 
         // Long-poll: when the caller passes `timeout` and there's nothing
@@ -815,10 +855,9 @@ namespace
             auto const member_count = room.members.size();
             auto timeline_events = canonicaljson::Array{};
             auto event_count = std::size_t{0U};
-            auto const timeline_cap =
-                filter.room.timeline.limit != 0U
-                    ? std::min(filter.room.timeline.limit, rt.limits.max_sync_events_per_room)
-                    : rt.limits.max_sync_events_per_room;
+            auto const timeline_cap = filter.room.timeline.limit != 0U
+                                          ? std::min(filter.room.timeline.limit, rt.limits.max_sync_events_per_room)
+                                          : rt.limits.max_sync_events_per_room;
 
             for (auto const& event : store.events)
             {
@@ -854,7 +893,7 @@ namespace
 
             auto const limited = store.events.size() > timeline_cap;
             auto room_account_data = build_account_data_events(store, filter.room.account_data, user, room.room_id,
-                                                                since_sync_stream_id, max_observed_sync_stream_id);
+                                                               since_sync_stream_id, max_observed_sync_stream_id);
             join_members.push_back(json_member(
                 room.room_id,
                 json_obj({
@@ -910,21 +949,20 @@ namespace
             }
         }
 
-        auto to_device_events = build_to_device_events_array(store, user, device_id, since_sync_stream_id,
-                                                             max_observed_sync_stream_id);
+        auto to_device_events =
+            build_to_device_events_array(store, user, device_id, since_sync_stream_id, max_observed_sync_stream_id);
         auto [device_changed, device_left] =
             build_device_list_arrays(store, user, since_sync_stream_id, max_observed_sync_stream_id);
         auto presence_events =
             build_presence_events(store, filter.presence, user, since_sync_stream_id, max_observed_sync_stream_id);
         auto global_account_data = build_account_data_events(store, filter.account_data, user, std::string_view{},
-                                                              since_sync_stream_id, max_observed_sync_stream_id);
+                                                             since_sync_stream_id, max_observed_sync_stream_id);
         auto otk_counts = build_otk_counts(store, user, device_id);
         auto fallback_key_types = build_fallback_key_types(store, user, device_id);
 
         auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, store.next_sync_stream_id);
         auto const next_token = sync::StreamToken{rt.homeserver.database.next_stream_ordering,
-                                                  rt.homeserver.database.next_stream_ordering,
-                                                  advanced_sync_stream_id};
+                                                  rt.homeserver.database.next_stream_ordering, advanced_sync_stream_id};
 
         return json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
@@ -934,8 +972,7 @@ namespace
                                      json_member("leave", json_obj(std::move(leave_members))),
                                  })),
             json_member("presence", json_obj({json_member("events", json_arr(std::move(presence_events)))})),
-            json_member("account_data",
-                        json_obj({json_member("events", json_arr(std::move(global_account_data)))})),
+            json_member("account_data", json_obj({json_member("events", json_arr(std::move(global_account_data)))})),
             json_member("to_device", json_obj({json_member("events", json_arr(std::move(to_device_events)))})),
             json_member("device_lists", json_obj({
                                             json_member("changed", json_arr(std::move(device_changed))),
@@ -1431,7 +1468,8 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             return err(400U, "M_BAD_JSON", "registration body must be Matrix JSON");
         }
-        auto const result = register_local_user(rt.homeserver, body->localpart, body->password);
+        auto const result =
+            register_local_user(rt.homeserver, body->localpart, body->password, body->registration_token);
         return result.ok ? resp(200U, json_serialize(json_obj({json_member("user_id", json_str(result.value))})))
                          : err(result.status, "M_FORBIDDEN", result.reason);
     }
@@ -1644,7 +1682,7 @@ auto run_client_server_flow(config::Config const& config) -> OperationResult
     }
     auto& rt = started.runtime;
     auto reg = handle_client_server_request(
-        rt, {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+        rt, {"POST", "/_matrix/client/v3/register", {}, registration_request_body(config, "alice", "CorrectHorse7!")});
     auto login = handle_client_server_request(
         rt,
         {"POST",

@@ -37,9 +37,10 @@ management, parameterized execution, and PostgreSQL error reporting.
 
 ## Maintenance and platform posture
 
-`libpq` is maintained with PostgreSQL and is available on the target Linux and
-BSD platforms through normal package managers. The project build requires the
-Meson `libpq` dependency when building the database module.
+`libpq` is now pinned through `subprojects/libpq.wrap`, which builds the
+PostgreSQL 18.0 client library from source through a Meson-managed external
+project. The default wrappers force fallback mode so CI and local builds resolve
+the same reviewed `libpq` source version instead of relying on host packages.
 
 ## Current limitations
 

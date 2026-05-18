@@ -34,13 +34,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            bison \
             clang \
+            flex \
             llvm \
-            libcurl4-openssl-dev \
-            libpq-dev \
             libssl-dev \
-            libsqlite3-dev \
-            libsodium-dev \
+            m4 \
+            perl \
             pkg-config
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja

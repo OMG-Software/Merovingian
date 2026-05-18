@@ -7,7 +7,7 @@ builddir=build
 cc=${CC:-clang}
 cxx=${CXX:-clang++}
 pkg_config=${PKG_CONFIG:-pkg-config}
-wrap_mode=default
+wrap_mode=forcefallback
 profile=
 build_tests=true
 build_fuzz=false
@@ -22,6 +22,7 @@ hardening=
 
 script_dir=$(CDPATH= cd "$(dirname "$0")" && pwd -P)
 repo_root=$(CDPATH= cd "$script_dir/.." && pwd -P)
+tool_shim_dir=$repo_root/scripts/tool-shims
 cd "$repo_root"
 
 usage() {
@@ -34,7 +35,7 @@ Options:
   --cc <command>      C compiler command. Default: clang or $CC.
   --cxx <command>     C++ compiler command. Default: clang++ or $CXX.
   --pkg-config <cmd>  pkg-config-compatible command. Default: pkg-config.
-  --wrap-mode <mode>  Meson wrap mode. Default: default.
+  --wrap-mode <mode>  Meson wrap mode. Default: forcefallback.
   --profile <name>    Named profile: debug, release, sanitizer, coverage, fuzz, hardened.
   --buildtype <type>  Meson buildtype, for example debug.
   --sanitize <list>   Meson b_sanitize value, for example address,undefined.
@@ -91,13 +92,6 @@ check_command() {
         return
     fi
     command -v "$1" >/dev/null 2>&1 || fail "missing command: $1"
-}
-
-check_pkg_config_module() {
-    if [ "$dry_run" -eq 1 ]; then
-        return
-    fi
-    "$pkg_config" --exists "$1" || fail "missing pkg-config module: $1"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -208,11 +202,7 @@ check_command "$cxx"
 check_command meson
 check_command ninja
 check_command "$pkg_config"
-check_pkg_config_module libsodium
 check_pkg_config_module openssl
-check_pkg_config_module libpq
-check_pkg_config_module sqlite3
-check_pkg_config_module libcurl
 
 meson_options="-Dbuild_tests=$build_tests -Dbuild_fuzz=$build_fuzz --wrap-mode=$wrap_mode"
 [ -z "$buildtype" ] || meson_options="$meson_options --buildtype=$buildtype"
@@ -222,10 +212,10 @@ meson_options="-Dbuild_tests=$build_tests -Dbuild_fuzz=$build_fuzz --wrap-mode=$
 
 if [ -f "$builddir/build.ninja" ]; then
     # shellcheck disable=SC2086
-    run env CC="$cc" CXX="$cxx" meson setup "$builddir" --reconfigure $meson_options
+    run env PATH="$tool_shim_dir:$PATH" CC="$cc" CXX="$cxx" meson setup "$builddir" --reconfigure $meson_options
 else
     # shellcheck disable=SC2086
-    run env CC="$cc" CXX="$cxx" meson setup "$builddir" $meson_options
+    run env PATH="$tool_shim_dir:$PATH" CC="$cc" CXX="$cxx" meson setup "$builddir" $meson_options
 fi
 
 if [ "$setup_only" -eq 1 ]; then

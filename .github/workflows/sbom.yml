@@ -1,0 +1,45 @@
+name: SBOM
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - 'claude/**'
+      - 'codex/**'
+  pull_request:
+    branches:
+      - main
+      - master
+  release:
+    types:
+      - published
+  schedule:
+    - cron: "41 3 * * 1"
+  workflow_dispatch:
+
+jobs:
+  generate-sbom:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: merovingian.spdx.json
+          artifact-name: merovingian-sbom-spdx
+
+      - name: Generate CycloneDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: cyclonedx-json
+          output-file: merovingian.cdx.json
+          artifact-name: merovingian-sbom-cyclonedx

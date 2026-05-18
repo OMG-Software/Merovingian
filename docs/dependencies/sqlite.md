@@ -24,9 +24,10 @@ process restart and provides a practical development path for contributors.
 
 ## Maintenance and platform posture
 
-SQLite is available through the supported Linux and BSD package managers and is
-required by the Meson build. It should remain isolated to the database backend
-module.
+SQLite is pinned through `subprojects/sqlite3.wrap`, currently targeting the
+WrapDB-packaged `3.53.1-1` source release. It remains isolated to the database
+backend module even though the default build path now resolves it from the
+committed wrap rather than the host package manager.
 
 ## Current limitations
 

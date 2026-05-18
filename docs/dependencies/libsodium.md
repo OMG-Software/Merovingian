@@ -27,9 +27,10 @@ and Ed25519 operations across Linux and BSD package managers.
 
 ## Maintenance and platform posture
 
-LibSodium is available through the supported Linux and BSD package managers and
-is required by the Meson build. The build wrappers check for the `libsodium`
-pkg-config module before configuring Meson.
+LibSodium is pinned through `subprojects/libsodium.wrap` and built from the
+official `libsodium-1.0.20` source tarball through a Meson-managed external
+project. The default Linux, BSD, and WSL wrappers force Meson fallback mode so
+the reviewed version is used consistently across CI and local builds.
 
 ## Current limitations
 

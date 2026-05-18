@@ -1,0 +1,10 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+set -eu
+
+if command -v gmake >/dev/null 2>&1; then
+    exec gmake "$@"
+fi
+
+exec /usr/bin/make "$@"

@@ -37,7 +37,19 @@ require_file scripts/build-linux.sh
 require_file scripts/build-bsd.sh
 require_file scripts/build-wsl.ps1
 require_file scripts/wsl-setup.sh
+require_file scripts/tool-shims/make
 require_file .github/workflows/release.yml
+require_file .github/workflows/secret-scan.yml
+require_file .github/workflows/dependency-vulnerability-triage.yml
+require_file .github/workflows/sbom.yml
+require_file .github/dependency-review-config.yml
+require_file .gitleaks.toml
+require_file subprojects/libsodium.wrap
+require_file subprojects/libpq.wrap
+require_file subprojects/curl.wrap
+require_file subprojects/sqlite3.wrap
+require_file subprojects/packagefiles/libsodium/meson.build
+require_file subprojects/packagefiles/libpq/meson.build
 
 if grep -R "password-hash:v1" src include >/dev/null 2>&1; then
     fail "production sources still contain legacy password-hash:v1"

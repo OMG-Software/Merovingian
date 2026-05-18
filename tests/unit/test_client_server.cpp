@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 
@@ -14,7 +15,7 @@ namespace
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
-    security.registration.enabled = true;
+    merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
@@ -119,8 +120,10 @@ SCENARIO("Client-server runtime account and device endpoints use real sessions",
         WHEN("a user registers and logs in")
         {
             auto const registered = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json("alice", "CorrectHorse7!")});
             auto const login = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST",
@@ -167,7 +170,10 @@ SCENARIO("Client-server runtime rejects malformed Matrix JSON request bodies", "
                 runtime, {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":)"});
             auto const incomplete_login = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"POST", "/_matrix/client/v3/login", {}, R"({"type":"m.login.password","password":"CorrectHorse7!"})"});
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
 
             THEN("the API fails closed with stable Matrix bad-json errors")
             {
@@ -191,7 +197,8 @@ SCENARIO("Client-server runtime dispatches complete HTTP requests through Matrix
 
         WHEN("registration login and whoami arrive as raw HTTP requests")
         {
-            auto const registration_body = std::string{R"({"username":"alice","password":"CorrectHorse7!"})"};
+            auto const registration_body =
+                std::string{merovingian::tests::registration_json("alice", "CorrectHorse7!")};
             auto const registration = merovingian::homeserver::handle_client_server_http_request(
                 runtime, "POST /_matrix/client/v3/register HTTP/1.1\r\nHost: example.org\r\nContent-Length: " +
                              std::to_string(registration_body.size()) + "\r\n\r\n" + registration_body);
@@ -254,8 +261,10 @@ SCENARIO("Client-server runtime escapes login and device JSON strings", "[homese
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .status == 200U);
 
         WHEN("the device id and display name include quotes and backslashes")
@@ -295,8 +304,10 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -349,8 +360,10 @@ SCENARIO("Client-server runtime signs sent events and persists their DAG metadat
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -408,8 +421,10 @@ SCENARIO("Client-server runtime wires server-blind E2EE key API routes", "[homes
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -452,10 +467,8 @@ SCENARIO("Client-server runtime wires trust and safety report and admin review r
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
-                    .status == 200U);
+        auto const admin = merovingian::homeserver::bootstrap_admin_user(runtime.homeserver, "alice", "CorrectHorse7!");
+        REQUIRE(admin.ok);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST",
@@ -499,8 +512,10 @@ SCENARIO("Client-server runtime persists client action audit events", "[homeserv
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"})
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -550,7 +565,10 @@ SCENARIO("Client-server runtime enforces request limits and Matrix-style errors"
         WHEN("oversized and repeated requests are sent")
         {
             auto const oversized = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
             runtime.limits.max_body_bytes = 4096U;
             auto const first = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
@@ -635,8 +653,10 @@ SCENARIO("Sync endpoint returns stream token and event bodies for initial and in
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const registered = merovingian::homeserver::handle_client_server_request(
-            runtime,
-            {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST",
@@ -722,8 +742,10 @@ SCENARIO("Sync surfaces invite and leave room categories alongside Matrix-spec t
         auto runtime = std::move(started.runtime);
 
         auto const register_response = merovingian::homeserver::handle_client_server_request(
-            runtime,
-            {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(register_response.status == 200U);
         auto const user_id = json_value(register_response.body, "\"user_id\":\"");
 
@@ -864,11 +886,16 @@ SCENARIO("Rate-limit buckets are scoped per access token to prevent cross-user d
         auto& runtime = started.runtime;
 
         auto const register_alice = merovingian::homeserver::handle_client_server_request(
-            runtime,
-            {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(register_alice.status == 200U);
         auto const register_bob = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {}, R"({"username":"bob","password":"CorrectHorse7!"})"});
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("bob", "CorrectHorse7!")});
         REQUIRE(register_bob.status == 200U);
 
         auto const login_alice = merovingian::homeserver::handle_client_server_request(

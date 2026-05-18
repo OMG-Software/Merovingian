@@ -71,6 +71,7 @@ Rejected cases include:
 - missing configured TLS certificate or private-key file
 - unsafe configured TLS certificate or private-key file permissions
 - open registration without token requirement
+- token-protected registration without a registration token file
 - disabled default encryption for new rooms
 - disabled direct-message encryption requirement
 - invalid federation default policy
@@ -130,6 +131,27 @@ exist as regular owner-only non-executable secret files. Startup loads the
 certificate chain and private key before binding the listener, verifies that the
 private key matches the certificate, and fails closed if OpenSSL rejects either
 file.
+
+## Registration Token Policy
+
+Public registration is disabled by default. If it is enabled, startup requires
+token protection and a token file:
+
+```text
+security.registration.enabled=true
+security.registration.require_token=true
+security.registration.token_file=/etc/merovingian/registration-token
+```
+
+The token file is read by the registration path and should contain the
+registration token on its first line. Treat it as a secret: owner-only,
+non-executable, outside web roots, and rotated whenever it may have been
+shared too broadly. Changing the token-file path requires a restart so startup
+can re-run secret-file metadata checks.
+
+Successful public registration creates a normal user only. Admin users must be
+created through the explicit operator bootstrap path, not by being the first
+public registrant.
 
 ## Federation exposure policy
 

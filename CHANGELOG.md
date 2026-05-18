@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.1.68
+
+- Fixed the critical registration audit finding by enforcing configured
+  registration tokens from `security.registration.token_file` in the runtime
+  registration path.
+- Removed implicit first-public-user admin creation; admin users now require the
+  explicit bootstrap API.
+- Fixed the high federation exposure finding by routing federation listeners
+  through a federation-only dispatcher that hides admin and client compatibility
+  routes.
+- Added BDD regression coverage for token-protected registration and
+  federation-only dispatch.
+- Documented registration token-file configuration and updated the security
+  audit retest notes.
+- Bumped project and executable versions to `0.1.68`.
+
+## 0.1.67
+
+- Added source-pinned Meson wraps for the previously unwrapped runtime
+  dependencies:
+  - `subprojects/libsodium.wrap` with a Meson external-project packagefile
+  - `subprojects/libpq.wrap` with a Meson external-project packagefile
+  - WrapDB-pinned `subprojects/curl.wrap`
+  - WrapDB-pinned `subprojects/sqlite3.wrap`
+- Switched the Linux, BSD, WSL, and setup entrypoints to
+  `--wrap-mode=forcefallback` by default so clean builds resolve the committed
+  dependency wraps instead of host pkg-config libraries.
+- Added `scripts/tool-shims/make` so external-project wraps resolve GNU make on
+  BSD hosts.
+- Added tooling coverage in `tests/tooling/test_dependency_wraps.py` and
+  tightened `scripts/check-release-readiness.sh` to require the wrap files and
+  packagefiles.
+- Updated CI package lists and developer/dependency documentation to match the
+  new source-pinned dependency path.
+- Bumped project and executable versions to `0.1.67`.
+
+## 0.1.66
+
+- Added three supply-chain workflows:
+  - `.github/workflows/secret-scan.yml` runs Gitleaks against repository
+    history and uploads SARIF results.
+  - `.github/workflows/dependency-vulnerability-triage.yml` runs GitHub
+    dependency review on pull requests and publishes an SBOM-backed
+    vulnerability triage report.
+  - `.github/workflows/sbom.yml` generates SPDX and CycloneDX JSON SBOM
+    artifacts and attaches them to published releases.
+- Added repository security-workflow contracts in
+  `tests/tooling/test_security_workflows.py` and registered the test in
+  `tests/meson.build`.
+- Added `.gitleaks.toml` and `.github/dependency-review-config.yml`, and
+  tightened `scripts/check-release-readiness.sh` so releases now require the
+  new workflow and configuration files.
+- Updated release, security-review, progress-tracker, and audit documentation
+  to reflect the new supply-chain automation and the remaining signing /
+  provenance gaps.
+- Bumped project and executable versions to `0.1.66`.
+
+## 0.1.65
+
+- Added `docs/security-code-audit-alpha.md`, a structured alpha code-audit
+  report covering scope, threat model, findings, test gaps, and remediation
+  priorities for the current repository state.
+- Linked the latest code-audit report from `docs/01-progress-tracker.md`.
+- Bumped project and executable versions to `0.1.65`.
+
 ## 0.1.64
 
 - Closed the remaining two Alpha TODOs from `docs/01-progress-tracker.md`.

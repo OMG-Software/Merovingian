@@ -40,13 +40,11 @@ supported Linux and BSD targets, and ships in mainline distributions.
 
 ## Maintenance and platform posture
 
-System libcurl packages are preferred for production builds so
-operating-system security updates carry the patch burden. The TLS backend
-is whatever the system libcurl was built against (OpenSSL on Linux,
-LibreSSL on OpenBSD, etc.); the OutboundClient integration suite enforces
-identical verification behavior across the supported platforms so backend
-drift surfaces in CI rather than at runtime. A pinned Meson wrap fallback
-can be added when a known-good WrapDB release is selected.
+libcurl is pinned through `subprojects/curl.wrap`, currently targeting the
+WrapDB-packaged `8.12.1-2` source release. The TLS backend still follows the
+host OpenSSL selection underneath that wrap, and the OutboundClient integration
+suite remains responsible for catching backend behavior drift across supported
+platforms.
 
 ## Current limitations
 

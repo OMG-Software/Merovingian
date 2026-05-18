@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.1.64',
+  version: '0.1.68',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -15,9 +15,9 @@ project(
 
 cpp = meson.get_compiler('cpp')
 thread_dep = dependency('threads')
-libsodium_dep = dependency('libsodium')
+libsodium_dep = dependency('libsodium', fallback: ['libsodium', 'libsodium_dep'])
 openssl_dep = dependency('openssl', include_type: 'system', fallback: ['openssl', 'openssl_dep'])
-libpq_dep = dependency('libpq', include_type: 'system')
+libpq_dep = dependency('libpq', fallback: ['libpq', 'libpq_dep'])
 sqlite_dep = dependency('sqlite3')
 yyjson_dep = dependency(
   'yyjson',
@@ -30,7 +30,7 @@ yyjson_dep = dependency(
 # integration suite enforces consistent verification behavior across
 # Linux and BSD targets. A subprojects/curl.wrap fallback can be added
 # in a follow-up once a known-good WrapDB release is pinned.
-libcurl_dep = dependency('libcurl', version: '>=7.85.0', include_type: 'system')
+libcurl_dep = dependency('libcurl', version: '>=7.85.0')
 resolv_dep = cpp.find_library('resolv', required: false)
 
 warning_flags = [

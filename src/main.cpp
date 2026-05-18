@@ -35,7 +35,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.1.64"};
+constexpr auto version = std::string_view{"0.1.68"};
 
 struct BootstrapConfigResult final
 {
@@ -192,7 +192,22 @@ struct BootstrapConfigResult final
         return client_tls_validation;
     }
 
-    return validate_existing_listener_tls_files(config.listeners().federation, "listeners.federation");
+    auto federation_tls_validation =
+        validate_existing_listener_tls_files(config.listeners().federation, "listeners.federation");
+    if (!federation_tls_validation.parsed.findings.empty())
+    {
+        return federation_tls_validation;
+    }
+
+    if (!config.security().registration.token_file.empty())
+    {
+        auto const token_required =
+            config.security().registration.enabled && config.security().registration.require_token;
+        return validate_existing_secret_file_metadata(config.security().registration.token_file,
+                                                      "security.registration.token_file", !token_required);
+    }
+
+    return {};
 }
 
 [[nodiscard]] auto load_config_from_file(std::string const& path) -> BootstrapConfigResult
@@ -554,7 +569,7 @@ struct ListenerBinding final
         threads.emplace_back([&runtime, &runtime_lock, &shutdown, &stats, &target = binding]() {
             auto const mode = target.role == merovingian::net::ListenerRole::client
                                   ? merovingian::homeserver::HttpDispatchMode::client_server
-                                  : merovingian::homeserver::HttpDispatchMode::local_router;
+                                  : merovingian::homeserver::HttpDispatchMode::federation;
             if (target.tls_context.has_value())
             {
                 merovingian::homeserver::serve_tls_http(*target.tls_context, target.acceptor, runtime, runtime_lock,

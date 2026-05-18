@@ -2,6 +2,7 @@
 
 #include "local_services.hpp"
 #include "merovingian/auth/identity.hpp"
+#include "merovingian/auth/session.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
@@ -9,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -150,23 +152,87 @@ namespace
         return iterator == database.sessions.end() ? nullptr : &(*iterator);
     }
 
+    auto trim_line_ending(std::string& value) -> void
+    {
+        while (!value.empty() && (value.back() == '\n' || value.back() == '\r'))
+        {
+            value.pop_back();
+        }
+    }
+
+    [[nodiscard]] auto read_registration_token(config::RegistrationSecurityConfig const& registration)
+        -> std::optional<std::string>
+    {
+        if (registration.token_file.empty())
+        {
+            return std::nullopt;
+        }
+
+        auto input = std::ifstream{registration.token_file};
+        if (!input)
+        {
+            return std::nullopt;
+        }
+
+        auto token = std::string{};
+        std::getline(input, token);
+        trim_line_ending(token);
+        return token.empty() ? std::optional<std::string>{} : std::optional<std::string>{std::move(token)};
+    }
+
+    [[nodiscard]] auto registration_token_matches(std::string_view expected, std::string_view presented) noexcept
+        -> bool
+    {
+        return sodium_is_ready() && expected.size() == presented.size() &&
+               sodium_memcmp(expected.data(), presented.data(), expected.size()) == 0;
+    }
+
+    [[nodiscard]] auto make_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
+                                 bool admin, std::string_view audit_outcome) -> OperationResult
+    {
+        auto const user_id = user_id_from_localpart(runtime.config.server().server_name, localpart);
+        if (!auth::user_id_is_valid(user_id))
+        {
+            return make_operation_result(false, {}, "invalid user id");
+        }
+        if (!auth::password_is_acceptable(password))
+        {
+            return make_operation_result(false, {}, "password rejected");
+        }
+        if (find_user(runtime.database, user_id) != nullptr)
+        {
+            return make_operation_result(false, {}, "user already exists");
+        }
+
+        auto const password_hash = hash_password(password);
+        if (!password_hash.has_value())
+        {
+            return make_operation_result(false, {}, "password hashing failed");
+        }
+        if (!database::store_user(runtime.database.persistent_store, {user_id, *password_hash, false, false, admin}))
+        {
+            return make_operation_result(false, {}, "user persistence failed", 500U);
+        }
+        runtime.database.users.push_back({user_id, *password_hash, false, false, admin});
+        append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.user_registered", user_id,
+                           user_id, audit_outcome);
+        return make_operation_result(true, user_id);
+    }
+
 } // namespace
 
-auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password)
-    -> OperationResult
+auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
+                         std::string_view registration_token) -> OperationResult
 {
     auto const user_id = user_id_from_localpart(runtime.config.server().server_name, localpart);
-    if (!auth::user_id_is_valid(user_id))
+    auto const& registration = runtime.config.security().registration;
+    auto const policy =
+        auth::registration_policy({registration.enabled, registration.require_token, !registration_token.empty()});
+    if (!policy.allowed)
     {
-        return make_operation_result(false, {}, "invalid user id");
-    }
-    if (!auth::password_is_acceptable(password))
-    {
-        return make_operation_result(false, {}, "password rejected");
-    }
-    if (find_user(runtime.database, user_id) != nullptr)
-    {
-        return make_operation_result(false, {}, "user already exists");
+        auto const status = policy.reason == "registration token required" ? 403U : 400U;
+        auto const reason = policy.reason == "registration disabled" ? "registration_disabled" : policy.reason;
+        return make_operation_result(false, {}, reason, static_cast<std::uint16_t>(status));
     }
 
     auto const decision = trust_safety::evaluate_registration_policy(
@@ -176,21 +242,22 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
         return make_operation_result(false, {}, decision.reason.code);
     }
 
-    auto const first_user_is_admin = runtime.database.users.empty();
-    auto const password_hash = hash_password(password);
-    if (!password_hash.has_value())
+    if (registration.require_token)
     {
-        return make_operation_result(false, {}, "password hashing failed");
+        auto const expected_token = read_registration_token(registration);
+        if (!expected_token.has_value() || !registration_token_matches(*expected_token, registration_token))
+        {
+            return make_operation_result(false, {}, "registration token rejected", 403U);
+        }
     }
-    if (!database::store_user(runtime.database.persistent_store,
-                              {user_id, *password_hash, false, false, first_user_is_admin}))
-    {
-        return make_operation_result(false, {}, "user persistence failed", 500U);
-    }
-    runtime.database.users.push_back({user_id, *password_hash, false, false, first_user_is_admin});
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.user_registered", user_id, user_id,
-                       first_user_is_admin ? "created_admin" : "created");
-    return make_operation_result(true, user_id);
+
+    return make_user(runtime, localpart, password, false, "created");
+}
+
+auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password)
+    -> OperationResult
+{
+    return make_user(runtime, localpart, password, true, "bootstrapped_admin");
 }
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)

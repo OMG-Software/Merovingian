@@ -21,6 +21,7 @@ database.pool_size=16
 
 security.registration.enabled=false
 security.registration.require_token=true
+security.registration.token_file=/etc/merovingian/registration-token
 
 security.encryption.default_for_new_rooms=true
 security.encryption.require_for_direct_messages=true

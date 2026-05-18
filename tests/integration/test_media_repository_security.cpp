@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/media/security.hpp"
@@ -17,7 +18,7 @@ namespace
 [[nodiscard]] auto media_test_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
-    security.registration.enabled = true;
+    merovingian::tests::enable_token_registration(security);
     security.media.max_upload_size = "8B";
     security.media.quarantine_unknown_mime = false;
     return {
@@ -40,9 +41,8 @@ namespace
 
 [[nodiscard]] auto register_and_login_admin(merovingian::homeserver::HomeserverRuntime& runtime) -> std::string
 {
-    auto const registration = merovingian::homeserver::handle_local_http_request(
-        runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
-    REQUIRE(registration.status == 200U);
+    auto const registration = merovingian::homeserver::bootstrap_admin_user(runtime, "alice", "CorrectHorse7!");
+    REQUIRE(registration.ok);
 
     auto const login = merovingian::homeserver::handle_local_http_request(
         runtime, {"POST", "/_matrix/client/v3/login", {}, "@alice:example.org|CorrectHorse7!|DEVICE1"});

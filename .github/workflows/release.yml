@@ -25,13 +25,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            bison \
             clang \
             catch2 \
-            libcurl4-openssl-dev \
-            libpq-dev \
+            flex \
             libssl-dev \
-            libsqlite3-dev \
-            libsodium-dev \
+            m4 \
+            perl \
             pkg-config
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja
@@ -93,7 +93,7 @@ jobs:
           usesh: true
           run: |
             tag="${GITHUB_REF_NAME}"
-            pkg install -y meson ninja llvm catch2 pkgconf git libsodium postgresql16-client openssl sqlite3 curl python3
+            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl python3
             sh scripts/build-bsd.sh --builddir build-freebsd-release --profile hardened
             sh scripts/check-release-readiness.sh
             package_root="merovingian-${tag}-freebsd-x86_64"
@@ -166,8 +166,10 @@ jobs:
           - unsafe-source gate
           - release-readiness metadata gate
 
-          This is an alpha pre-release. SBOM generation, dependency/license reports,
-          and artifact signing remain tracked production work in docs/01-progress-tracker.md.
+          Companion security workflows publish SPDX/CycloneDX SBOM artifacts and
+          dependency-triage evidence for this codebase. Artifact signing,
+          provenance, and license review remain tracked production work in
+          docs/01-progress-tracker.md.
           EOF
 
       - name: Publish GitHub alpha release
