@@ -905,12 +905,9 @@ auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
     {
         statements.push_back({"postgresql_create_" + std::string{table.name}, create_table_if_missing_sql(table), {}});
     }
+    // The schema deploys at v1 in its final shape; only the initial
+    // migration row is recorded.
     statements.push_back(migration_record_statement(1U, "initial_schema"));
-    statements.push_back(migration_record_statement(2U, "media_metadata_columns"));
-    statements.push_back(migration_record_statement(3U, "e2ee_key_storage"));
-    statements.push_back(migration_record_statement(4U, "signing_key_and_event_depth"));
-    statements.push_back(migration_record_statement(5U, "stream_ordering_and_membership_columns"));
-    statements.push_back(migration_record_statement(6U, "federation_queue_replay_columns"));
     return statements;
 }
 
