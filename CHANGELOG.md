@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- Bump to alpha release version.
+
 ## 0.1.64
 
 - Closed the remaining two Alpha TODOs from `docs/01-progress-tracker.md`.
