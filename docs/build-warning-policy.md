@@ -27,6 +27,11 @@ choices explicit at the project boundary. Profiles are names for reviewed Meson
 option sets; they do not weaken warning-as-error policy or bypass dependency
 checks.
 
+Fallback builds use Meson's default `wrapped-runtime` test setup to expose
+staged external-project library directories through `LD_LIBRARY_PATH`. This
+keeps Fedora and BSD test execution aligned with the libraries that were built
+for the current Meson tree.
+
 `_FORTIFY_SOURCE=3` is requested only when Meson reports an optimized build.
 That keeps the default debug profile warning-clean on glibc platforms, where
 FORTIFY without optimization is itself a compiler warning and this project

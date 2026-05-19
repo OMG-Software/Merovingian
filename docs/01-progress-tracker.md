@@ -115,13 +115,17 @@ deployment milestone.
   the build-local external-project dist directory. The libpq packagefile
   exposes PostgreSQL's installed include root because `libpq-fe.h` is staged
   directly under `include`, and the curl packagefile exposes curl's installed
-  include root so `<curl/curl.h>` resolves on BSD. Catch2 fallback builds
-  disable Catch2's own upstream SelfTest target; SQLite fallback builds are
-  static so sanitizer jobs link sanitizer runtimes through Merovingian's test
-  executables. `_FORTIFY_SOURCE=3` is requested only for optimized builds so
-  Fedora debug CI does not fail warnings-as-errors on glibc's optimization
-  diagnostic. Fedora container CI now covers the Red Hat package family in
-  addition to Ubuntu and FreeBSD.
+  include root so `<curl/curl.h>` resolves on BSD. The curl fallback disables
+  optional zlib and zstd support so its static archive does not need undeclared
+  compression libraries at link time. Catch2 fallback builds disable Catch2's
+  own upstream SelfTest target; SQLite fallback builds are static so sanitizer
+  jobs link sanitizer runtimes through Merovingian's test executables. Meson
+  tests run with a default fallback-runtime setup that exposes staged
+  external-project library directories through `LD_LIBRARY_PATH`.
+  `_FORTIFY_SOURCE=3` is requested only for optimized builds so Fedora debug CI
+  does not fail warnings-as-errors on glibc's optimization diagnostic. Fedora
+  container CI now covers the Red Hat package family in addition to Ubuntu and
+  FreeBSD.
   Current pinned wrap versions: curl 8.20.0, libsodium 1.0.22, Catch2 v3.14.0,
   libpq (PostgreSQL 18.0), SQLite 3.53.1, yyjson 0.12.0.
 - Client discovery: unauthenticated `GET /_matrix/client/versions` returns

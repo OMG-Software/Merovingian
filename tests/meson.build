@@ -1,6 +1,15 @@
 if get_option ('build_tests')
-shell = find_program('sh')
+  shell = find_program('sh')
   python = find_program('python3', 'python')
+  wrapped_runtime_env = environment()
+  wrapped_runtime_env.prepend(
+    'LD_LIBRARY_PATH',
+    meson.project_build_root() / 'subprojects' / 'libsodium-1.0.22' / 'dist' / 'usr' / 'local' / get_option('libdir'),
+    meson.project_build_root() / 'subprojects' / 'postgresql-18.0' / 'dist' / 'usr' / 'local' / get_option('libdir'),
+    meson.project_build_root() / 'subprojects' / 'curl-8.20.0' / 'dist' / 'usr' / 'local' / get_option('libdir'),
+    separator: ':',
+  )
+  add_test_setup('wrapped-runtime', env: wrapped_runtime_env, is_default: true)
   catch2_dep = dependency(
     'catch2',
     required: false,

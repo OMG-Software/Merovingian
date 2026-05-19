@@ -31,6 +31,8 @@
 - Fixed curl 8.20.0 configure options and dependency naming so the fallback
   exposes `libcurl_dep`, and corrected the fallback include root so
   `<curl/curl.h>` resolves consistently on Linux and BSD.
+- Disabled optional zlib and zstd support in the curl fallback so static
+  fallback links do not require undeclared compression libraries.
 - Fixed libpq external-project configure and include handling so build tools are
   found and `libpq-fe.h` is exposed from PostgreSQL's installed include root.
 - Disabled Catch2's upstream self-test target in fallback builds so CI only
@@ -45,6 +47,9 @@
   resolution, make-shim `DESTDIR` forwarding, Catch2 fallback self-test
   suppression, curl/libpq include-root handling, SQLite static fallback, and
   optimized-only FORTIFY handling.
+- Added a default Meson test setup that exposes staged external-project library
+  directories through `LD_LIBRARY_PATH` for Fedora and other fallback-runtime
+  test jobs.
 - Added a Fedora container build to CI so the Linux workflow also covers the
   Red Hat package family with `dnf`-provided dependencies.
 - Fixed registration-token CRLF handling so Windows-edited token files compare

@@ -48,6 +48,11 @@ The fallback packagefile exposes curl's installed include root, not the nested
 `curl` include directory, so `<curl/curl.h>` resolves the same way on Linux and
 BSD.
 
+The fallback also disables optional zlib and zstd content-encoding support.
+Merovingian does not require compressed federation responses at this boundary,
+and disabling those backends keeps the static fallback link closed without
+pulling undeclared compression libraries into every binary.
+
 ## Current limitations
 
 - The libcurl-backed `perform()` is synchronous. Async/multi-handle support

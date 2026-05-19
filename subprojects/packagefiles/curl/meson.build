@@ -8,6 +8,8 @@ curl_project = external_project.add_project(
     '--disable-shared',
     '--enable-static',
     '--without-brotli',
+    '--without-zlib',
+    '--without-zstd',
     '--without-libpsl',
     '--without-librtmp',
     '--without-libidn2',

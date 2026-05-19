@@ -152,6 +152,30 @@ class DependencyWrapTests(unittest.TestCase):
         self.assertIn("curl_project.dependency('curl')", packagefile)
         self.assertNotIn("subdir: 'curl'", packagefile)
 
+    def test_curl_fallback_does_not_require_extra_compression_libraries(self) -> None:
+        # GIVEN the curl fallback links a static libcurl archive into test binaries.
+        self.assertTrue(CURL_PACKAGEFILE.is_file(), "curl packagefile is missing")
+        packagefile = CURL_PACKAGEFILE.read_text(encoding="utf-8")
+
+        # WHEN Meson consumes the external-project pkg-config metadata.
+        # THEN optional compression backends are disabled so libcurl does not
+        # require undeclared zlib or zstd link dependencies.
+        self.assertIn("'--without-zlib'", packagefile)
+        self.assertIn("'--without-zstd'", packagefile)
+
+    def test_external_project_runtime_libraries_are_available_to_tests(self) -> None:
+        # GIVEN some autotools fallbacks can still install shared libraries.
+        tests_build = REPO_ROOT / "tests" / "meson.build"
+        self.assertTrue(tests_build.is_file(), "tests meson.build is missing")
+        tests_meson = tests_build.read_text(encoding="utf-8")
+
+        # WHEN Fedora executes binaries from Meson's test harness.
+        # THEN the default test setup exposes staged external-project library
+        # directories through LD_LIBRARY_PATH.
+        self.assertIn("wrapped_runtime_env.prepend(", tests_meson)
+        self.assertIn("'LD_LIBRARY_PATH'", tests_meson)
+        self.assertIn("add_test_setup('wrapped-runtime', env: wrapped_runtime_env, is_default: true)", tests_meson)
+
     def test_setup_scripts_install_the_extra_tools_needed_by_wrapped_sources(self) -> None:
         # GIVEN the environment bootstrap scripts.
         for script_path in (SETUP_SCRIPT, WSL_SETUP_SCRIPT):
