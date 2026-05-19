@@ -1,0 +1,11 @@
+title = "Merovingian gitleaks allowlist"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Reviewed test fixtures and CI placeholders"
+paths = [
+  '''(^|/)tests/''',
+  '''^\.github/workflows/postgres-integration\.yml$''',
+]

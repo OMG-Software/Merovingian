@@ -16,6 +16,15 @@ test(
 )
 
 test(
+  'server-admin-bootstrap-help-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable + ' --help 2>&1 | grep -q -- "--bootstrap-admin"',
+  ],
+)
+
+test(
   'setup-dev-env-help-smoke-test',
   smoke_test,
   args: [

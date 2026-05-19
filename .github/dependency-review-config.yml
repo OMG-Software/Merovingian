@@ -1,0 +1,4 @@
+fail-on-severity: high
+vulnerability-check: true
+license-check: false
+show-patched-versions: true

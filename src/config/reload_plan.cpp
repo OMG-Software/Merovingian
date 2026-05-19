@@ -136,6 +136,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.registration.require_token");
     }
+    if (current.security().registration.token_file != next.security().registration.token_file)
+    {
+        add_change(plan, "security.registration.token_file");
+    }
 
     if (current.security().encryption.default_for_new_rooms != next.security().encryption.default_for_new_rooms)
     {

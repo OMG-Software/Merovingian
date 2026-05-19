@@ -12,10 +12,10 @@ library already exists in the project's dependency surface, use it.
 ## Background
 
 The project already depends on `yyjson` (pinned to v0.12.0 in
-`subprojects/yyjson.wrap`) and `OpenSSL` (pinned via wrap, used for TLS
-termination on inbound listeners). The canonical JSON layer uses `yyjson` for
-strict parsing and project-owned deterministic serialization for signing
-inputs.
+`subprojects/yyjson.wrap`) and `OpenSSL` (resolved from the operating-system
+package and used for TLS termination on inbound listeners). The canonical JSON
+layer uses `yyjson` for strict parsing and project-owned deterministic
+serialization for signing inputs.
 
 Despite this, several response paths build JSON shapes by string concatenation
 through a bespoke `json_escape` helper, and the federation outbound path is a
@@ -233,7 +233,7 @@ test harness, not against real homeservers.
 - Gate federation outbound build on `curl_dep.found()` so the project still
   builds for non-federation-enabled deployments if that becomes a goal.
 - CI Linux and BSD jobs must install libcurl development headers before
-  configuring Meson, matching the existing OpenSSL/LibSodium pattern.
+  configuring Meson, matching the system OpenSSL and LibSodium package pattern.
 
 ## Out of scope / deferred
 

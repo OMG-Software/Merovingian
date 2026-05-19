@@ -8,6 +8,8 @@ Use this checklist for every release candidate.
 - Access tokens are CSPRNG-generated, high entropy, bearer-only, and stored as
   cryptographic hashes.
 - Token comparisons avoid early-exit secret comparison.
+- Public registration requires `security.registration.require_token=true` and
+  an owner-only `security.registration.token_file`.
 - Admin bootstrap is explicit and cannot be claimed by enabling public
   registration.
 
@@ -47,6 +49,8 @@ Use this checklist for every release candidate.
   plus SHA-256 checksum files through `.github/workflows/release.yml`.
 - CI passed normal, sanitizer, static-analysis, BSD, fuzz, and release-readiness
   workflows.
-- Dependency and license reports are attached.
+- Secret-scanning, dependency-triage, and SBOM workflows passed for the release
+  candidate commit.
+- Dependency vulnerability triage artifacts were reviewed before tagging.
 - SBOM and package checksums are attached.
 - Release artifacts are signed.

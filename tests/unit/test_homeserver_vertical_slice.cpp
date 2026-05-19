@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -15,7 +16,7 @@ namespace
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
-    security.registration.enabled = true;
+    merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
@@ -63,11 +64,10 @@ SCENARIO("Homeserver admin health requires an admin session", "[homeserver][vert
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const user = merovingian::homeserver::handle_local_http_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
-        REQUIRE(user.status == 200U);
+        auto const user = merovingian::homeserver::bootstrap_admin_user(runtime, "alice", "CorrectHorse7!");
+        REQUIRE(user.ok);
         auto const login = merovingian::homeserver::handle_local_http_request(
-            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.value + "|CorrectHorse7!|DEVICE1"});
         REQUIRE(login.status == 200U);
 
         WHEN("admin health is requested with and without the admin token")
@@ -106,7 +106,10 @@ SCENARIO("Homeserver registration follows runtime registration config", "[homese
         WHEN("a client attempts registration")
         {
             auto const user = merovingian::homeserver::handle_local_http_request(
-                started.runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
+                                  merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
 
             THEN("registration is rejected by policy")
             {
@@ -128,7 +131,10 @@ SCENARIO("Homeserver local auth route creates unique sessions and revokes tokens
         WHEN("a user registers, logs in twice, authenticates, and logs out")
         {
             auto const user = merovingian::homeserver::handle_local_http_request(
-                runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
             auto const login = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
             auto const second_login = merovingian::homeserver::handle_local_http_request(
@@ -166,10 +172,10 @@ SCENARIO("Homeserver admin observability endpoints expose runtime metrics and du
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const user = merovingian::homeserver::handle_local_http_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+        auto const user = merovingian::homeserver::bootstrap_admin_user(runtime, "alice", "CorrectHorse7!");
+        REQUIRE(user.ok);
         auto const login = merovingian::homeserver::handle_local_http_request(
-            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.value + "|CorrectHorse7!|DEVICE1"});
         REQUIRE(login.status == 200U);
 
         WHEN("admin metrics and audit are requested")
@@ -207,7 +213,10 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
         WHEN("a user registers and logs in twice")
         {
             auto const user = merovingian::homeserver::handle_local_http_request(
-                runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
             REQUIRE(user.status == 200U);
             auto const first_login = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
@@ -244,7 +253,10 @@ SCENARIO("Homeserver rejects same-length incorrect passwords and crafted token c
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const user = merovingian::homeserver::handle_local_http_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
         REQUIRE(user.status == 200U);
         auto const login = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
@@ -276,7 +288,10 @@ SCENARIO("Homeserver local room route flow creates joins sends and fetches state
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const user = merovingian::homeserver::handle_local_http_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
         REQUIRE(user.status == 200U);
         auto const login = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
@@ -371,7 +386,10 @@ SCENARIO("Homeserver event send uses wall-clock origin_server_ts", "[homeserver]
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const user = merovingian::homeserver::handle_local_http_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {}, "alice|CorrectHorse7!"});
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
         REQUIRE(user.status == 200U);
         auto const login = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});

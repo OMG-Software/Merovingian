@@ -35,7 +35,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.1.64"};
+constexpr auto version = std::string_view{"0.1.65"};
 
 struct BootstrapConfigResult final
 {
@@ -192,7 +192,22 @@ struct BootstrapConfigResult final
         return client_tls_validation;
     }
 
-    return validate_existing_listener_tls_files(config.listeners().federation, "listeners.federation");
+    auto federation_tls_validation =
+        validate_existing_listener_tls_files(config.listeners().federation, "listeners.federation");
+    if (!federation_tls_validation.parsed.findings.empty())
+    {
+        return federation_tls_validation;
+    }
+
+    if (!config.security().registration.token_file.empty())
+    {
+        auto const token_required =
+            config.security().registration.enabled && config.security().registration.require_token;
+        return validate_existing_secret_file_metadata(config.security().registration.token_file,
+                                                      "security.registration.token_file", !token_required);
+    }
+
+    return {};
 }
 
 [[nodiscard]] auto load_config_from_file(std::string const& path) -> BootstrapConfigResult
@@ -254,6 +269,9 @@ struct BootstrapConfigResult final
 struct ParsedArgs final
 {
     bool dry_run{false};
+    std::optional<std::string> bootstrap_admin_localpart{};
+    std::optional<std::string> bootstrap_admin_password_file{};
+    std::optional<std::string> error{};
     std::vector<std::string_view> positional{};
 };
 
@@ -269,9 +287,48 @@ struct ParsedArgs final
             parsed.dry_run = true;
             continue;
         }
+        if (argument == "--bootstrap-admin")
+        {
+            if (parsed.bootstrap_admin_localpart.has_value())
+            {
+                parsed.error = "--bootstrap-admin specified more than once";
+                return parsed;
+            }
+            if (index + 1 >= argc)
+            {
+                parsed.error = "--bootstrap-admin requires a localpart";
+                return parsed;
+            }
+            parsed.bootstrap_admin_localpart = argv[++index];
+            continue;
+        }
+        if (argument == "--bootstrap-admin-password-file")
+        {
+            if (parsed.bootstrap_admin_password_file.has_value())
+            {
+                parsed.error = "--bootstrap-admin-password-file specified more than once";
+                return parsed;
+            }
+            if (index + 1 >= argc)
+            {
+                parsed.error = "--bootstrap-admin-password-file requires a path";
+                return parsed;
+            }
+            parsed.bootstrap_admin_password_file = argv[++index];
+            continue;
+        }
         parsed.positional.push_back(argument);
     }
+    if (parsed.bootstrap_admin_localpart.has_value() != parsed.bootstrap_admin_password_file.has_value())
+    {
+        parsed.error = "--bootstrap-admin and --bootstrap-admin-password-file must be used together";
+    }
     return parsed;
+}
+
+[[nodiscard]] auto usage_error(std::string message) -> BootstrapConfigResult
+{
+    return reject_config(merovingian::bootstrap::ExitCode::usage_error, "arguments", std::move(message));
 }
 
 [[nodiscard]] auto build_config_from_positional(std::vector<std::string_view> const& positional)
@@ -288,9 +345,9 @@ struct ParsedArgs final
         return load_config_from_file(std::string{positional[1]});
     }
 
-    return reject_config(merovingian::bootstrap::ExitCode::usage_error, "arguments",
-                         "usage: merovingian-server [--dry-run] [--config <path>] [--check-config <path>] "
-                         "[--plan-config-reload <current> <next>] [--help] [--version]");
+    return usage_error("usage: merovingian-server [--dry-run] [--config <path>] "
+                       "[--bootstrap-admin <localpart> --bootstrap-admin-password-file <path>] "
+                       "[--check-config <path>] [--plan-config-reload <current> <next>] [--help] [--version]");
 }
 
 [[nodiscard]] auto is_help_request(int argc, char const* const* argv) noexcept -> bool
@@ -320,6 +377,8 @@ auto print_help() -> void
               << "Usage:\n"
               << "  merovingian-server [--dry-run]\n"
               << "  merovingian-server [--dry-run] --config <path>\n"
+              << "  merovingian-server [--config <path>] --bootstrap-admin <localpart> "
+                 "--bootstrap-admin-password-file <path>\n"
               << "  merovingian-server --check-config <path>\n"
               << "  merovingian-server --plan-config-reload <current> <next>\n"
               << "  merovingian-server --help\n"
@@ -327,6 +386,28 @@ auto print_help() -> void
               << "\n"
               << "Configuration is validated before startup continues.\n"
               << "--dry-run validates and prints the startup summary without binding listeners.\n";
+}
+
+auto trim_line_ending(std::string& value) -> void
+{
+    while (!value.empty() && (value.back() == '\n' || value.back() == '\r'))
+    {
+        value.pop_back();
+    }
+}
+
+[[nodiscard]] auto read_bootstrap_admin_password(std::string const& path) -> std::optional<std::string>
+{
+    auto input = std::ifstream{path};
+    if (!input)
+    {
+        return std::nullopt;
+    }
+
+    auto password = std::string{};
+    std::getline(input, password);
+    trim_line_ending(password);
+    return password.empty() ? std::optional<std::string>{} : std::optional<std::string>{std::move(password)};
 }
 
 auto print_version() -> void
@@ -554,7 +635,7 @@ struct ListenerBinding final
         threads.emplace_back([&runtime, &runtime_lock, &shutdown, &stats, &target = binding]() {
             auto const mode = target.role == merovingian::net::ListenerRole::client
                                   ? merovingian::homeserver::HttpDispatchMode::client_server
-                                  : merovingian::homeserver::HttpDispatchMode::local_router;
+                                  : merovingian::homeserver::HttpDispatchMode::federation;
             if (target.tls_context.has_value())
             {
                 merovingian::homeserver::serve_tls_http(*target.tls_context, target.acceptor, runtime, runtime_lock,
@@ -593,7 +674,7 @@ struct ListenerBinding final
     return stats;
 }
 
-[[nodiscard]] auto run_server(BootstrapConfigResult const& result) -> int
+[[nodiscard]] auto run_server(BootstrapConfigResult const& result, ParsedArgs const& args) -> int
 {
     // Fail closed when a hardening control is explicitly disabled. Documented
     // alpha exceptions are still permitted; production gating happens at
@@ -610,6 +691,25 @@ struct ListenerBinding final
     {
         LOG_CRITICAL("Runtime failed to start: " + runtime_result.reason);
         return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+    }
+
+    if (args.bootstrap_admin_localpart.has_value() && args.bootstrap_admin_password_file.has_value())
+    {
+        auto password = read_bootstrap_admin_password(*args.bootstrap_admin_password_file);
+        if (!password.has_value())
+        {
+            LOG_CRITICAL("Bootstrap admin password file is missing or empty");
+            return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+        }
+
+        auto admin = merovingian::homeserver::bootstrap_admin_user(runtime_result.runtime.homeserver,
+                                                                   *args.bootstrap_admin_localpart, *password);
+        if (!admin.ok)
+        {
+            LOG_CRITICAL("Bootstrap admin creation failed: " + admin.reason);
+            return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
+        }
+        LOG_INFO("Bootstrap admin user created: " + admin.value);
     }
 
     auto const plans = merovingian::net::make_runtime_listeners(result.parsed.config);
@@ -667,6 +767,13 @@ auto main(int argc, char const* const* argv) -> int
     LOG_INFO("Starting The Merovingian bootstrap server");
 
     auto const args = parse_args(argc, argv);
+    if (args.error.has_value())
+    {
+        auto const result = usage_error(*args.error);
+        log_config_findings(result);
+        return merovingian::bootstrap::to_int(result.failure_code);
+    }
+
     auto const result = build_config_from_positional(args.positional);
     if (!result.parsed.findings.empty())
     {
@@ -682,5 +789,5 @@ auto main(int argc, char const* const* argv) -> int
         return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::success);
     }
 
-    return run_server(result);
+    return run_server(result, args);
 }

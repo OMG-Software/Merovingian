@@ -5,7 +5,14 @@
     {
       "method": "POST",
       "path": "/_matrix/client/v3/register",
-      "body": {"username": "alice", "password": "CorrectHorse7!"},
+      "body": {
+        "username": "alice",
+        "password": "CorrectHorse7!",
+        "auth": {
+          "type": "m.login.registration_token",
+          "token": "test-registration-token"
+        }
+      },
       "expect_status": 200
     },
     {

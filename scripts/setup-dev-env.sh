@@ -24,7 +24,7 @@ Usage:
 
 Options:
   --dry-run                 Print commands without running them.
-  --check-only              Check for required tools and pkg-config modules only.
+  --check-only              Check for required build tools only.
   --no-install              Do not install operating-system packages.
   --no-configure            Do not create or validate the Meson build directory.
   --builddir <path>         Meson build directory to configure. Default: build.
@@ -151,28 +151,28 @@ detect_package_manager() {
 package_list_for() {
     case "$1" in
         apt)
-            printf '%s\n' "build-essential clang lld meson ninja-build pkg-config git python3 libsodium-dev libpq-dev libsqlite3-dev libssl-dev libcurl4-openssl-dev catch2 clang-format clang-tidy cppcheck"
+            printf '%s\n' "build-essential clang lld meson ninja-build pkg-config git python3 perl bison flex m4 libssl-dev libsodium-dev libpq-dev catch2 clang-format clang-tidy cppcheck"
             ;;
         dnf)
-            printf '%s\n' "gcc-c++ clang lld meson ninja-build pkgconf-pkg-config git python3 libsodium-devel libpq-devel sqlite-devel openssl-devel libcurl-devel catch-devel clang-tools-extra cppcheck"
+            printf '%s\n' "gcc-c++ clang lld meson ninja-build pkgconf-pkg-config git python3 perl bison flex m4 openssl-devel libsodium-devel libpq-devel catch-devel clang-tools-extra cppcheck"
             ;;
         zypper)
-            printf '%s\n' "gcc-c++ clang lld meson ninja pkg-config git python3 libsodium-devel postgresql-devel sqlite3-devel libopenssl-devel libcurl-devel catch2-devel clang-tools cppcheck"
+            printf '%s\n' "gcc-c++ clang lld meson ninja pkg-config git python3 perl bison flex m4 libopenssl-devel libsodium-devel postgresql-devel catch2-devel clang-tools cppcheck"
             ;;
         pacman)
-            printf '%s\n' "base-devel clang lld meson ninja pkgconf git python libsodium postgresql-libs sqlite openssl curl catch2 clang-tools-extra cppcheck"
+            printf '%s\n' "base-devel clang lld meson ninja pkgconf git python perl bison flex m4 openssl libsodium postgresql-libs catch2 clang-tools-extra cppcheck"
             ;;
         apk)
-            printf '%s\n' "build-base clang lld meson ninja pkgconf git python3 libsodium-dev postgresql-dev sqlite-dev openssl-dev curl-dev catch2-dev clang-extra-tools cppcheck"
+            printf '%s\n' "build-base clang lld meson ninja pkgconf git python3 perl bison flex m4 openssl-dev libsodium-dev postgresql-dev catch2-dev clang-extra-tools cppcheck"
             ;;
         pkg)
-            printf '%s\n' "llvm meson ninja pkgconf git python3 libsodium postgresql16-client sqlite3 openssl curl catch2 cppcheck"
+            printf '%s\n' "llvm meson ninja pkgconf git python3 perl5 bison flex gmake openssl libsodium postgresql17-client catch2 cppcheck"
             ;;
         pkg_add)
-            printf '%s\n' "llvm meson ninja pkgconf git libsodium postgresql-client sqlite3 openssl curl catch2 cppcheck"
+            printf '%s\n' "llvm meson ninja pkgconf git perl bison flex gmake openssl libsodium postgresql-client catch2 cppcheck"
             ;;
         pkgin)
-            printf '%s\n' "clang meson ninja-build pkg-config git python311 libsodium postgresql16-client sqlite3 openssl curl catch2 cppcheck"
+            printf '%s\n' "clang meson ninja-build pkg-config git python311 perl bison flex gmake openssl libsodium postgresql17-client catch2 cppcheck"
             ;;
         *)
             fail "unsupported package manager: $1"
@@ -224,20 +224,6 @@ install_for() {
     esac
 }
 
-pkg_config_tool() {
-    if command -v pkg-config >/dev/null 2>&1; then
-        printf '%s\n' pkg-config
-        return
-    fi
-
-    if command -v pkgconf >/dev/null 2>&1; then
-        printf '%s\n' pkgconf
-        return
-    fi
-
-    printf '%s\n' pkg-config
-}
-
 check_command() {
     if ! command -v "$1" >/dev/null 2>&1; then
         printf 'missing command: %s\n' "$1" >&2
@@ -248,34 +234,11 @@ check_command() {
     return 0
 }
 
-check_pkg_config_module() {
-    tool=$1
-    module=$2
-
-    if ! command -v "$tool" >/dev/null 2>&1; then
-        printf 'missing command: %s\n' "$tool" >&2
-        return 1
-    fi
-
-    if ! "$tool" --exists "$module"; then
-        printf 'missing pkg-config module: %s\n' "$module" >&2
-        return 1
-    fi
-
-    printf 'found pkg-config module: %s\n' "$module"
-    return 0
-}
-
 check_environment() {
     status=0
-    pc_tool=$(pkg_config_tool)
 
-    for command_name in c++ git meson ninja; do
+    for command_name in c++ git meson ninja perl bison flex pkg-config; do
         check_command "$command_name" || status=1
-    done
-
-    for module in libsodium sqlite3 libpq openssl libcurl; do
-        check_pkg_config_module "$pc_tool" "$module" || status=1
     done
 
     if [ "$status" -ne 0 ]; then
@@ -284,12 +247,14 @@ check_environment() {
 }
 
 configure_meson_build() {
+    tool_shim_dir=$repo_root/scripts/tool-shims
+
     if [ -d "$builddir" ]; then
-        run meson setup "$builddir" --reconfigure
+        run env PATH="$tool_shim_dir:$PATH" meson setup "$builddir" --reconfigure --wrap-mode=forcefallback
         return
     fi
 
-    run meson setup "$builddir"
+    run env PATH="$tool_shim_dir:$PATH" meson setup "$builddir" --wrap-mode=forcefallback
 }
 
 while [ "$#" -gt 0 ]; do

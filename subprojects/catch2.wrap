@@ -1,5 +1,5 @@
 [wrap-git]
 directory=catch2
 url=https://github.com/catchorg/Catch2.git
-revision=v3.8.1
+revision=v3.14.0
 depth=1

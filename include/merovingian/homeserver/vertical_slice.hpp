@@ -113,8 +113,13 @@ struct LocalHttpResponse final
 [[nodiscard]] auto admin_audit_summary(HomeserverRuntime const& runtime) -> std::string;
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse;
+[[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
+    -> LocalHttpResponse;
 [[nodiscard]] auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
-                                       std::string_view password) -> OperationResult;
+                                       std::string_view password, std::string_view registration_token = {})
+    -> OperationResult;
+[[nodiscard]] auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart,
+                                        std::string_view password) -> OperationResult;
 [[nodiscard]] auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                                     std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token)

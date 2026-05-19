@@ -1,10 +1,18 @@
 if get_option ('build_tests')
-shell = find_program('sh')
+  shell = find_program('sh')
   python = find_program('python3', 'python')
+  wrapped_runtime_env = environment()
+  wrapped_runtime_env.prepend(
+    'LD_LIBRARY_PATH',
+    meson.project_build_root() / 'subprojects' / 'curl-8.20.0' / 'dist' / 'usr' / 'local' / get_option('libdir'),
+    separator: ':',
+  )
+  add_test_setup('wrappedruntime', env: wrapped_runtime_env, is_default: true)
   catch2_dep = dependency(
     'catch2',
     required: false,
     fallback: ['catch2', 'catch2_dep'],
+    default_options: ['tests=false'],
   )
 
   test(
@@ -29,6 +37,24 @@ shell = find_program('sh')
     'release-workflow-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_release_workflow.py'],
+  )
+
+  test(
+    'ci-workflow-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_ci_workflow.py'],
+  )
+
+  test(
+    'dependency-wrap-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_dependency_wraps.py'],
+  )
+
+  test(
+    'security-workflow-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_security_workflows.py'],
   )
 
   unit_tests = executable(
@@ -99,7 +125,7 @@ shell = find_program('sh')
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
-  test('unit-tests', unit_tests)
+  test('unit-tests', unit_tests, timeout: 120)
 
   integration_tests = executable(
     'merovingian-integration-tests',

@@ -24,13 +24,17 @@ enum class HttpDispatchMode
 {
     client_server,
     local_router,
+    federation,
 };
+
+[[nodiscard]] auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
+                                               HttpDispatchMode mode) -> LocalHttpResponse;
 
 // Read one HTTP/1.1 request from the connected socket, dispatch it through
 // the selected runtime router, and write a single response. Closes the
 // connection after the response is sent. Client listeners should use
-// `client_server`; federation/internal compatibility paths can use
-// `local_router` until those APIs have production adapters.
+// `client_server`; federation listeners should use `federation`; internal
+// compatibility paths can use `local_router`.
 //
 // `runtime_lock` serialises mutation of the shared runtime across listeners.
 // The acceptor's fd is taken by value (already-accepted client socket).

@@ -27,9 +27,15 @@ and Ed25519 operations across Linux and BSD package managers.
 
 ## Maintenance and platform posture
 
-LibSodium is available through the supported Linux and BSD package managers and
-is required by the Meson build. The build wrappers check for the `libsodium`
-pkg-config module before configuring Meson.
+LibSodium is resolved from the operating-system package and linked dynamically.
+The top-level Meson dependency sets `allow_fallback: false`, so clean builds
+must provide `libsodium.pc` through the host package manager even when the
+wrapper scripts use Meson's `forcefallback` mode for other dependencies.
+
+Supported development paths install the OS development package explicitly:
+Debian-family hosts use `libsodium-dev`, Fedora-family hosts use
+`libsodium-devel`, FreeBSD uses `libsodium`, OpenBSD uses `libsodium`, and
+NetBSD/pkgsrc uses `libsodium`.
 
 ## Current limitations
 

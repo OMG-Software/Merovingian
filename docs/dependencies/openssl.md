@@ -12,8 +12,9 @@ logic.
 ## Why it is needed
 
 Matrix federation and public client listeners require a TLS implementation.
-OpenSSL is packaged across the supported Linux and BSD targets and has a Meson
-WrapDB fallback for bootstrap builds when a system package is unavailable.
+OpenSSL is packaged across the supported Linux and BSD targets. Merovingian
+requires that OS-provided development package instead of falling back to a
+vendored OpenSSL build.
 
 ## Security boundary
 
@@ -26,10 +27,13 @@ WrapDB fallback for bootstrap builds when a system package is unavailable.
 
 ## Maintenance and platform posture
 
-System OpenSSL packages are preferred for production builds so operating-system
-security updates carry the patch burden. The pinned Meson wrap exists for
-bootstrap and CI reproducibility, not as a policy to vendor OpenSSL in release
-builds.
+System OpenSSL packages are required for normal builds so operating-system
+security updates carry the patch burden. The top-level Meson dependency sets
+`allow_fallback: false`, which keeps OpenSSL dynamically linked from the host
+package even when other dependencies are forced through source-pinned wraps.
+The same OS-supplied dynamic-link policy now applies to LibSodium and
+PostgreSQL libpq. Linux and Fedora CI install `libssl-dev` or `openssl-devel`;
+FreeBSD CI installs the `openssl` package.
 
 ## Current limitations
 

@@ -40,13 +40,18 @@ supported Linux and BSD targets, and ships in mainline distributions.
 
 ## Maintenance and platform posture
 
-System libcurl packages are preferred for production builds so
-operating-system security updates carry the patch burden. The TLS backend
-is whatever the system libcurl was built against (OpenSSL on Linux,
-LibreSSL on OpenBSD, etc.); the OutboundClient integration suite enforces
-identical verification behavior across the supported platforms so backend
-drift surfaces in CI rather than at runtime. A pinned Meson wrap fallback
-can be added when a known-good WrapDB release is selected.
+libcurl is pinned through `subprojects/curl.wrap`, currently targeting the
+8.20.0 source release. The TLS backend still follows the host OpenSSL selection
+underneath that wrap, and the OutboundClient integration suite remains
+responsible for catching backend behavior drift across supported platforms.
+The fallback packagefile exposes curl's installed include root, not the nested
+`curl` include directory, so `<curl/curl.h>` resolves the same way on Linux and
+BSD.
+
+The fallback also disables optional zlib and zstd content-encoding support.
+Merovingian does not require compressed federation responses at this boundary,
+and disabling those backends keeps the static fallback link closed without
+pulling undeclared compression libraries into every binary.
 
 ## Current limitations
 

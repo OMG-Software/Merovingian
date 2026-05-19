@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.1.64',
+  version: '0.1.65',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -15,10 +15,14 @@ project(
 
 cpp = meson.get_compiler('cpp')
 thread_dep = dependency('threads')
-libsodium_dep = dependency('libsodium')
-openssl_dep = dependency('openssl', include_type: 'system', fallback: ['openssl', 'openssl_dep'])
-libpq_dep = dependency('libpq', include_type: 'system')
-sqlite_dep = dependency('sqlite3')
+libsodium_dep = dependency('libsodium', include_type: 'system', allow_fallback: false)
+openssl_dep = dependency('openssl', include_type: 'system', allow_fallback: false)
+libpq_dep = dependency('libpq', include_type: 'system', allow_fallback: false)
+sqlite_dep = dependency(
+  'sqlite3',
+  fallback: ['sqlite3', 'sqlite3_dep'],
+  default_options: ['default_library=static'],
+)
 yyjson_dep = dependency(
   'yyjson',
   version: '>=0.12.0',
@@ -28,9 +32,9 @@ yyjson_dep = dependency(
 # libcurl drives the federation outbound HTTP client. The TLS backend is
 # whatever the system libcurl was built against; the OutboundClient
 # integration suite enforces consistent verification behavior across
-# Linux and BSD targets. A subprojects/curl.wrap fallback can be added
-# in a follow-up once a known-good WrapDB release is pinned.
-libcurl_dep = dependency('libcurl', version: '>=7.85.0', include_type: 'system')
+# Linux and BSD targets. A subprojects/curl.wrap fallback builds curl
+# from source when the system library is not available.
+libcurl_dep = dependency('libcurl', fallback: ['curl', 'libcurl_dep'])
 resolv_dep = cpp.find_library('resolv', required: false)
 
 warning_flags = [
@@ -54,7 +58,6 @@ warning_flags = [
 
 hardening_compile_flags = [
   '-fstack-protector-strong',
-  '-D_FORTIFY_SOURCE=3',
   '-fPIE',
   '-fvisibility=hidden',
   '-ftrivial-auto-var-init=zero',
@@ -72,6 +75,9 @@ hardening_link_flags = [
 add_project_arguments(cpp.get_supported_arguments(warning_flags), language: 'cpp')
 
 if get_option('hardening')
+  if get_option('optimization') != '0'
+    hardening_compile_flags += ['-D_FORTIFY_SOURCE=3']
+  endif
   add_project_arguments(cpp.get_supported_arguments(hardening_compile_flags), language: 'cpp')
   add_project_link_arguments(cpp.get_supported_link_arguments(hardening_link_flags), language: 'cpp')
 endif
