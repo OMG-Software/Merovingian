@@ -450,7 +450,7 @@ auto discover_server(std::string_view server_name, std::string_view well_known_s
         result.reason = "server name is empty";
         return result;
     }
-    auto const direct_host_port = parse_host_port(server_name, default_federation_port);
+    auto direct_host_port = parse_host_port(server_name, default_federation_port);
     if (!direct_host_port.has_value() ||
         (!server_name_is_valid(direct_host_port->host) && !host_is_numeric_ip(direct_host_port->host)))
     {
