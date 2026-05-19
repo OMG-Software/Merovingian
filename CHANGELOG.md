@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.0
+
+- Bump to alpha release version.
+
 ## 0.1.65
 
 - Added `docs/security-code-audit-alpha.md`, a structured alpha code-audit
