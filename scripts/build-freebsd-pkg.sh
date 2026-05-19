@@ -30,10 +30,9 @@ mkdir -p "${STAGING}/usr/local/etc/rc.d"
 install -m 0755 packaging/rc.d/merovingian \
     "${STAGING}/usr/local/etc/rc.d/merovingian"
 
-# 5. Generate plist from installed files
-find "$(pwd)/${STAGING}/usr/local" -type f \
-    | sed "s|$(pwd)/${STAGING}/usr/local/||" \
-    | sort > /tmp/merovingian-plist
+# 5. Generate plist from installed files (relative to root-dir)
+STAGING_ROOT="$(pwd)/${STAGING}/usr/local"
+(cd "${STAGING_ROOT}" && find . -type f | sed 's|^\./||' | sort) > /tmp/merovingian-plist
 
 # 6. Patch manifest version
 sed "s/version: \"[^\"]*\"/version: \"${VERSION}\"/" \
