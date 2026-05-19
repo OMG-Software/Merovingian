@@ -6,11 +6,10 @@ set -e
 VERSION="0.2.1"
 STAGING="staging-fbsd"
 
-# Wipe any stale staging tree left by a cached FreeBSD VM from a previous run.
-rm -rf "${STAGING}"
+# Clean any state (staged files, build dir) from cached FreeBSD VM runs.
+rm -rf "${STAGING}" build-freebsd-pkg
 
 # 1. Configure with meson using FreeBSD prefix conventions.
-#    --prefer-static: link .a archives for application deps; libc stays dynamic.
 #    -pie: produce a PIE executable so the kernel applies ASLR.
 meson setup build-freebsd-pkg \
     --prefix=/usr/local \
@@ -25,36 +24,29 @@ meson setup build-freebsd-pkg \
 # 2. Compile
 meson compile -C build-freebsd-pkg
 
-# 3. Install into staging tree
-meson install -C build-freebsd-pkg --destdir "$(pwd)/${STAGING}/"
+# 3. Install into staging tree.
+#    $PWD avoids subshell/symlink issues that $(pwd) can have inside the VM.
+meson install -C build-freebsd-pkg --destdir "${PWD}/${STAGING}"
 
 # 4. Install rc.d script (BSD install does not accept GNU -D; create dir first)
 mkdir -p "${STAGING}/usr/local/etc/rc.d"
 install -m 0755 packaging/rc.d/merovingian \
     "${STAGING}/usr/local/etc/rc.d/merovingian"
 
-# 5. Generate plist from installed files (relative to root-dir)
-#    Use paths inside ${STAGING} (wiped above) not /tmp, so cached VM state
-#    from previous runs cannot bleed into this run.
-STAGING_ROOT="$(pwd)/${STAGING}/usr/local"
-PLIST="$(pwd)/${STAGING}/merovingian.plist"
-MANIFEST="$(pwd)/${STAGING}/merovingian-manifest"
+# 5. Confirm the staged tree looks right before packaging.
+echo "[debug] staged files under ${STAGING}/usr/local:"
+ls -lR "${STAGING}/usr/local" || true
 
-echo "[debug] staging tree:"
-find "${STAGING_ROOT}" -type f || true
-(cd "${STAGING_ROOT}" && find . -type f | sed 's|^\./||' | sort) > "${PLIST}"
-echo "[debug] plist:"
-cat "${PLIST}"
-
-# 6. Patch manifest version
+# 6. Patch manifest version into a temp file alongside (not inside) the staging root.
+MANIFEST="${PWD}/${STAGING}.manifest"
 sed "s/version: \"[^\"]*\"/version: \"${VERSION}\"/" \
     packaging/freebsd/+MANIFEST > "${MANIFEST}"
 
-# 7. Create the .pkg archive
+# 7. Create the .pkg archive.
+#    No --plist: pkg(8) automatically packages all files found under --root-dir.
 pkg create \
     --manifest "${MANIFEST}" \
-    --root-dir "${STAGING_ROOT}" \
-    --plist "${PLIST}" \
+    --root-dir "${PWD}/${STAGING}/usr/local" \
     --out-dir .
 
 echo "Built FreeBSD package (static deps) for merovingian-${VERSION}"
