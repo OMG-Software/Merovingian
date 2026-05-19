@@ -104,11 +104,20 @@ deployment milestone.
 - Supply-chain automation: release publication, secret scanning, dependency
   vulnerability triage, and SBOM workflows exist and are checked by the
   release-readiness gate.
-- Direct runtime dependencies now resolve through committed source-pinned Meson
-  wraps for libsodium, libcurl, libpq, SQLite, OpenSSL, Catch2, and yyjson.
-  The OpenSSL fallback dependency passes `werror=false` and `include_type:
-  'system'` so that its C-style casts and assembly files do not trigger the
-  parent project's strict C++ warning policy.
+- Direct runtime dependencies resolve through committed source-pinned Meson
+  wraps for libsodium, libcurl, libpq, SQLite, Catch2, and yyjson. OpenSSL is
+  resolved from the operating-system package and explicitly disallows Meson
+  fallback resolution so distro security updates apply to production builds.
+  curl, libsodium, and libpq use the `unstable-external_project` module to
+  build from upstream tarballs via their native configure scripts. The shared
+  make shim forwards Meson's staged `DESTDIR` as a make command-line variable
+  so upstream Makefiles that assign `DESTDIR=` internally still install into
+  the build-local external-project dist directory. The libpq packagefile
+  exposes PostgreSQL's installed include root because `libpq-fe.h` is staged
+  directly under `include`. Fedora container CI now covers the Red Hat package
+  family in addition to Ubuntu and FreeBSD.
+  Current pinned wrap versions: curl 8.20.0, libsodium 1.0.22, Catch2 v3.14.0,
+  libpq (PostgreSQL 18.0), SQLite 3.53.1, yyjson 0.12.0.
 - Client discovery: unauthenticated `GET /_matrix/client/versions` returns
   supported versions `v1.1` through `v1.18` with an empty `unstable_features`
   object.

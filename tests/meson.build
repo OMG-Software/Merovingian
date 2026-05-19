@@ -32,6 +32,12 @@ shell = find_program('sh')
   )
 
   test(
+    'ci-workflow-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_ci_workflow.py'],
+  )
+
+  test(
     'dependency-wrap-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_dependency_wraps.py'],

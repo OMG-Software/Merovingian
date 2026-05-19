@@ -29,7 +29,8 @@ libpq_project = external_project.add_project(
     '--libdir=@PREFIX@/@LIBDIR@',
     '--includedir=@PREFIX@/@INCLUDEDIR@',
   ],
+  env: {'PATH': '/usr/bin:/bin:/usr/local/bin:/usr/sbin:/sbin'},
 )
 
-libpq_dep = libpq_project.dependency('pq', subdir: 'postgresql')
+libpq_dep = libpq_project.dependency('pq')
 meson.override_dependency('libpq', libpq_dep)

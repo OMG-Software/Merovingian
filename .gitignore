@@ -6,9 +6,10 @@ __pycache__/
 *.py[cod]
 /subprojects/yyjson/
 /subprojects/openssl-3.0.8/
-/subprojects/libsodium-1.0.20/
+/subprojects/openssl-3.0.20/
+/subprojects/libsodium-1.0.22/
 /subprojects/postgresql-18.0/
 /subprojects/catch2/
-/subprojects/curl-8.12.1/
+/subprojects/curl-8.20.0/
 /subprojects/sqlite-amalgamation-3530100/
 /subprojects/packagecache/

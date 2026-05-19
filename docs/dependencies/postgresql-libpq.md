@@ -41,6 +41,8 @@ management, parameterized execution, and PostgreSQL error reporting.
 PostgreSQL 18.0 client library from source through a Meson-managed external
 project. The default wrappers force fallback mode so CI and local builds resolve
 the same reviewed `libpq` source version instead of relying on host packages.
+The packagefile exposes PostgreSQL's installed include root because
+`libpq-fe.h` is installed directly under `include`.
 
 ## Current limitations
 

@@ -24,5 +24,6 @@ or tooling boundary so upstream APIs do not leak across the homeserver.
 - Third-party headers should be treated as system includes where supported so
   warning-as-error applies to project code.
 - Source-pinned wraps are the default build path for direct third-party
-  dependencies so CI and local builds resolve the same reviewed versions.
+  dependencies except OpenSSL, which resolves from the operating-system package
+  so production deployments receive distro security updates.
 - Test-only dependencies must not be linked into production targets.

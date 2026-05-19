@@ -41,10 +41,9 @@ supported Linux and BSD targets, and ships in mainline distributions.
 ## Maintenance and platform posture
 
 libcurl is pinned through `subprojects/curl.wrap`, currently targeting the
-WrapDB-packaged `8.12.1-2` source release. The TLS backend still follows the
-host OpenSSL selection underneath that wrap, and the OutboundClient integration
-suite remains responsible for catching backend behavior drift across supported
-platforms.
+8.20.0 source release. The TLS backend still follows the host OpenSSL selection
+underneath that wrap, and the OutboundClient integration suite remains
+responsible for catching backend behavior drift across supported platforms.
 
 ## Current limitations
 

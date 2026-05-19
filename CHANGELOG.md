@@ -1,99 +1,52 @@
 # Changelog
 
-## 0.1.71
-
-- Fixed OpenSSL fallback subproject compilation failures on CI by:
-  - Passing `default_options: ['werror=false']` to the OpenSSL dependency
-    declaration so the parent project's `werror=true` does not leak into the
-    C subproject and cause `-Wunused-command-line-argument` errors on
-    assembly files.
-  - Using `include_type: 'system'` (already present) for the OpenSSL
-    dependency so that consuming C++ code gets `-isystem` flags, suppressing
-    `-Wold-style-cast` warnings from OpenSSL's C-style casts.
-- Added auto-extracted subproject directories to `.gitignore`.
-- Bumped project and executable versions to `0.1.71`.
-
-## 0.1.70
-
-- Trimmed carriage returns when reading registration token files so CRLF
-  token files compare equal to LF token files, preventing reproducible
-  "registration token rejected" failures on Windows-edited config.
-- Restored `pkg-config` to the `setup-dev-env.sh` preflight command checks
-  so the environment check catches missing pkg-config before the build
-  wrappers fail.
-- Bumped project and executable versions to `0.1.70`.
-
-## 0.1.69
-
-- Fixed CI failure caused by missing `check_pkg_config_module` function in
-  `scripts/build-linux.sh`. The function is now defined and verifies that
-  required pkg-config modules (e.g. openssl) are available before the build
-  proceeds.
-- Bumped project and executable versions to `0.1.69`.
-
-## 0.1.68
-
-- Fixed the critical registration audit finding by enforcing configured
-  registration tokens from `security.registration.token_file` in the runtime
-  registration path.
-- Removed implicit first-public-user admin creation; admin users now require the
-  explicit bootstrap API.
-- Fixed the high federation exposure finding by routing federation listeners
-  through a federation-only dispatcher that hides admin and client compatibility
-  routes.
-- Added BDD regression coverage for token-protected registration and
-  federation-only dispatch.
-- Documented registration token-file configuration and updated the security
-  audit retest notes.
-- Bumped project and executable versions to `0.1.68`.
-
-## 0.1.67
-
-- Added source-pinned Meson wraps for the previously unwrapped runtime
-  dependencies:
-  - `subprojects/libsodium.wrap` with a Meson external-project packagefile
-  - `subprojects/libpq.wrap` with a Meson external-project packagefile
-  - WrapDB-pinned `subprojects/curl.wrap`
-  - WrapDB-pinned `subprojects/sqlite3.wrap`
-- Switched the Linux, BSD, WSL, and setup entrypoints to
-  `--wrap-mode=forcefallback` by default so clean builds resolve the committed
-  dependency wraps instead of host pkg-config libraries.
-- Added `scripts/tool-shims/make` so external-project wraps resolve GNU make on
-  BSD hosts.
-- Added tooling coverage in `tests/tooling/test_dependency_wraps.py` and
-  tightened `scripts/check-release-readiness.sh` to require the wrap files and
-  packagefiles.
-- Updated CI package lists and developer/dependency documentation to match the
-  new source-pinned dependency path.
-- Bumped project and executable versions to `0.1.67`.
-
-## 0.1.66
-
-- Added three supply-chain workflows:
-  - `.github/workflows/secret-scan.yml` runs Gitleaks against repository
-    history and uploads SARIF results.
-  - `.github/workflows/dependency-vulnerability-triage.yml` runs GitHub
-    dependency review on pull requests and publishes an SBOM-backed
-    vulnerability triage report.
-  - `.github/workflows/sbom.yml` generates SPDX and CycloneDX JSON SBOM
-    artifacts and attaches them to published releases.
-- Added repository security-workflow contracts in
-  `tests/tooling/test_security_workflows.py` and registered the test in
-  `tests/meson.build`.
-- Added `.gitleaks.toml` and `.github/dependency-review-config.yml`, and
-  tightened `scripts/check-release-readiness.sh` so releases now require the
-  new workflow and configuration files.
-- Updated release, security-review, progress-tracker, and audit documentation
-  to reflect the new supply-chain automation and the remaining signing /
-  provenance gaps.
-- Bumped project and executable versions to `0.1.66`.
-
 ## 0.1.65
 
 - Added `docs/security-code-audit-alpha.md`, a structured alpha code-audit
   report covering scope, threat model, findings, test gaps, and remediation
   priorities for the current repository state.
 - Linked the latest code-audit report from `docs/01-progress-tracker.md`.
+- Added supply-chain workflows for Gitleaks secret scanning, dependency review,
+  and SPDX/CycloneDX SBOM generation.
+- Added repository security-workflow contracts in
+  `tests/tooling/test_security_workflows.py`, registered them in
+  `tests/meson.build`, and tightened release-readiness checks for the new
+  workflow/configuration files.
+- Added source-pinned Meson wraps for libsodium, libcurl, libpq, SQLite,
+  Catch2, and yyjson, plus external-project packagefiles for native
+  configure-based dependencies.
+- Switched Linux, BSD, WSL, and setup entrypoints to
+  `--wrap-mode=forcefallback` by default for source-pinned dependencies, while
+  keeping OpenSSL resolved from the operating-system package with Meson fallback
+  disabled.
+- Added `scripts/tool-shims/make` so external-project wraps resolve GNU make on
+  BSD hosts and forward Meson's staged `DESTDIR` as a make command-line variable
+  when upstream Makefiles assign `DESTDIR=` internally.
+- Updated dependency versions and build policy:
+  - curl 8.12.1 to 8.20.0
+  - libsodium 1.0.20 to 1.0.22
+  - Catch2 v3.8.1 to v3.14.0
+  - PostgreSQL libpq wrap to PostgreSQL 18.0
+  - OpenSSL now links dynamically from the OS package instead of the wrap
+- Fixed curl 8.20.0 configure options and dependency naming so the fallback
+  exposes `libcurl_dep`.
+- Fixed libpq external-project configure and include handling so build tools are
+  found and `libpq-fe.h` is exposed from PostgreSQL's installed include root.
+- Added dependency-wrap tooling coverage for wrap pinning, OpenSSL system
+  resolution, make-shim `DESTDIR` forwarding, and libpq include-root handling.
+- Added a Fedora container build to CI so the Linux workflow also covers the
+  Red Hat package family with `dnf`-provided dependencies.
+- Fixed registration-token CRLF handling so Windows-edited token files compare
+  equal after trimming carriage returns.
+- Restored `pkg-config` preflight checks for the build environment while
+  avoiding package-module checks for dependencies now resolved through wraps.
+- Enforced configured registration tokens at runtime, removed implicit
+  first-public-user admin creation, and routed federation listeners through a
+  federation-only dispatcher that hides admin and client compatibility routes.
+- Added BDD regression coverage and documentation for token-protected
+  registration, explicit admin bootstrap, and federation-only dispatch.
+- Updated CI package lists and developer/dependency documentation for the
+  source-pinned dependency path and OS-provided OpenSSL policy.
 - Bumped project and executable versions to `0.1.65`.
 
 ## 0.1.64

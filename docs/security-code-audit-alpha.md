@@ -113,7 +113,7 @@ surface unverifiable.
 ### Critical: registration-token policy is not enforced and first registration becomes admin
 
 - Severity: Critical
-- Status: Fixed in 0.1.68
+- Status: Fixed in 0.1.65
 - Affected code:
   - [src/homeserver/client_server.cpp](/C:/dev/Merovingian/src/homeserver/client_server.cpp:1427)
   - [src/homeserver/auth_service.cpp](/C:/dev/Merovingian/src/homeserver/auth_service.cpp:172)
@@ -163,7 +163,7 @@ Retest:
 ### High: federation listener is routed through the legacy local router and exposes non-federation surfaces
 
 - Severity: High
-- Status: Fixed in 0.1.68
+- Status: Fixed in 0.1.65
 - Affected code:
   - [src/main.cpp](/C:/dev/Merovingian/src/main.cpp:555)
   - [src/net/listener.cpp](/C:/dev/Merovingian/src/net/listener.cpp:38)

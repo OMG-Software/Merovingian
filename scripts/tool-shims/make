@@ -3,6 +3,10 @@
 
 set -eu
 
+if [ -n "${DESTDIR:-}" ]; then
+    set -- "DESTDIR=$DESTDIR" "$@"
+fi
+
 if command -v gmake >/dev/null 2>&1; then
     exec gmake "$@"
 fi
