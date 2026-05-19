@@ -159,6 +159,9 @@ Retest:
   registration is enabled, parses Matrix UI-auth registration tokens from the
   JSON request body, compares them with LibSodium constant-time comparison, and
   moves admin creation behind the explicit `bootstrap_admin_user` API.
+- `merovingian-server` now exposes an explicit operator startup path,
+  `--bootstrap-admin <localpart> --bootstrap-admin-password-file <path>`, which
+  creates the admin account through `bootstrap_admin_user` before listener bind.
 
 ### High: federation listener is routed through the legacy local router and exposes non-federation surfaces
 

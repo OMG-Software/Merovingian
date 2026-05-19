@@ -30,6 +30,19 @@ Plan a configuration reload without applying it:
 ./build/src/merovingian-server --plan-config-reload current.conf next.conf
 ```
 
+Provision the first administrator through an explicit operator startup action:
+
+```bash
+./build/src/merovingian-server --config config/merovingian.conf.example \
+  --bootstrap-admin alice \
+  --bootstrap-admin-password-file /run/merovingian/bootstrap-admin-password
+```
+
+The password file is read as a single line with CRLF/LF line endings trimmed.
+The account is created through the same persisted admin-user path used by tests,
+before listeners are bound. Public Matrix registration never grants admin
+privileges implicitly.
+
 ## Format rules
 
 - One `key=value` pair per line.

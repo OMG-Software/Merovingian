@@ -66,6 +66,10 @@
 - Enforced configured registration tokens at runtime, removed implicit
   first-public-user admin creation, and routed federation listeners through a
   federation-only dispatcher that hides admin and client compatibility routes.
+- Added an explicit `merovingian-server --bootstrap-admin <localpart>
+  --bootstrap-admin-password-file <path>` startup path so operators can create
+  the first admin account through the persisted bootstrap API before listeners
+  are bound.
 - Added BDD regression coverage and documentation for token-protected
   registration, explicit admin bootstrap, and federation-only dispatch.
 - Updated CI package lists and developer/dependency documentation for the

@@ -14,6 +14,8 @@ SBOM_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sbom.yml"
 GITLEAKS_CONFIG = REPO_ROOT / ".gitleaks.toml"
 DEPENDENCY_REVIEW_CONFIG = REPO_ROOT / ".github" / "dependency-review-config.yml"
 RELEASE_READINESS_SCRIPT = REPO_ROOT / "scripts" / "check-release-readiness.sh"
+SERVER_MAIN = REPO_ROOT / "src" / "main.cpp"
+SMOKE_TESTS = REPO_ROOT / "tests" / "smoke" / "meson.build"
 
 
 class SecurityWorkflowTests(unittest.TestCase):
@@ -90,6 +92,21 @@ class SecurityWorkflowTests(unittest.TestCase):
         self.assertIn(".github/workflows/sbom.yml", script)
         self.assertIn(".gitleaks.toml", script)
         self.assertIn(".github/dependency-review-config.yml", script)
+
+    def test_admin_bootstrap_is_an_explicit_operator_startup_path(self) -> None:
+        # GIVEN public registration must not implicitly create admin users.
+        self.assertTrue(SERVER_MAIN.is_file(), "server main is missing")
+        self.assertTrue(SMOKE_TESTS.is_file(), "smoke tests are missing")
+        server_main = SERVER_MAIN.read_text(encoding="utf-8")
+        smoke_tests = SMOKE_TESTS.read_text(encoding="utf-8")
+
+        # WHEN an operator needs to provision the first administrator.
+        # THEN the server exposes an explicit startup flag pair wired to the
+        # reviewed bootstrap_admin_user path and covered by help smoke tests.
+        self.assertIn("--bootstrap-admin", server_main)
+        self.assertIn("--bootstrap-admin-password-file", server_main)
+        self.assertIn("bootstrap_admin_user(runtime_result.runtime", server_main)
+        self.assertIn("server-admin-bootstrap-help-smoke-test", smoke_tests)
 
 
 if __name__ == "__main__":
