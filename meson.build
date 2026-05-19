@@ -16,7 +16,14 @@ cpp = meson.get_compiler('cpp')
 thread_dep = dependency('threads')
 libsodium_dep = dependency('libsodium', include_type: 'system', allow_fallback: false)
 openssl_dep = dependency('openssl', include_type: 'system', allow_fallback: false)
-libpq_dep = dependency('libpq', include_type: 'system', allow_fallback: false)
+# pgcommon and pgport are internal PostgreSQL libraries that libpq.a requires
+# when linked statically but that Alpine's libpq.pc omits from Libs.private.
+# Wrapping them here ensures they are always available when needed without
+# affecting dynamic builds (find_library returns an empty dep when absent).
+_libpq      = dependency('libpq', include_type: 'system', allow_fallback: false)
+_pgcommon   = cpp.find_library('pgcommon', required: false)
+_pgport     = cpp.find_library('pgport',   required: false)
+libpq_dep   = declare_dependency(dependencies: [_libpq, _pgcommon, _pgport])
 sqlite_dep = dependency(
   'sqlite3',
   fallback: ['sqlite3', 'sqlite3_dep'],

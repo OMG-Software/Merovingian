@@ -229,29 +229,37 @@ class DependencyWrapTests(unittest.TestCase):
         self.assertIn("libpq-devel", setup_script)
         self.assertIn("postgresql17-client", setup_script)
 
-    def test_package_scaffolds_mark_dynamic_library_dependencies(self) -> None:
-        # GIVEN system install packages are now scaffolded for release builds.
+    def test_package_scaffolds_declare_dependency_policy(self) -> None:
+        # GIVEN distribution package scaffolds exist for all supported platforms.
         for package_name, package_path in PACKAGE_SCAFFOLDS.items():
             self.assertTrue(package_path.is_file(), f"{package_name} scaffold is missing")
 
         # WHEN package metadata is inspected.
-        # THEN the OS-supplied dynamic libraries are declared as build/runtime dependencies.
         deb_control = PACKAGE_SCAFFOLDS["deb"].read_text(encoding="utf-8")
         rpm_spec = PACKAGE_SCAFFOLDS["rpm"].read_text(encoding="utf-8")
         freebsd_manifest = PACKAGE_SCAFFOLDS["freebsd"].read_text(encoding="utf-8")
         openbsd_plist = PACKAGE_SCAFFOLDS["openbsd-plist"].read_text(encoding="utf-8")
         netbsd_makefile = PACKAGE_SCAFFOLDS["netbsd"].read_text(encoding="utf-8")
 
-        for token in ("libssl-dev", "libsodium-dev", "libpq-dev", "libsodium23", "libpq5"):
+        # THEN build-time dependencies are declared for all packaged platforms.
+        for token in ("libssl-dev", "libsodium-dev", "libpq-dev"):
             self.assertIn(token, deb_control)
-
-        for token in ("openssl-devel", "libsodium-devel", "libpq-devel", "Requires:       libsodium", "Requires:       libpq"):
+        for token in ("openssl-devel", "libsodium-devel", "libpq-devel"):
             self.assertIn(token, rpm_spec)
 
+        # THEN Linux/BSD distribution packages use static application linking
+        # (--prefer-static) so shared-library runtime dependencies are absent.
+        for token in ("libsodium23", "libpq5", "libssl3"):
+            self.assertNotIn(token, deb_control)
+        for token in ("Requires:       libsodium", "Requires:       libpq"):
+            self.assertNotIn(token, rpm_spec)
+        self.assertIn("--prefer-static", rpm_spec)
         for token in ("openssl", "libsodium", "postgresql17-client", "curl"):
-            self.assertIn(token, freebsd_manifest)
-            self.assertIn(token, netbsd_makefile)
+            self.assertNotIn(token, freebsd_manifest)
 
+        # THEN NetBSD and OpenBSD scaffolds declare their OS-supplied runtime deps.
+        for token in ("openssl", "libsodium", "postgresql17-client", "curl"):
+            self.assertIn(token, netbsd_makefile)
         for token in ("openssl", "libsodium", "postgresql-client", "curl"):
             self.assertIn(token, openbsd_plist)
 

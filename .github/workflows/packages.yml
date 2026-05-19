@@ -43,7 +43,7 @@ jobs:
       - name: Install build dependencies
         run: |
           dnf install -y clang meson ninja-build pkgconf-pkg-config git \
-            openssl-devel openssl-static \
+            openssl-devel \
             libsodium-devel \
             libpq-devel \
             libcurl-devel \

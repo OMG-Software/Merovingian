@@ -25,12 +25,9 @@ Rules-Requires-Root: no
 Package: merovingian
 Architecture: any
 Depends:
- ${shlibs:Depends},
- ${misc:Depends},
- libssl3 | libssl3t64,
- libsodium23,
- libpq5,
- libcurl4
+ ${misc:Depends}
+Recommends:
+ ca-certificates
 Description: secure Matrix Protocol homeserver
  Merovingian is an alpha Matrix Protocol homeserver focused on secure
  implementation, runtime hardening, and auditable dependency boundaries.
