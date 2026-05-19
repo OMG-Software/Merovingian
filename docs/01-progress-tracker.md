@@ -124,7 +124,9 @@ deployment milestone.
   external-project library directories through `LD_LIBRARY_PATH`, and the
   aggregate Catch2 unit-test binary has an explicit CI-sized timeout so
   fallback, coverage, and sanitizer jobs do not kill a passing suite at Meson's
-  30 second default.
+  30 second default. Post-build validation scripts that execute
+  `merovingian-server` directly also expose those staged library directories
+  before running dry-run checks.
   `_FORTIFY_SOURCE=3` is requested only for optimized builds so Fedora debug CI
   does not fail warnings-as-errors on glibc's optimization diagnostic. Fedora
   container CI now covers the Red Hat package family in addition to Ubuntu and

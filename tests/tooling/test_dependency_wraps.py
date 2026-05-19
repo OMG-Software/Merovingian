@@ -13,6 +13,7 @@ SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup-dev-env.sh"
 WSL_SETUP_SCRIPT = REPO_ROOT / "scripts" / "wsl-setup.sh"
 WSL_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-wsl.ps1"
 MAKE_SHIM = REPO_ROOT / "scripts" / "tool-shims" / "make"
+VALIDATE_PHASE1_SCRIPT = REPO_ROOT / "scripts" / "validate-phase1-config.sh"
 LIBPQ_PACKAGEFILE = REPO_ROOT / "subprojects" / "packagefiles" / "libpq" / "meson.build"
 CURL_PACKAGEFILE = REPO_ROOT / "subprojects" / "packagefiles" / "curl" / "meson.build"
 WRAPS = {
@@ -185,6 +186,18 @@ class DependencyWrapTests(unittest.TestCase):
         # WHEN fallback, coverage, or sanitizer builds execute the aggregate binary.
         # THEN the Meson test timeout is explicit and larger than the 30s default.
         self.assertIn("test('unit-tests', unit_tests, timeout: 120)", tests_meson)
+
+    def test_phase1_config_validation_uses_wrapped_runtime_libraries(self) -> None:
+        # GIVEN the Phase 1 config validation script runs built executables directly.
+        self.assertTrue(VALIDATE_PHASE1_SCRIPT.is_file(), "Phase 1 validation script is missing")
+        script = VALIDATE_PHASE1_SCRIPT.read_text(encoding="utf-8")
+
+        # WHEN libpq or other external projects install shared libraries under the build tree.
+        # THEN the script adds staged library directories to LD_LIBRARY_PATH before dry runs.
+        self.assertIn("runtime_library_dirs=(", script)
+        self.assertIn("subprojects/postgresql-18.0/dist/usr/local/lib64", script)
+        self.assertIn("subprojects/postgresql-18.0/dist/usr/local/lib/x86_64-linux-gnu", script)
+        self.assertIn("export LD_LIBRARY_PATH", script)
 
     def test_setup_scripts_install_the_extra_tools_needed_by_wrapped_sources(self) -> None:
         # GIVEN the environment bootstrap scripts.

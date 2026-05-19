@@ -53,6 +53,9 @@
 - Raised the aggregate Catch2 unit-suite Meson timeout so fallback, coverage,
   and sanitizer CI jobs do not kill an otherwise passing suite at Meson's 30s
   default.
+- Made the Phase 1 configuration validation script expose staged
+  external-project runtime libraries before executing `merovingian-server`, so
+  Fedora fallback builds can find wrapped `libpq`.
 - Added a Fedora container build to CI so the Linux workflow also covers the
   Red Hat package family with `dnf`-provided dependencies.
 - Fixed registration-token CRLF handling so Windows-edited token files compare

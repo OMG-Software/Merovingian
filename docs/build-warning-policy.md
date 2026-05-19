@@ -37,6 +37,11 @@ That test executable now covers enough runtime behavior that fallback,
 coverage, and sanitizer jobs can exceed Meson's 30 second default even when all
 assertions pass.
 
+Post-build validation scripts that execute `merovingian-server` directly must
+also expose the staged external-project runtime libraries from the selected
+build directory. This keeps Fedora and other fallback builds from resolving
+wrapped dependencies through absent system library paths.
+
 `_FORTIFY_SOURCE=3` is requested only when Meson reports an optimized build.
 That keeps the default debug profile warning-clean on glibc platforms, where
 FORTIFY without optimization is itself a compiler warning and this project
