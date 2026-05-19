@@ -22,6 +22,15 @@ That workflow:
 - attaches SHA-256 checksum files
 - publishes a GitHub prerelease with the built assets
 
+Published releases also trigger [sbom.yml](../.github/workflows/sbom.yml),
+which attaches SPDX and CycloneDX JSON SBOM files to the GitHub release.
+Repository changes are additionally covered by:
+
+- [secret-scan.yml](../.github/workflows/secret-scan.yml) for Gitleaks-based
+  history scanning
+- [dependency-vulnerability-triage.yml](../.github/workflows/dependency-vulnerability-triage.yml)
+  for PR dependency review and SBOM-backed vulnerability triage
+
 The packaged tarballs include:
 
 - `bin/merovingian-server`
@@ -31,7 +40,9 @@ The packaged tarballs include:
 - `docs/configuration.md`
 - `docs/release-process.md`
 - `docs/security-review-checklist.md`
-- Linux and BSD packaging scaffolds
+- Linux and BSD packaging scaffolds, including Debian control metadata, RPM
+  spec metadata, FreeBSD manifest metadata, OpenBSD packing-list metadata, and
+  NetBSD/pkgsrc Makefile metadata
 - `README.md`
 - `LICENSE`
 
@@ -40,10 +51,9 @@ The packaged tarballs include:
 Alpha prerelease publication is not the same as a production release.
 The current workflow does not yet attach:
 
-- SBOM output
-- dependency or license reports
 - artifact signatures
 - provenance attestations
+- a release-attached dependency or license report
 
 Those remain tracked production gaps in `docs/01-progress-tracker.md`.
 
@@ -69,3 +79,5 @@ git push origin v<version>-alpha.1
 ```
 
 GitHub Actions publishes the prerelease assets for that tag.
+The matching release event also publishes the SBOM assets, and the scheduled
+dependency-triage workflow keeps a separate vulnerability report artifact.

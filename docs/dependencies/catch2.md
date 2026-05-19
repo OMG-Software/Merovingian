@@ -23,7 +23,10 @@ integration coverage.
 ## Maintenance and platform posture
 
 Catch2 is available through supported Linux and BSD package managers. A wrap is
-present for environments where the system package is not available.
+present for environments where the system package is not available. Fallback
+builds disable Catch2's own upstream self-test executable so CI builds only the
+Merovingian test targets and does not inherit upstream compiler compatibility
+noise.
 
 ## Current limitations
 

@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <string>
 #include <vector>
 
@@ -51,13 +54,34 @@ private:
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
-    security.registration.enabled = true;
+    merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
         security,
     };
+}
+
+[[nodiscard]] auto token_required_registration_config(std::filesystem::path const& token_file)
+    -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    security.registration.enabled = true;
+    security.registration.require_token = true;
+    security.registration.token_file = token_file.string();
+    return {
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},
+        security,
+    };
+}
+
+[[nodiscard]] auto unique_secret_path(std::string const& suffix) -> std::filesystem::path
+{
+    auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
+    return std::filesystem::temp_directory_path() / ("merovingian-secret-" + suffix + "-" + std::to_string(now));
 }
 
 [[nodiscard]] auto unique_sqlite_path(std::string const& suffix) -> std::filesystem::path
@@ -76,10 +100,11 @@ SCENARIO("Admin health remains admin-only after router split", "[homeserver][sec
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const admin_user = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!");
+        auto const admin_user = merovingian::homeserver::bootstrap_admin_user(runtime, "alice", "CorrectHorse7!");
         auto const admin_login =
             merovingian::homeserver::login_local_user(runtime, admin_user.value, "CorrectHorse7!", "ADMIN1");
-        auto const normal_user = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse8!");
+        auto const normal_user = merovingian::homeserver::register_local_user(runtime, "bob", "CorrectHorse8!",
+                                                                              merovingian::tests::registration_token);
         auto const normal_login =
             merovingian::homeserver::login_local_user(runtime, normal_user.value, "CorrectHorse8!", "USER1");
         REQUIRE(admin_login.ok);
@@ -98,6 +123,87 @@ SCENARIO("Admin health remains admin-only after router split", "[homeserver][sec
                 REQUIRE(normal_response.status == 401U);
                 REQUIRE_FALSE(
                     merovingian::homeserver::authenticated_admin_user(runtime, normal_login.value).has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("Public registration enforces configured token policy and never bootstraps admin",
+         "[homeserver][security][auth][review]")
+{
+    GIVEN("a runtime with token-protected registration")
+    {
+        auto const token_file = unique_secret_path("registration-token");
+        {
+            auto output = std::ofstream{token_file};
+            output << "register-alpha-token\n";
+        }
+        auto started = merovingian::homeserver::start_client_server(token_required_registration_config(token_file));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("clients register without, with invalid, and with valid registration tokens")
+        {
+            auto const missing_token = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+            auto const invalid_token = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 R"({"auth":{"type":"m.login.registration_token","token":"wrong"},"username":"alice","password":"CorrectHorse7!"})"});
+            auto const accepted = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 R"({"auth":{"type":"m.login.registration_token","token":"register-alpha-token"},"username":"alice","password":"CorrectHorse7!"})"});
+
+            THEN("only the valid token creates a non-admin user")
+            {
+                REQUIRE(missing_token.status == 403U);
+                REQUIRE(invalid_token.status == 403U);
+                REQUIRE(accepted.status == 200U);
+                REQUIRE_FALSE(runtime.homeserver.database.users.empty());
+                REQUIRE_FALSE(runtime.homeserver.database.users.front().admin);
+            }
+        }
+
+        std::filesystem::remove(token_file);
+    }
+}
+
+SCENARIO("Federation dispatch exposes only federation routes", "[homeserver][security][federation][review]")
+{
+    GIVEN("a started runtime served through federation dispatch mode")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("admin, client, and federation key routes are requested")
+        {
+            auto const admin = merovingian::homeserver::dispatch_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/health", {}, {}},
+                merovingian::homeserver::HttpDispatchMode::federation);
+            auto const client_register = merovingian::homeserver::dispatch_local_http_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 merovingian::tests::registration_pipe("alice", "CorrectHorse7!")},
+                merovingian::homeserver::HttpDispatchMode::federation);
+            auto const keys = merovingian::homeserver::dispatch_local_http_request(
+                runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
+                merovingian::homeserver::HttpDispatchMode::federation);
+
+            THEN("non-federation surfaces are hidden and federation keys remain reachable")
+            {
+                REQUIRE(admin.status == 404U);
+                REQUIRE(client_register.status == 404U);
+                REQUIRE(keys.status == 200U);
+                REQUIRE(keys.body.find("\"verify_keys\"") != std::string::npos);
             }
         }
     }
@@ -398,7 +504,8 @@ SCENARIO("Persisted local event ids are unique across rooms", "[homeserver][room
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const user = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!");
+        auto const user = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
         auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
         auto const first_room = merovingian::homeserver::create_room(runtime, login.value);
         auto const second_room = merovingian::homeserver::create_room(runtime, login.value);
@@ -432,7 +539,8 @@ SCENARIO("Sending a state event mirrors current state", "[homeserver][rooms][rev
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const user = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!");
+        auto const user = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
         auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
         auto const room = merovingian::homeserver::create_room(runtime, login.value);
         REQUIRE(room.ok);

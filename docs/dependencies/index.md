@@ -23,6 +23,8 @@ or tooling boundary so upstream APIs do not leak across the homeserver.
   file that owns them.
 - Third-party headers should be treated as system includes where supported so
   warning-as-error applies to project code.
-- Wrap fallbacks are for bootstrap and CI reproducibility; system packages
-  remain preferred for production builds.
+- Source-pinned wraps are the default build path for direct third-party
+  dependencies except OpenSSL, LibSodium, and PostgreSQL libpq, which resolve
+  from operating-system packages so production deployments receive distro
+  security updates.
 - Test-only dependencies must not be linked into production targets.

@@ -4,6 +4,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <string>
 
@@ -449,6 +450,35 @@ SCENARIO("Config validation rejects unsafe registration policy", "[config][valid
             {
                 REQUIRE_FALSE(findings.empty());
                 REQUIRE_FALSE(valid);
+            }
+        }
+    }
+}
+
+SCENARIO("Config validation rejects token-protected registration without token file", "[config][validation][security]")
+{
+    GIVEN("registration enabled with token protection but no token file")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        security.registration.enabled = true;
+        security.registration.require_token = true;
+
+        WHEN("the config is constructed and validated")
+        {
+            auto const config = merovingian::config::Config{
+                merovingian::config::ServerConfig{},
+                merovingian::config::ListenersConfig{},
+                merovingian::config::DatabaseConfig{},
+                security,
+            };
+            auto const findings = merovingian::config::validate(config);
+
+            THEN("validation fails with a registration token-file finding")
+            {
+                REQUIRE_FALSE(findings.empty());
+                REQUIRE(std::ranges::any_of(findings, [](auto const& finding) {
+                    return finding.field == "security.registration.token_file";
+                }));
             }
         }
     }

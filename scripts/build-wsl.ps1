@@ -5,7 +5,7 @@ param(
     [string]$BuildDir = "build-wsl",
     [string]$CC = "clang",
     [string]$CXX = "clang++",
-    [string]$WrapMode = "default",
+    [string]$WrapMode = "forcefallback",
     [ValidateSet("", "debug", "release", "sanitizer", "coverage", "fuzz", "hardened")]
     [string]$Profile = "",
     [switch]$BuildFuzz,

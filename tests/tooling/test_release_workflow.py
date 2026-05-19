@@ -37,6 +37,22 @@ class ReleaseWorkflowTests(unittest.TestCase):
         )
         self.assertIn("sh scripts/check-release-readiness.sh", workflow)
 
+    def test_alpha_packages_include_system_package_scaffolds(self) -> None:
+        # GIVEN the repository release workflow.
+        self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")
+        workflow = WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN alpha assets are staged.
+        # THEN Debian, RPM, and BSD package scaffolds are copied into the release tarballs.
+        self.assertIn("packaging/deb", workflow)
+        self.assertIn("packaging/rpm", workflow)
+        self.assertIn("packaging/freebsd", workflow)
+        self.assertIn("packaging/openbsd", workflow)
+        self.assertIn("packaging/netbsd", workflow)
+        self.assertIn("libsodium-dev", workflow)
+        self.assertIn("libpq-dev", workflow)
+        self.assertIn("libsodium postgresql17-client", workflow)
+
     def test_alpha_release_publishes_prerelease_assets_and_checksums(self) -> None:
         # GIVEN the repository release workflow.
         self.assertTrue(WORKFLOW.is_file(), "release workflow is missing")

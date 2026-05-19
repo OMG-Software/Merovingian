@@ -138,6 +138,10 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        else if (key == "security.registration.token_file")
+        {
+            security.registration.token_file = std::string{value};
+        }
         else if (key == "security.encryption.default_for_new_rooms")
         {
             if (!parse_bool_value(value, security.encryption.default_for_new_rooms))

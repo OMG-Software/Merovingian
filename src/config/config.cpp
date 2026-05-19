@@ -381,6 +381,12 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.registration.require_token", "open registration requires token protection"});
     }
 
+    if (config.security().registration.enabled && config.security().registration.require_token &&
+        config.security().registration.token_file.empty())
+    {
+        findings.push_back({"security.registration.token_file", "token-protected registration requires a token file"});
+    }
+
     if (!config.security().encryption.default_for_new_rooms)
     {
         findings.push_back({"security.encryption.default_for_new_rooms", "new rooms must default to encrypted"});

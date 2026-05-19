@@ -9,7 +9,8 @@ auto reload_policy_for_key(std::string_view key) noexcept -> ReloadPolicy
 {
     if (key == "server.name" || key == "database.uri_file" || key == "database.role" ||
         key == "listeners.client.tls_certificate_file" || key == "listeners.client.tls_private_key_file" ||
-        key == "listeners.federation.tls_certificate_file" || key == "listeners.federation.tls_private_key_file")
+        key == "listeners.federation.tls_certificate_file" || key == "listeners.federation.tls_private_key_file" ||
+        key == "security.registration.token_file")
     {
         return ReloadPolicy::restart_required;
     }

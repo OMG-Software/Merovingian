@@ -29,15 +29,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            bison \
             catch2 \
             clang \
+            flex \
             gcovr \
-            libcurl4-openssl-dev \
             libpq-dev \
-            libssl-dev \
-            libsqlite3-dev \
             libsodium-dev \
+            libssl-dev \
             llvm \
+            m4 \
+            perl \
             pkg-config
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja

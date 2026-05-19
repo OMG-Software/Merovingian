@@ -56,6 +56,7 @@ struct RegistrationSecurityConfig final
 {
     bool enabled{false};
     bool require_token{true};
+    std::string token_file{};
 };
 
 struct EncryptionSecurityConfig final
