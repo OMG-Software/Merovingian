@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.2
+Version:        0.2.3
 Release:        1%{?dist}
 Summary:        A secure Matrix Protocol homeserver
 
@@ -37,7 +37,9 @@ Secure by design, implementation, and during runtime.
     --prefer-static \
     -Dhardening=true \
     -Dbuild_tests=false \
-    -Dbuild_fuzz=false
+    -Dbuild_fuzz=false \
+    -Dcpp_link_args='-pie' \
+    -Dc_link_args='-pie'
 %meson_build
 
 %install
@@ -79,6 +81,9 @@ install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 %dir %{_sysconfdir}/merovingian
 
 %changelog
+* Tue May 19 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.3-1
+- 0.2.3: restore -fPIE and -Wl,-z,noexecstack; PIE now supplied per-platform via -pie
+
 * Tue May 19 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.2-1
 - 0.2.2: statically link application deps; remove shared-lib Requires; add --prefer-static
 

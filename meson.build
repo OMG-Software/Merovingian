@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.2.2',
+  version: '0.2.3',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -54,16 +54,29 @@ warning_flags = [
 hardening_compile_flags = [
   '-fstack-protector-strong',
   '-D_FORTIFY_SOURCE=3',
+  '-fPIE',
   '-fvisibility=hidden',
   '-ftrivial-auto-var-init=zero',
   '-fstack-clash-protection',
   '-fcf-protection=full',
 ]
 
+# -pie is supplied per-platform by the build scripts:
+#   Alpine/musl .deb → -static-pie (fully static PIE via cpp_link_args)
+#   Fedora .rpm / FreeBSD .pkg → -pie (dynamic-libc PIE via cpp_link_args)
+# -Wl,-z,relro/-z,now are enforced by the dynamic linker; omitted here because
+# fully-static binaries have no dynamic linker to enforce them.
+# -Wl,-z,noexecstack sets the PT_GNU_STACK ELF note; the kernel reads this on
+# both static and dynamic ELF binaries, so it applies universally.
+hardening_link_flags = [
+  '-Wl,-z,noexecstack',
+]
+
 add_project_arguments(cpp.get_supported_arguments(warning_flags), language: 'cpp')
 
 if get_option('hardening')
   add_project_arguments(cpp.get_supported_arguments(hardening_compile_flags), language: 'cpp')
+  add_project_link_arguments(cpp.get_supported_link_arguments(hardening_link_flags), language: 'cpp')
 endif
 
 inc = include_directories('include')

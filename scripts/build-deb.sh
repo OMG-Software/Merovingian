@@ -3,13 +3,14 @@
 # Build a Debian binary package (.deb) for merovingian 0.2.1.
 set -e
 
-VERSION="0.2.2"
+VERSION="0.2.3"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 
 # 1. Configure with meson.
 #    --prefer-static: use .a archives over .so for all dependencies.
-#    cpp_link_args/c_link_args=-static: force fully-static binary (musl libc on Alpine).
+#    -static-pie: fully static binary with ASLR preserved (musl libc on Alpine
+#    supports static PIE natively; -static-pie = -static -pie combined).
 CC=clang CXX=clang++ meson setup build-deb \
     --prefix=/usr \
     --sysconfdir=/etc \
@@ -18,8 +19,8 @@ CC=clang CXX=clang++ meson setup build-deb \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
-    -Dcpp_link_args='-static' \
-    -Dc_link_args='-static'
+    -Dcpp_link_args='-static-pie' \
+    -Dc_link_args='-static-pie'
 
 # 2. Compile
 meson compile -C build-deb

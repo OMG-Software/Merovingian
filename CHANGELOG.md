@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.3
+
+- Restored `-fPIE` in `hardening_compile_flags` (required for PIE and for
+  `-static-pie` to work correctly on Alpine/musl).
+- Restored `-Wl,-z,noexecstack` in `hardening_link_flags`. This ELF note is
+  read by the kernel on both static and dynamic binaries; removing it was an
+  error that left the stack potentially executable.
+- PIE is now supplied per-platform via `cpp_link_args` rather than baked into
+  `meson.build`: Alpine `.deb` uses `-static-pie` (fully static + ASLR);
+  Fedora `.rpm` and FreeBSD `.pkg` use `-pie` (dynamic-libc PIE).
+- `-Wl,-z,relro` and `-Wl,-z,now` remain absent from `meson.build`; they are
+  dynamic-linker-enforced and meaningless for static or mostly-static builds.
+
 ## 0.2.2
 
 - Fully static packaging: all distribution binaries now link application

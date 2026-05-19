@@ -3,11 +3,12 @@
 # Build a FreeBSD pkg(8) package for merovingian 0.2.1.
 set -e
 
-VERSION="0.2.2"
+VERSION="0.2.3"
 STAGING="staging-fbsd"
 
 # 1. Configure with meson using FreeBSD prefix conventions.
 #    --prefer-static: link .a archives for application deps; libc stays dynamic.
+#    -pie: produce a PIE executable so the kernel applies ASLR.
 meson setup build-freebsd-pkg \
     --prefix=/usr/local \
     --sysconfdir=/usr/local/etc \
@@ -15,7 +16,9 @@ meson setup build-freebsd-pkg \
     --prefer-static \
     -Dhardening=true \
     -Dbuild_tests=false \
-    -Dbuild_fuzz=false
+    -Dbuild_fuzz=false \
+    -Dcpp_link_args='-pie' \
+    -Dc_link_args='-pie'
 
 # 2. Compile
 meson compile -C build-freebsd-pkg
