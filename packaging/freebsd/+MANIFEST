@@ -1,0 +1,17 @@
+name: merovingian
+version: "0.2.1"
+origin: net-im/merovingian
+comment: A secure Matrix Protocol homeserver
+desc: "Merovingian is an alpha Matrix Protocol homeserver."
+maintainer: james@merovingian-homeserver.example
+www: https://github.com/merovingian-homeserver/merovingian
+prefix: /usr/local
+licenselogic: single
+licenses: [GPL3]
+flatsize: 0
+deps: {
+    libsodium: {origin: security/libsodium, version: "1.0"},
+    postgresql17-client: {origin: databases/postgresql17-client, version: "17.0"},
+    curl: {origin: ftp/curl, version: "8.0"},
+    openssl: {origin: security/openssl, version: "3.0"}
+}

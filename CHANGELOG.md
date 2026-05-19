@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1
+
+- Added distro packaging: `.deb` (Debian/Ubuntu), `.rpm` (Fedora), and `.pkg` (FreeBSD).
+- New scripts: `scripts/build-deb.sh`, `scripts/build-rpm.sh`, `scripts/build-freebsd-pkg.sh`.
+- New packaging support files: `packaging/deb/postinst`, `packaging/deb/prerm`, `packaging/deb/conffiles`,
+  `packaging/rpm/merovingian.spec` (updated to 0.2.1 with systemd scriptlets and `%pre` user creation),
+  `packaging/freebsd/+MANIFEST` (updated to 0.2.1 with desc field).
+- New CI workflow `.github/workflows/packages.yml` produces installable packages on every push to
+  `main`, `feature/**`, `codex/**`, and `alpha-release`.
+
 ## 0.1.64
 
 - Closed the remaining two Alpha TODOs from `docs/01-progress-tracker.md`.

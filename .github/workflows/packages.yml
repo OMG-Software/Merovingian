@@ -1,0 +1,64 @@
+name: packages
+on:
+  push:
+    branches: [main, 'feature/**', 'codex/**', 'alpha-release']
+  pull_request:
+    branches: [main]
+jobs:
+  deb:
+    name: Debian package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang meson ninja-build pkg-config \
+            libssl-dev libsodium-dev libpq-dev libcurl4-openssl-dev \
+            catch2 perl bison flex m4
+      - name: Build .deb
+        run: sh scripts/build-deb.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb-package
+          path: merovingian_*.deb
+          retention-days: 30
+
+  rpm:
+    name: Fedora RPM package
+    runs-on: ubuntu-latest
+    container: fedora:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          dnf install -y clang meson ninja-build pkgconf-pkg-config git \
+            openssl-devel libsodium-devel libpq-devel libcurl-devel \
+            catch-devel perl bison flex m4 \
+            rpm-build systemd-rpm-macros
+      - name: Build .rpm
+        run: sh scripts/build-rpm.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rpm-package
+          path: merovingian-*.rpm
+          retention-days: 30
+
+  freebsd-pkg:
+    name: FreeBSD package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build FreeBSD .pkg
+        uses: vmactions/freebsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg install -y meson ninja pkgconf llvm perl5 bison flex \
+              gmake openssl libsodium postgresql17-client curl catch2
+          run: sh scripts/build-freebsd-pkg.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: freebsd-package
+          path: merovingian-*.pkg
+          retention-days: 30

@@ -1,0 +1,19 @@
+#!/bin/sh
+set -e
+case "$1" in
+    configure)
+        if ! getent passwd merovingian > /dev/null 2>&1; then
+            adduser --system --group --no-create-home \
+                    --home /var/lib/merovingian \
+                    --shell /usr/sbin/nologin \
+                    --gecos "Merovingian homeserver" \
+                    merovingian
+        fi
+        install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
+        install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
+        ;;
+esac
+if [ -d /run/systemd/system ] && [ "$1" = "configure" ]; then
+    systemctl --no-reload enable merovingian.service >/dev/null 2>&1 || true
+fi
+exit 0
