@@ -16,12 +16,13 @@ The script supports these package managers:
 - BSD: `pkg`, `pkg_add`, `pkgin`
 
 The package set intentionally avoids Boost. It installs C++ toolchains, Meson,
-Ninja, pkg-config/pkgconf, Git, Python, Perl, Bison, Flex, M4, TLS headers,
-Catch2, clang tooling, and cppcheck. Merovingian now pins libsodium, libcurl,
-libpq, SQLite, Catch2, and yyjson through committed Meson wraps so the default
-build path does not depend on host copies of those libraries. OpenSSL is the
-exception: it is resolved from the operating-system package so security updates
-can be delivered by the host package manager. `yyjson` is used for strict JSON
+Ninja, pkg-config/pkgconf, Git, Python, Perl, Bison, Flex, M4, OpenSSL,
+LibSodium, PostgreSQL client headers, Catch2, clang tooling, and cppcheck.
+Merovingian pins libcurl, SQLite, Catch2, and yyjson through committed Meson
+wraps so the default build path does not depend on host copies of those
+libraries. OpenSSL, LibSodium, and PostgreSQL libpq are resolved from
+operating-system packages so security updates can be delivered by the host
+package manager. `yyjson` is used for strict JSON
 parsing; its wrap exposes third-party headers as system includes so
 warning-as-error still applies to project code rather than inline C headers
 from the dependency checkout. C++ sources include a project-owned adapter rather
@@ -34,8 +35,9 @@ The unsafe source gate is a Bash script and must be run with `bash`, matching
 CI, because it relies on strict shell options and portable grep behavior.
 OpenSSL is the selected TLS provider and is intentionally resolved through the
 host package manager. The Linux, BSD, and WSL wrappers still run Meson with
-`--wrap-mode=forcefallback` by default, but the top-level OpenSSL dependency
-disallows fallback so clean builds use the OS-provided OpenSSL library.
+`--wrap-mode=forcefallback` by default, but the top-level OpenSSL, LibSodium,
+and libpq dependencies disallow fallback so clean builds use OS-provided shared
+libraries for those boundaries.
 Dependency reviews live under `docs/dependencies/`; new direct dependencies
 should add or update a review there before they are wired into Meson.
 
@@ -55,10 +57,10 @@ sh scripts/build-linux.sh --builddir build-wsl
 ```
 
 The WSL setup script installs the compiler, linker, Perl/Bison/Flex toolchain
-needed by the wrapped third-party sources, OpenSSL headers, Catch2, clang
-tooling, cppcheck, and a current Meson/Ninja virtual environment. The virtual
-environment is used because the distribution Meson in Ubuntu 24.04 is too old
-to configure the repo's C++26 build.
+needed by the wrapped third-party sources, OpenSSL, LibSodium, PostgreSQL
+client headers, Catch2, clang tooling, cppcheck, and a current Meson/Ninja
+virtual environment. The virtual environment is used because the distribution
+Meson in Ubuntu 24.04 is too old to configure the repo's C++26 build.
 
 Project-owned headers should use quoted includes. Use the rewrite helper to
 convert angle-bracket Merovingian includes in source trees:
@@ -129,8 +131,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build-wsl.ps1 -Distro Ubuntu-24
 ```
 
 Both wrappers use Meson `forcefallback` mode by default so pinned dependency
-wraps are used even when the host has system copies installed. OpenSSL is
-excluded from that policy and is resolved from the host package manager.
+wraps are used even when the host has system copies installed. OpenSSL,
+LibSodium, and PostgreSQL libpq are excluded from that policy and are resolved
+from the host package manager.
 
 Meson launches repository shell-based source gates through `sh`, which keeps
 WSL builds on `/mnt/c` independent of Windows executable-bit metadata.

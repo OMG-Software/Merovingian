@@ -1486,7 +1486,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y g++ meson ninja-build pkg-config
+          sudo apt-get install -y g++ meson ninja-build pkg-config libssl-dev libsodium-dev libpq-dev
 
       - name: Configure
         run: meson setup build -Dbuildtype=debugoptimized
@@ -1506,7 +1506,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang meson ninja-build pkg-config
+          sudo apt-get install -y clang meson ninja-build pkg-config libssl-dev libsodium-dev libpq-dev
 
       - name: Configure
         run: CXX=clang++ meson setup build -Dbuildtype=debugoptimized
@@ -1526,7 +1526,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang meson ninja-build pkg-config
+          sudo apt-get install -y clang meson ninja-build pkg-config libssl-dev libsodium-dev libpq-dev
 
       - name: Configure
         run: CXX=clang++ meson setup build -Db_sanitize=undefined -Dbuildtype=debugoptimized
@@ -1546,7 +1546,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang meson ninja-build pkg-config
+          sudo apt-get install -y clang meson ninja-build pkg-config libssl-dev libsodium-dev libpq-dev
 
       - name: Configure
         run: CXX=clang++ meson setup build -Db_sanitize=thread -Dbuildtype=debugoptimized
@@ -1566,7 +1566,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang meson ninja-build pkg-config
+          sudo apt-get install -y clang meson ninja-build pkg-config libssl-dev libsodium-dev libpq-dev
 
       - name: Configure
         run: CXX=clang++ meson setup build -Dbuildtype=release -Dhardened=true
@@ -1587,7 +1587,7 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg install -y meson ninja pkgconf llvm
+            pkg install -y meson ninja pkgconf llvm openssl libsodium postgresql17-client
           run: |
             c++ --version
             meson setup build -Dbuildtype=debugoptimized
@@ -1603,7 +1603,7 @@ jobs:
       - uses: vmactions/openbsd-vm@v1
         with:
           prepare: |
-            pkg_add meson ninja pkgconf
+            pkg_add meson ninja pkgconf openssl libsodium postgresql-client
           run: |
             c++ --version
             meson setup build -Dbuildtype=debugoptimized
@@ -1637,7 +1637,7 @@ netbsd:
     - uses: vmactions/netbsd-vm@v1
       with:
         prepare: |
-          pkgin -y install meson ninja-build pkg-config clang
+          pkgin -y install meson ninja-build pkg-config clang openssl libsodium postgresql17-client
         run: |
           c++ --version
           meson setup build -Dbuildtype=debugoptimized

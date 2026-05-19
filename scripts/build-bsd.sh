@@ -222,7 +222,9 @@ check_command "$cxx"
 check_command meson
 check_command ninja
 check_command "$pkg_config"
+check_pkg_config_module libsodium
 check_pkg_config_module openssl
+check_pkg_config_module libpq
 
 meson_options="-Dbuild_tests=$build_tests -Dbuild_fuzz=$build_fuzz --wrap-mode=$wrap_mode"
 [ -z "$buildtype" ] || meson_options="$meson_options --buildtype=$buildtype"

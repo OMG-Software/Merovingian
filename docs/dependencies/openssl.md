@@ -31,8 +31,9 @@ System OpenSSL packages are required for normal builds so operating-system
 security updates carry the patch burden. The top-level Meson dependency sets
 `allow_fallback: false`, which keeps OpenSSL dynamically linked from the host
 package even when other dependencies are forced through source-pinned wraps.
-Linux and Fedora CI install `libssl-dev` or `openssl-devel`; FreeBSD CI installs
-the `openssl` package.
+The same OS-supplied dynamic-link policy now applies to LibSodium and
+PostgreSQL libpq. Linux and Fedora CI install `libssl-dev` or `openssl-devel`;
+FreeBSD CI installs the `openssl` package.
 
 ## Current limitations
 

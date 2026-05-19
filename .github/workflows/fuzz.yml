@@ -38,6 +38,8 @@ jobs:
             clang \
             flex \
             llvm \
+            libpq-dev \
+            libsodium-dev \
             libssl-dev \
             m4 \
             perl \

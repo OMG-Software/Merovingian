@@ -4,8 +4,6 @@ if get_option ('build_tests')
   wrapped_runtime_env = environment()
   wrapped_runtime_env.prepend(
     'LD_LIBRARY_PATH',
-    meson.project_build_root() / 'subprojects' / 'libsodium-1.0.22' / 'dist' / 'usr' / 'local' / get_option('libdir'),
-    meson.project_build_root() / 'subprojects' / 'postgresql-18.0' / 'dist' / 'usr' / 'local' / get_option('libdir'),
     meson.project_build_root() / 'subprojects' / 'curl-8.20.0' / 'dist' / 'usr' / 'local' / get_option('libdir'),
     separator: ':',
   )

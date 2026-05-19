@@ -99,40 +99,40 @@ deployment milestone.
 - Trust and safety: registration/account/invite/federation/media/report policy
   engine, runtime client event reporting, admin safety report listing/review,
   durable policy audit rows, and durable admin action rows exist.
-- Packaging scaffolds: systemd, OpenRC, BSD rc.d, and Docker assets exist for
-  early deployment-shape testing.
+- Packaging scaffolds: systemd, OpenRC, BSD rc.d, Docker assets, Debian control
+  metadata, RPM spec metadata, and BSD package metadata exist for early
+  deployment-shape testing.
 - Supply-chain automation: release publication, secret scanning, dependency
   vulnerability triage, and SBOM workflows exist and are checked by the
   release-readiness gate.
 - Direct runtime dependencies resolve through committed source-pinned Meson
-  wraps for libsodium, libcurl, libpq, SQLite, Catch2, and yyjson. OpenSSL is
-  resolved from the operating-system package and explicitly disallows Meson
-  fallback resolution so distro security updates apply to production builds.
-  curl, libsodium, and libpq use the `unstable-external_project` module to
-  build from upstream tarballs via their native configure scripts. The shared
-  make shim forwards Meson's staged `DESTDIR` as a make command-line variable
-  so upstream Makefiles that assign `DESTDIR=` internally still install into
-  the build-local external-project dist directory. The libpq packagefile
-  exposes PostgreSQL's installed include root because `libpq-fe.h` is staged
-  directly under `include`, and the curl packagefile exposes curl's installed
-  include root so `<curl/curl.h>` resolves on BSD. The curl fallback disables
+  wraps for libcurl, SQLite, Catch2, and yyjson. OpenSSL, LibSodium, and
+  PostgreSQL libpq resolve from operating-system packages and explicitly
+  disallow Meson fallback resolution so distro security updates apply to
+  production builds. curl uses the `unstable-external_project` module to build
+  from an upstream tarball via its native configure script. The shared make
+  shim forwards Meson's staged `DESTDIR` as a make command-line variable so
+  upstream Makefiles that assign `DESTDIR=` internally still install into the
+  build-local external-project dist directory. The curl packagefile exposes
+  curl's installed include root so `<curl/curl.h>` resolves on BSD. The curl
+  fallback disables
   optional zlib and zstd support so its static archive does not need undeclared
   compression libraries at link time. Catch2 fallback builds disable Catch2's
   own upstream SelfTest target; SQLite fallback builds are static so sanitizer
   jobs link sanitizer runtimes through Merovingian's test executables. Meson
-  tests run with a default fallback-runtime setup that exposes staged
+  tests run with a default fallback-runtime setup that exposes staged curl
   external-project library directories through `LD_LIBRARY_PATH`, and the
   aggregate Catch2 unit-test binary has an explicit CI-sized timeout so
   fallback, coverage, and sanitizer jobs do not kill a passing suite at Meson's
   30 second default. Post-build validation scripts that execute
-  `merovingian-server` directly also expose those staged library directories
-  before running dry-run checks.
+  `merovingian-server` directly also expose those staged curl library
+  directories before running dry-run checks.
   `_FORTIFY_SOURCE=3` is requested only for optimized builds so Fedora debug CI
   does not fail warnings-as-errors on glibc's optimization diagnostic. Fedora
   container CI now covers the Red Hat package family in addition to Ubuntu and
   FreeBSD.
-  Current pinned wrap versions: curl 8.20.0, libsodium 1.0.22, Catch2 v3.14.0,
-  libpq (PostgreSQL 18.0), SQLite 3.53.1, yyjson 0.12.0.
+  Current pinned wrap versions: curl 8.20.0, Catch2 v3.14.0, SQLite 3.53.1,
+  yyjson 0.12.0.
 - Client discovery: unauthenticated `GET /_matrix/client/versions` returns
   supported versions `v1.1` through `v1.18` with an empty `unstable_features`
   object.

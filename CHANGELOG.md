@@ -12,29 +12,28 @@
   `tests/tooling/test_security_workflows.py`, registered them in
   `tests/meson.build`, and tightened release-readiness checks for the new
   workflow/configuration files.
-- Added source-pinned Meson wraps for libsodium, libcurl, libpq, SQLite,
-  Catch2, and yyjson, plus external-project packagefiles for native
-  configure-based dependencies.
+- Added source-pinned Meson wraps for libcurl, SQLite, Catch2, and yyjson,
+  plus external-project packagefiles for native configure-based dependencies.
 - Switched Linux, BSD, WSL, and setup entrypoints to
   `--wrap-mode=forcefallback` by default for source-pinned dependencies, while
-  keeping OpenSSL resolved from the operating-system package with Meson fallback
-  disabled.
+  keeping OpenSSL, LibSodium, and PostgreSQL libpq resolved from
+  operating-system packages with Meson fallback disabled.
 - Added `scripts/tool-shims/make` so external-project wraps resolve GNU make on
   BSD hosts and forward Meson's staged `DESTDIR` as a make command-line variable
   when upstream Makefiles assign `DESTDIR=` internally.
 - Updated dependency versions and build policy:
   - curl 8.12.1 to 8.20.0
-  - libsodium 1.0.20 to 1.0.22
   - Catch2 v3.8.1 to v3.14.0
-  - PostgreSQL libpq wrap to PostgreSQL 18.0
   - OpenSSL now links dynamically from the OS package instead of the wrap
+- Moved LibSodium and PostgreSQL libpq to OS-supplied dynamic library
+  resolution, added package-manager dependency coverage for Linux/BSD build
+  paths, and scaffolded Debian, RPM, FreeBSD, OpenBSD, and NetBSD package
+  metadata that records the required dynamic library dependencies.
 - Fixed curl 8.20.0 configure options and dependency naming so the fallback
   exposes `libcurl_dep`, and corrected the fallback include root so
   `<curl/curl.h>` resolves consistently on Linux and BSD.
 - Disabled optional zlib and zstd support in the curl fallback so static
   fallback links do not require undeclared compression libraries.
-- Fixed libpq external-project configure and include handling so build tools are
-  found and `libpq-fe.h` is exposed from PostgreSQL's installed include root.
 - Disabled Catch2's upstream self-test target in fallback builds so CI only
   builds Merovingian's tests.
 - Kept SQLite fallback builds static so sanitizer CI links the sanitizer runtime
@@ -43,25 +42,27 @@
 - Gated `_FORTIFY_SOURCE=3` behind optimized builds so Fedora debug builds do
   not fail warnings-as-errors on glibc's "requires compiling with optimization"
   diagnostic.
-- Added dependency-wrap tooling coverage for wrap pinning, OpenSSL system
+- Added dependency-wrap tooling coverage for wrap pinning, OS-supplied
+  OpenSSL/LibSodium/libpq
   resolution, make-shim `DESTDIR` forwarding, Catch2 fallback self-test
-  suppression, curl/libpq include-root handling, SQLite static fallback, and
-  optimized-only FORTIFY handling.
+  suppression, curl include-root handling, SQLite static fallback, package
+  scaffold dependency metadata, and optimized-only FORTIFY handling.
 - Added a default Meson `wrappedruntime` test setup that exposes staged external-project library
   directories through `LD_LIBRARY_PATH` for Fedora and other fallback-runtime
   test jobs.
 - Raised the aggregate Catch2 unit-suite Meson timeout so fallback, coverage,
   and sanitizer CI jobs do not kill an otherwise passing suite at Meson's 30s
   default.
-- Made the Phase 1 configuration validation script expose staged
-  external-project runtime libraries before executing `merovingian-server`, so
-  Fedora fallback builds can find wrapped `libpq`.
+- Made the Phase 1 configuration validation script expose staged curl runtime
+  libraries before executing `merovingian-server`, so fallback builds can find
+  wrap-built runtime libraries outside Meson's test harness.
 - Added a Fedora container build to CI so the Linux workflow also covers the
   Red Hat package family with `dnf`-provided dependencies.
 - Fixed registration-token CRLF handling so Windows-edited token files compare
   equal after trimming carriage returns.
-- Restored `pkg-config` preflight checks for the build environment while
-  avoiding package-module checks for dependencies now resolved through wraps.
+- Restored `pkg-config` preflight checks for the build environment, requiring
+  OS-supplied OpenSSL, LibSodium, and libpq modules while avoiding
+  package-module checks for dependencies still resolved through wraps.
 - Enforced configured registration tokens at runtime, removed implicit
   first-public-user admin creation, and routed federation listeners through a
   federation-only dispatcher that hides admin and client compatibility routes.

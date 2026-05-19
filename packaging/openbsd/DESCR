@@ -1,0 +1,5 @@
+Merovingian is an alpha Matrix Protocol homeserver focused on secure
+implementation, runtime hardening, and auditable dependency boundaries.
+
+The OpenBSD package scaffold records the OS-supplied runtime libraries used by
+the build: OpenSSL, LibSodium, PostgreSQL libpq, and libcurl.

@@ -15,9 +15,9 @@ project(
 
 cpp = meson.get_compiler('cpp')
 thread_dep = dependency('threads')
-libsodium_dep = dependency('libsodium', include_type: 'system', fallback: ['libsodium', 'libsodium_dep'])
+libsodium_dep = dependency('libsodium', include_type: 'system', allow_fallback: false)
 openssl_dep = dependency('openssl', include_type: 'system', allow_fallback: false)
-libpq_dep = dependency('libpq', fallback: ['libpq', 'libpq_dep'])
+libpq_dep = dependency('libpq', include_type: 'system', allow_fallback: false)
 sqlite_dep = dependency(
   'sqlite3',
   fallback: ['sqlite3', 'sqlite3_dep'],

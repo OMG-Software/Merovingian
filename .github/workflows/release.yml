@@ -29,6 +29,8 @@ jobs:
             clang \
             catch2 \
             flex \
+            libpq-dev \
+            libsodium-dev \
             libssl-dev \
             m4 \
             perl \
@@ -55,6 +57,11 @@ jobs:
           mkdir -p "${package_root}/bin" \
             "${package_root}/config" \
             "${package_root}/docs" \
+            "${package_root}/packaging/deb" \
+            "${package_root}/packaging/rpm" \
+            "${package_root}/packaging/freebsd" \
+            "${package_root}/packaging/openbsd" \
+            "${package_root}/packaging/netbsd" \
             "${package_root}/packaging/systemd" \
             "${package_root}/packaging/openrc" \
             "${package_root}/packaging/rc.d"
@@ -66,6 +73,11 @@ jobs:
           cp packaging/systemd/merovingian.service "${package_root}/packaging/systemd/"
           cp packaging/openrc/merovingian "${package_root}/packaging/openrc/"
           cp packaging/rc.d/merovingian "${package_root}/packaging/rc.d/"
+          cp packaging/deb/control "${package_root}/packaging/deb/"
+          cp packaging/rpm/merovingian.spec "${package_root}/packaging/rpm/"
+          cp packaging/freebsd/+MANIFEST "${package_root}/packaging/freebsd/"
+          cp packaging/openbsd/DESCR packaging/openbsd/PLIST "${package_root}/packaging/openbsd/"
+          cp packaging/netbsd/Makefile "${package_root}/packaging/netbsd/"
           tar -czf "${package_root}.tar.gz" "${package_root}"
           sha256sum "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"
 
@@ -93,13 +105,18 @@ jobs:
           usesh: true
           run: |
             tag="${GITHUB_REF_NAME}"
-            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl python3
+            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client python3
             sh scripts/build-bsd.sh --builddir build-freebsd-release --profile hardened
             sh scripts/check-release-readiness.sh
             package_root="merovingian-${tag}-freebsd-x86_64"
             mkdir -p "${package_root}/bin" \
               "${package_root}/config" \
               "${package_root}/docs" \
+              "${package_root}/packaging/deb" \
+              "${package_root}/packaging/rpm" \
+              "${package_root}/packaging/freebsd" \
+              "${package_root}/packaging/openbsd" \
+              "${package_root}/packaging/netbsd" \
               "${package_root}/packaging/systemd" \
               "${package_root}/packaging/openrc" \
               "${package_root}/packaging/rc.d"
@@ -111,6 +128,11 @@ jobs:
             cp packaging/systemd/merovingian.service "${package_root}/packaging/systemd/"
             cp packaging/openrc/merovingian "${package_root}/packaging/openrc/"
             cp packaging/rc.d/merovingian "${package_root}/packaging/rc.d/"
+            cp packaging/deb/control "${package_root}/packaging/deb/"
+            cp packaging/rpm/merovingian.spec "${package_root}/packaging/rpm/"
+            cp packaging/freebsd/+MANIFEST "${package_root}/packaging/freebsd/"
+            cp packaging/openbsd/DESCR packaging/openbsd/PLIST "${package_root}/packaging/openbsd/"
+            cp packaging/netbsd/Makefile "${package_root}/packaging/netbsd/"
             tar -czf "${package_root}.tar.gz" "${package_root}"
             digest="$(sha256 -q "${package_root}.tar.gz")"
             printf '%s  %s\n' "${digest}" "${package_root}.tar.gz" > "${package_root}.tar.gz.sha256"

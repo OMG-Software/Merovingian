@@ -40,7 +40,9 @@ The packaged tarballs include:
 - `docs/configuration.md`
 - `docs/release-process.md`
 - `docs/security-review-checklist.md`
-- Linux and BSD packaging scaffolds
+- Linux and BSD packaging scaffolds, including Debian control metadata, RPM
+  spec metadata, FreeBSD manifest metadata, OpenBSD packing-list metadata, and
+  NetBSD/pkgsrc Makefile metadata
 - `README.md`
 - `LICENSE`
 
