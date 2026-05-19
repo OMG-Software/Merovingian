@@ -32,7 +32,7 @@ libpq_dep       = declare_dependency(dependencies: [_libpq, _pgcommon, _pgport])
 sqlite_dep = dependency(
   'sqlite3',
   fallback: ['sqlite3', 'sqlite3_dep'],
-  default_options: ['default_library=static'],
+  default_options: ['default_library=static', 'warning_level=0', 'werror=false'],
 )
 yyjson_dep = dependency(
   'yyjson',

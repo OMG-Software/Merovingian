@@ -18,7 +18,11 @@
 - CI fixes: `libpq.a` static link now resolves `pg_encoding_to_char` via `libpgcommon_shlib.a`
   (Alpine's frontend pgcommon variant); RPM build uses `tar` instead of `git archive` to avoid
   `GIT_DISCOVERY_ACROSS_FILESYSTEM` failures in Docker containers; FreeBSD build uses
-  `--wrap-mode=default` so system curl is preferred while yyjson can still fall back to its wrap.
+  `--wrap-mode=default` so system curl is preferred while yyjson can still fall back to its wrap;
+  sqlite3 subproject compiled with `warning_level=0`/`werror=false` to suppress Fedora RPM
+  toolchain warnings in third-party C code; fixed redundant `std::move` from `const` optional
+  in `server_discovery.cpp` (GCC 16 `-Wredundant-move`); added `git` to FreeBSD CI prepare
+  step so the yyjson git wrap can clone the source.
 
 ## 0.2.0
 

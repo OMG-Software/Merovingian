@@ -70,7 +70,7 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg install -y meson ninja pkgconf llvm perl5 bison flex \
+            pkg install -y meson ninja pkgconf llvm git perl5 bison flex \
               gmake openssl libsodium postgresql17-client curl sqlite3 catch2
           run: sh scripts/build-freebsd-pkg.sh
       - uses: actions/upload-artifact@v4
