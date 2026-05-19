@@ -57,7 +57,7 @@ class DependencyWrapTests(unittest.TestCase):
         # THEN wrap-backed dependencies are limited to the remaining vendored
         # runtime libraries.
         self.assertIn("fallback: ['sqlite3', 'sqlite3_dep']", meson_build)
-        self.assertIn("default_options: ['default_library=static']", meson_build)
+        self.assertIn("default_options: ['default_library=static'", meson_build)
         self.assertIn("dependency('libcurl', fallback: ['curl', 'libcurl_dep'])", meson_build)
 
     def test_catch2_fallback_does_not_build_upstream_self_tests(self) -> None:

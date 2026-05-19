@@ -31,7 +31,7 @@ install -m 0755 packaging/rc.d/merovingian \
     "${STAGING}/usr/local/etc/rc.d/merovingian"
 
 # 5. Generate plist from installed files
-find "${STAGING}/usr/local" -type f \
+find "$(pwd)/${STAGING}/usr/local" -type f \
     | sed "s|$(pwd)/${STAGING}/usr/local/||" \
     | sort > /tmp/merovingian-plist
 
