@@ -34,18 +34,27 @@ install -m 0755 packaging/rc.d/merovingian \
     "${STAGING}/usr/local/etc/rc.d/merovingian"
 
 # 5. Generate plist from installed files (relative to root-dir)
+#    Use paths inside ${STAGING} (wiped above) not /tmp, so cached VM state
+#    from previous runs cannot bleed into this run.
 STAGING_ROOT="$(pwd)/${STAGING}/usr/local"
-(cd "${STAGING_ROOT}" && find . -type f | sed 's|^\./||' | sort) > /tmp/merovingian-plist
+PLIST="$(pwd)/${STAGING}/merovingian.plist"
+MANIFEST="$(pwd)/${STAGING}/merovingian-manifest"
+
+echo "[debug] staging tree:"
+find "${STAGING_ROOT}" -type f || true
+(cd "${STAGING_ROOT}" && find . -type f | sed 's|^\./||' | sort) > "${PLIST}"
+echo "[debug] plist:"
+cat "${PLIST}"
 
 # 6. Patch manifest version
 sed "s/version: \"[^\"]*\"/version: \"${VERSION}\"/" \
-    packaging/freebsd/+MANIFEST > /tmp/merovingian-manifest
+    packaging/freebsd/+MANIFEST > "${MANIFEST}"
 
 # 7. Create the .pkg archive
 pkg create \
-    --manifest /tmp/merovingian-manifest \
-    --root-dir "$(pwd)/${STAGING}/usr/local" \
-    --plist /tmp/merovingian-plist \
+    --manifest "${MANIFEST}" \
+    --root-dir "${STAGING_ROOT}" \
+    --plist "${PLIST}" \
     --out-dir .
 
 echo "Built FreeBSD package (static deps) for merovingian-${VERSION}"
