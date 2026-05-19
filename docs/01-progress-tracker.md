@@ -98,6 +98,11 @@ deployment milestone.
   durable policy audit rows, and durable admin action rows exist.
 - Packaging scaffolds: systemd, OpenRC, BSD rc.d, and Docker assets exist for
   early deployment-shape testing.
+- Distribution packaging: installable `.deb` (Debian/Ubuntu), `.rpm` (Fedora),
+  and `.pkg` (FreeBSD) packages are produced by CI on every push. Binaries are
+  fully statically linked against application dependencies (libsodium, OpenSSL,
+  libpq, libcurl, sqlite3); the `.deb` binary is built on Alpine (musl) and
+  carries zero shared-library runtime requirements.
 - Client discovery: unauthenticated `GET /_matrix/client/versions` returns
   supported versions `v1.1` through `v1.18` with an empty `unstable_features`
   object.
@@ -321,7 +326,7 @@ With the Alpha gates closed, Beta priorities take over from here:
 | Runtime hardening | `integrated` | Systemd/OpenRC/rc.d packaging, hardening plan, startup self-check with `HardeningStatus::alpha_exception` + documented notes, `merovingian-server` refusing to bind when any control reports `disabled`, alpha-only exceptions enumerated in `docs/hardening-alpha-exceptions.md`, and release-readiness gating on the new doc | Implement the in-process probes that retire each documented alpha exception: ELF program-header probe for linker/RELRO status, Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Linux and FreeBSD CI, setup-command planning for OpenBSD and NetBSD | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `integrated` | Canonical JSON and HTTP fuzz targets build with `-fsanitize=fuzzer,address,undefined`, the `fuzz` GitHub Actions workflow runs each target for a bounded duration on every push (and longer on a Sunday schedule), and crash inputs/corpora are uploaded as artifacts | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
-| Supply chain and release | `scaffolded` | Release-readiness script, packaging skeletons, the alpha hardening exceptions documentation, and a tag-driven alpha prerelease workflow that builds hardened Linux/FreeBSD tarballs and publishes SHA-256 checksums exist | Add SBOM, dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
+| Supply chain and release | `integrated` | Release-readiness script, installable `.deb`/`.rpm`/`.pkg` packages built by CI (statically linked, zero runtime deps for the `.deb`), tag-driven alpha prerelease workflow, SHA-256 checksums, and alpha hardening exceptions documentation | Add SBOM, dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
 
 ## Matrix v1.18 protocol coverage
 

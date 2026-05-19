@@ -3,14 +3,16 @@
 # Build a FreeBSD pkg(8) package for merovingian 0.2.1.
 set -e
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 STAGING="staging-fbsd"
 
-# 1. Configure with meson using FreeBSD prefix conventions
+# 1. Configure with meson using FreeBSD prefix conventions.
+#    --prefer-static: link .a archives for application deps; libc stays dynamic.
 meson setup build-freebsd-pkg \
     --prefix=/usr/local \
     --sysconfdir=/usr/local/etc \
     --wrap-mode=forcefallback \
+    --prefer-static \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false
@@ -41,4 +43,4 @@ pkg create \
     --plist /tmp/merovingian-plist \
     --out-dir .
 
-echo "Built FreeBSD package for merovingian-${VERSION}"
+echo "Built FreeBSD package (static deps) for merovingian-${VERSION}"

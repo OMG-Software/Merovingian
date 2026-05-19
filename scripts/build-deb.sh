@@ -3,18 +3,23 @@
 # Build a Debian binary package (.deb) for merovingian 0.2.1.
 set -e
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 
-# 1. Configure with meson (forcefallback so CI does not need wrap source deps)
+# 1. Configure with meson.
+#    --prefer-static: use .a archives over .so for all dependencies.
+#    cpp_link_args/c_link_args=-static: force fully-static binary (musl libc on Alpine).
 CC=clang CXX=clang++ meson setup build-deb \
     --prefix=/usr \
     --sysconfdir=/etc \
     --wrap-mode=forcefallback \
+    --prefer-static \
     -Dhardening=true \
     -Dbuild_tests=false \
-    -Dbuild_fuzz=false
+    -Dbuild_fuzz=false \
+    -Dcpp_link_args='-static' \
+    -Dc_link_args='-static'
 
 # 2. Compile
 meson compile -C build-deb
@@ -43,7 +48,7 @@ Version: ${VERSION}
 Architecture: ${ARCH}
 Maintainer: James Chapman <james@merovingian-homeserver.example>
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libssl3 | libssl3t64, libsodium23, libpq5, libcurl4t64 | libcurl4
+Recommends: ca-certificates
 Section: net
 Priority: optional
 Description: A secure Matrix Protocol homeserver
@@ -61,4 +66,4 @@ chmod 0755 "${STAGING}/DEBIAN/postinst" "${STAGING}/DEBIAN/prerm"
 dpkg-deb --root-owner-group --build "${STAGING}/" \
     "${PKG_NAME}_${VERSION}_${ARCH}.deb"
 
-echo "Built: ${PKG_NAME}_${VERSION}_${ARCH}.deb"
+echo "Built (static): ${PKG_NAME}_${VERSION}_${ARCH}.deb"

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.1
+Version:        0.2.2
 Release:        1%{?dist}
 Summary:        A secure Matrix Protocol homeserver
 
@@ -23,10 +23,6 @@ BuildRequires:  flex
 BuildRequires:  m4
 BuildRequires:  systemd-rpm-macros
 
-Requires:       openssl-libs
-Requires:       libsodium
-Requires:       libpq
-Requires:       libcurl
 
 %description
 Merovingian is an alpha Matrix Protocol homeserver.
@@ -38,6 +34,7 @@ Secure by design, implementation, and during runtime.
 %build
 %meson \
     --wrap-mode=forcefallback \
+    --prefer-static \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false
@@ -82,5 +79,8 @@ install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 %dir %{_sysconfdir}/merovingian
 
 %changelog
+* Tue May 19 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.2-1
+- 0.2.2: statically link application deps; remove shared-lib Requires; add --prefer-static
+
 * Tue May 19 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.1-1
 - Bump to 0.2.1: add systemd scriptlets, %pre user creation, service file install

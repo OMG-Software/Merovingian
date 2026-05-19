@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.2
+
+- Fully static packaging: all distribution binaries now link application
+  dependencies (libsodium, OpenSSL, libpq, libcurl, sqlite3) as static archives.
+- `.deb` CI job switched to `alpine:latest` container; binary is fully static
+  (musl libc) with zero shared-library runtime dependencies.
+- `.rpm` CI job adds `openssl-static`, `zlib-static`, and `sqlite-devel` build
+  deps; `--prefer-static` passed to meson; shared-lib `Requires:` removed from spec.
+- FreeBSD `.pkg` adds `sqlite3` build dep; `--prefer-static` passed to meson;
+  shared-lib `deps` block removed from `+MANIFEST`.
+- `meson.build`: removed `b_pie=true` and `-fPIE` / `-pie` / ELF-hardening link
+  flags (`-Wl,-z,relro/now/noexecstack`) — incompatible with static linking and
+  meaningless on non-ELF targets.
+
 ## 0.2.1
 
 - Added distro packaging: `.deb` (Debian/Ubuntu), `.rpm` (Fedora), and `.pkg` (FreeBSD).
