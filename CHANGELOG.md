@@ -30,6 +30,7 @@
   in `server_discovery.cpp` (GCC 16 `-Wredundant-move`); added `git` to FreeBSD CI prepare
   step so the yyjson git wrap can clone the source.
 
+
 ## 0.2.0
 
 - Bump to alpha release version.
