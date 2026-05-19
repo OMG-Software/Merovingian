@@ -47,7 +47,7 @@
   resolution, make-shim `DESTDIR` forwarding, Catch2 fallback self-test
   suppression, curl/libpq include-root handling, SQLite static fallback, and
   optimized-only FORTIFY handling.
-- Added a default Meson test setup that exposes staged external-project library
+- Added a default Meson `wrappedruntime` test setup that exposes staged external-project library
   directories through `LD_LIBRARY_PATH` for Fedora and other fallback-runtime
   test jobs.
 - Added a Fedora container build to CI so the Linux workflow also covers the

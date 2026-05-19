@@ -27,7 +27,7 @@ choices explicit at the project boundary. Profiles are names for reviewed Meson
 option sets; they do not weaken warning-as-error policy or bypass dependency
 checks.
 
-Fallback builds use Meson's default `wrapped-runtime` test setup to expose
+Fallback builds use Meson's default `wrappedruntime` test setup to expose
 staged external-project library directories through `LD_LIBRARY_PATH`. This
 keeps Fedora and BSD test execution aligned with the libraries that were built
 for the current Meson tree.

@@ -9,7 +9,7 @@ if get_option ('build_tests')
     meson.project_build_root() / 'subprojects' / 'curl-8.20.0' / 'dist' / 'usr' / 'local' / get_option('libdir'),
     separator: ':',
   )
-  add_test_setup('wrapped-runtime', env: wrapped_runtime_env, is_default: true)
+  add_test_setup('wrappedruntime', env: wrapped_runtime_env, is_default: true)
   catch2_dep = dependency(
     'catch2',
     required: false,

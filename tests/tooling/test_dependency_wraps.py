@@ -174,7 +174,7 @@ class DependencyWrapTests(unittest.TestCase):
         # directories through LD_LIBRARY_PATH.
         self.assertIn("wrapped_runtime_env.prepend(", tests_meson)
         self.assertIn("'LD_LIBRARY_PATH'", tests_meson)
-        self.assertIn("add_test_setup('wrapped-runtime', env: wrapped_runtime_env, is_default: true)", tests_meson)
+        self.assertIn("add_test_setup('wrappedruntime', env: wrapped_runtime_env, is_default: true)", tests_meson)
 
     def test_setup_scripts_install_the_extra_tools_needed_by_wrapped_sources(self) -> None:
         # GIVEN the environment bootstrap scripts.
