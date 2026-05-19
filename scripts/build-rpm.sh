@@ -13,10 +13,15 @@ mkdir -p "${HOME}/rpmbuild/SOURCES"
 mkdir -p "${HOME}/rpmbuild/SPECS"
 mkdir -p "${HOME}/rpmbuild/SRPMS"
 
-# 2. Create source tarball from git HEAD
-git archive --format=tar.gz \
-    --prefix="merovingian-${VERSION}/" \
-    HEAD > "${HOME}/rpmbuild/SOURCES/merovingian-${VERSION}.tar.gz"
+# 2. Create source tarball from the working tree.
+# git-archive is unreliable in Docker containers (GIT_DISCOVERY_ACROSS_FILESYSTEM);
+# tar from the working directory is equivalent and container-safe.
+tar czf "${HOME}/rpmbuild/SOURCES/merovingian-${VERSION}.tar.gz" \
+    --transform "s|^\./|merovingian-${VERSION}/|" \
+    --exclude='./.git' \
+    --exclude='./build-rpm' \
+    --exclude='./staging-*' \
+    .
 
 # 3. Copy spec file
 cp packaging/rpm/merovingian.spec "${HOME}/rpmbuild/SPECS/merovingian.spec"

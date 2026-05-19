@@ -12,7 +12,7 @@ STAGING="staging-fbsd"
 meson setup build-freebsd-pkg \
     --prefix=/usr/local \
     --sysconfdir=/usr/local/etc \
-    --wrap-mode=nofallback \
+    --wrap-mode=default \
     --prefer-static \
     -Dhardening=true \
     -Dbuild_tests=false \

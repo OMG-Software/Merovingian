@@ -15,6 +15,10 @@
 - `meson.build`: removed `b_pie=true` and ELF-dynamic-only link flags (`-pie`, `-Wl,-z,relro/now`);
   retained `-fPIE` (compile) and `-Wl,-z,noexecstack` (kernel-enforced on static and dynamic ELF);
   PIE link flag supplied per-platform via `cpp_link_args` in each build script.
+- CI fixes: `libpq.a` static link now resolves `pg_encoding_to_char` via `libpgcommon_shlib.a`
+  (Alpine's frontend pgcommon variant); RPM build uses `tar` instead of `git archive` to avoid
+  `GIT_DISCOVERY_ACROSS_FILESYSTEM` failures in Docker containers; FreeBSD build uses
+  `--wrap-mode=default` so system curl is preferred while yyjson can still fall back to its wrap.
 
 ## 0.2.0
 
