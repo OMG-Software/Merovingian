@@ -176,6 +176,16 @@ class DependencyWrapTests(unittest.TestCase):
         self.assertIn("'LD_LIBRARY_PATH'", tests_meson)
         self.assertIn("add_test_setup('wrappedruntime', env: wrapped_runtime_env, is_default: true)", tests_meson)
 
+    def test_aggregate_unit_test_binary_has_ci_sized_timeout(self) -> None:
+        # GIVEN the full Catch2 unit suite runs as one aggregate Meson test.
+        tests_build = REPO_ROOT / "tests" / "meson.build"
+        self.assertTrue(tests_build.is_file(), "tests meson.build is missing")
+        tests_meson = tests_build.read_text(encoding="utf-8")
+
+        # WHEN fallback, coverage, or sanitizer builds execute the aggregate binary.
+        # THEN the Meson test timeout is explicit and larger than the 30s default.
+        self.assertIn("test('unit-tests', unit_tests, timeout: 120)", tests_meson)
+
     def test_setup_scripts_install_the_extra_tools_needed_by_wrapped_sources(self) -> None:
         # GIVEN the environment bootstrap scripts.
         for script_path in (SETUP_SCRIPT, WSL_SETUP_SCRIPT):

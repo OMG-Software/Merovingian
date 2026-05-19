@@ -121,7 +121,10 @@ deployment milestone.
   own upstream SelfTest target; SQLite fallback builds are static so sanitizer
   jobs link sanitizer runtimes through Merovingian's test executables. Meson
   tests run with a default fallback-runtime setup that exposes staged
-  external-project library directories through `LD_LIBRARY_PATH`.
+  external-project library directories through `LD_LIBRARY_PATH`, and the
+  aggregate Catch2 unit-test binary has an explicit CI-sized timeout so
+  fallback, coverage, and sanitizer jobs do not kill a passing suite at Meson's
+  30 second default.
   `_FORTIFY_SOURCE=3` is requested only for optimized builds so Fedora debug CI
   does not fail warnings-as-errors on glibc's optimization diagnostic. Fedora
   container CI now covers the Red Hat package family in addition to Ubuntu and

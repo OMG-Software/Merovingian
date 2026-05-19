@@ -50,6 +50,9 @@
 - Added a default Meson `wrappedruntime` test setup that exposes staged external-project library
   directories through `LD_LIBRARY_PATH` for Fedora and other fallback-runtime
   test jobs.
+- Raised the aggregate Catch2 unit-suite Meson timeout so fallback, coverage,
+  and sanitizer CI jobs do not kill an otherwise passing suite at Meson's 30s
+  default.
 - Added a Fedora container build to CI so the Linux workflow also covers the
   Red Hat package family with `dnf`-provided dependencies.
 - Fixed registration-token CRLF handling so Windows-edited token files compare

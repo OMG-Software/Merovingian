@@ -127,7 +127,7 @@ if get_option ('build_tests')
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
   )
 
-  test('unit-tests', unit_tests)
+  test('unit-tests', unit_tests, timeout: 120)
 
   integration_tests = executable(
     'merovingian-integration-tests',
