@@ -20,13 +20,17 @@ openssl_dep = dependency('openssl', include_type: 'system', allow_fallback: fals
 # Libs.private. Alpine ships the frontend (_shlib) variant separately;
 # other distros use the plain library name. Prefer _shlib, fall back to plain.
 _libpq          = dependency('libpq', include_type: 'system', allow_fallback: false)
-_pgcommon       = cpp.find_library('pgcommon_shlib', required: false)
+# libpq.a requires pgcommon/pgport symbols that libpq.pc omits from Libs.private.
+# Use static:true so we only add them when a .a file physically exists — this
+# prevents false-positive detection of dynamic-only stubs on FreeBSD that the
+# linker cannot then resolve. Alpine ships libpgcommon_shlib.a (frontend variant).
+_pgcommon       = cpp.find_library('pgcommon_shlib', required: false, static: true)
 if not _pgcommon.found()
-  _pgcommon     = cpp.find_library('pgcommon', required: false)
+  _pgcommon     = cpp.find_library('pgcommon', required: false, static: true)
 endif
-_pgport         = cpp.find_library('pgport_shlib', required: false)
+_pgport         = cpp.find_library('pgport_shlib', required: false, static: true)
 if not _pgport.found()
-  _pgport       = cpp.find_library('pgport', required: false)
+  _pgport       = cpp.find_library('pgport', required: false, static: true)
 endif
 libpq_dep       = declare_dependency(dependencies: [_libpq, _pgcommon, _pgport])
 sqlite_dep = dependency(
