@@ -54,13 +54,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            bison \
             clang \
             catch2 \
-            libcurl4-openssl-dev \
+            flex \
             libpq-dev \
-            libssl-dev \
-            libsqlite3-dev \
             libsodium-dev \
+            libssl-dev \
+            m4 \
+            perl \
             pkg-config \
             postgresql-client
           python -m pip install --upgrade pip

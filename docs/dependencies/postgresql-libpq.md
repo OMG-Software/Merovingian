@@ -37,9 +37,16 @@ management, parameterized execution, and PostgreSQL error reporting.
 
 ## Maintenance and platform posture
 
-`libpq` is maintained with PostgreSQL and is available on the target Linux and
-BSD platforms through normal package managers. The project build requires the
-Meson `libpq` dependency when building the database module.
+`libpq` is resolved from the operating-system PostgreSQL client package and
+linked dynamically. The top-level Meson dependency sets `allow_fallback: false`,
+so clean builds must provide `libpq.pc` through the host package manager even
+when the wrapper scripts use Meson's `forcefallback` mode for other
+dependencies.
+
+Supported development paths install the OS development package explicitly:
+Debian-family hosts use `libpq-dev`, Fedora-family hosts use `libpq-devel`,
+FreeBSD uses `postgresql17-client`, OpenBSD uses `postgresql-client`, and
+NetBSD/pkgsrc uses `postgresql17-client`.
 
 ## Current limitations
 

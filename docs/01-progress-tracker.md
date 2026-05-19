@@ -6,6 +6,9 @@ alpha-readiness, progress, and protocol-coverage notes. Historical numbered
 milestone and phase documents are planning notes only; do not use them to decide
 whether a capability is ready.
 
+The latest repository code-audit report is tracked in
+`docs/security-code-audit-alpha.md`.
+
 No milestone is complete until every listed `TODO` item for that milestone is
 closed and the evidence is recorded in CI or release notes.
 
@@ -69,7 +72,7 @@ deployment milestone.
   route shapes are runtime-wired with durable server-blind storage,
   one-time-key consumption, fallback-key reuse, backup rows, redaction, audit,
   and SQLite restart coverage.
-- Inbound federation foundation: federation listener local-router dispatch,
+- Inbound federation foundation: federation-only listener dispatch,
   inbound transaction scaffold, SSRF/TLS policy checks, duplicate handling,
   canonical JSON Ed25519 request verification, JSON PDU signature verification
   for known keys, signed-request integration coverage, inbound
@@ -96,13 +99,42 @@ deployment milestone.
 - Trust and safety: registration/account/invite/federation/media/report policy
   engine, runtime client event reporting, admin safety report listing/review,
   durable policy audit rows, and durable admin action rows exist.
-- Packaging scaffolds: systemd, OpenRC, BSD rc.d, and Docker assets exist for
-  early deployment-shape testing.
+- Packaging scaffolds: systemd, OpenRC, BSD rc.d, Docker assets, Debian control
+  metadata, RPM spec metadata, and BSD package metadata exist for early
+  deployment-shape testing.
 - Distribution packaging: installable `.deb` (Debian/Ubuntu), `.rpm` (Fedora),
   and `.pkg` (FreeBSD) packages are produced by CI on every push. Binaries are
   fully statically linked against application dependencies (libsodium, OpenSSL,
   libpq, libcurl, sqlite3); the `.deb` binary is built on Alpine (musl) and
   carries zero shared-library runtime requirements.
+- Supply-chain automation: release publication, secret scanning, dependency
+  vulnerability triage, and SBOM workflows exist and are checked by the
+  release-readiness gate.
+- Direct runtime dependencies resolve through committed source-pinned Meson
+  wraps for libcurl, SQLite, Catch2, and yyjson. OpenSSL, LibSodium, and
+  PostgreSQL libpq resolve from operating-system packages and explicitly
+  disallow Meson fallback resolution so distro security updates apply to
+  production builds. curl uses the `unstable-external_project` module to build
+  from an upstream tarball via its native configure script. The shared make
+  shim forwards Meson's staged `DESTDIR` as a make command-line variable so
+  upstream Makefiles that assign `DESTDIR=` internally still install into the
+  build-local external-project dist directory. The curl packagefile exposes
+  curl's installed include root so `<curl/curl.h>` resolves on BSD. The curl
+  fallback disables optional zlib and zstd support so its static archive does
+  not need undeclared compression libraries at link time. Catch2 fallback builds
+  disable Catch2's own upstream SelfTest target; SQLite fallback builds are
+  static so sanitizer jobs link sanitizer runtimes through Merovingian's test
+  executables. Meson tests run with a default fallback-runtime setup that
+  exposes staged curl external-project library directories through
+  `LD_LIBRARY_PATH`, and the aggregate Catch2 unit-test binary has an explicit
+  CI-sized timeout so fallback, coverage, and sanitizer jobs do not kill a
+  passing suite at Meson's 30 second default. Post-build validation scripts that
+  execute `merovingian-server` directly also expose those staged curl library
+  directories before running dry-run checks. `_FORTIFY_SOURCE=3` is requested
+  only for optimized builds so Fedora debug CI does not fail warnings-as-errors
+  on glibc's optimization diagnostic. Fedora container CI now covers the Red Hat
+  package family in addition to Ubuntu and FreeBSD. Current pinned wrap
+  versions: curl 8.20.0, Catch2 v3.14.0, SQLite 3.53.1, yyjson 0.12.0.
 - Client discovery: unauthenticated `GET /_matrix/client/versions` returns
   supported versions `v1.1` through `v1.18` with an empty `unstable_features`
   object.
@@ -282,8 +314,8 @@ be published as production releases while any blocking gate remains open.
 - Fail closed when required production hardening controls are unavailable.
 - Pass conformance, fuzz, sanitizer, static-analysis, platform, packaging, and
   release-readiness checks before creating a release tag.
-- Add signed release artifacts, reproducible builds, SBOM, dependency pinning
-  policy, license review, checksums, provenance, and artifact signatures.
+- Add signed release artifacts, reproducible builds, dependency pinning
+  policy, license review, provenance, and artifact signatures.
 - Record compiler version, linker flags, dependency versions, test logs,
   sanitizer logs, fuzz target names, package checksums, and artifact signatures
   in release notes.
@@ -312,13 +344,13 @@ With the Alpha gates closed, Beta priorities take over from here:
 | --- | --- | --- | --- |
 | Build and warning policy | `runtime-wired` | Meson C++26 build, warnings-as-errors, hardening flags, Linux and FreeBSD CI, reusable local build wrappers, WSL bridge wrapper, and named debug/release/sanitizer/coverage/fuzz/hardened wrapper profiles | Add signed release artifacts, reproducible builds, mandatory fuzz execution, and platform-specific production hardening enforcement. |
 | Secure configuration | `runtime-wired` | Validated defaults, bounded parser, config-file metadata checks, reload planning, smoke tests | Replace phase-specific CI naming with capability gates and add production profile enforcement. |
-| Runtime listener | `runtime-wired` | `net::TcpAcceptor` binds per `ListenerPlan`, `net::ShutdownSignal` handles SIGINT/SIGTERM, `homeserver::serve_http`/`serve_tls_http` accept/parse/dispatch loops, client listeners dispatch through the `client_server` Matrix JSON adapter, `--dry-run` flag for validation-only runs, integration tests exercising loopback HTTP and TLS round-trips | Add per-connection slowloris enforcement, per-endpoint rate-limit accounting, multi-listener thread pool, and keep-alive. |
+| Runtime listener | `runtime-wired` | `net::TcpAcceptor` binds per `ListenerPlan`, `net::ShutdownSignal` handles SIGINT/SIGTERM, `homeserver::serve_http`/`serve_tls_http` accept/parse/dispatch loops, client listeners dispatch through the `client_server` Matrix JSON adapter, federation listeners dispatch through a federation-only router, `--dry-run` flag for validation-only runs, integration tests exercising loopback HTTP and TLS round-trips | Add per-connection slowloris enforcement, per-endpoint rate-limit accounting, multi-listener thread pool, and keep-alive. |
 | HTTP transport | `runtime-wired` | HTTP/1.1 request-head parser, request limits, rate-limit helpers, per-endpoint rate-limit enforcement keyed by normalized bucket, 429 `M_LIMIT_EXCEEDED` response on quota breach, single-request adapter, cleartext/TLS accept-read-write loop with response serialization, dispatch-mode separation, OpenSSL RAII boundary, libcurl-backed outbound HTTPS client with peer and hostname verification, redirects refused, https-only protocol, pinned-address DNS, bounded response cap, optional CA trust blob, and `MSG_NOSIGNAL` writes | Upgrade to `llhttp` or reviewed parser boundary, add request body streaming, keep-alive, HTTP/2, per-connection slowloris policy, remote-IP buckets for unauthenticated routes, durable rate-limit state, and operator-tunable policy overrides. |
 | Client-server API | `runtime-wired` | Registration, password login, logout, whoami, devices, room creation, send, joined rooms, sync slices, unauthenticated `GET /_matrix/client/versions`, and Matrix v1.18-spec-complete sync response shape are reachable through the client listener's Matrix JSON adapter | Complete Matrix v1.18 endpoint coverage, conformance coverage, persistence semantics, and populate the top-level sync surfaces with real behavior. |
-| Authentication and sessions | `runtime-wired` | LibSodium password hashing, CSPRNG access tokens, durable token hashes, SQLite/PostgreSQL hydration into runtime sessions, client-server register/login/logout/whoami/device routes, policy checks, durable audit events, and restart-survival coverage | Add refresh-token rotation, registration tokens, explicit admin bootstrap controls, account recovery controls, global logout, and Matrix conformance fixtures. |
+| Authentication and sessions | `runtime-wired` | LibSodium password hashing, CSPRNG access tokens, durable token hashes, SQLite/PostgreSQL hydration into runtime sessions, token-file-enforced public registration, explicit admin bootstrap API and startup flag, client-server register/login/logout/whoami/device routes, policy checks, durable audit events, and restart-survival coverage | Add refresh-token rotation, richer operator bootstrap lifecycle controls, account recovery controls, global logout, and Matrix conformance fixtures. |
 | E2EE key APIs | `runtime-wired` | Key API route/planning boundary, authenticated client-server runtime dispatch for upload/query/claim/cross-signing/signature/backup route shapes, durable device/one-time/fallback/cross-signing/signature/backup storage, one-time-key consumption, fallback-key reuse, server-blind payload redaction, audit records, and SQLite restart coverage | Add Matrix device-list stream semantics, full key-count algorithms, complete backup version/session retrieval/deletion, Matrix v1.18 semantics, and conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Strict canonical JSON parser boundary, deterministic serializer, event envelope, content hashes, reference-hash event IDs, redacted signing payloads, Base64 Ed25519 signature attachment/verification, persisted runtime signing key, signed runtime event JSON, durable event DAG rows, room-version-aware redaction, v6+ auth rules, state resolution v2, incremental sync with stream tokens and `since`, Matrix-shaped sync responses with `rooms.join`, `rooms.invite`, `rooms.leave`, and top-level `presence`, `account_data`, `to_device`, `device_lists`, and `device_one_time_keys_count` keys, encrypted-room policy, local room flow, and restart-survival integration coverage | Add sync long polling and filters, real payloads for presence/device/to-device/account-data surfaces, restricted join rule evaluation, third-party invite auth, and broader Matrix v1.18 room-version conformance fixtures. |
-| Federation | `runtime-wired` | Runtime federation listener dispatch through the local router, inbound transaction scaffold, unauthenticated inbound `GET /_matrix/key/v2/server` key publication with a canonical self-signed response, SSRF/TLS policy checks, trust-state logic, duplicate handling, canonical JSON Ed25519 request verification, JSON PDU event-signature verification for known and discovered remote keys, signed-request integration coverage, server discovery with HTTPS well-known fetch, DNS SRV, A/AAAA resolution, IPv6 pins, private/loopback rejection, remote key fetch/cache with every listed verify key self-signed, outbound transaction types with exponential backoff and circuit breaker policy, `merovingian::http::OutboundClient`, `perform_outbound_transaction` wiring, `DispatchWorker` bounded retry queue, durable queue/destination persistence with restart replay, X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, circuit-breaker short-circuit before network I/O, circuit-open requeue, inbound PDU/EDU ingestion hooks, and per-platform TLS integration coverage | Remote PDU state merge, joins/invites/backfill, TLS-bound origin validation, key rotation, and conformance coverage. |
+| Federation | `runtime-wired` | Runtime federation listener dispatch through a federation-only router, inbound transaction scaffold, unauthenticated inbound `GET /_matrix/key/v2/server` key publication with a canonical self-signed response, SSRF/TLS policy checks, trust-state logic, duplicate handling, canonical JSON Ed25519 request verification, JSON PDU event-signature verification for known and discovered remote keys, signed-request integration coverage, server discovery with HTTPS well-known fetch, DNS SRV, A/AAAA resolution, IPv6 pins, private/loopback rejection, remote key fetch/cache with every listed verify key self-signed, outbound transaction types with exponential backoff and circuit breaker policy, `merovingian::http::OutboundClient`, `perform_outbound_transaction` wiring, `DispatchWorker` bounded retry queue, durable queue/destination persistence with restart replay, X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, circuit-breaker short-circuit before network I/O, circuit-open requeue, inbound PDU/EDU ingestion hooks, and per-platform TLS integration coverage | Remote PDU state merge, joins/invites/backfill, TLS-bound origin validation, key rotation, and conformance coverage. |
 | Media repository | `runtime-wired` | Runtime media routes for authenticated local upload/download, MIME policy, quarantine/release/remove, LibSodium digest, metrics, audit, persistent metadata writes, and integration coverage | Add sandboxed processing worker, remote fetch, AV hook boundary, thumbnailing, decompression limits, and durable blob storage. |
 | Database persistence | `runtime-wired` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, fail-closed hydration, busy timeout, runtime hydration, write-through users/devices/tokens/rooms/events/E2EE keys/media/audit/admin rows, SQLite transaction rollback, atomic runtime helpers, dependency reviews, PostgreSQL RAII connection/result boundary, PostgreSQL schema bootstrap/pending-migration hydration/write-through path, migration-file loading, offline migrator scaffold, database role separation, durable trust-and-safety rows, and restart-survival integration coverage | Add live PostgreSQL integration tests, enforce runtime/migration grants through separate PostgreSQL users, and persistence for account data, policy rules, and media blob metadata. |
 | Observability and audit | `runtime-wired` | Structured logging, health snapshots, safe metrics summaries, redaction helpers, durable audit events, admin health/metrics/audit runtime endpoints, and client-server action audit persistence | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
@@ -326,7 +358,7 @@ With the Alpha gates closed, Beta priorities take over from here:
 | Runtime hardening | `integrated` | Systemd/OpenRC/rc.d packaging, hardening plan, startup self-check with `HardeningStatus::alpha_exception` + documented notes, `merovingian-server` refusing to bind when any control reports `disabled`, alpha-only exceptions enumerated in `docs/hardening-alpha-exceptions.md`, and release-readiness gating on the new doc | Implement the in-process probes that retire each documented alpha exception: ELF program-header probe for linker/RELRO status, Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Linux and FreeBSD CI, setup-command planning for OpenBSD and NetBSD | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `integrated` | Canonical JSON and HTTP fuzz targets build with `-fsanitize=fuzzer,address,undefined`, the `fuzz` GitHub Actions workflow runs each target for a bounded duration on every push (and longer on a Sunday schedule), and crash inputs/corpora are uploaded as artifacts | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
-| Supply chain and release | `integrated` | Release-readiness script, installable `.deb`/`.rpm`/`.pkg` packages built by CI (statically linked, zero runtime deps for the `.deb`), tag-driven alpha prerelease workflow, SHA-256 checksums, and alpha hardening exceptions documentation | Add SBOM, dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
+| Supply chain and release | `integrated` | Release-readiness script, installable `.deb`/`.rpm`/`.pkg` packages built by CI (statically linked, zero runtime deps for the `.deb`), tag-driven alpha prerelease workflow, SHA-256 checksums, alpha hardening exceptions documentation, plus dedicated secret-scan, dependency-vulnerability-triage, and SBOM workflows | Add dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
 
 ## Matrix v1.18 protocol coverage
 
@@ -345,14 +377,16 @@ Coverage states:
 The runtime listener binds configured client listeners and, when enabled,
 federation listeners. Client listeners dispatch parsed HTTP/1.1 requests into
 `handle_client_server_request` over loopback cleartext or configured TLS.
-Federation and internal compatibility paths can still dispatch into the legacy
-local router until those surfaces have production adapters.
+Federation listeners dispatch into a federation-only router that exposes only
+federation requests and server-key publication. Internal compatibility paths can
+still dispatch into the legacy local router until those surfaces have production
+adapters.
 
 ### Client-server API
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Authentication | `POST /_matrix/client/v3/register` | `partial` | Matrix JSON body is parsed, local registration is reachable through the client listener, and SQLite-backed local users survive restart. Needs UI auth, registration tokens, PostgreSQL coverage, and conformance fixtures. |
+| Authentication | `POST /_matrix/client/v3/register` | `partial` | Matrix JSON body is parsed, registration-token UI auth is enforced from the configured token file, public registration creates non-admin users, local registration is reachable through the client listener, and SQLite-backed local users survive restart. Needs full UI auth flows, PostgreSQL coverage, and conformance fixtures. |
 | Authentication | `POST /_matrix/client/v3/login` | `partial` | Password login works for local users with LibSodium-backed hashes, token hashes are SQLite-persisted, and restart-survival is tested. Needs full Matrix login flows, refresh behavior, PostgreSQL coverage, and conformance fixtures. |
 | Authentication | `POST /_matrix/client/v3/logout` | `partial` | Local bearer-token logout works through the client listener and token revocation is routed through the persistent store. Needs global logout and conformance fixtures. |
 | Authentication | `POST /_matrix/client/v3/logout/all` | `scaffolded` | Route planning exists in the auth boundary. Runtime behavior is not complete. |
@@ -378,12 +412,12 @@ local router until those surfaces have production adapters.
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (inbound) | `partial` | Inbound transaction handling is runtime-wired through federation listener local-router dispatch with request policy, duplicate handling, canonical JSON request-signature verification, JSON PDU event-signature verification for known and on-demand discovered keys, PDU/EDU parsing, sink hooks, and conflict audit. Needs PDU insertion into the durable room event graph, state-conflict merge, joins/backfill, and richer EDU side effects. |
+| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (inbound) | `partial` | Inbound transaction handling is runtime-wired through federation-only listener dispatch with request policy, duplicate handling, canonical JSON request-signature verification, JSON PDU event-signature verification for known and on-demand discovered keys, PDU/EDU parsing, sink hooks, and conflict audit. Needs PDU insertion into the durable room event graph, state-conflict merge, joins/backfill, and richer EDU side effects. |
 | Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (outbound) | `partial` | `perform_outbound_transaction` composes the libcurl-backed `merovingian::http::OutboundClient` with X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, and circuit-breaker short-circuit through `destination_should_retry`. `DispatchWorker` provides a bounded retry queue, requeues circuit-open transactions for the destination retry deadline, persists pending rows and destination retry state, and replays pending rows after restart. Per-platform TLS integration coverage exercises valid round-trip, hostname mismatch, untrusted self-signed, and 3xx rejection. Needs production runtime wiring to start the replay worker and Matrix conformance coverage. |
 | Joins/leaves/invites | Federation join, leave, invite, and backfill flows | `scaffolded` | Route planning exists for selected federation surfaces. Full make/send join, leave, invite, and backfill behavior is not implemented. |
 | Server discovery | Well-known, DNS, TLS, and key discovery | `partial` | Server discovery now fetches `https://<server>/.well-known/matrix/server` through the pinned outbound client, parses `m.server`, falls back to `_matrix-fed._tcp.<host>` SRV records, resolves A/AAAA addresses, handles public IPv6 pins, rejects private/loopback IPv4 and IPv6 addresses before exposing the pin set to `OutboundClient`, and feeds remote key fetch/cache for on-demand inbound verification. Needs TLS-bound origin validation, richer Matrix edge-case fixtures, and live network conformance coverage. |
 | Signing verification | Request and event signatures | `partial` | Federation requests verify canonical JSON Ed25519 signatures, and JSON PDUs verify Matrix event signatures against known or on-demand discovered remote key material with CI-covered event-ID API linkage. Remote server-key responses must self-sign every listed verify key before caching. Outbound requests are signed through the shared `make_federation_signature` primitive. Needs TLS-bound origin validation, room-version-specific verification, persisted federation key rotation, and inclusion of the destination server name in the X-Matrix payload to match newer Matrix spec versions. |
-| Key publication | `GET /_matrix/key/v2/server` (inbound) | `partial` | The local router answers unauthenticated key fetches with the persisted runtime Ed25519 verify key, `valid_until_ts`, empty `old_verify_keys`, and a canonical self-signature verified by integration coverage. Needs key rotation, multiple active/old keys, production adapter routing, and Matrix federation conformance fixtures. |
+| Key publication | `GET /_matrix/key/v2/server` (inbound) | `partial` | The federation-only router answers unauthenticated key fetches with the persisted runtime Ed25519 verify key, `valid_until_ts`, empty `old_verify_keys`, and a canonical self-signature verified by integration coverage. Needs key rotation, multiple active/old keys, and Matrix federation conformance fixtures. |
 | Federation queues | Outbound federation and retry/backoff | `partial` | `OutboundClient` is wired through `perform_outbound_transaction` with retry-state mutation via `apply_outbound_result`, circuit-breaker short-circuit via `destination_should_retry`, and a `DispatchWorker` that retries discovery and delivery failures without dropping circuit-open transactions. Pending transactions persist to `federation_transactions`, destination retry state persists to `federation_destinations`, and bounded worker replay hydrates both after restart. Needs production runtime worker startup and live federation delivery coverage. |
 
 ### Server administration and operations
@@ -494,4 +528,6 @@ These commands are the minimum release evidence path. The release operator must
 also record dependency versions, test logs, sanitizer logs, fuzz target names,
 package checksums, and artifact signatures in release notes. Tags matching
 `v*-alpha*` trigger `.github/workflows/release.yml`, which builds hardened
-Linux and FreeBSD tarballs and publishes them as a GitHub prerelease.
+Linux and FreeBSD tarballs and publishes them as a GitHub prerelease, while
+the published release event triggers `.github/workflows/sbom.yml` to attach
+SPDX and CycloneDX inventories.

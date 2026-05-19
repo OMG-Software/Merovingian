@@ -1,0 +1,9 @@
+[wrap-file]
+directory = curl-8.20.0
+source_url = https://github.com/curl/curl/releases/download/curl-8_20_0/curl-8.20.0.tar.xz
+source_filename = curl-8.20.0.tar.xz
+source_hash = 63fe2dc148ba0ceae89922ef838f7e5c946272c2e78b7c59fab4b79d3ce2b896
+patch_directory = curl
+
+[provide]
+dependency_names = libcurl

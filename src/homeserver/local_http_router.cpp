@@ -253,10 +253,15 @@ namespace
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/register")
     {
+        if (auto const fields = split_pipe_3(request.body); fields.has_value())
+        {
+            return response_from_operation(register_local_user(runtime, (*fields)[0], (*fields)[1], (*fields)[2]),
+                                           200U);
+        }
         auto const fields = split_pipe_2(request.body);
         return fields.has_value()
                    ? response_from_operation(register_local_user(runtime, (*fields)[0], (*fields)[1]), 200U)
-                   : response(400U, "registration body must be localpart|password");
+                   : response(400U, "registration body must be localpart|password[|token]");
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/login")
     {
@@ -353,6 +358,31 @@ namespace
         auto result =
             fetch_room_state(runtime, request.access_token, suffix.substr(0U, suffix.size() - state_suffix.size()));
         return result.ok ? response(200U, result.value) : response(401U, result.reason);
+    }
+    return response(404U, "route not found");
+}
+
+[[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
+    -> LocalHttpResponse
+{
+    if (!runtime.started)
+    {
+        return response(503U, "runtime not started");
+    }
+    if (request.method == "GET" && request.target == "/_matrix/key/v2/server")
+    {
+        return response_from_operation(publish_server_signing_keys(runtime));
+    }
+    if (starts_with(request.target, "/_matrix/federation/"))
+    {
+        auto signed_request = parse_signed_federation_request(request);
+        if (!signed_request.has_value())
+        {
+            return response(401U, "malformed federation authorization");
+        }
+        auto const federation_response =
+            federation::handle_inbound_federation_request(runtime.federation, *signed_request);
+        return response(federation_response.status, federation_response.body);
     }
     return response(404U, "route not found");
 }

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/schema.hpp"
@@ -18,7 +19,7 @@ namespace
 [[nodiscard]] auto registration_enabled_config() -> merovingian::config::Config
 {
     auto security = merovingian::config::SecurityConfig{};
-    security.registration.enabled = true;
+    merovingian::tests::enable_token_registration(security);
     return {
         merovingian::config::ServerConfig{},
         merovingian::config::ListenersConfig{},
@@ -35,7 +36,7 @@ namespace
     database.sqlite_path = sqlite_path.string();
 
     auto security = merovingian::config::SecurityConfig{};
-    security.registration.enabled = true;
+    merovingian::tests::enable_token_registration(security);
 
     return {
         merovingian::config::ServerConfig{},
@@ -94,10 +95,11 @@ SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions 
                 auto& runtime = started.runtime;
 
                 auto const registered = merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST",
-                              "/_matrix/client/v3/register",
-                              {},
-                              R"({"username":"restart","password":"CorrectHorse7!"})"});
+                    runtime,
+                    {"POST",
+                     "/_matrix/client/v3/register",
+                     {},
+                     R"({"username":"restart","password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
                 auto const login = merovingian::homeserver::handle_client_server_request(
                     runtime,
                     {"POST",
@@ -162,8 +164,10 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
                 auto& runtime = started.runtime;
 
                 auto const registered = merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {}, R"({"username":"keys","password":"CorrectHorse7!"})"});
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("keys", "CorrectHorse7!")});
                 auto const login = merovingian::homeserver::handle_client_server_request(
                     runtime,
                     {"POST",
@@ -301,8 +305,10 @@ SCENARIO("Persistent homeserver store records the client-server flow",
         WHEN("a user registers logs in creates a room sends a message and logs out")
         {
             auto const registered = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/register", {}, R"({"username":"alice","password":"CorrectHorse7!"})"});
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json("alice", "CorrectHorse7!")});
             auto const login = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST",

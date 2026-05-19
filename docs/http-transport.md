@@ -30,8 +30,7 @@ Implemented now:
   `client_server` adapter while federation/internal compatibility paths can
   keep using the local router
 - OpenSSL-backed TLS server context and connection wrappers, with OpenSSL
-  resolved through a pinned Meson wrap fallback when no system package is
-  available
+  resolved from the operating-system package
 - TLS listener accept path with bounded handshake timeout
 - single-mutex serialisation of runtime mutation across acceptors
 
@@ -111,9 +110,8 @@ keeps connection lifetime to a single HTTP request.
 OpenSSL is the selected TLS provider for this boundary. The project-owned
 wrapper keeps OpenSSL-specific types out of higher-level transport code, which
 contains provider maintenance without making provider replacement part of the
-current plan. GnuTLS is not the active replacement path while Meson WrapDB
-provides an OpenSSL wrap and does not provide a standard `gnutls` package for
-this project to consume directly.
+current plan. OpenSSL is dynamically linked from the host package manager so
+TLS security updates can arrive through normal distro and BSD package channels.
 
 ## Request limits
 

@@ -33,14 +33,16 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            bison \
             clang \
             clang-tidy \
             catch2 \
-            libcurl4-openssl-dev \
+            flex \
             libpq-dev \
-            libssl-dev \
-            libsqlite3-dev \
             libsodium-dev \
+            libssl-dev \
+            m4 \
+            perl \
             pkg-config
           python -m pip install --upgrade pip
           python -m pip install --upgrade meson ninja
@@ -73,6 +75,52 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  # -- Fedora / Red Hat family -----------------------------------------------
+  fedora-build-and-test:
+    runs-on: ubuntu-latest
+    container:
+      image: fedora:latest
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - name: Install dependencies
+        run: |
+          dnf install -y \
+            bison \
+            catch-devel \
+            clang \
+            clang-tools-extra \
+            cppcheck \
+            flex \
+            gcc-c++ \
+            git \
+            lld \
+            m4 \
+            meson \
+            ninja-build \
+            libpq-devel \
+            libsodium-devel \
+            openssl-devel \
+            perl \
+            pkgconf-pkg-config \
+            python3
+
+      - uses: actions/checkout@v4
+
+      - name: Build and test
+        run: sh scripts/build-linux.sh --builddir build-fedora
+
+      - name: Validate Phase 1 configuration gates
+        run: bash scripts/validate-phase1-config.sh build-fedora
+
+      - name: Reject unsafe allocation patterns
+        run: bash scripts/reject-unsafe.sh
+
+      - name: Check release readiness metadata
+        run: sh scripts/check-release-readiness.sh
+
   # ── FreeBSD ────────────────────────────────────────────────────────────────
   freebsd:
     runs-on: ubuntu-latest
@@ -85,7 +133,7 @@ jobs:
         with:
           usesh: true
           run: |
-            pkg install -y meson ninja llvm catch2 pkgconf git libsodium postgresql16-client openssl sqlite3 curl
+            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client
             sh scripts/build-bsd.sh --builddir build
             mkdir -p artifacts/bin artifacts/config artifacts/docs
             cp build/src/merovingian-server artifacts/bin/

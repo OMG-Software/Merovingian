@@ -1,10 +1,10 @@
 Name:           merovingian
 Version:        0.2.1
 Release:        1%{?dist}
-Summary:        A secure Matrix Protocol homeserver
+Summary:        Secure Matrix Protocol homeserver
 
 License:        GPL-3.0-or-later
-URL:            https://github.com/merovingian-homeserver/merovingian
+URL:            https://github.com/OMG-Software/Merovingian
 Source0:        %{name}-%{version}.tar.gz
 
 BuildRequires:  clang
@@ -23,10 +23,9 @@ BuildRequires:  flex
 BuildRequires:  m4
 BuildRequires:  systemd-rpm-macros
 
-
 %description
-Merovingian is an alpha Matrix Protocol homeserver.
-Secure by design, implementation, and during runtime.
+Merovingian is an alpha Matrix Protocol homeserver focused on secure
+implementation, runtime hardening, and auditable dependency boundaries.
 
 %prep
 %autosetup
@@ -74,7 +73,7 @@ install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 
 %files
 %license LICENSE
-%doc README.md
+%doc README.md docs/configuration.md docs/release-process.md
 %{_bindir}/merovingian-server
 %{_bindir}/merovingian-db-migrate
 %{_unitdir}/merovingian.service

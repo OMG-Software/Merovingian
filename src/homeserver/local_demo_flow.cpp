@@ -3,6 +3,7 @@
 #include "local_services.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 
+#include <fstream>
 #include <string>
 
 namespace merovingian::homeserver
@@ -13,6 +14,18 @@ namespace
     [[nodiscard]] auto demo_secret() -> std::string
     {
         return std::string{"LocalDemo"} + std::string{"Pass"} + std::string{"1!"};
+    }
+
+    [[nodiscard]] auto registration_token(config::Config const& config) -> std::string
+    {
+        if (!config.security().registration.require_token || config.security().registration.token_file.empty())
+        {
+            return {};
+        }
+        auto input = std::ifstream{config.security().registration.token_file};
+        auto token = std::string{};
+        std::getline(input, token);
+        return token;
     }
 
 } // namespace
@@ -28,7 +41,7 @@ auto run_local_vertical_slice(config::Config const& config) -> OperationResult
     auto& runtime = started.runtime;
     auto const password = demo_secret();
 
-    auto registered = register_local_user(runtime, "alice", password);
+    auto registered = register_local_user(runtime, "alice", password, registration_token(config));
     if (!registered.ok)
     {
         return registered;

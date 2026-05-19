@@ -326,17 +326,6 @@ namespace
         static_cast<void>(send_all(stream, response));
     }
 
-    [[nodiscard]] auto dispatch_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
-                                        HttpDispatchMode mode) -> LocalHttpResponse
-    {
-        if (mode == HttpDispatchMode::client_server)
-        {
-            return handle_client_server_request(runtime, request);
-        }
-
-        return handle_local_http_request(runtime.homeserver, request);
-    }
-
     auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, std::mutex& runtime_lock,
                       HttpServeStats& stats, HttpDispatchMode dispatch_mode) -> void
     {
@@ -396,7 +385,7 @@ namespace
         auto response = LocalHttpResponse{};
         {
             auto guard = std::lock_guard<std::mutex>{runtime_lock};
-            response = dispatch_request(runtime, local_request, dispatch_mode);
+            response = dispatch_local_http_request(runtime, local_request, dispatch_mode);
             ++stats.completed_requests;
         }
 
@@ -405,6 +394,22 @@ namespace
     }
 
 } // namespace
+
+auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode)
+    -> LocalHttpResponse
+{
+    switch (mode)
+    {
+    case HttpDispatchMode::client_server:
+        return handle_client_server_request(runtime, request);
+    case HttpDispatchMode::federation:
+        return handle_federation_http_request(runtime.homeserver, request);
+    case HttpDispatchMode::local_router:
+        return handle_local_http_request(runtime.homeserver, request);
+    }
+
+    return {500U, "unknown dispatch mode"};
+}
 
 auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, std::mutex& runtime_lock,
                                HttpServeStats& stats, HttpDispatchMode dispatch_mode) -> void

@@ -89,6 +89,7 @@ SCENARIO("Identity and secret source config keys require restart", "[config][rel
         auto constexpr database_uri_key = "database.uri_file";
         auto constexpr tls_certificate_key = "listeners.client.tls_certificate_file";
         auto constexpr tls_private_key = "listeners.client.tls_private_key_file";
+        auto constexpr registration_token_file_key = "security.registration.token_file";
 
         WHEN("their reload policies are requested")
         {
@@ -96,6 +97,8 @@ SCENARIO("Identity and secret source config keys require restart", "[config][rel
             auto const database_uri_policy = merovingian::config::reload_policy_for_key(database_uri_key);
             auto const tls_certificate_policy = merovingian::config::reload_policy_for_key(tls_certificate_key);
             auto const tls_private_key_policy = merovingian::config::reload_policy_for_key(tls_private_key);
+            auto const registration_token_file_policy =
+                merovingian::config::reload_policy_for_key(registration_token_file_key);
 
             THEN("both policies require restart")
             {
@@ -103,6 +106,7 @@ SCENARIO("Identity and secret source config keys require restart", "[config][rel
                 REQUIRE(database_uri_policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(tls_certificate_policy == merovingian::config::ReloadPolicy::restart_required);
                 REQUIRE(tls_private_key_policy == merovingian::config::ReloadPolicy::restart_required);
+                REQUIRE(registration_token_file_policy == merovingian::config::ReloadPolicy::restart_required);
             }
         }
     }
