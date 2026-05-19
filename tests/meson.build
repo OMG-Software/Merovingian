@@ -5,6 +5,7 @@ shell = find_program('sh')
     'catch2',
     required: false,
     fallback: ['catch2', 'catch2_dep'],
+    default_options: ['tests=false'],
   )
 
   test(

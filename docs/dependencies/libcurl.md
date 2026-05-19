@@ -44,6 +44,9 @@ libcurl is pinned through `subprojects/curl.wrap`, currently targeting the
 8.20.0 source release. The TLS backend still follows the host OpenSSL selection
 underneath that wrap, and the OutboundClient integration suite remains
 responsible for catching backend behavior drift across supported platforms.
+The fallback packagefile exposes curl's installed include root, not the nested
+`curl` include directory, so `<curl/curl.h>` resolves the same way on Linux and
+BSD.
 
 ## Current limitations
 

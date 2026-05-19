@@ -29,11 +29,22 @@
   - PostgreSQL libpq wrap to PostgreSQL 18.0
   - OpenSSL now links dynamically from the OS package instead of the wrap
 - Fixed curl 8.20.0 configure options and dependency naming so the fallback
-  exposes `libcurl_dep`.
+  exposes `libcurl_dep`, and corrected the fallback include root so
+  `<curl/curl.h>` resolves consistently on Linux and BSD.
 - Fixed libpq external-project configure and include handling so build tools are
   found and `libpq-fe.h` is exposed from PostgreSQL's installed include root.
+- Disabled Catch2's upstream self-test target in fallback builds so CI only
+  builds Merovingian's tests.
+- Kept SQLite fallback builds static so sanitizer CI links the sanitizer runtime
+  from Merovingian test executables instead of a standalone SQLite shared
+  object.
+- Gated `_FORTIFY_SOURCE=3` behind optimized builds so Fedora debug builds do
+  not fail warnings-as-errors on glibc's "requires compiling with optimization"
+  diagnostic.
 - Added dependency-wrap tooling coverage for wrap pinning, OpenSSL system
-  resolution, make-shim `DESTDIR` forwarding, and libpq include-root handling.
+  resolution, make-shim `DESTDIR` forwarding, Catch2 fallback self-test
+  suppression, curl/libpq include-root handling, SQLite static fallback, and
+  optimized-only FORTIFY handling.
 - Added a Fedora container build to CI so the Linux workflow also covers the
   Red Hat package family with `dnf`-provided dependencies.
 - Fixed registration-token CRLF handling so Windows-edited token files compare

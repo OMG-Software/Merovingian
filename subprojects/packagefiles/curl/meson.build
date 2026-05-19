@@ -25,5 +25,5 @@ curl_project = external_project.add_project(
   ],
 )
 
-libcurl_dep = curl_project.dependency('curl', subdir: 'curl')
+libcurl_dep = curl_project.dependency('curl')
 meson.override_dependency('libcurl', libcurl_dep)

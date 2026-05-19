@@ -14,6 +14,7 @@ WSL_SETUP_SCRIPT = REPO_ROOT / "scripts" / "wsl-setup.sh"
 WSL_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-wsl.ps1"
 MAKE_SHIM = REPO_ROOT / "scripts" / "tool-shims" / "make"
 LIBPQ_PACKAGEFILE = REPO_ROOT / "subprojects" / "packagefiles" / "libpq" / "meson.build"
+CURL_PACKAGEFILE = REPO_ROOT / "subprojects" / "packagefiles" / "curl" / "meson.build"
 WRAPS = {
     "libsodium": REPO_ROOT / "subprojects" / "libsodium.wrap",
     "libcurl": REPO_ROOT / "subprojects" / "curl.wrap",
@@ -50,8 +51,30 @@ class DependencyWrapTests(unittest.TestCase):
             meson_build,
         )
         self.assertIn("dependency('libpq', fallback: ['libpq', 'libpq_dep'])", meson_build)
-        self.assertIn("dependency('sqlite3')", meson_build)
+        self.assertIn("fallback: ['sqlite3', 'sqlite3_dep']", meson_build)
+        self.assertIn("default_options: ['default_library=static']", meson_build)
         self.assertIn("dependency('libcurl', fallback: ['curl', 'libcurl_dep'])", meson_build)
+
+    def test_catch2_fallback_does_not_build_upstream_self_tests(self) -> None:
+        # GIVEN Catch2 is a test-only dependency used through Meson fallback mode.
+        tests_build = REPO_ROOT / "tests" / "meson.build"
+        self.assertTrue(tests_build.is_file(), "tests meson.build is missing")
+        tests_meson = tests_build.read_text(encoding="utf-8")
+
+        # WHEN the fallback subproject is selected by forcefallback CI builds.
+        # THEN Catch2's own upstream SelfTest target is disabled.
+        self.assertIn("fallback: ['catch2', 'catch2_dep']", tests_meson)
+        self.assertIn("default_options: ['tests=false']", tests_meson)
+
+    def test_hardening_fortify_is_only_requested_for_optimized_builds(self) -> None:
+        # GIVEN Fedora treats _FORTIFY_SOURCE without optimization as a warning.
+        self.assertTrue(MESON_BUILD.is_file(), "meson.build is missing")
+        meson_build = MESON_BUILD.read_text(encoding="utf-8")
+
+        # WHEN warnings are fatal in debug builds.
+        # THEN the FORTIFY flag is added only after Meson reports an optimized build.
+        self.assertIn("if get_option('optimization') != '0'", meson_build)
+        self.assertIn("hardening_compile_flags += ['-D_FORTIFY_SOURCE=3']", meson_build)
 
     def test_openssl_resolves_from_system_packages(self) -> None:
         # GIVEN OpenSSL receives distro security updates through system packages.
@@ -117,6 +140,17 @@ class DependencyWrapTests(unittest.TestCase):
         # that would hide libpq-fe.h from consumers.
         self.assertIn("libpq_project.dependency('pq')", packagefile)
         self.assertNotIn("subdir: 'postgresql'", packagefile)
+
+    def test_curl_dependency_uses_installed_header_root(self) -> None:
+        # GIVEN curl installs curl/curl.h beneath the configured include root.
+        self.assertTrue(CURL_PACKAGEFILE.is_file(), "curl packagefile is missing")
+        packagefile = CURL_PACKAGEFILE.read_text(encoding="utf-8")
+
+        # WHEN Meson exposes the curl external-project dependency.
+        # THEN the dependency does not add a curl include subdirectory that
+        # would make <curl/curl.h> resolve as curl/curl/curl.h on BSD hosts.
+        self.assertIn("curl_project.dependency('curl')", packagefile)
+        self.assertNotIn("subdir: 'curl'", packagefile)
 
     def test_setup_scripts_install_the_extra_tools_needed_by_wrapped_sources(self) -> None:
         # GIVEN the environment bootstrap scripts.

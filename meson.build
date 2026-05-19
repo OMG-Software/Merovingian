@@ -18,7 +18,11 @@ thread_dep = dependency('threads')
 libsodium_dep = dependency('libsodium', include_type: 'system', fallback: ['libsodium', 'libsodium_dep'])
 openssl_dep = dependency('openssl', include_type: 'system', allow_fallback: false)
 libpq_dep = dependency('libpq', fallback: ['libpq', 'libpq_dep'])
-sqlite_dep = dependency('sqlite3')
+sqlite_dep = dependency(
+  'sqlite3',
+  fallback: ['sqlite3', 'sqlite3_dep'],
+  default_options: ['default_library=static'],
+)
 yyjson_dep = dependency(
   'yyjson',
   version: '>=0.12.0',
@@ -54,7 +58,6 @@ warning_flags = [
 
 hardening_compile_flags = [
   '-fstack-protector-strong',
-  '-D_FORTIFY_SOURCE=3',
   '-fPIE',
   '-fvisibility=hidden',
   '-ftrivial-auto-var-init=zero',
@@ -72,6 +75,9 @@ hardening_link_flags = [
 add_project_arguments(cpp.get_supported_arguments(warning_flags), language: 'cpp')
 
 if get_option('hardening')
+  if get_option('optimization') != '0'
+    hardening_compile_flags += ['-D_FORTIFY_SOURCE=3']
+  endif
   add_project_arguments(cpp.get_supported_arguments(hardening_compile_flags), language: 'cpp')
   add_project_link_arguments(cpp.get_supported_link_arguments(hardening_link_flags), language: 'cpp')
 endif
