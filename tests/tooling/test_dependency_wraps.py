@@ -247,13 +247,12 @@ class DependencyWrapTests(unittest.TestCase):
         for token in ("openssl-devel", "libsodium-devel", "libpq-devel"):
             self.assertIn(token, rpm_spec)
 
-        # THEN the Alpine .deb binary has no shared-library runtime requirements
-        # (fully static via -static-pie); app-level deps on Fedora and FreeBSD
-        # are statically linked via Meson wraps (default_library=static), while
-        # security/system libraries (libpq, libsodium, openssl) remain dynamic
-        # so they receive OS security updates without rebuilding the package.
+        # THEN all three platforms declare security libraries as dynamic runtime
+        # dependencies so OS package updates (apt upgrade libssl3 etc.) patch
+        # the binary without rebuilding the package. App-level deps (SQLite,
+        # curl, yyjson) remain statically linked via Meson wraps.
         for token in ("libsodium23", "libpq5", "libssl3"):
-            self.assertNotIn(token, deb_control)
+            self.assertIn(token, deb_control)
         for token in ("Requires:       libsodium", "Requires:       libpq"):
             self.assertNotIn(token, rpm_spec)
         for token in ("openssl", "libsodium", "postgresql17-client", "curl"):

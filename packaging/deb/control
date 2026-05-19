@@ -25,7 +25,10 @@ Rules-Requires-Root: no
 Package: merovingian
 Architecture: any
 Depends:
- ${misc:Depends}
+ ${misc:Depends},
+ libssl3,
+ libsodium23,
+ libpq5
 Recommends:
  ca-certificates
 Description: secure Matrix Protocol homeserver
