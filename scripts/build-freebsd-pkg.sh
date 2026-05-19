@@ -6,6 +6,9 @@ set -e
 VERSION="0.2.1"
 STAGING="staging-fbsd"
 
+# Wipe any stale staging tree left by a cached FreeBSD VM from a previous run.
+rm -rf "${STAGING}"
+
 # 1. Configure with meson using FreeBSD prefix conventions.
 #    --prefer-static: link .a archives for application deps; libc stays dynamic.
 #    -pie: produce a PIE executable so the kernel applies ASLR.
