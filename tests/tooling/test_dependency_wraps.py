@@ -247,13 +247,15 @@ class DependencyWrapTests(unittest.TestCase):
         for token in ("openssl-devel", "libsodium-devel", "libpq-devel"):
             self.assertIn(token, rpm_spec)
 
-        # THEN Linux/BSD distribution packages use static application linking
-        # (--prefer-static) so shared-library runtime dependencies are absent.
+        # THEN the Alpine .deb binary has no shared-library runtime requirements
+        # (fully static via -static-pie); app-level deps on Fedora and FreeBSD
+        # are statically linked via Meson wraps (default_library=static), while
+        # security/system libraries (libpq, libsodium, openssl) remain dynamic
+        # so they receive OS security updates without rebuilding the package.
         for token in ("libsodium23", "libpq5", "libssl3"):
             self.assertNotIn(token, deb_control)
         for token in ("Requires:       libsodium", "Requires:       libpq"):
             self.assertNotIn(token, rpm_spec)
-        self.assertIn("--prefer-static", rpm_spec)
         for token in ("openssl", "libsodium", "postgresql17-client", "curl"):
             self.assertNotIn(token, freebsd_manifest)
 

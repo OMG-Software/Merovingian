@@ -33,7 +33,6 @@ implementation, runtime hardening, and auditable dependency boundaries.
 %build
 %meson \
     --wrap-mode=forcefallback \
-    --prefer-static \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \

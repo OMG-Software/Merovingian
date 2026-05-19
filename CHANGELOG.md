@@ -15,6 +15,12 @@
 - `meson.build`: removed `b_pie=true` and ELF-dynamic-only link flags (`-pie`, `-Wl,-z,relro/now`);
   retained `-fPIE` (compile) and `-Wl,-z,noexecstack` (kernel-enforced on static and dynamic ELF);
   PIE link flag supplied per-platform via `cpp_link_args` in each build script.
+- Fedora and FreeBSD builds no longer pass `--prefer-static` to meson; system security
+  libraries (libpq, libsodium, openssl) link dynamically so they receive OS security updates,
+  while app-level dependencies (SQLite, curl, yyjson) remain statically linked via wraps.
+  The `--prefer-static` flag caused `libpq.pc`'s `Libs.private` transitive deps (pgcommon,
+  pgport, gssapi, ldap) to be added to the link, but these have no static variants on
+  Fedora or FreeBSD. The Alpine deb retains full static linking via `-static-pie`.
 - CI fixes: `libpq.a` static link now resolves `pg_encoding_to_char` via `libpgcommon_shlib.a`
   (Alpine's frontend pgcommon variant); RPM build uses `tar` instead of `git archive` to avoid
   `GIT_DISCOVERY_ACROSS_FILESYSTEM` failures in Docker containers; FreeBSD build uses

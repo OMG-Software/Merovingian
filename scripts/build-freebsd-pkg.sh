@@ -13,7 +13,6 @@ meson setup build-freebsd-pkg \
     --prefix=/usr/local \
     --sysconfdir=/usr/local/etc \
     --wrap-mode=default \
-    --prefer-static \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
