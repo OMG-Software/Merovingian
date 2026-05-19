@@ -1,0 +1,11 @@
+#!/bin/sh
+set -e
+case "$1" in
+    remove|upgrade|deconfigure)
+        if [ -d /run/systemd/system ]; then
+            systemctl --no-reload disable merovingian.service >/dev/null 2>&1 || true
+            systemctl stop merovingian.service >/dev/null 2>&1 || true
+        fi
+        ;;
+esac
+exit 0

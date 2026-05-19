@@ -2,14 +2,13 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.2.0',
+  version: '0.2.1',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
     'cpp_std=c++26',
     'warning_level=3',
     'werror=true',
-    'b_pie=true',
   ],
 )
 
@@ -17,11 +16,27 @@ cpp = meson.get_compiler('cpp')
 thread_dep = dependency('threads')
 libsodium_dep = dependency('libsodium', include_type: 'system', allow_fallback: false)
 openssl_dep = dependency('openssl', include_type: 'system', allow_fallback: false)
-libpq_dep = dependency('libpq', include_type: 'system', allow_fallback: false)
+# libpq.a requires pgcommon and pgport symbols that libpq.pc omits from
+# Libs.private. Alpine ships the frontend (_shlib) variant separately;
+# other distros use the plain library name. Prefer _shlib, fall back to plain.
+_libpq          = dependency('libpq', include_type: 'system', allow_fallback: false)
+# libpq.a requires pgcommon/pgport symbols that libpq.pc omits from Libs.private.
+# Use static:true so we only add them when a .a file physically exists — this
+# prevents false-positive detection of dynamic-only stubs on FreeBSD that the
+# linker cannot then resolve. Alpine ships libpgcommon_shlib.a (frontend variant).
+_pgcommon       = cpp.find_library('pgcommon_shlib', required: false, static: true)
+if not _pgcommon.found()
+  _pgcommon     = cpp.find_library('pgcommon', required: false, static: true)
+endif
+_pgport         = cpp.find_library('pgport_shlib', required: false, static: true)
+if not _pgport.found()
+  _pgport       = cpp.find_library('pgport', required: false, static: true)
+endif
+libpq_dep       = declare_dependency(dependencies: [_libpq, _pgcommon, _pgport])
 sqlite_dep = dependency(
   'sqlite3',
   fallback: ['sqlite3', 'sqlite3_dep'],
-  default_options: ['default_library=static'],
+  default_options: ['default_library=static', 'warning_level=0', 'werror=false'],
 )
 yyjson_dep = dependency(
   'yyjson',
@@ -65,10 +80,14 @@ hardening_compile_flags = [
   '-fcf-protection=full',
 ]
 
+# -pie is supplied per-platform by the build scripts:
+#   Alpine/musl .deb → -static-pie (fully static PIE via cpp_link_args)
+#   Fedora .rpm / FreeBSD .pkg → -pie (dynamic-libc PIE via cpp_link_args)
+# -Wl,-z,relro/-z,now are enforced by the dynamic linker; omitted here because
+# fully-static binaries have no dynamic linker to enforce them.
+# -Wl,-z,noexecstack sets the PT_GNU_STACK ELF note; the kernel reads this on
+# both static and dynamic ELF binaries, so it applies universally.
 hardening_link_flags = [
-  '-pie',
-  '-Wl,-z,relro',
-  '-Wl,-z,now',
   '-Wl,-z,noexecstack',
 ]
 

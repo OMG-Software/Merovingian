@@ -96,7 +96,7 @@ auto ShutdownSignal::fire() noexcept -> void
         return;
     }
     auto const byte = char{'x'};
-    static_cast<void>(::write(m_write.get(), &byte, 1U));
+    [[maybe_unused]] auto const write_result = ::write(m_write.get(), &byte, 1U);
 }
 
 auto install_shutdown_signal_handlers(ShutdownSignal& signal) noexcept -> bool

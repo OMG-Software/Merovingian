@@ -1,5 +1,36 @@
 # Changelog
 
+## 0.2.1
+
+- Added distro packaging: `.deb` (Debian/Ubuntu), `.rpm` (Fedora), and `.pkg` (FreeBSD).
+- New scripts: `scripts/build-deb.sh`, `scripts/build-rpm.sh`, `scripts/build-freebsd-pkg.sh`.
+- New packaging support files: `packaging/deb/postinst`, `packaging/deb/prerm`, `packaging/deb/conffiles`,
+  `packaging/rpm/merovingian.spec`, `packaging/freebsd/+MANIFEST`.
+- New CI workflow `.github/workflows/packages.yml` produces installable packages on every push to
+  `main`, `feature/**`, `codex/**`, and `alpha-release`.
+- All distribution binaries statically link application dependencies (libsodium, OpenSSL, libpq,
+  libcurl, sqlite3). The `.deb` is built on Alpine (musl) with `-static-pie` — fully static with
+  ASLR. The `.rpm` and FreeBSD `.pkg` use `--prefer-static` with `-pie` (dynamic libc, static app
+  libs).
+- `meson.build`: removed `b_pie=true` and ELF-dynamic-only link flags (`-pie`, `-Wl,-z,relro/now`);
+  retained `-fPIE` (compile) and `-Wl,-z,noexecstack` (kernel-enforced on static and dynamic ELF);
+  PIE link flag supplied per-platform via `cpp_link_args` in each build script.
+- Fedora and FreeBSD builds no longer pass `--prefer-static` to meson; system security
+  libraries (libpq, libsodium, openssl) link dynamically so they receive OS security updates,
+  while app-level dependencies (SQLite, curl, yyjson) remain statically linked via wraps.
+  The `--prefer-static` flag caused `libpq.pc`'s `Libs.private` transitive deps (pgcommon,
+  pgport, gssapi, ldap) to be added to the link, but these have no static variants on
+  Fedora or FreeBSD. The Alpine deb retains full static linking via `-static-pie`.
+- CI fixes: `libpq.a` static link now resolves `pg_encoding_to_char` via `libpgcommon_shlib.a`
+  (Alpine's frontend pgcommon variant); RPM build uses `tar` instead of `git archive` to avoid
+  `GIT_DISCOVERY_ACROSS_FILESYSTEM` failures in Docker containers; FreeBSD build uses
+  `--wrap-mode=default` so system curl is preferred while yyjson can still fall back to its wrap;
+  sqlite3 subproject compiled with `warning_level=0`/`werror=false` to suppress Fedora RPM
+  toolchain warnings in third-party C code; fixed redundant `std::move` from `const` optional
+  in `server_discovery.cpp` (GCC 16 `-Wredundant-move`); added `git` to FreeBSD CI prepare
+  step so the yyjson git wrap can clone the source.
+
+
 ## 0.2.0
 
 - Bump to alpha release version.
@@ -47,13 +78,13 @@
   not fail warnings-as-errors on glibc's "requires compiling with optimization"
   diagnostic.
 - Added dependency-wrap tooling coverage for wrap pinning, OS-supplied
-  OpenSSL/LibSodium/libpq
-  resolution, make-shim `DESTDIR` forwarding, Catch2 fallback self-test
-  suppression, curl include-root handling, SQLite static fallback, package
-  scaffold dependency metadata, and optimized-only FORTIFY handling.
-- Added a default Meson `wrappedruntime` test setup that exposes staged external-project library
-  directories through `LD_LIBRARY_PATH` for Fedora and other fallback-runtime
-  test jobs.
+  OpenSSL/LibSodium/libpq resolution, make-shim `DESTDIR` forwarding, Catch2
+  fallback self-test suppression, curl include-root handling, SQLite static
+  fallback, package scaffold dependency metadata, and optimized-only FORTIFY
+  handling.
+- Added a default Meson `wrappedruntime` test setup that exposes staged
+  external-project library directories through `LD_LIBRARY_PATH` for Fedora and
+  other fallback-runtime test jobs.
 - Raised the aggregate Catch2 unit-suite Meson timeout so fallback, coverage,
   and sanitizer CI jobs do not kill an otherwise passing suite at Meson's 30s
   default.

@@ -102,6 +102,11 @@ deployment milestone.
 - Packaging scaffolds: systemd, OpenRC, BSD rc.d, Docker assets, Debian control
   metadata, RPM spec metadata, and BSD package metadata exist for early
   deployment-shape testing.
+- Distribution packaging: installable `.deb` (Debian/Ubuntu), `.rpm` (Fedora),
+  and `.pkg` (FreeBSD) packages are produced by CI on every push. Binaries are
+  fully statically linked against application dependencies (libsodium, OpenSSL,
+  libpq, libcurl, sqlite3); the `.deb` binary is built on Alpine (musl) and
+  carries zero shared-library runtime requirements.
 - Supply-chain automation: release publication, secret scanning, dependency
   vulnerability triage, and SBOM workflows exist and are checked by the
   release-readiness gate.
@@ -115,24 +120,21 @@ deployment milestone.
   upstream Makefiles that assign `DESTDIR=` internally still install into the
   build-local external-project dist directory. The curl packagefile exposes
   curl's installed include root so `<curl/curl.h>` resolves on BSD. The curl
-  fallback disables
-  optional zlib and zstd support so its static archive does not need undeclared
-  compression libraries at link time. Catch2 fallback builds disable Catch2's
-  own upstream SelfTest target; SQLite fallback builds are static so sanitizer
-  jobs link sanitizer runtimes through Merovingian's test executables. Meson
-  tests run with a default fallback-runtime setup that exposes staged curl
-  external-project library directories through `LD_LIBRARY_PATH`, and the
-  aggregate Catch2 unit-test binary has an explicit CI-sized timeout so
-  fallback, coverage, and sanitizer jobs do not kill a passing suite at Meson's
-  30 second default. Post-build validation scripts that execute
-  `merovingian-server` directly also expose those staged curl library
-  directories before running dry-run checks.
-  `_FORTIFY_SOURCE=3` is requested only for optimized builds so Fedora debug CI
-  does not fail warnings-as-errors on glibc's optimization diagnostic. Fedora
-  container CI now covers the Red Hat package family in addition to Ubuntu and
-  FreeBSD.
-  Current pinned wrap versions: curl 8.20.0, Catch2 v3.14.0, SQLite 3.53.1,
-  yyjson 0.12.0.
+  fallback disables optional zlib and zstd support so its static archive does
+  not need undeclared compression libraries at link time. Catch2 fallback builds
+  disable Catch2's own upstream SelfTest target; SQLite fallback builds are
+  static so sanitizer jobs link sanitizer runtimes through Merovingian's test
+  executables. Meson tests run with a default fallback-runtime setup that
+  exposes staged curl external-project library directories through
+  `LD_LIBRARY_PATH`, and the aggregate Catch2 unit-test binary has an explicit
+  CI-sized timeout so fallback, coverage, and sanitizer jobs do not kill a
+  passing suite at Meson's 30 second default. Post-build validation scripts that
+  execute `merovingian-server` directly also expose those staged curl library
+  directories before running dry-run checks. `_FORTIFY_SOURCE=3` is requested
+  only for optimized builds so Fedora debug CI does not fail warnings-as-errors
+  on glibc's optimization diagnostic. Fedora container CI now covers the Red Hat
+  package family in addition to Ubuntu and FreeBSD. Current pinned wrap
+  versions: curl 8.20.0, Catch2 v3.14.0, SQLite 3.53.1, yyjson 0.12.0.
 - Client discovery: unauthenticated `GET /_matrix/client/versions` returns
   supported versions `v1.1` through `v1.18` with an empty `unstable_features`
   object.
@@ -356,7 +358,7 @@ With the Alpha gates closed, Beta priorities take over from here:
 | Runtime hardening | `integrated` | Systemd/OpenRC/rc.d packaging, hardening plan, startup self-check with `HardeningStatus::alpha_exception` + documented notes, `merovingian-server` refusing to bind when any control reports `disabled`, alpha-only exceptions enumerated in `docs/hardening-alpha-exceptions.md`, and release-readiness gating on the new doc | Implement the in-process probes that retire each documented alpha exception: ELF program-header probe for linker/RELRO status, Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Linux and FreeBSD CI, setup-command planning for OpenBSD and NetBSD | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `integrated` | Canonical JSON and HTTP fuzz targets build with `-fsanitize=fuzzer,address,undefined`, the `fuzz` GitHub Actions workflow runs each target for a bounded duration on every push (and longer on a Sunday schedule), and crash inputs/corpora are uploaded as artifacts | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
-| Supply chain and release | `integrated` | Release-readiness script, packaging skeletons, the alpha hardening exceptions documentation, a tag-driven alpha prerelease workflow that builds hardened Linux/FreeBSD tarballs and publishes SHA-256 checksums, plus dedicated secret-scan, dependency-vulnerability-triage, and SBOM workflows exist | Add dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
+| Supply chain and release | `integrated` | Release-readiness script, installable `.deb`/`.rpm`/`.pkg` packages built by CI (statically linked, zero runtime deps for the `.deb`), tag-driven alpha prerelease workflow, SHA-256 checksums, alpha hardening exceptions documentation, plus dedicated secret-scan, dependency-vulnerability-triage, and SBOM workflows | Add dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
 
 ## Matrix v1.18 protocol coverage
 
