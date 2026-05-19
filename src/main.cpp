@@ -706,7 +706,7 @@ struct ListenerBinding final
                                                                    *args.bootstrap_admin_localpart, *password);
         if (!admin.ok)
         {
-            LOG_CRITICAL("Bootstrap admin creation failed: " + admin.message);
+            LOG_CRITICAL("Bootstrap admin creation failed: " + admin.reason);
             return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
         }
         LOG_INFO("Bootstrap admin user created: " + admin.value);
