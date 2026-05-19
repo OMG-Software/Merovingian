@@ -35,7 +35,7 @@ This Code of Conduct applies in all project spaces — including the repository,
 
 ## Enforcement
 
-Instances of unacceptable behaviour may be reported to the project maintainers at **claude@ping.me.uk**. All complaints will be reviewed promptly and investigated fairly.
+Instances of unacceptable behaviour may be reported to the project maintainers at **merovingian@ping.me.uk**. All complaints will be reviewed promptly and investigated fairly.
 
 All maintainers are obligated to respect the privacy and security of the reporter of any incident.
 
