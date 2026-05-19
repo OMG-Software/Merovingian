@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.1
+Version:        0.2.2
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -79,6 +79,10 @@ install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 %dir %{_sysconfdir}/merovingian
 
 %changelog
+* Wed May 20 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.2-1
+- Switch .deb build to Ubuntu with dynamic security library linking
+- Declare libssl3, libsodium23, libpq5 as runtime deps in .deb package
+
 * Tue May 19 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.1-1
 - Add distro packaging: .deb, .rpm, FreeBSD .pkg via CI
 - Statically link application deps; remove shared-lib Requires

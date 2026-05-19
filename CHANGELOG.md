@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.2
+
+- Switch `.deb` build from Alpine (fully static) to Ubuntu with dynamic OS library linking.
+- Declared `libssl3`, `libsodium23`, and `libpq5` as runtime `Depends` in the `.deb` package so
+  distro security updates patch these libraries without rebuilding Merovingian.
+- App-level dependencies (SQLite, curl, yyjson) remain statically linked via source-pinned Meson wraps.
+- Added `CODE_OF_CONDUCT.md` adapted from Contributor Covenant v2.1.
+
 ## 0.2.1
 
 - Added distro packaging: `.deb` (Debian/Ubuntu), `.rpm` (Fedora), and `.pkg` (FreeBSD).
