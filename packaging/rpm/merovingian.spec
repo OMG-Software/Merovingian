@@ -41,7 +41,7 @@ implementation, runtime hardening, and auditable dependency boundaries.
 %meson_build
 
 %install
-%meson_install
+%meson_install --skip-subprojects
 install -D -m 0644 packaging/systemd/merovingian.service \
     %{buildroot}%{_unitdir}/merovingian.service
 install -d -m 0755 %{buildroot}%{_sysconfdir}/merovingian

@@ -25,8 +25,9 @@ meson compile -C build-freebsd-pkg
 # 3. Install into staging tree
 meson install -C build-freebsd-pkg --destdir "$(pwd)/${STAGING}/"
 
-# 4. Install rc.d script
-install -D -m 0755 packaging/rc.d/merovingian \
+# 4. Install rc.d script (BSD install does not accept GNU -D; create dir first)
+mkdir -p "${STAGING}/usr/local/etc/rc.d"
+install -m 0755 packaging/rc.d/merovingian \
     "${STAGING}/usr/local/etc/rc.d/merovingian"
 
 # 5. Generate plist from installed files
