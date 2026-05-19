@@ -702,7 +702,7 @@ struct ListenerBinding final
             return merovingian::bootstrap::to_int(merovingian::bootstrap::ExitCode::runtime_start_error);
         }
 
-        auto admin = merovingian::homeserver::bootstrap_admin_user(runtime_result.runtime,
+        auto admin = merovingian::homeserver::bootstrap_admin_user(runtime_result.runtime.homeserver,
                                                                    *args.bootstrap_admin_localpart, *password);
         if (!admin.ok)
         {
