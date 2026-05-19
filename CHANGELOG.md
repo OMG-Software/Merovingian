@@ -1,41 +1,20 @@
 # Changelog
 
-## 0.2.3
-
-- Restored `-fPIE` in `hardening_compile_flags` (required for PIE and for
-  `-static-pie` to work correctly on Alpine/musl).
-- Restored `-Wl,-z,noexecstack` in `hardening_link_flags`. This ELF note is
-  read by the kernel on both static and dynamic binaries; removing it was an
-  error that left the stack potentially executable.
-- PIE is now supplied per-platform via `cpp_link_args` rather than baked into
-  `meson.build`: Alpine `.deb` uses `-static-pie` (fully static + ASLR);
-  Fedora `.rpm` and FreeBSD `.pkg` use `-pie` (dynamic-libc PIE).
-- `-Wl,-z,relro` and `-Wl,-z,now` remain absent from `meson.build`; they are
-  dynamic-linker-enforced and meaningless for static or mostly-static builds.
-
-## 0.2.2
-
-- Fully static packaging: all distribution binaries now link application
-  dependencies (libsodium, OpenSSL, libpq, libcurl, sqlite3) as static archives.
-- `.deb` CI job switched to `alpine:latest` container; binary is fully static
-  (musl libc) with zero shared-library runtime dependencies.
-- `.rpm` CI job adds `openssl-static`, `zlib-static`, and `sqlite-devel` build
-  deps; `--prefer-static` passed to meson; shared-lib `Requires:` removed from spec.
-- FreeBSD `.pkg` adds `sqlite3` build dep; `--prefer-static` passed to meson;
-  shared-lib `deps` block removed from `+MANIFEST`.
-- `meson.build`: removed `b_pie=true` and `-fPIE` / `-pie` / ELF-hardening link
-  flags (`-Wl,-z,relro/now/noexecstack`) — incompatible with static linking and
-  meaningless on non-ELF targets.
-
 ## 0.2.1
 
 - Added distro packaging: `.deb` (Debian/Ubuntu), `.rpm` (Fedora), and `.pkg` (FreeBSD).
 - New scripts: `scripts/build-deb.sh`, `scripts/build-rpm.sh`, `scripts/build-freebsd-pkg.sh`.
 - New packaging support files: `packaging/deb/postinst`, `packaging/deb/prerm`, `packaging/deb/conffiles`,
-  `packaging/rpm/merovingian.spec` (updated to 0.2.1 with systemd scriptlets and `%pre` user creation),
-  `packaging/freebsd/+MANIFEST` (updated to 0.2.1 with desc field).
+  `packaging/rpm/merovingian.spec`, `packaging/freebsd/+MANIFEST`.
 - New CI workflow `.github/workflows/packages.yml` produces installable packages on every push to
   `main`, `feature/**`, `codex/**`, and `alpha-release`.
+- All distribution binaries statically link application dependencies (libsodium, OpenSSL, libpq,
+  libcurl, sqlite3). The `.deb` is built on Alpine (musl) with `-static-pie` — fully static with
+  ASLR. The `.rpm` and FreeBSD `.pkg` use `--prefer-static` with `-pie` (dynamic libc, static app
+  libs).
+- `meson.build`: removed `b_pie=true` and ELF-dynamic-only link flags (`-pie`, `-Wl,-z,relro/now`);
+  retained `-fPIE` (compile) and `-Wl,-z,noexecstack` (kernel-enforced on static and dynamic ELF);
+  PIE link flag supplied per-platform via `cpp_link_args` in each build script.
 
 ## 0.1.64
 

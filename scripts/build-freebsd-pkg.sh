@@ -3,7 +3,7 @@
 # Build a FreeBSD pkg(8) package for merovingian 0.2.1.
 set -e
 
-VERSION="0.2.3"
+VERSION="0.2.1"
 STAGING="staging-fbsd"
 
 # 1. Configure with meson using FreeBSD prefix conventions.
