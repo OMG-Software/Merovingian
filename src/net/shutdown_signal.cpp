@@ -5,6 +5,8 @@
 #include <array>
 #include <atomic>
 
+#include <tuple>
+
 #include <fcntl.h>
 #include <signal.h>
 #include <unistd.h>
@@ -67,7 +69,7 @@ namespace
 
 ShutdownSignal::ShutdownSignal()
 {
-    static_cast<void>(open_self_pipe(m_read, m_write));
+    std::ignore = open_self_pipe(m_read, m_write);
 }
 
 auto ShutdownSignal::valid() const noexcept -> bool
@@ -125,8 +127,8 @@ auto uninstall_shutdown_signal_handlers() noexcept -> void
     action.sa_handler = SIG_DFL;
     ::sigemptyset(&action.sa_mask);
     action.sa_flags = 0;
-    static_cast<void>(::sigaction(SIGINT, &action, nullptr));
-    static_cast<void>(::sigaction(SIGTERM, &action, nullptr));
+    std::ignore = ::sigaction(SIGINT, &action, nullptr);
+    std::ignore = ::sigaction(SIGTERM, &action, nullptr);
     g_active_target.store(nullptr, std::memory_order_release);
 }
 

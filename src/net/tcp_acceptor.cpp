@@ -8,6 +8,8 @@
 #include <cstring>
 #include <string>
 
+#include <tuple>
+
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -92,8 +94,7 @@ auto TcpAcceptor::bind(std::string_view host, std::uint16_t port) -> TcpBindResu
         {
             auto const v6_only = 1;
             // Restrict v6 binds to v6 to avoid silently shadowing a separate v4 bind.
-            static_cast<void>(
-                ::setsockopt(handle.native_handle(), IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only)));
+            std::ignore = ::setsockopt(handle.native_handle(), IPPROTO_IPV6, IPV6_V6ONLY, &v6_only, sizeof(v6_only));
         }
 
         if (::bind(handle.native_handle(), candidate->ai_addr, candidate->ai_addrlen) != 0)

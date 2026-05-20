@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -230,13 +231,13 @@ namespace
             auto result = execute_prepared_statement(connection, statement);
             if (!result.ok)
             {
-                static_cast<void>(execute_raw_command(connection, "ROLLBACK"));
+                std::ignore = execute_raw_command(connection, "ROLLBACK");
                 return false;
             }
         }
         if (!execute_raw_command(connection, "COMMIT"))
         {
-            static_cast<void>(execute_raw_command(connection, "ROLLBACK"));
+            std::ignore = execute_raw_command(connection, "ROLLBACK");
             return false;
         }
         return true;

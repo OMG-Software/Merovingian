@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -36,7 +37,7 @@ namespace
     [[nodiscard]] auto to_hex(unsigned char const* bytes, std::size_t size) -> std::string
     {
         auto output = std::string((size * 2U) + 1U, '\0');
-        static_cast<void>(sodium_bin2hex(output.data(), output.size(), bytes, size));
+        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes, size);
         output.pop_back();
         return output;
     }

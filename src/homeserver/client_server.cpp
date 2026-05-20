@@ -60,7 +60,7 @@ namespace
         auto bytes = std::array<unsigned char, 16U>{};
         randombytes_buf(bytes.data(), bytes.size());
         auto output = std::string(bytes.size() * 2U + 1U, '\0');
-        static_cast<void>(sodium_bin2hex(output.data(), output.size(), bytes.data(), bytes.size()));
+        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes.data(), bytes.size());
         output.pop_back(); // remove the null terminator included by sodium_bin2hex
         return output;
     }
@@ -866,7 +866,7 @@ namespace
                 auto const observed_id = notifier.current_stream_id();
                 if (observed_id <= since_sync_stream_id)
                 {
-                    (void)notifier.wait_for_change(since_sync_stream_id, std::chrono::milliseconds{*request.timeout});
+                    std::ignore = notifier.wait_for_change(since_sync_stream_id, std::chrono::milliseconds{*request.timeout});
                 }
             }
         }
@@ -1778,7 +1778,7 @@ auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentTo
         database::enqueue_to_device_message(runtime.homeserver.database.persistent_store, std::move(message));
     if (stored)
     {
-        (void)ensure_sync_notifier(runtime);
+        std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
 }
@@ -1789,7 +1789,7 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
         database::record_device_list_change(runtime.homeserver.database.persistent_store, std::move(change));
     if (stored)
     {
-        (void)ensure_sync_notifier(runtime);
+        std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
 }
@@ -1799,7 +1799,7 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence sta
     auto const stored = database::upsert_presence(runtime.homeserver.database.persistent_store, std::move(state));
     if (stored)
     {
-        (void)ensure_sync_notifier(runtime);
+        std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
 }
@@ -1812,7 +1812,7 @@ auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountD
     auto const stored = database::store_account_data(runtime.homeserver.database.persistent_store, std::move(data));
     if (stored)
     {
-        (void)ensure_sync_notifier(runtime);
+        std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
 }

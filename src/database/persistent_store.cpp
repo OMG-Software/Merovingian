@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <optional>
+#include <tuple>
 #include <utility>
 #include <variant>
 
@@ -1185,7 +1186,7 @@ namespace
         {
             continue;
         }
-        (void)record_and_persist(
+        std::ignore = record_and_persist(
             store, record_statement(
                        "delete_to_device_message",
                        "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "

@@ -7,6 +7,7 @@
 
 #include <string>
 #include <string_view>
+#include <tuple>
 
 namespace merovingian::homeserver
 {
@@ -41,7 +42,7 @@ namespace
         return make_operation_result(false, {}, result.reason, result.status);
     }
 
-    (void)database::store_local_media(runtime.database.persistent_store, {
+    std::ignore = database::store_local_media(runtime.database.persistent_store, {
                                                                              result.media_id,
                                                                              *user_id,
                                                                              result.content_type,
@@ -91,8 +92,8 @@ namespace
     auto const result = media::quarantine_local_media(runtime.media_repository, media_id, reason);
     if (result.ok)
     {
-        (void)database::update_local_media_state(runtime.database.persistent_store, media_id, true, false);
-        (void)database::append_admin_action(runtime.database.persistent_store,
+        std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, true, false);
+        std::ignore = database::append_admin_action(runtime.database.persistent_store,
                                             {*admin_user_id, "media.quarantine", std::string{media_id}});
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.quarantined",
                            *admin_user_id, media_id, reason);
@@ -112,8 +113,8 @@ namespace
     auto const result = media::release_local_media(runtime.media_repository, media_id);
     if (result.ok)
     {
-        (void)database::update_local_media_state(runtime.database.persistent_store, media_id, false, false);
-        (void)database::append_admin_action(runtime.database.persistent_store,
+        std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, false, false);
+        std::ignore = database::append_admin_action(runtime.database.persistent_store,
                                             {*admin_user_id, "media.release", std::string{media_id}});
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.released", *admin_user_id,
                            media_id, "released");
@@ -133,8 +134,8 @@ namespace
     auto const result = media::remove_local_media(runtime.media_repository, media_id, reason);
     if (result.ok)
     {
-        (void)database::update_local_media_state(runtime.database.persistent_store, media_id, false, true);
-        (void)database::append_admin_action(runtime.database.persistent_store,
+        std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, false, true);
+        std::ignore = database::append_admin_action(runtime.database.persistent_store,
                                             {*admin_user_id, "media.remove", std::string{media_id}});
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.removed", *admin_user_id,
                            media_id, reason);

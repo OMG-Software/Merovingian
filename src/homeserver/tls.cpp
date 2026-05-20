@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstring>
 #include <string>
+#include <tuple>
 #include <utility>
 
 #include <fcntl.h>
@@ -56,7 +57,7 @@ namespace
     {
         if (original_flags >= 0)
         {
-            static_cast<void>(::fcntl(fd, F_SETFL, original_flags));
+            std::ignore = ::fcntl(fd, F_SETFL, original_flags);
         }
     }
 

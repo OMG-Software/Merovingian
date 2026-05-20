@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -60,7 +61,7 @@ namespace
         {
             if (active_)
             {
-                static_cast<void>(execute_sql(connection_, "ROLLBACK"));
+                std::ignore = execute_sql(connection_, "ROLLBACK");
             }
         }
 
