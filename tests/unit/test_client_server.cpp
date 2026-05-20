@@ -1009,6 +1009,39 @@ SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[hom
     }
 }
 
+SCENARIO("OPTIONS preflight requests return 200 without requiring an access token",
+         "[homeserver][client-server][cors][preflight]")
+{
+    GIVEN("a started client-server runtime")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("an OPTIONS preflight is sent to the login endpoint without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"OPTIONS", "/_matrix/client/v3/login", {}, {}});
+
+            THEN("the response is 200, not 401, so the browser allows the following POST")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
+
+        WHEN("an OPTIONS preflight is sent to the register endpoint without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"OPTIONS", "/_matrix/client/v3/register", {}, {}});
+
+            THEN("the response is 200")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
 SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
          "[homeserver][client-server][well-known][discovery]")
 {
