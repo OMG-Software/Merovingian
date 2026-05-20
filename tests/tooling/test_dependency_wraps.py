@@ -8,6 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MESON_BUILD = REPO_ROOT / "meson.build"
 LINUX_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-linux.sh"
+STATIC_LINUX_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-static-linux.sh"
 BSD_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-bsd.sh"
 SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup-dev-env.sh"
 WSL_SETUP_SCRIPT = REPO_ROOT / "scripts" / "wsl-setup.sh"
@@ -99,13 +100,27 @@ class DependencyWrapTests(unittest.TestCase):
 
     def test_build_wrappers_force_wrap_fallback_by_default(self) -> None:
         # GIVEN the local build wrappers.
-        for wrapper_path in (LINUX_BUILD_WRAPPER, BSD_BUILD_WRAPPER, WSL_BUILD_WRAPPER):
+        for wrapper_path in (LINUX_BUILD_WRAPPER, STATIC_LINUX_BUILD_WRAPPER, BSD_BUILD_WRAPPER, WSL_BUILD_WRAPPER):
             self.assertTrue(wrapper_path.is_file(), f"{wrapper_path.name} is missing")
             wrapper = wrapper_path.read_text(encoding="utf-8")
 
             # WHEN a developer runs the default build path.
             # THEN Meson is configured in forcefallback mode instead of system dependency mode.
             self.assertIn("forcefallback", wrapper)
+
+    def test_static_linux_wrapper_builds_a_musl_static_pie_tarball(self) -> None:
+        # GIVEN the static Linux fallback build wrapper.
+        self.assertTrue(STATIC_LINUX_BUILD_WRAPPER.is_file(), "static Linux build wrapper is missing")
+        wrapper = STATIC_LINUX_BUILD_WRAPPER.read_text(encoding="utf-8")
+
+        # WHEN CI builds the fallback artifact for old distributions.
+        # THEN the wrapper prefers static libraries, requests static PIE, and
+        # rejects binaries that still contain a dynamic interpreter.
+        self.assertIn("--prefer-static", wrapper)
+        self.assertIn("-Dcpp_link_args=-static-pie", wrapper)
+        self.assertIn("readelf -l", wrapper)
+        self.assertIn('PACKAGE_ROOT="merovingian-${VERSION}-linux-static-x86_64"', wrapper)
+        self.assertIn('TARBALL="${PACKAGE_ROOT}.tar.gz"', wrapper)
 
     def test_build_scripts_require_os_supplied_pkg_config_modules(self) -> None:
         # GIVEN the local build and setup scripts.

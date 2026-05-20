@@ -85,8 +85,16 @@ dependency-triage workflow keeps a separate vulnerability report artifact.
 ## Rolling latest packages
 
 Pushes to `main` also trigger [packages.yml](../.github/workflows/packages.yml).
-That workflow rebuilds the Debian, Fedora RPM, and FreeBSD packages, replaces
-the rolling `latest` GitHub prerelease, and uploads fresh package checksums.
+That workflow rebuilds the Debian, Fedora RPM, FreeBSD, and static Linux
+fallback packages, replaces the rolling `latest` GitHub prerelease, and uploads
+fresh package checksums.
 The publish step resolves and deletes the existing `latest` release with an
 explicit `--repo "${{ github.repository }}"` scope before recreating it so the
 artifact-only job does not depend on checkout state.
+
+The static Linux fallback artifact is built on Alpine/musl with `-static-pie`
+and packaged as `merovingian-<version>-linux-static-x86_64.tar.gz`. It is a
+portability fallback for older Linux distributions that cannot easily consume
+the `.deb` or `.rpm`; distro packages remain preferred where available because
+their OpenSSL, libsodium, and libpq dependencies receive normal OS security
+updates.
