@@ -9,7 +9,9 @@ local development, WSL, BSD, and CI jobs.
 - Project-owned warning flag set in `meson.build`.
 - Compiler/linker hardening option enabled by default where supported.
 - Reusable Linux and BSD build wrappers.
-- Windows-to-WSL wrapper for Ubuntu-24.04 local builds.
+- Windows-to-WSL launchers (`build-wsl.cmd` and `scripts/build-wsl.ps1`) that
+  delegate to `scripts/build-wsl.sh` through the default or explicitly
+  selected WSL distro.
 - Named wrapper profiles:
   - `debug`
   - `release`

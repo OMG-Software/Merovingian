@@ -21,7 +21,7 @@ Options:
 
 After setup:
   export PATH="$HOME/.local/bin:$PATH"
-  sh scripts/build-linux.sh --builddir build-wsl
+  sh scripts/build-wsl.sh
 EOF
 }
 
@@ -121,6 +121,6 @@ Add this to the current shell before building:
 
 Then build with:
 
-  sh scripts/build-linux.sh --builddir build-wsl
+  sh scripts/build-wsl.sh
 
 EOF

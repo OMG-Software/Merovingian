@@ -53,8 +53,36 @@ Ubuntu/Debian WSL hosts should first run:
 ```sh
 sh scripts/wsl-setup.sh
 export PATH="$HOME/.local/bin:$PATH"
-sh scripts/build-linux.sh --builddir build-wsl
+sh scripts/build-wsl.sh
 ```
+
+`build-wsl.sh` defaults to the `build-wsl` directory and contains NTFS-specific
+workarounds.  In particular, automake's `depcomp` bootstrap fails on
+NTFS-backed filesystems; the script automatically detects a stale curl
+subproject (one configured without `--disable-dependency-tracking`) and wipes
+it so Meson re-configures curl with the correct options. It also compares the
+extracted `subprojects/curl-<version>/meson.build` against the committed curl
+packagefile and re-extracts curl when that copy is stale, including after
+`--clean` wipes the build directory. Pass `--clean` to wipe the entire build
+directory and start from scratch. The wrapper also stages an executable
+`make` shim under the WSL home directory cache before Meson setup so
+`external_project` builds do not depend on executable-bit metadata for scripts
+stored under `/mnt/c`. The staged shim is rewritten with LF line endings so
+its `#!/bin/sh` shebang remains executable on Linux.
+
+From Windows, use the launcher wrappers instead of typing the full `wsl.exe`
+command manually:
+
+```powershell
+.\build-wsl.cmd
+.\build-wsl.cmd -Distro Ubuntu-24.04 -CompileOnly
+```
+
+`build-wsl.cmd` forwards its arguments to `scripts/build-wsl.ps1`, and the
+PowerShell bridge enters the default WSL distro unless `-Distro` is provided,
+then runs `sh ./scripts/build-wsl.sh` from the repository root. This keeps
+Windows-triggered builds on the same WSL build path as an interactive Linux
+shell.
 
 The WSL setup script installs the compiler, linker, Perl/Bison/Flex toolchain
 needed by the wrapped third-party sources, OpenSSL, LibSodium, PostgreSQL
@@ -109,28 +137,35 @@ sh scripts/setup-dev-env.sh --no-install
 
 ## Build Wrappers
 
-Use the Linux wrapper inside WSL or a native Linux shell to configure, compile,
-and test with a C++26-capable Clang toolchain:
+Use the Linux wrapper on a native Linux shell to configure, compile, and test
+with a C++26-capable Clang toolchain:
 
 ```sh
 sh scripts/build-linux.sh
 ```
 
-The default build directory is `build-clang22`, with `CC=clang-22` and
-`CXX=clang++-22`. Override these when using another compiler:
+The default build directory is `build`, with `CC=clang` and `CXX=clang++`.
+Override these when using another compiler:
 
 ```sh
 sh scripts/build-linux.sh --builddir build-dev --cc clang-22 --cxx clang++-22
 ```
 
-From Windows PowerShell, call the WSL wrapper with the distro name that appears
-in `wsl -l -v`:
+Inside WSL use the dedicated WSL wrapper instead:
 
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-wsl.ps1 -Distro Ubuntu-24.04
+```sh
+sh scripts/build-wsl.sh
 ```
 
-Both wrappers use Meson `forcefallback` mode by default so pinned dependency
+The default build directory is `build-wsl`.  The script automatically handles
+NTFS-specific issues (see the WSL section above).  Pass `--clean` to force a
+full rebuild.
+
+From Windows, `.\build-wsl.cmd` is the matching entrypoint; it forwards all
+arguments to `scripts/build-wsl.ps1`, which then invokes `scripts/build-wsl.sh`
+inside the default WSL distro unless `-Distro` overrides it.
+
+All wrappers use Meson `forcefallback` mode by default so pinned dependency
 wraps are used even when the host has system copies installed. OpenSSL,
 LibSodium, and PostgreSQL libpq are excluded from that policy and are resolved
 from the host package manager.
