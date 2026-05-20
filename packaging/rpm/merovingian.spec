@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.6
+Version:        0.2.7
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.7-1
+- Bump version to 0.2.7
+
 * Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.6-1
 - Generate /etc/merovingian/registration-token on first install
 - Default config search path baked in via MEROVINGIAN_SYSCONFDIR at build time
