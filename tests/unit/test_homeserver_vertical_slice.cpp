@@ -272,7 +272,7 @@ SCENARIO("Homeserver rejects same-length incorrect passwords and crafted token c
 
             THEN("credential and token comparisons use the full secret value")
             {
-                REQUIRE(bad_login.status == 400U);
+                REQUIRE(bad_login.status == 403U);
                 REQUIRE(bad_login.body == "bad credentials");
                 REQUIRE_FALSE(fake_auth.has_value());
             }

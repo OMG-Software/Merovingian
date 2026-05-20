@@ -961,3 +961,114 @@ SCENARIO("Rate-limit buckets are scoped per access token to prevent cross-user d
         }
     }
 }
+
+SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[homeserver][client-server][login][auth]")
+{
+    GIVEN("a started client-server runtime with registration enabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("login is attempted for a user that does not exist")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@nobody:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+
+            THEN("the response is 403 M_FORBIDDEN, not 400")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("a user registers and then logs in with the wrong password")
+        {
+            auto const registered = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/register", {},
+                 merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+            REQUIRE(registered.status == 200U);
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"WrongPassword1!","device_id":"DEVICE1"})"});
+
+            THEN("the response is 403 M_FORBIDDEN, not 400")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("OPTIONS preflight requests return 200 without requiring an access token",
+         "[homeserver][client-server][cors][preflight]")
+{
+    GIVEN("a started client-server runtime")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("an OPTIONS preflight is sent to the login endpoint without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"OPTIONS", "/_matrix/client/v3/login", {}, {}});
+
+            THEN("the response is 200, not 401, so the browser allows the following POST")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
+
+        WHEN("an OPTIONS preflight is sent to the register endpoint without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"OPTIONS", "/_matrix/client/v3/register", {}, {}});
+
+            THEN("the response is 200")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
+         "[homeserver][client-server][well-known][discovery]")
+{
+    GIVEN("a started client-server runtime with a configured public base URL")
+    {
+        auto server = merovingian::config::ServerConfig{};
+        server.public_baseurl = "https://matrix.example.org";
+        auto security = merovingian::config::SecurityConfig{};
+        merovingian::tests::enable_token_registration(security);
+        auto config = merovingian::config::Config{server, {}, {}, security};
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("GET /.well-known/matrix/client is requested")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/.well-known/matrix/client", {}, {}});
+
+            THEN("the response is 200 with the homeserver base URL in the Matrix discovery format")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("m.homeserver") != std::string::npos);
+                REQUIRE(response.body.find("https://matrix.example.org") != std::string::npos);
+                REQUIRE(response.body.find("base_url") != std::string::npos);
+            }
+        }
+    }
+}
