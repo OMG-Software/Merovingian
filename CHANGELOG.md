@@ -25,8 +25,16 @@
   so automake's `depcomp` bootstrap no longer fails on NTFS-backed filesystems
   (WSL builds under `/mnt/c/`).
 - Added `scripts/build-wsl.sh`: a dedicated WSL build wrapper that defaults to
-  `build-wsl`, auto-detects and wipes stale curl subproject directories and
-  stale extracted packagefile copies, and accepts `--clean` for a full rebuild.
+  `build-wsl`, auto-detects and wipes stale curl subproject directories (those
+  configured without `--disable-dependency-tracking`), auto-reextracts stale
+  `subprojects/curl-<version>` packagefile copies, and accepts `--clean` for a
+  full rebuild without reusing stale extracted curl sources. Updated
+  `scripts/wsl-setup.sh`, `scripts/build-wsl.ps1`, and `build-wsl.cmd` to point
+  at the new script, and removed the hardcoded `Ubuntu-24.04` launcher
+  dependency so the default WSL distro works out of the box. The WSL wrapper
+  now stages an executable `make` shim under the Linux filesystem so Meson's
+  `external_project` helper can invoke it even when the repo lives on `/mnt/c`,
+  and rewrites that shim with LF line endings so the shebang stays executable.
 - Replaced all `static_cast<void>(expr)` and `(void)expr` return-value discards
   with `std::ignore = expr` across 18 files for consistent `[[nodiscard]]`/
   `warn_unused_result` suppression.
