@@ -74,16 +74,15 @@ From Windows, use the launcher wrappers instead of typing the full `wsl.exe`
 command manually:
 
 ```powershell
-.\wsl-build.cmd
-.\wsl-build.cmd -Distro Ubuntu-24.04 -CompileOnly
+.\build-wsl.cmd
+.\build-wsl.cmd -Distro Ubuntu-24.04 -CompileOnly
 ```
 
-`wsl-build.cmd` forwards its arguments to `scripts/build-wsl.ps1`, and the
+`build-wsl.cmd` forwards its arguments to `scripts/build-wsl.ps1`, and the
 PowerShell bridge enters the default WSL distro unless `-Distro` is provided,
 then runs `sh ./scripts/build-wsl.sh` from the repository root. This keeps
 Windows-triggered builds on the same WSL build path as an interactive Linux
-shell. `build-wsl.cmd` remains available as a compatibility alias for the same
-PowerShell bridge.
+shell.
 
 The WSL setup script installs the compiler, linker, Perl/Bison/Flex toolchain
 needed by the wrapped third-party sources, OpenSSL, LibSodium, PostgreSQL
@@ -162,10 +161,9 @@ The default build directory is `build-wsl`.  The script automatically handles
 NTFS-specific issues (see the WSL section above).  Pass `--clean` to force a
 full rebuild.
 
-From Windows, `.\wsl-build.cmd` is the matching entrypoint; it forwards all
+From Windows, `.\build-wsl.cmd` is the matching entrypoint; it forwards all
 arguments to `scripts/build-wsl.ps1`, which then invokes `scripts/build-wsl.sh`
-inside the default WSL distro unless `-Distro` overrides it. `.\build-wsl.cmd`
-invokes the same bridge for compatibility.
+inside the default WSL distro unless `-Distro` overrides it.
 
 All wrappers use Meson `forcefallback` mode by default so pinned dependency
 wraps are used even when the host has system copies installed. OpenSSL,
