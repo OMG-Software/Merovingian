@@ -156,7 +156,7 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
         };
     case KeyApiEndpoint::device_list_update:
         return {
-            {"key_api_record_device_list_update", "INSERT INTO device_list_updates user_id, device_id VALUES $1, $2",
+            {"key_api_record_device_list_update", "INSERT INTO device_list_updates (user_id, device_id) VALUES ($1, $2)",
              user_device_params(user_id, device_id)}
         };
     case KeyApiEndpoint::upload_cross_signing_keys:

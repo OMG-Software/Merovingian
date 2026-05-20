@@ -130,6 +130,51 @@ SCENARIO("Key API database scaffold covers cross-signing and key backups", "[aut
     }
 }
 
+SCENARIO("Key API INSERT statements use valid SQL syntax with parenthesised column lists",
+         "[auth][key-api][database][sql]")
+{
+    GIVEN("a device list update route")
+    {
+        auto const device_list_update =
+            merovingian::auth::match_key_api_route("PUT", "/_matrix/client/v3/devices/DEVICE123");
+
+        WHEN("the boundary plan is built")
+        {
+            auto const plan = merovingian::auth::make_key_api_boundary_plan(
+                device_list_update.route, "@alice:example.org", "DEVICE123");
+
+            THEN("all INSERT statements have parenthesised column lists and value tuples")
+            {
+                auto const insert_syntax_is_valid = [](merovingian::database::PreparedStatement const& stmt) -> bool
+                {
+                    if (!stmt.sql.starts_with("INSERT "))
+                    {
+                        return true;
+                    }
+                    auto const values_pos = stmt.sql.find(" VALUES ");
+                    if (values_pos == std::string::npos)
+                    {
+                        return false;
+                    }
+                    auto const col_lparen = stmt.sql.find('(');
+                    if (col_lparen == std::string::npos || col_lparen >= values_pos)
+                    {
+                        return false;
+                    }
+                    auto const val_lparen = stmt.sql.find('(', values_pos + 8U);
+                    return val_lparen != std::string::npos;
+                };
+
+                for (auto const& stmt : plan.database_statements)
+                {
+                    INFO("statement: " << stmt.name << " sql: " << stmt.sql);
+                    REQUIRE(insert_syntax_is_valid(stmt));
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("Key payload summaries never log server-blind key material", "[auth][key-api][logging]")
 {
     GIVEN("server-blind key payload material")

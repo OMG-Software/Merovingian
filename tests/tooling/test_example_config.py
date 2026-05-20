@@ -20,7 +20,7 @@ class ExampleConfigTests(unittest.TestCase):
         for expected_comment in (
             "# Server identity",
             "# Listener exposure",
-            "# Database connection",
+            "# Database backend",
             "# Public registration",
             "# Room encryption policy",
             "# Federation policy",
