@@ -1449,6 +1449,18 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         return err(429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
     }
 
+    // GET /.well-known/matrix/client tells clients where the homeserver lives.
+    // Must be served before any auth check; the path is outside /_matrix/ so
+    // Apache or nginx may not proxy it unless explicitly configured to do so.
+    if (req.method == "GET" && req.target == "/.well-known/matrix/client")
+    {
+        auto const& base_url = rt.homeserver.config.server().public_baseurl;
+        return resp(200U,
+                    json_serialize(json_obj({
+                        json_member("m.homeserver", json_obj({json_member("base_url", json_str(base_url))})),
+                    })));
+    }
+
     // GET /_matrix/client/versions is the unauthenticated discovery endpoint
     // most Matrix clients hit first. It must answer before any auth check so
     // a fresh client can negotiate spec compatibility before it has a token.

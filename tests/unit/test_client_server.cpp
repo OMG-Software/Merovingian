@@ -1008,4 +1008,34 @@ SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[hom
         }
     }
 }
+
+SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
+         "[homeserver][client-server][well-known][discovery]")
+{
+    GIVEN("a started client-server runtime with a configured public base URL")
+    {
+        auto server = merovingian::config::ServerConfig{};
+        server.public_baseurl = "https://matrix.example.org";
+        auto security = merovingian::config::SecurityConfig{};
+        merovingian::tests::enable_token_registration(security);
+        auto config = merovingian::config::Config{server, {}, {}, security};
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("GET /.well-known/matrix/client is requested")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/.well-known/matrix/client", {}, {}});
+
+            THEN("the response is 200 with the homeserver base URL in the Matrix discovery format")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("m.homeserver") != std::string::npos);
+                REQUIRE(response.body.find("https://matrix.example.org") != std::string::npos);
+                REQUIRE(response.body.find("base_url") != std::string::npos);
+            }
+        }
+    }
+}
 }
