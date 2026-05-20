@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.7
+Version:        0.2.8
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.8-1
+- Fix malformed INSERT SQL in login and register boundary plans
+
 * Tue May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.7-1
 - Bump version to 0.2.7
 

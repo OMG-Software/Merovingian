@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.7
+## 0.2.8
 
 - Fixed malformed SQL in `insert_device_statement` and `persist_token_hash_statement`
   (`src/auth/client_server_api.cpp`): column lists and value tuples were missing
