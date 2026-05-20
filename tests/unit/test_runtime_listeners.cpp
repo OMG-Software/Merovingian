@@ -27,8 +27,35 @@ SCENARIO("Runtime listener planning includes client and federation listeners by 
                 REQUIRE(listeners.plans()[0].tls_certificate_file.empty());
                 REQUIRE(listeners.plans()[0].tls_private_key_file.empty());
                 REQUIRE(listeners.plans()[1].role == merovingian::net::ListenerRole::federation);
-                REQUIRE(listeners.plans()[1].bind == "127.0.0.1:8448");
+                REQUIRE(listeners.plans()[1].bind == "127.0.0.1:8009");
                 REQUIRE_FALSE(listeners.plans()[1].tls);
+            }
+        }
+    }
+}
+
+SCENARIO("Runtime listener planning preserves configured federation bind", "[net][listener][config]")
+{
+    GIVEN("configuration with a custom internal federation listener")
+    {
+        auto listeners_config = merovingian::config::ListenersConfig{};
+        listeners_config.federation.bind = "127.0.0.1:8010";
+        auto const config = merovingian::config::Config{
+            merovingian::config::ServerConfig{},
+            listeners_config,
+            merovingian::config::DatabaseConfig{},
+            merovingian::config::SecurityConfig{},
+        };
+
+        WHEN("runtime listeners are planned")
+        {
+            auto const listeners = merovingian::net::make_runtime_listeners(config);
+
+            THEN("the federation listener uses the configured bind address")
+            {
+                REQUIRE(listeners.count() == 2U);
+                REQUIRE(listeners.plans()[1].role == merovingian::net::ListenerRole::federation);
+                REQUIRE(listeners.plans()[1].bind == "127.0.0.1:8010");
             }
         }
     }
