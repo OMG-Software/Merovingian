@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.10
+
+- Added `GET /.well-known/matrix/client` endpoint so browser-based Matrix
+  clients (Cinny, Element Web) can discover the homeserver base URL without
+  requiring a separate static file served by the reverse proxy.
+- Fixed `OPTIONS` preflight requests returning `401 M_UNKNOWN_TOKEN`. Browser
+  clients send an OPTIONS preflight before every cross-origin POST; the
+  access-token gate was rejecting them before any route handler ran, causing
+  all login and register attempts from web clients to fail silently.
+
 ## 0.2.9
 
 - Fixed `login_local_user()` returning HTTP `400` instead of `403` for unknown
