@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.2.11
+
+- Added `GET /_matrix/client/v3/capabilities` stub returning server capability
+  flags. Cinny and Element Web require this before opening a sync connection.
+- Added `GET /_matrix/client/v3/pushrules/` stub returning an empty global
+  ruleset. Cinny fetches this immediately after login; a 404 caused the
+  "Connection lost" error before sync was established.
+
 ## 0.2.10
 
 - Added `GET /.well-known/matrix/client` endpoint so browser-based Matrix

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.10
+Version:        0.2.11
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.11-1
+- Add GET /capabilities and GET /pushrules/ stubs so Cinny and Element can complete post-login initialisation
+
 * Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.10-1
 - Add OPTIONS preflight handler and /.well-known/matrix/client endpoint
 

@@ -1072,3 +1072,95 @@ SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
         }
     }
 }
+
+SCENARIO("Capabilities endpoint returns server feature flags for authenticated clients",
+         "[homeserver][client-server][capabilities]")
+{
+    GIVEN("a started runtime with a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        WHEN("GET /_matrix/client/v3/capabilities is requested with a valid token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/capabilities", token, {}});
+
+            THEN("the response is 200 with a capabilities object")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("capabilities") != std::string::npos);
+            }
+        }
+
+        WHEN("GET /_matrix/client/v3/capabilities is requested without a token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/capabilities", {}, {}});
+
+            THEN("the response is 401")
+            {
+                REQUIRE(response.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated clients",
+         "[homeserver][client-server][pushrules]")
+{
+    GIVEN("a started runtime with a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        WHEN("GET /_matrix/client/v3/pushrules/ is requested with a valid token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/pushrules/", token, {}});
+
+            THEN("the response is 200 with a global ruleset")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("global") != std::string::npos);
+            }
+        }
+
+        WHEN("GET /_matrix/client/v3/pushrules/ is requested without a token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/pushrules/", {}, {}});
+
+            THEN("the response is 401")
+            {
+                REQUIRE(response.status == 401U);
+            }
+        }
+    }
+}
