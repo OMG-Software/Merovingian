@@ -961,3 +961,51 @@ SCENARIO("Rate-limit buckets are scoped per access token to prevent cross-user d
         }
     }
 }
+
+SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[homeserver][client-server][login][auth]")
+{
+    GIVEN("a started client-server runtime with registration enabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("login is attempted for a user that does not exist")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@nobody:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+
+            THEN("the response is 403 M_FORBIDDEN, not 400")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("a user registers and then logs in with the wrong password")
+        {
+            merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/register", {},
+                 merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"WrongPassword1!","device_id":"DEVICE1"})"});
+
+            THEN("the response is 403 M_FORBIDDEN, not 400")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+}

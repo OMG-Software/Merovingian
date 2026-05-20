@@ -267,11 +267,12 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     auto* user = find_user(runtime.database, user_id);
     if (user == nullptr)
     {
-        return make_operation_result(false, {}, "unknown user");
+        // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
+        return make_operation_result(false, {}, "unknown user", 403U);
     }
     if (!password_matches(user->password_hash, password))
     {
-        return make_operation_result(false, {}, "bad credentials");
+        return make_operation_result(false, {}, "bad credentials", 403U);
     }
     if (!auth::device_id_is_valid(device_id))
     {
@@ -290,7 +291,8 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     auto const login = auth::login_policy({user->user_id, state});
     if (!login.allowed)
     {
-        return make_operation_result(false, {}, login.reason);
+        // Account locked or suspended: still a 403, not a 400.
+        return make_operation_result(false, {}, login.reason, 403U);
     }
 
     auto const token = issue_token();
