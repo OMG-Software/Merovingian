@@ -1541,6 +1541,39 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     {
         return resp(200U, json_serialize(json_obj({json_member("user_id", json_str(*user))})));
     }
+    // Clients (Cinny, Element) fetch /capabilities immediately after login to
+    // discover what the server supports. Return a minimal stable set; extend
+    // as features are implemented.
+    if (req.method == "GET" && req.target == "/_matrix/client/v3/capabilities")
+    {
+        return resp(200U,
+                    json_serialize(json_obj({json_member(
+                        "capabilities",
+                        json_obj({
+                            json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
+                            json_member("m.room_versions",
+                                        json_obj({
+                                            json_member("default", json_str("10")),
+                                            json_member("available", json_obj({json_member("10", json_str("stable"))})),
+                                        })),
+                        }))})));
+    }
+    // Clients fetch /pushrules/ immediately after login to load notification
+    // rules. Push infrastructure is not yet implemented; return an empty
+    // global ruleset so clients can proceed to open their sync connection.
+    if (req.method == "GET" && req.target == "/_matrix/client/v3/pushrules/")
+    {
+        return resp(200U,
+                    json_serialize(json_obj({json_member(
+                        "global",
+                        json_obj({
+                            json_member("content", json_arr({})),
+                            json_member("override", json_arr({})),
+                            json_member("room", json_arr({})),
+                            json_member("sender", json_arr({})),
+                            json_member("underride", json_arr({})),
+                        }))})));
+    }
     auto const key_route = auth::match_key_api_route(req.method, req.target);
     if (key_route.matched && key_route.route.endpoint != auth::KeyApiEndpoint::device_list_update)
     {
