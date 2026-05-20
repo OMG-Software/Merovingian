@@ -26,17 +26,20 @@ listeners.federation.tls_certificate_file=
 listeners.federation.tls_private_key_file=
 
 # Database backend
-# database.backend selects the storage engine. Two values are accepted:
-#   postgresql  — production default; requires a URI file and a running server.
-#   sqlite      — single-file store, suitable for development and evaluation.
-#                 No server or credentials needed; the file is created on first
-#                 start. Not recommended for production: no connection pooling,
-#                 no concurrent write scaling, and no role separation.
-# To switch to SQLite comment out the PostgreSQL keys below and uncomment the
-# SQLite block, or vice versa.
-database.backend=postgresql
+# database.backend selects the storage engine:
+#   postgresql  — production default. No configuration line needed; omitting
+#                 database.backend is equivalent to setting it to postgresql.
+#   sqlite      — single-file store for development and evaluation. No server
+#                 or credentials needed; the file is created on first start.
+#                 Not recommended for production: no connection pooling, no
+#                 concurrent write scaling, and no role separation.
+#
+# To use SQLite: uncomment the two lines in the SQLite block below and remove
+# (or comment out) the three PostgreSQL connection keys above them.
+# Only one database.backend line may appear in the config; duplicates are
+# rejected at startup.
 
-# PostgreSQL connection (used when database.backend=postgresql)
+# PostgreSQL connection (active when database.backend=postgresql or unset)
 # Keep database credentials out of this file. database.uri_file must point to
 # an owner-only secret file containing the PostgreSQL connection URI.
 # role=runtime is for the server process; use role=migration only for the
@@ -45,10 +48,8 @@ database.uri_file=/etc/merovingian/db-uri
 database.role=runtime
 database.pool_size=16
 
-# SQLite connection (used when database.backend=sqlite)
-# database.sqlite_path is the path to the SQLite database file. The directory
-# must be writable by the server process. The file is created if absent.
-# Uncomment these two lines and set database.backend=sqlite to use SQLite.
+# SQLite connection — uncomment both lines below to switch to SQLite.
+# Remove or comment out the three PostgreSQL keys above when doing so.
 #database.backend=sqlite
 #database.sqlite_path=/var/lib/merovingian/merovingian.sqlite3
 
