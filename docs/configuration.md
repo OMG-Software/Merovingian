@@ -3,6 +3,9 @@
 The bootstrap configuration uses a conservative dependency-free `key=value` format.
 
 This format is intentionally narrow while the runtime is still being built. It provides a checked operator-facing configuration path without adding a YAML, TOML, or JSON dependency before dependency review is complete.
+The checked-in example config includes explanatory full-line comments for each
+operator-facing section. Keep comments on their own lines: the parser ignores
+lines beginning with `#`, but values should remain plain `key=value` entries.
 
 ## Example
 
@@ -48,6 +51,7 @@ privileges implicitly.
 - One `key=value` pair per line.
 - Blank lines are ignored.
 - Lines beginning with `#` are ignored.
+- Inline trailing comments after values are not supported.
 - Whitespace around keys and values is trimmed.
 - Boolean values must be exactly `true` or `false`.
 - Unsigned integers must contain digits only.

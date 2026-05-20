@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.4
+
+- Added section-level explanatory comments to
+  `config/merovingian.conf.example` covering server identity, listener
+  exposure, database secret handling, registration, encryption, federation,
+  media safety, and logging redaction.
+- Added tooling coverage to keep the example config's operator guidance in
+  place.
+- Bumped project, executable, and package metadata versions to `0.2.4`.
+
 ## 0.2.3
 
 - Added an Alpine/musl static Linux fallback tarball to `.github/workflows/packages.yml`

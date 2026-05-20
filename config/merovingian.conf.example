@@ -1,11 +1,21 @@
-# The Merovingian Phase 2 bootstrap configuration
-# Format: key=value
-# Blank lines and lines beginning with # are ignored.
+# The Merovingian bootstrap configuration.
+# Format: key=value. Blank lines and lines beginning with # are ignored.
+# Do not add trailing comments after values; use full comment lines instead.
 
+# Server identity
+# server.name is the Matrix server name used in user IDs and federation.
+# public_baseurl is the HTTPS URL clients use to reach this homeserver.
+# trusted_proxies is empty by default; set it only to reverse proxies that
+# sanitize and replace forwarding headers before traffic reaches Merovingian.
 server.name=example.org
 server.public_baseurl=https://matrix.example.org
 server.trusted_proxies=
 
+# Listener exposure
+# Keep TLS disabled only on loopback binds. If binding to a public interface,
+# set tls=true and provide certificate and private-key paths below.
+# The client listener serves client-server traffic. The federation listener is
+# separate so operators can expose or firewall federation independently.
 listeners.client.bind=127.0.0.1:8008
 listeners.client.tls=false
 listeners.client.tls_certificate_file=
@@ -15,20 +25,37 @@ listeners.federation.tls=false
 listeners.federation.tls_certificate_file=
 listeners.federation.tls_private_key_file=
 
+# Database connection
+# Keep database credentials out of this file. database.uri_file must point to
+# an owner-only secret file containing the PostgreSQL connection URI.
+# role=runtime is for the server process; use role=migration only for the
+# offline database migration command. pool_size controls concurrent DB work.
 database.uri_file=/etc/merovingian/db-uri
 database.role=runtime
 database.pool_size=16
 
+# Public registration
+# Registration is disabled by default. If enabled, keep require_token=true and
+# store the token in an owner-only secret file outside web roots.
 security.registration.enabled=false
 security.registration.require_token=true
 security.registration.token_file=/etc/merovingian/registration-token
 
+# Room encryption policy
+# New private/direct rooms require encryption by default. Public unencrypted
+# rooms are allowed for compatibility, while federated private rooms must not
+# bypass encryption.
 security.encryption.default_for_new_rooms=true
 security.encryption.require_for_direct_messages=true
 security.encryption.require_for_private_rooms=true
 security.encryption.allow_unencrypted_public_rooms=true
 security.encryption.block_unencrypted_federated_private_rooms=true
 
+# Federation policy
+# default_policy=allow permits federation except denied servers. Switch to
+# default_policy=deny with a populated allowed_servers list for allow-list mode.
+# deny_ip_ranges blocks private and loopback network targets during remote
+# discovery/fetching and should keep the default private ranges.
 security.federation.enabled=true
 security.federation.default_policy=allow
 security.federation.allowed_servers=
@@ -39,6 +66,10 @@ security.federation.deny_ip_ranges=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.
 security.federation.max_transaction_size=10MiB
 security.federation.remote_timeout=30s
 
+# Media safety policy
+# max_upload_size bounds local uploads. Unknown MIME types are quarantined, AV
+# scanning is expected, private-IP remote fetches are blocked, and decoding is
+# treated as sandbox-only work.
 security.media.max_upload_size=50MiB
 security.media.quarantine_unknown_mime=true
 security.media.enable_av_scanner=true
@@ -46,6 +77,9 @@ security.media.block_private_ip_fetches=true
 security.media.remote_fetch_timeout=30s
 security.media.decode_in_sandbox=true
 
+# Logging redaction
+# Structured logs are enabled, but token values and event content stay redacted
+# so operational logs do not become a credential or message-content sink.
 security.logging.redact_tokens=true
 security.logging.redact_event_content=true
 security.logging.structured=true

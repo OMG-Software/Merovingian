@@ -47,8 +47,9 @@ deployment milestone.
 - Build and warning policy: Meson C++26 build, warnings-as-errors, hardening
   flags, Linux and FreeBSD CI, local build wrappers, WSL wrapper, and named
   debug/release/sanitizer/coverage/fuzz/hardened wrapper profiles exist.
-- Secure configuration: validated defaults, bounded config parser, config-file
-  metadata checks, reload planning, and smoke tests exist.
+- Secure configuration: validated defaults, bounded config parser, commented
+  operator example config, config-file metadata checks, reload planning, and
+  smoke tests exist.
 - Runtime listener: `merovingian::homeserver::serve_http` and
   `serve_tls_http` bind configured listeners, accept HTTP/1.1 requests, dispatch
   client traffic through the Matrix JSON adapter, and handle shutdown.
