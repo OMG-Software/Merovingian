@@ -30,6 +30,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -55,11 +56,7 @@ namespace
     // the same pattern used for access tokens.
     [[nodiscard]] auto generate_filter_id() -> std::string
     {
-        // static so the init check runs at most once per process lifetime;
-        // assigned to a named variable because GCC's warn_unused_result on
-        // sodium_init() is not suppressed by static_cast<void>() alone.
-        static auto const sodium_ready = sodium_init() >= 0;
-        static_cast<void>(sodium_ready);
+        std::ignore = sodium_init();
         auto bytes = std::array<unsigned char, 16U>{};
         randombytes_buf(bytes.data(), bytes.size());
         auto output = std::string(bytes.size() * 2U + 1U, '\0');
