@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.4
+Version:        0.2.5
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -82,6 +82,9 @@ install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 20 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.5-1
+- Move the default internal federation listener away from public port 8448
+
 * Wed May 20 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.4-1
 - Add explanatory comments to the example configuration
 

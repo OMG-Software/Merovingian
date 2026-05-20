@@ -120,7 +120,12 @@ Bootstrap exits with explicit status codes:
 
 ## Listener exposure policy
 
-The defaults bind both client and federation listeners to loopback with TLS disabled. This supports a reverse-proxy deployment model while avoiding accidental public cleartext exposure.
+The defaults bind both client and federation listeners to loopback with TLS
+disabled. This supports a reverse-proxy deployment model while avoiding
+accidental public cleartext exposure. The client listener defaults to
+`127.0.0.1:8008`; the internal federation listener defaults to
+`127.0.0.1:8009` so Apache, nginx, or another reverse proxy can own the public
+Matrix federation port `8448`.
 
 A listener with `tls=false` must bind to one of:
 

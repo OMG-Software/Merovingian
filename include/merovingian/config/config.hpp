@@ -28,7 +28,7 @@ struct ListenerConfig final
 struct ListenersConfig final
 {
     ListenerConfig client{"127.0.0.1:8008", false};
-    ListenerConfig federation{"127.0.0.1:8448", false};
+    ListenerConfig federation{"127.0.0.1:8009", false};
 };
 
 enum class DatabaseBackend

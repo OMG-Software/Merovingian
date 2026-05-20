@@ -29,7 +29,7 @@ SCENARIO("Config provides secure server and listener defaults", "[config]")
                 REQUIRE_FALSE(listeners.client.tls);
                 REQUIRE(listeners.client.tls_certificate_file.empty());
                 REQUIRE(listeners.client.tls_private_key_file.empty());
-                REQUIRE(listeners.federation.bind == "127.0.0.1:8448");
+                REQUIRE(listeners.federation.bind == "127.0.0.1:8009");
                 REQUIRE_FALSE(listeners.federation.tls);
                 REQUIRE(listeners.federation.tls_certificate_file.empty());
                 REQUIRE(listeners.federation.tls_private_key_file.empty());
