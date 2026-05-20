@@ -253,6 +253,29 @@ SCENARIO("Client-server runtime HTTP adapter rejects incomplete and trailing req
     }
 }
 
+SCENARIO("Client-server GET login returns password flow discovery response", "[homeserver][client-server]")
+{
+    GIVEN("a running client-server homeserver")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("an unauthenticated client queries GET /_matrix/client/v3/login")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/login", {}, {}});
+
+            THEN("the server returns 200 with a flows array containing m.login.password")
+            {
+                REQUIRE(resp.status == 200U);
+                REQUIRE(resp.body.find("\"flows\"") != std::string::npos);
+                REQUIRE(resp.body.find("\"m.login.password\"") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server runtime escapes login and device JSON strings", "[homeserver][client-server]")
 {
     GIVEN("a logged-in client-server user with a device value requiring JSON escapes")

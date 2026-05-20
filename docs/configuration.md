@@ -177,6 +177,19 @@ own that static discovery response:
 }
 ```
 
+Replace `pong.ping.me.uk` with your `server.public_baseurl` value throughout
+the examples below.
+
+**Apache** serves this from a static file — create it once before reloading:
+
+```sh
+mkdir -p /var/www/merovingian/.well-known/matrix
+printf '{"m.homeserver":{"base_url":"https://pong.ping.me.uk"}}' \
+    > /var/www/merovingian/.well-known/matrix/client
+```
+
+**nginx** returns the response inline from the config; no file is needed.
+
 ### Apache httpd
 
 This example assumes `mod_ssl`, `mod_headers`, `mod_proxy`,
@@ -210,12 +223,11 @@ Listen 8448
     ProxyPreserveHost On
     RequestHeader set X-Forwarded-Proto "https"
 
+    # Exclude /.well-known/ from proxying so the Alias below is reached.
+    # Without this, Apache forwards /.well-known/ requests to Merovingian.
+    ProxyPass        "/.well-known/" "!"
     ProxyPass        "/_matrix/" "http://127.0.0.1:8008/_matrix/"
     ProxyPassReverse "/_matrix/" "http://127.0.0.1:8008/_matrix/"
-
-    <Location "/_matrix/">
-        Require all granted
-    </Location>
 
     Alias "/.well-known/matrix/client" "/var/www/merovingian/.well-known/matrix/client"
 
@@ -223,14 +235,20 @@ Listen 8448
         Require all granted
     </Directory>
 
+    # Deny everything by default. Specific allows below must come AFTER this
+    # block — Apache Location merging uses document order; later = wins.
+    <Location "/">
+        Require all denied
+    </Location>
+
+    <Location "/_matrix/">
+        Require all granted
+    </Location>
+
     <Location "/.well-known/matrix/client">
         Require all granted
         ForceType application/json
         Header always set Access-Control-Allow-Origin "*"
-    </Location>
-
-    <Location "/">
-        Require all denied
     </Location>
 </VirtualHost>
 
@@ -250,12 +268,12 @@ Listen 8448
     ProxyPass        "/_matrix/" "http://127.0.0.1:8009/_matrix/"
     ProxyPassReverse "/_matrix/" "http://127.0.0.1:8009/_matrix/"
 
-    <Location "/_matrix/">
-        Require all granted
-    </Location>
-
     <Location "/">
         Require all denied
+    </Location>
+
+    <Location "/_matrix/">
+        Require all granted
     </Location>
 </VirtualHost>
 ```

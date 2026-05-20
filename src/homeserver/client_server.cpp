@@ -1478,6 +1478,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         return result.ok ? resp(200U, json_serialize(json_obj({json_member("user_id", json_str(result.value))})))
                          : err(result.status, "M_FORBIDDEN", result.reason);
     }
+    if (req.method == "GET" && req.target == "/_matrix/client/v3/login")
+    {
+        return resp(200U, json_serialize(json_obj({
+                              json_member("flows", json_arr({json_obj({json_member("type", json_str("m.login.password"))})})),
+                          })));
+    }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
     {
         auto const body = parse_login_body(req.body, rt.homeserver.config.server().server_name);
