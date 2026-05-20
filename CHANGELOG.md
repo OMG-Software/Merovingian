@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.12
+
+- Added `POST /_matrix/client/v3/user/{userId}/filter` to store a sync filter and
+  return a `filter_id`. Added `GET /_matrix/client/v3/user/{userId}/filter/{filterId}`
+  to retrieve a previously stored filter. Cinny posts a filter immediately after
+  login and uses the returned `filter_id` in all `/sync` requests.
+
 ## 0.2.11
 
 - Added `GET /_matrix/client/v3/capabilities` stub returning server capability

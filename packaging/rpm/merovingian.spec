@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.11
+Version:        0.2.12
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.12-1
+- Add POST /user/{userId}/filter and GET /user/{userId}/filter/{filterId} so Cinny can store and retrieve sync filters
+
 * Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.11-1
 - Add GET /capabilities and GET /pushrules/ stubs so Cinny and Element can complete post-login initialisation
 

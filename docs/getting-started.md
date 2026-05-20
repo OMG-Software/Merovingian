@@ -202,3 +202,5 @@ EOF
 | `bad credentials` on login (HTTP 403) | Wrong password |
 | Client shows "Failed to get registration options" | `/.well-known/matrix/client` returns 404 — see step 8 |
 | Client OPTIONS requests return 401 | Old build — upgrade to 0.2.10+ |
+| Client shows "Connection lost" immediately after login | Old build returning 404 on `/capabilities` or `/pushrules/` — upgrade to 0.2.11+ |
+| Client retries `/user/.../filter` every few seconds and never syncs | Old build returning 404 on the filter API — upgrade to 0.2.12+ |

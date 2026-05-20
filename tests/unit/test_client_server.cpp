@@ -1164,3 +1164,82 @@ SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated 
         }
     }
 }
+
+SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][client-server][filter]")
+{
+    GIVEN("a started runtime with a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        // @alice:example.org percent-encoded as it appears in a real browser URL
+        auto constexpr user_filter_url = "/_matrix/client/v3/user/%40alice%3Aexample.org/filter";
+        auto constexpr filter_body     = R"({"room":{"timeline":{"limit":50}}})";
+
+        WHEN("POST /user/{userId}/filter is called with a valid filter body")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", user_filter_url, token, filter_body});
+
+            THEN("the response is 200 and contains a filter_id")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("filter_id") != std::string::npos);
+            }
+        }
+
+        WHEN("GET /user/{userId}/filter/{filterId} is called with a valid filter_id")
+        {
+            // Store a filter first so we have a filter_id to look up
+            auto const store_resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", user_filter_url, token, filter_body});
+            REQUIRE(store_resp.status == 200U);
+            auto const fid = json_value(store_resp.body, "\"filter_id\":\"");
+
+            auto const get_url  = std::string{user_filter_url} + "/" + fid;
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", get_url, token, {}});
+
+            THEN("the response is 200 and returns the stored filter body")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("timeline") != std::string::npos);
+            }
+        }
+
+        WHEN("GET /user/{userId}/filter/{filterId} is called with an unknown filter_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", std::string{user_filter_url} + "/nonexistent", token, {}});
+
+            THEN("the response is 404")
+            {
+                REQUIRE(response.status == 404U);
+            }
+        }
+
+        WHEN("POST /user/{userId}/filter is called without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", user_filter_url, {}, filter_body});
+
+            THEN("the response is 401")
+            {
+                REQUIRE(response.status == 401U);
+            }
+        }
+    }
+}

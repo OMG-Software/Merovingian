@@ -1289,6 +1289,43 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     store.next_sync_stream_id = observed;
 }
 
+[[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool
+{
+    if (filter.user_id.empty() || filter.filter_id.empty() || filter.json.empty())
+    {
+        return false;
+    }
+    auto const statement = record_statement(
+        "upsert_filter",
+        "INSERT INTO filters (user_id, filter_id, json) VALUES ($1, $2, $3) "
+        "ON CONFLICT (user_id, filter_id) DO UPDATE SET json = $3",
+        {public_value(filter.user_id), public_value(filter.filter_id), sensitive_value(filter.json)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    // Keep the in-memory mirror in sync; replace existing entry if present.
+    auto const existing = std::ranges::find_if(store.filters, [&filter](PersistentFilter const& f) {
+        return f.user_id == filter.user_id && f.filter_id == filter.filter_id;
+    });
+    if (existing != store.filters.end())
+    {
+        *existing = std::move(filter);
+        return true;
+    }
+    store.filters.push_back(std::move(filter));
+    return true;
+}
+
+[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id,
+                               std::string_view filter_id) -> std::optional<PersistentFilter>
+{
+    auto const it = std::ranges::find_if(store.filters, [user_id, filter_id](PersistentFilter const& f) {
+        return f.user_id == user_id && f.filter_id == filter_id;
+    });
+    return it == store.filters.end() ? std::nullopt : std::optional<PersistentFilter>{*it};
+}
+
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool
 {
     for (auto const& statement : store.prepared_statements)

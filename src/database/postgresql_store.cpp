@@ -769,6 +769,20 @@ namespace
                 store.presence_states.push_back(std::move(entry));
             }
         }
+
+        auto filters = query_rows(connection, "postgresql_load_filters",
+                                  "SELECT user_id, filter_id, json FROM filters ORDER BY user_id, filter_id");
+        if (!filters.ok)
+        {
+            return false;
+        }
+        for (auto const& row : filters.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                store.filters.push_back({row[0], row[1], row[2]});
+            }
+        }
         return true;
     }
 
