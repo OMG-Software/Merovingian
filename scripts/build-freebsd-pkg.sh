@@ -28,10 +28,13 @@ meson compile -C build-freebsd-pkg
 #    $PWD avoids subshell/symlink issues that $(pwd) can have inside the VM.
 meson install -C build-freebsd-pkg --destdir "${PWD}/${STAGING}"
 
-# 4. Install rc.d script (BSD install does not accept GNU -D; create dir first)
+# 4. Install rc.d script and sample config (BSD install does not accept GNU -D)
 mkdir -p "${STAGING}/usr/local/etc/rc.d"
 install -m 0755 packaging/rc.d/merovingian \
     "${STAGING}/usr/local/etc/rc.d/merovingian"
+mkdir -p "${STAGING}/usr/local/etc/merovingian"
+install -m 0644 config/merovingian.conf.example \
+    "${STAGING}/usr/local/etc/merovingian/merovingian.conf.sample"
 
 # 5. Confirm the staged tree looks right before packaging.
 echo "[debug] staged files under ${STAGING}/usr/local:"
