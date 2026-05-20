@@ -14,10 +14,9 @@
   configured without `--disable-dependency-tracking`), auto-reextracts stale
   `subprojects/curl-<version>` packagefile copies, and accepts `--clean` for a
   full rebuild without reusing stale extracted curl sources. Updated
-  `scripts/wsl-setup.sh`, `scripts/build-wsl.ps1`,
-  `wsl-build.cmd`, and the compatibility alias `build-wsl.cmd` to point at the
-  new script, and removed the hardcoded `Ubuntu-24.04` launcher dependency so
-  the default WSL distro works out of the box. The WSL wrapper now stages an
+  `scripts/wsl-setup.sh`, `scripts/build-wsl.ps1`, and `build-wsl.cmd` to point
+  at the new script, and removed the hardcoded `Ubuntu-24.04` launcher
+  dependency so the default WSL distro works out of the box. The WSL wrapper now stages an
   executable `make` shim under the Linux filesystem so Meson's
   `external_project` helper can invoke it even when the repo lives on `/mnt/c`,
   and rewrites that shim with LF line endings so the shebang stays executable.

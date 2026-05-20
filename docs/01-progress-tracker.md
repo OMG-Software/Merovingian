@@ -147,10 +147,9 @@ deployment milestone.
   directory for a full rebuild. The wrapper also stages an executable
   Linux-filesystem `make` shim before Meson setup so `external_project`
   invocations do not fail on DrvFS execute-bit handling or CRLF shebangs. The
-  Windows `wsl-build.cmd`,
-  `build-wsl.cmd`, and `scripts/build-wsl.ps1` launchers now delegate to that
-  same wrapper so WSL builds keep the NTFS guardrails even when started from
-  Windows. Catch2 fallback builds
+  Windows `build-wsl.cmd` and `scripts/build-wsl.ps1` launchers now delegate to
+  that same wrapper so WSL builds keep the NTFS guardrails even when started
+  from Windows. Catch2 fallback builds
   disable Catch2's own upstream SelfTest target; SQLite fallback builds are
   static so sanitizer jobs link sanitizer runtimes through Merovingian's test
   executables. Meson tests run with a default fallback-runtime setup that

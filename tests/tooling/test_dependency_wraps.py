@@ -12,7 +12,7 @@ STATIC_LINUX_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-static-linux.sh"
 BSD_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-bsd.sh"
 SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup-dev-env.sh"
 WSL_SETUP_SCRIPT = REPO_ROOT / "scripts" / "wsl-setup.sh"
-WSL_BUILD_CMD = REPO_ROOT / "wsl-build.cmd"
+WSL_BUILD_CMD = REPO_ROOT / "build-wsl.cmd"
 WSL_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-wsl.ps1"
 WSL_BUILD_SHELL_WRAPPER = REPO_ROOT / "scripts" / "build-wsl.sh"
 MAKE_SHIM = REPO_ROOT / "scripts" / "tool-shims" / "make"
@@ -112,7 +112,7 @@ class DependencyWrapTests(unittest.TestCase):
 
     def test_windows_wsl_launch_chain_targets_the_dedicated_wsl_wrapper(self) -> None:
         # GIVEN the Windows entrypoints for WSL builds.
-        self.assertTrue(WSL_BUILD_CMD.is_file(), "wsl-build.cmd is missing")
+        self.assertTrue(WSL_BUILD_CMD.is_file(), "build-wsl.cmd is missing")
         self.assertTrue(WSL_BUILD_WRAPPER.is_file(), "build-wsl.ps1 is missing")
         self.assertTrue(WSL_BUILD_SHELL_WRAPPER.is_file(), "build-wsl.sh is missing")
         cmd_wrapper = WSL_BUILD_CMD.read_text(encoding="utf-8")
