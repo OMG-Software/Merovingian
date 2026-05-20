@@ -10,6 +10,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -60,7 +61,7 @@ namespace
         {
             if (active_)
             {
-                static_cast<void>(execute_sql(connection_, "ROLLBACK"));
+                std::ignore = execute_sql(connection_, "ROLLBACK");
             }
         }
 
@@ -479,6 +480,12 @@ namespace
                              entry.last_active_ago = static_cast<std::int64_t>(parse_u64(column_text(row, 4)));
                              entry.currently_active = text_is_true(column_text(row, 5));
                              store.presence_states.push_back(std::move(entry));
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, filter_id, json FROM filters",
+                         [&store](sqlite3_stmt& row) {
+                             store.filters.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          });
     }
 

@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -417,7 +418,7 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         auto const fetched = fetch_remote_server_keys(client, network, server_name, timeout_seconds);
         if (fetched.ok)
         {
-            (void)cache_remote_server_keys(store, fetched.response);
+            std::ignore = cache_remote_server_keys(store, fetched.response);
             auto refreshed = find_cached_remote_key(store, server_name, key_id);
             if (refreshed.has_value() && discovery.discovery_allowed)
             {

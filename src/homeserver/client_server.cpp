@@ -8,6 +8,7 @@
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
@@ -16,7 +17,10 @@
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
+#include <sodium.h>
+
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +30,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <utility>
 #include <variant>
@@ -44,6 +49,20 @@ namespace
     [[nodiscard]] auto ends_with(std::string_view v, std::string_view suffix) noexcept -> bool
     {
         return v.size() >= suffix.size() && v.substr(v.size() - suffix.size()) == suffix;
+    }
+
+    // Generate a 32-character lowercase hex filter ID from 16 random bytes.
+    // Uses libsodium so the randomness is cryptographically strong, matching
+    // the same pattern used for access tokens.
+    [[nodiscard]] auto generate_filter_id() -> std::string
+    {
+        std::ignore = sodium_init();
+        auto bytes = std::array<unsigned char, 16U>{};
+        randombytes_buf(bytes.data(), bytes.size());
+        auto output = std::string(bytes.size() * 2U + 1U, '\0');
+        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes.data(), bytes.size());
+        output.pop_back(); // remove the null terminator included by sodium_bin2hex
+        return output;
     }
 
     // Thin builder facade over the project's canonical JSON value model.
@@ -509,6 +528,15 @@ namespace
         {
             return identity + req.method + " /_matrix/client/v3/devices/{deviceId}";
         }
+        auto constexpr user_prefix = std::string_view{"/_matrix/client/v3/user/"};
+        if (starts_with(target, user_prefix) && ends_with(target, "/filter"))
+        {
+            return identity + req.method + " /_matrix/client/v3/user/{userId}/filter";
+        }
+        if (starts_with(target, user_prefix) && target.find("/filter/") != std::string_view::npos)
+        {
+            return identity + req.method + " /_matrix/client/v3/user/{userId}/filter/{filterId}";
+        }
         if (trust_safety::match_reporting_api_route(req.method, target).matched)
         {
             return identity + req.method + " /_matrix/client/v3/trust-safety/{route}";
@@ -838,7 +866,7 @@ namespace
                 auto const observed_id = notifier.current_stream_id();
                 if (observed_id <= since_sync_stream_id)
                 {
-                    (void)notifier.wait_for_change(since_sync_stream_id, std::chrono::milliseconds{*request.timeout});
+                    std::ignore = notifier.wait_for_change(since_sync_stream_id, std::chrono::milliseconds{*request.timeout});
                 }
             }
         }
@@ -1658,6 +1686,58 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             return wrap(handle_local_http_request(rt.homeserver, req), "state");
         }
     }
+
+    // POST  /_matrix/client/v3/user/{userId}/filter   — upload and store a sync filter
+    // GET   /_matrix/client/v3/user/{userId}/filter/{filterId} — retrieve a stored filter
+    auto constexpr user_prefix = std::string_view{"/_matrix/client/v3/user/"};
+    if (starts_with(req.target, user_prefix))
+    {
+        auto const suffix        = std::string_view{req.target}.substr(user_prefix.size());
+        auto constexpr filter_s  = std::string_view{"/filter"};
+        auto constexpr filter_m  = std::string_view{"/filter/"};
+
+        if (req.method == "POST" && ends_with(suffix, filter_s))
+        {
+            // Extract and decode the userId from the URL path segment
+            auto const encoded_user = suffix.substr(0U, suffix.size() - filter_s.size());
+            auto const path_user    = core::percent_decode(encoded_user);
+            if (path_user != *user)
+            {
+                return err(403U, "M_FORBIDDEN", "cannot upload filter for another user");
+            }
+            if (req.body.empty())
+            {
+                return err(400U, "M_BAD_JSON", "filter body must not be empty");
+            }
+            auto const filter_id = generate_filter_id();
+            if (!database::store_filter(rt.homeserver.database.persistent_store,
+                                        {path_user, filter_id, req.body}))
+            {
+                return err(500U, "M_UNKNOWN", "failed to persist filter");
+            }
+            return resp(200U, json_serialize(json_obj({json_member("filter_id", json_str(filter_id))})));
+        }
+
+        auto const mid_pos = suffix.find(filter_m);
+        if (req.method == "GET" && mid_pos != std::string_view::npos)
+        {
+            auto const encoded_user = suffix.substr(0U, mid_pos);
+            auto const path_user    = core::percent_decode(encoded_user);
+            if (path_user != *user)
+            {
+                return err(403U, "M_FORBIDDEN", "cannot access filter for another user");
+            }
+            auto const filter_id = std::string{suffix.substr(mid_pos + filter_m.size())};
+            auto const stored    = database::find_filter(rt.homeserver.database.persistent_store,
+                                                         path_user, filter_id);
+            if (!stored.has_value())
+            {
+                return err(404U, "M_NOT_FOUND", "filter not found");
+            }
+            return resp(200U, stored->json);
+        }
+    }
+
     return err(404U, "M_UNRECOGNIZED", "route not found");
 }
 
@@ -1698,7 +1778,7 @@ auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentTo
         database::enqueue_to_device_message(runtime.homeserver.database.persistent_store, std::move(message));
     if (stored)
     {
-        (void)ensure_sync_notifier(runtime);
+        std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
 }
@@ -1709,7 +1789,7 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
         database::record_device_list_change(runtime.homeserver.database.persistent_store, std::move(change));
     if (stored)
     {
-        (void)ensure_sync_notifier(runtime);
+        std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
 }
@@ -1719,7 +1799,7 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence sta
     auto const stored = database::upsert_presence(runtime.homeserver.database.persistent_store, std::move(state));
     if (stored)
     {
-        (void)ensure_sync_notifier(runtime);
+        std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
 }
@@ -1732,7 +1812,7 @@ auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountD
     auto const stored = database::store_account_data(runtime.homeserver.database.persistent_store, std::move(data));
     if (stored)
     {
-        (void)ensure_sync_notifier(runtime);
+        std::ignore = ensure_sync_notifier(runtime);
     }
     return stored;
 }

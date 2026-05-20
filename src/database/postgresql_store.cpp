@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -230,13 +231,13 @@ namespace
             auto result = execute_prepared_statement(connection, statement);
             if (!result.ok)
             {
-                static_cast<void>(execute_raw_command(connection, "ROLLBACK"));
+                std::ignore = execute_raw_command(connection, "ROLLBACK");
                 return false;
             }
         }
         if (!execute_raw_command(connection, "COMMIT"))
         {
-            static_cast<void>(execute_raw_command(connection, "ROLLBACK"));
+            std::ignore = execute_raw_command(connection, "ROLLBACK");
             return false;
         }
         return true;
@@ -767,6 +768,20 @@ namespace
                 entry.last_active_ago = static_cast<std::int64_t>(parse_u64(row[4]));
                 entry.currently_active = text_is_true(row[5]);
                 store.presence_states.push_back(std::move(entry));
+            }
+        }
+
+        auto filters = query_rows(connection, "postgresql_load_filters",
+                                  "SELECT user_id, filter_id, json FROM filters ORDER BY user_id, filter_id");
+        if (!filters.ok)
+        {
+            return false;
+        }
+        for (auto const& row : filters.rows)
+        {
+            if (row.size() >= 3U)
+            {
+                store.filters.push_back({row[0], row[1], row[2]});
             }
         }
         return true;

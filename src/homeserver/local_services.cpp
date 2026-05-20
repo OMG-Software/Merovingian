@@ -6,6 +6,7 @@
 
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 namespace merovingian::homeserver
@@ -23,7 +24,7 @@ auto append_local_audit(LocalDatabase& database, observability::AuditCategory ca
 {
     database.audit_events.push_back(
         observability::make_audit_event(category, event_type, actor, target, reason, "local-vertical-slice"));
-    (void)database::append_audit_event(database.persistent_store,
+    std::ignore = database::append_audit_event(database.persistent_store,
                                        {observability::audit_category_name(category), std::string{event_type},
                                         std::string{actor}, std::string{target}, std::string{reason}});
 }

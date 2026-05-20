@@ -6,6 +6,7 @@
 
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <variant>
 
 #include <sodium.h>
@@ -169,9 +170,9 @@ auto matrix_base64_from_bytes(std::string_view bytes) -> std::string
     }
 
     auto output = std::string(sodium_base64_ENCODED_LEN(bytes.size(), sodium_base64_VARIANT_ORIGINAL_NO_PADDING), '\0');
-    static_cast<void>(sodium_bin2base64(output.data(), output.size(),
-                                        reinterpret_cast<unsigned char const*>(bytes.data()), bytes.size(),
-                                        sodium_base64_VARIANT_ORIGINAL_NO_PADDING));
+    std::ignore = sodium_bin2base64(output.data(), output.size(),
+                                    reinterpret_cast<unsigned char const*>(bytes.data()), bytes.size(),
+                                    sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
     output.resize(std::char_traits<char>::length(output.c_str()));
     return output;
 }

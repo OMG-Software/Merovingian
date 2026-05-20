@@ -2,6 +2,7 @@
 
 #include "merovingian/core/file_descriptor.hpp"
 
+#include <tuple>
 #include <utility>
 
 #include <unistd.h>
@@ -44,7 +45,7 @@ auto FileDescriptor::reset(int fd) noexcept -> void
 {
     if (valid())
     {
-        static_cast<void>(::close(m_fd));
+        std::ignore = ::close(m_fd);
     }
 
     m_fd = fd;

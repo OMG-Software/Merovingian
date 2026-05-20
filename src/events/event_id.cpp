@@ -10,6 +10,7 @@
 #include <initializer_list>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <variant>
 
 #include <sodium.h>
@@ -32,7 +33,7 @@ namespace
             std::string(sodium_base64_ENCODED_LEN(digest.size(), sodium_base64_VARIANT_ORIGINAL_NO_PADDING), '\0');
         auto const variant =
             url_safe ? sodium_base64_VARIANT_URLSAFE_NO_PADDING : sodium_base64_VARIANT_ORIGINAL_NO_PADDING;
-        static_cast<void>(sodium_bin2base64(output.data(), output.size(), digest.data(), digest.size(), variant));
+        std::ignore = sodium_bin2base64(output.data(), output.size(), digest.data(), digest.size(), variant);
         output.resize(std::char_traits<char>::length(output.c_str()));
         return output;
     }

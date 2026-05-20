@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -178,7 +179,7 @@ private:
         auto const time_now = std::chrono::system_clock::to_time_t(now);
 
         auto local = tm{};
-        static_cast<void>(localtime_r(&time_now, &local));
+        std::ignore = localtime_r(&time_now, &local);
 
         auto date = std::array<char, 32>{};
         auto zone = std::array<char, 10>{};
@@ -193,8 +194,8 @@ private:
             return {};
         }
 
-        static_cast<void>(std::snprintf(result.data(), result.size(), "%s.%03d %s", date.data(),
-                                        static_cast<int>(milliseconds.count()), zone.data()));
+        std::ignore = std::snprintf(result.data(), result.size(), "%s.%03d %s", date.data(),
+                                    static_cast<int>(milliseconds.count()), zone.data());
 
         return std::string{result.data()};
     }
@@ -354,7 +355,7 @@ auto string_format(std::string const& format, Args&&... args) -> std::string
     }
 
     auto buffer = std::vector<char>(static_cast<std::size_t>(required) + 1U);
-    static_cast<void>(std::snprintf(buffer.data(), buffer.size(), format.c_str(), std::forward<Args>(args)...));
+    std::ignore = std::snprintf(buffer.data(), buffer.size(), format.c_str(), std::forward<Args>(args)...);
 
     return std::string{buffer.data(), static_cast<std::size_t>(required)};
 }

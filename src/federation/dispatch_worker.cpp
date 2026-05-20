@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <thread>
+#include <tuple>
 #include <utility>
 
 namespace merovingian::federation
@@ -157,7 +158,7 @@ auto DispatchWorker::take_next(OutboundTransaction& out) -> bool
     queue_.erase(ready);
     // Removing an entry frees a slot under max_queue_depth — top up the
     // active queue from any replay overflow that was parked at startup.
-    (void)top_up_replay_locked();
+    std::ignore = top_up_replay_locked();
     return true;
 }
 
@@ -248,7 +249,7 @@ auto DispatchWorker::run_once() -> bool
             auto lock = std::lock_guard{mutex_};
             if (persistent_store_ != nullptr)
             {
-                (void)database::store_federation_destination(*persistent_store_,
+                std::ignore = database::store_federation_destination(*persistent_store_,
                                                              to_persistent_destination(destination));
             }
             ++summary_.failed;
@@ -281,7 +282,7 @@ auto DispatchWorker::run_once() -> bool
             auto lock = std::lock_guard{mutex_};
             if (persistent_store_ != nullptr)
             {
-                (void)database::store_federation_destination(*persistent_store_,
+                std::ignore = database::store_federation_destination(*persistent_store_,
                                                              to_persistent_destination(destination));
                 if (!database::delete_federation_transaction(*persistent_store_, transaction.transaction_id))
                 {
@@ -304,7 +305,7 @@ auto DispatchWorker::run_once() -> bool
         auto lock = std::lock_guard{mutex_};
         if (persistent_store_ != nullptr)
         {
-            (void)database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
+            std::ignore = database::store_federation_destination(*persistent_store_, to_persistent_destination(destination));
         }
         ++summary_.failed;
     }

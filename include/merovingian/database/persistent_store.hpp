@@ -276,6 +276,16 @@ struct PersistentPresence final
     bool currently_active{false};
 };
 
+// A client-uploaded sync filter. The server stores the raw JSON verbatim and
+// returns an opaque `filter_id`; clients pass the id as a query parameter on
+// subsequent /sync requests so the server can apply the filter criteria.
+struct PersistentFilter final
+{
+    std::string user_id{};
+    std::string filter_id{};
+    std::string json{};
+};
+
 struct PersistentStore final
 {
     bool open{false};
@@ -311,6 +321,7 @@ struct PersistentStore final
     std::vector<PersistentToDeviceMessage> to_device_messages{};
     std::vector<PersistentDeviceListChange> device_list_changes{};
     std::vector<PersistentPresence> presence_states{};
+    std::vector<PersistentFilter> filters{};
     std::vector<PreparedStatement> prepared_statements{};
     // Monotonic stream id used by /sync surfaces (to_device, device_list
     // changes, presence). Incremented before each new row is persisted so
@@ -379,6 +390,11 @@ struct PersistentStoreOpenResult final
     -> std::vector<PersistentToDeviceMessage>;
 [[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool;
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
+// Store a sync filter uploaded by a client. On conflict the JSON is replaced.
+[[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool;
+// Return the filter for (user_id, filter_id), or nullopt when not found.
+[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id,
+                               std::string_view filter_id) -> std::optional<PersistentFilter>;
 // Sets `store.next_sync_stream_id` to the maximum stream_id observed
 // across every sync-surface row already loaded into memory (account_data,
 // room account_data, to_device_messages, device_list_changes,

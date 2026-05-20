@@ -15,6 +15,7 @@
 #include <mutex>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 #include <poll.h>
@@ -323,7 +324,7 @@ namespace
     auto write_error_response(ConnectionStream& stream, std::uint16_t status, std::string_view body) noexcept -> void
     {
         auto const response = format_response(status, body);
-        static_cast<void>(send_all(stream, response));
+        std::ignore = send_all(stream, response);
     }
 
     auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, std::mutex& runtime_lock,
@@ -390,7 +391,7 @@ namespace
         }
 
         auto const formatted = format_response(response.status, response.body);
-        static_cast<void>(send_all(stream, formatted));
+        std::ignore = send_all(stream, formatted);
     }
 
 } // namespace
@@ -462,7 +463,7 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::m
             ++stats.accepted_connections;
         }
         serve_one_http_connection(client.native_handle(), runtime, runtime_lock, stats, dispatch_mode);
-        static_cast<void>(::shutdown(client.native_handle(), SHUT_RDWR));
+        std::ignore = ::shutdown(client.native_handle(), SHUT_RDWR);
     }
 }
 
@@ -521,7 +522,7 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
 
         auto stream = TlsConnectionStream{*accepted_tls.connection};
         serve_stream(stream, runtime, runtime_lock, stats, dispatch_mode);
-        static_cast<void>(::shutdown(client.native_handle(), SHUT_RDWR));
+        std::ignore = ::shutdown(client.native_handle(), SHUT_RDWR);
     }
 }
 
