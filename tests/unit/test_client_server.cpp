@@ -988,10 +988,11 @@ SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[hom
 
         WHEN("a user registers and then logs in with the wrong password")
         {
-            merovingian::homeserver::handle_client_server_request(
+            auto const registered = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/register", {},
                  merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+            REQUIRE(registered.status == 200U);
 
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime,
@@ -1070,5 +1071,4 @@ SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
             }
         }
     }
-}
 }
