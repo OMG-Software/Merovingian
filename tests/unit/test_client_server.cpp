@@ -592,7 +592,7 @@ SCENARIO("Client-server runtime enforces request limits and Matrix-style errors"
                           "/_matrix/client/v3/register",
                           {},
                           merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
-            runtime.limits.max_body_bytes = 4096U;
+            runtime.limits.max_body_bytes = 65536U;
             auto const first = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
             auto const second = merovingian::homeserver::handle_client_server_request(
@@ -1156,6 +1156,170 @@ SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated 
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/pushrules/", {}, {}});
+
+            THEN("the response is 401")
+            {
+                REQUIRE(response.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-server][key-api]")
+{
+    GIVEN("a started runtime with a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        WHEN("POST /keys/upload is called with a body larger than 4 KiB but within 64 KiB")
+        {
+            // Simulate a real Cinny OTK bundle: device keys + many one-time keys.
+            // The body must exceed 4096 bytes to prove the old limit is gone.
+            auto large_body = std::string{R"({"device_keys":{"@alice:example.org":{"DEVICE1":{"algorithms":[],"device_id":"DEVICE1","keys":{},"signatures":{},"user_id":"@alice:example.org"}}},"one_time_keys":{)"};
+            for (int i = 0; i < 40; ++i)
+            {
+                if (i != 0) { large_body += ','; }
+                large_body += "\"signed_curve25519:KEY" + std::to_string(i) + "\":\"" + std::string(80U, 'a') + "\"";
+            }
+            large_body += "}}";
+            REQUIRE(large_body.size() > 4096U);
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", token, large_body});
+
+            THEN("the response is 200, not 413")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("OIDC auth metadata discovery endpoint returns 404 without authentication",
+         "[homeserver][client-server]")
+{
+    GIVEN("a started runtime")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata is called without a token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata", {}, {}});
+
+            THEN("the response is 404, not 401")
+            {
+                // We do not implement OIDC; the endpoint must be absent (404) rather
+                // than access-denied (401) so clients can probe and fall back gracefully.
+                REQUIRE(response.status == 404U);
+            }
+        }
+    }
+}
+
+SCENARIO("Profile endpoint returns a user profile stub for authenticated clients",
+         "[homeserver][client-server]")
+{
+    GIVEN("a started runtime with a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        WHEN("GET /profile/{userId} is called with a percent-encoded user id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", token, {}});
+
+            THEN("the response is 200 and contains displayname and avatar_url fields")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("displayname") != std::string::npos);
+                REQUIRE(response.body.find("avatar_url") != std::string::npos);
+            }
+        }
+
+        WHEN("GET /profile/{userId} is called without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
+
+            THEN("the response is 401")
+            {
+                REQUIRE(response.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("Media config endpoint returns upload size limit for authenticated clients",
+         "[homeserver][client-server]")
+{
+    GIVEN("a started runtime with a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        WHEN("GET /_matrix/media/v3/config is called with a valid token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/media/v3/config", token, {}});
+
+            THEN("the response is 200 and contains m.upload.size")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("m.upload.size") != std::string::npos);
+            }
+        }
+
+        WHEN("GET /_matrix/media/v3/config is called without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/media/v3/config", {}, {}});
 
             THEN("the response is 401")
             {

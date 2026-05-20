@@ -44,7 +44,10 @@ struct ClientKeyApiRecord final
 
 struct ClientApiLimits final
 {
-    std::size_t max_body_bytes{4096U};
+    // 64 KiB covers real Matrix API calls including keys/upload (device keys +
+    // many one-time keys) while staying well below the HTTP-layer 1 MiB cap in
+    // http::RequestLimits::max_body_bytes.
+    std::size_t max_body_bytes{65536U};
     std::uint32_t max_requests_per_bucket{64U};
     std::uint64_t rate_limit_window_requests{64U};
     std::size_t max_sync_rooms{16U};
