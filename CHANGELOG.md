@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.7
+
+- Bumped version to 0.2.7.
+
 ## 0.2.6
 
 - `merovingian-server` now searches `$sysconfdir/merovingian/merovingian.conf`
