@@ -177,6 +177,19 @@ own that static discovery response:
 }
 ```
 
+Replace `pong.ping.me.uk` with your `server.public_baseurl` value throughout
+the examples below.
+
+**Apache** serves this from a static file — create it once before reloading:
+
+```sh
+mkdir -p /var/www/merovingian/.well-known/matrix
+printf '{"m.homeserver":{"base_url":"https://pong.ping.me.uk"}}' \
+    > /var/www/merovingian/.well-known/matrix/client
+```
+
+**nginx** returns the response inline from the config; no file is needed.
+
 ### Apache httpd
 
 This example assumes `mod_ssl`, `mod_headers`, `mod_proxy`,
