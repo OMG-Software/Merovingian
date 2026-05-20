@@ -81,3 +81,12 @@ git push origin v<version>-alpha.1
 GitHub Actions publishes the prerelease assets for that tag.
 The matching release event also publishes the SBOM assets, and the scheduled
 dependency-triage workflow keeps a separate vulnerability report artifact.
+
+## Rolling latest packages
+
+Pushes to `main` also trigger [packages.yml](../.github/workflows/packages.yml).
+That workflow rebuilds the Debian, Fedora RPM, and FreeBSD packages, replaces
+the rolling `latest` GitHub prerelease, and uploads fresh package checksums.
+The publish step resolves and deletes the existing `latest` release with an
+explicit `--repo "${{ github.repository }}"` scope before recreating it so the
+artifact-only job does not depend on checkout state.

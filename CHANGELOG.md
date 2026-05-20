@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.3
+
+- Fixed `.github/workflows/packages.yml` so the rolling `latest` GitHub release
+  is looked up and deleted with explicit `--repo "${{ github.repository }}"`
+  scoping before it is recreated from `main`.
+- Added tooling coverage for `.github/workflows/packages.yml` so CI rejects
+  repo-implicit `gh release` usage in the artifact-only rolling release job.
+- Aligned `merovingian-server`, `merovingian-db-migrate`, and the Meson project
+  version to `0.2.3`.
+- Updated the release-process and progress-tracker docs for the rolling
+  `latest` publication path.
+
 ## 0.2.2
 
 - Switch `.deb` build from Alpine (fully static) to Ubuntu with dynamic OS library linking.

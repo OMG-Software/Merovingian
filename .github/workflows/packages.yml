@@ -100,7 +100,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete latest --yes --cleanup-tag 2>/dev/null || true
+          if gh release view latest --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            gh release delete latest \
+              --repo "${{ github.repository }}" \
+              --yes \
+              --cleanup-tag
+          fi
           gh release create latest \
             --repo "${{ github.repository }}" \
             --prerelease \

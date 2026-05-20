@@ -40,6 +40,12 @@ if get_option ('build_tests')
   )
 
   test(
+    'packages-workflow-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_packages_workflow.py'],
+  )
+
+  test(
     'ci-workflow-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_ci_workflow.py'],

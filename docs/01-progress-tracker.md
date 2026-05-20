@@ -109,7 +109,9 @@ deployment milestone.
   upgrade`, `dnf upgrade`) patch them without rebuilding Merovingian; the `.deb`
   declares `libssl3`, `libsodium23`, and `libpq5` as runtime `Depends`.
   Application dependencies (libcurl, SQLite, yyjson) remain statically linked via
-  source-pinned Meson wraps.
+  source-pinned Meson wraps. Pushes to `main` also replace the rolling GitHub
+  `latest` prerelease through repo-scoped `gh release` commands so the artifact
+  publication job does not retain stale release state.
 - Test isolation: `registration_token_file()` now generates a process-unique
   filename (random salt + atomic counter) so parallel `meson test` jobs do not
   truncate each other's token file mid-write, eliminating intermittent 403
