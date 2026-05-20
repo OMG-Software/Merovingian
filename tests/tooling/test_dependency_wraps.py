@@ -12,7 +12,9 @@ STATIC_LINUX_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-static-linux.sh"
 BSD_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-bsd.sh"
 SETUP_SCRIPT = REPO_ROOT / "scripts" / "setup-dev-env.sh"
 WSL_SETUP_SCRIPT = REPO_ROOT / "scripts" / "wsl-setup.sh"
+WSL_BUILD_CMD = REPO_ROOT / "wsl-build.cmd"
 WSL_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-wsl.ps1"
+WSL_BUILD_SHELL_WRAPPER = REPO_ROOT / "scripts" / "build-wsl.sh"
 MAKE_SHIM = REPO_ROOT / "scripts" / "tool-shims" / "make"
 VALIDATE_PHASE1_SCRIPT = REPO_ROOT / "scripts" / "validate-phase1-config.sh"
 CURL_PACKAGEFILE = REPO_ROOT / "subprojects" / "packagefiles" / "curl" / "meson.build"
@@ -107,6 +109,59 @@ class DependencyWrapTests(unittest.TestCase):
             # WHEN a developer runs the default build path.
             # THEN Meson is configured in forcefallback mode instead of system dependency mode.
             self.assertIn("forcefallback", wrapper)
+
+    def test_windows_wsl_launch_chain_targets_the_dedicated_wsl_wrapper(self) -> None:
+        # GIVEN the Windows entrypoints for WSL builds.
+        self.assertTrue(WSL_BUILD_CMD.is_file(), "wsl-build.cmd is missing")
+        self.assertTrue(WSL_BUILD_WRAPPER.is_file(), "build-wsl.ps1 is missing")
+        self.assertTrue(WSL_BUILD_SHELL_WRAPPER.is_file(), "build-wsl.sh is missing")
+        cmd_wrapper = WSL_BUILD_CMD.read_text(encoding="utf-8")
+        ps_wrapper = WSL_BUILD_WRAPPER.read_text(encoding="utf-8")
+
+        # WHEN a Windows developer launches the WSL build from cmd.exe or PowerShell.
+        # THEN both bridge layers delegate to the dedicated WSL shell wrapper and preserve arguments.
+        self.assertIn("scripts\\build-wsl.ps1", cmd_wrapper)
+        self.assertIn("%*", cmd_wrapper)
+        self.assertNotIn("Ubuntu-24.04", cmd_wrapper)
+        self.assertIn("if ([string]::IsNullOrWhiteSpace($Distro))", ps_wrapper)
+        self.assertIn("sh ./scripts/build-wsl.sh", ps_wrapper)
+        self.assertNotIn("build-linux.sh", ps_wrapper)
+
+    def test_wsl_build_wrapper_detects_stale_extracted_curl_packagefiles(self) -> None:
+        # GIVEN the WSL wrapper must recover from previously extracted curl sources.
+        self.assertTrue(WSL_BUILD_SHELL_WRAPPER.is_file(), "build-wsl.sh is missing")
+        script = WSL_BUILD_SHELL_WRAPPER.read_text(encoding="utf-8")
+
+        # WHEN the committed curl packagefile changes after Meson already
+        # extracted subprojects/curl-<version>.
+        # THEN the wrapper compares the extracted meson.build with the committed
+        # packagefile and inspects the real configure log path under build/.
+        self.assertIn('packagefile_curl_meson="$repo_root/subprojects/packagefiles/curl/meson.build"', script)
+        self.assertIn('source_meson="${source_curl_dir}meson.build"', script)
+        self.assertIn('build_config_log="${build_curl_dir}build/config.log"', script)
+        self.assertIn('cmp -s "$packagefile_curl_meson" "$source_meson"', script)
+        self.assertIn('run rm -rf "$source_curl_dir"', script)
+        self.assertIn('run rm -rf "$build_curl_dir"', script)
+        self.assertIn('if [ "$dry_run" -eq 0 ] && [ -d "$repo_root/subprojects" ]; then', script)
+        self.assertNotIn('[ "$clean" -eq 0 ] && [ -d "$repo_root/subprojects" ]', script)
+
+    def test_wsl_build_wrapper_stages_executable_make_shim_off_drvfs(self) -> None:
+        # GIVEN Meson external_project executes the configured make program directly.
+        self.assertTrue(WSL_BUILD_SHELL_WRAPPER.is_file(), "build-wsl.sh is missing")
+        script = WSL_BUILD_SHELL_WRAPPER.read_text(encoding="utf-8")
+
+        # WHEN the repo lives on /mnt/c and shell scripts do not carry Unix
+        # execute bits reliably.
+        # THEN the WSL wrapper stages a local executable make shim on the Linux
+        # filesystem and prepends that directory before meson setup.
+        self.assertIn('runtime_tool_shim_dir=${MEROVINGIAN_WSL_TOOL_SHIM_DIR:-"$HOME/.cache/merovingian-wsl-tool-shims"}', script)
+        self.assertIn('repo_make_shim="$tool_shim_dir/make"', script)
+        self.assertIn('runtime_make_shim="$runtime_tool_shim_dir/make"', script)
+        self.assertIn('run mkdir -p "$runtime_tool_shim_dir"', script)
+        self.assertIn("tr -d '\\015'", script)
+        self.assertNotIn('run cp "$repo_make_shim" "$runtime_make_shim"', script)
+        self.assertIn('run chmod 0755 "$runtime_make_shim"', script)
+        self.assertIn('PATH="$runtime_tool_shim_dir:$tool_shim_dir:$PATH"', script)
 
     def test_static_linux_wrapper_builds_a_musl_static_pie_tarball(self) -> None:
         # GIVEN the static Linux fallback build wrapper.

@@ -135,7 +135,22 @@ deployment milestone.
   build-local external-project dist directory. The curl packagefile exposes
   curl's installed include root so `<curl/curl.h>` resolves on BSD. The curl
   fallback disables optional zlib and zstd support so its static archive does
-  not need undeclared compression libraries at link time. Catch2 fallback builds
+  not need undeclared compression libraries at link time. The curl packagefile
+  also passes `--disable-dependency-tracking` so automake's `depcomp` bootstrap
+  does not fail on NTFS-backed filesystems (WSL builds under `/mnt/c/`). A
+  dedicated `scripts/build-wsl.sh` wrapper defaults to `build-wsl`, detects
+  stale curl subproject directories (including extracted source trees whose
+  copied `meson.build` no longer matches
+  `subprojects/packagefiles/curl/meson.build`, and build trees configured
+  without `--disable-dependency-tracking`), wipes them automatically, and
+  still re-extracts stale curl sources after `--clean` removes the build
+  directory for a full rebuild. The wrapper also stages an executable
+  Linux-filesystem `make` shim before Meson setup so `external_project`
+  invocations do not fail on DrvFS execute-bit handling or CRLF shebangs. The
+  Windows `wsl-build.cmd`,
+  `build-wsl.cmd`, and `scripts/build-wsl.ps1` launchers now delegate to that
+  same wrapper so WSL builds keep the NTFS guardrails even when started from
+  Windows. Catch2 fallback builds
   disable Catch2's own upstream SelfTest target; SQLite fallback builds are
   static so sanitizer jobs link sanitizer runtimes through Merovingian's test
   executables. Meson tests run with a default fallback-runtime setup that

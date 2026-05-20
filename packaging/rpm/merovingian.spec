@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.12
+Version:        0.2.13
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.2.13-1
+- Fix the Windows-to-WSL build launch chain to use scripts/build-wsl.sh
+- Re-extract stale curl packagefiles and normalize the staged WSL make shim
+
 * Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.12-1
 - Add POST /user/{userId}/filter and GET /user/{userId}/filter/{filterId} so Cinny can store and retrieve sync filters
 

@@ -1,14 +1,11 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 [CmdletBinding()]
 param(
-    [string]$Distro = "Ubuntu-24.04",
+    [string]$Distro = "",
     [string]$BuildDir = "build-wsl",
     [string]$CC = "clang",
     [string]$CXX = "clang++",
     [string]$WrapMode = "forcefallback",
-    [ValidateSet("", "debug", "release", "sanitizer", "coverage", "fuzz", "hardened")]
-    [string]$Profile = "",
-    [switch]$BuildFuzz,
     [switch]$NoTests,
     [switch]$SetupOnly,
     [switch]$CompileOnly,
@@ -29,15 +26,26 @@ function ConvertTo-WslPath([string]$WindowsPath) {
         return "/mnt/$Drive/$Tail"
     }
 
-    $WslPath = (& wsl.exe -d $Distro -- wslpath -a -- "$ResolvedPath")
+    if ([string]::IsNullOrWhiteSpace($Distro)) {
+        $WslPath = (& wsl.exe -- wslpath -a -- "$ResolvedPath")
+    }
+    else {
+        $WslPath = (& wsl.exe -d $Distro -- wslpath -a -- "$ResolvedPath")
+    }
     if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($WslPath)) {
-        throw "Unable to resolve repository path inside WSL distro '$Distro': $ResolvedPath"
+        $TargetDistro = if ([string]::IsNullOrWhiteSpace($Distro)) { "<default>" } else { $Distro }
+        throw "Unable to resolve repository path inside WSL distro '$TargetDistro': $ResolvedPath"
     }
     return $WslPath.Trim()
 }
 
 $ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $RepoRoot = Split-Path -Parent $ScriptRoot
+$BuildScript = Join-Path $ScriptRoot "build-wsl.sh"
+
+if (-not (Test-Path -LiteralPath $BuildScript)) {
+    throw "Missing WSL build wrapper: $BuildScript"
+}
 
 $LinuxRepoRoot = ConvertTo-WslPath $RepoRoot
 
@@ -48,12 +56,6 @@ $ArgsList = @(
     "--wrap-mode", $WrapMode
 )
 
-if ($Profile -ne "") {
-    $ArgsList += @("--profile", $Profile)
-}
-if ($BuildFuzz) {
-    $ArgsList += "--build-fuzz"
-}
 if ($NoTests) {
     $ArgsList += "--no-tests"
 }
@@ -68,7 +70,12 @@ if ($DryRun) {
 }
 
 $QuotedArgs = ($ArgsList | ForEach-Object { Quote-Bash $_ }) -join " "
-$Command = "cd $(Quote-Bash $LinuxRepoRoot) && sh scripts/build-linux.sh $QuotedArgs"
+$Command = "cd $(Quote-Bash $LinuxRepoRoot) && sh ./scripts/build-wsl.sh $QuotedArgs"
 
-wsl.exe -d $Distro -- bash -lc $Command
+if ([string]::IsNullOrWhiteSpace($Distro)) {
+    wsl.exe -- bash -lc $Command
+}
+else {
+    wsl.exe -d $Distro -- bash -lc $Command
+}
 exit $LASTEXITCODE
