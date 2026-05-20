@@ -45,6 +45,8 @@ implementation, runtime hardening, and auditable dependency boundaries.
 install -D -m 0644 packaging/systemd/merovingian.service \
     %{buildroot}%{_unitdir}/merovingian.service
 install -d -m 0755 %{buildroot}%{_sysconfdir}/merovingian
+install -m 0644 config/merovingian.conf.example \
+    %{buildroot}%{_sysconfdir}/merovingian/merovingian.conf.example
 
 %pre
 # Create merovingian group if it does not exist
@@ -77,6 +79,7 @@ install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 %{_bindir}/merovingian-db-migrate
 %{_unitdir}/merovingian.service
 %dir %{_sysconfdir}/merovingian
+%{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
 * Wed May 20 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.2-1

@@ -3,8 +3,10 @@
 
 #include "merovingian/config/config.hpp"
 
+#include <atomic>
 #include <filesystem>
 #include <fstream>
+#include <random>
 #include <string>
 #include <string_view>
 
@@ -13,9 +15,18 @@ namespace merovingian::tests
 
 inline constexpr auto registration_token = std::string_view{"test-registration-token"};
 
+// Each call writes a unique file so that parallel meson test jobs do not
+// truncate each other's token file between the ofstream open (which zeroes
+// the file) and the write completion.  The static salt gives each process a
+// different prefix; the atomic counter makes calls within the same process
+// distinct too.
 inline auto registration_token_file() -> std::string
 {
-    auto const path = std::filesystem::temp_directory_path() / "merovingian-test-registration-token.txt";
+    static auto const s_salt = std::random_device{}();
+    static std::atomic<unsigned> s_counter{0U};
+    auto const filename = "merovingian-reg-" + std::to_string(s_salt) + "-" +
+                          std::to_string(s_counter.fetch_add(1U)) + ".txt";
+    auto const path = std::filesystem::temp_directory_path() / filename;
     auto output = std::ofstream{path};
     output << registration_token << '\n';
     return path.string();

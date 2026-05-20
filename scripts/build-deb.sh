@@ -32,8 +32,10 @@ meson install -C build-deb --destdir "$(pwd)/${STAGING}/"
 install -D -m 0644 packaging/systemd/merovingian.service \
     "${STAGING}/lib/systemd/system/merovingian.service"
 
-# 5. Create config directory placeholder
+# 5. Create config directory and install sample config
 install -d -m 0755 "${STAGING}/etc/merovingian"
+install -m 0644 config/merovingian.conf.example \
+    "${STAGING}/etc/merovingian/merovingian.conf.example"
 
 # 6. Install license
 install -D -m 0644 LICENSE \

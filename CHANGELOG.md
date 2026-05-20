@@ -7,6 +7,9 @@
   distro security updates patch these libraries without rebuilding Merovingian.
 - App-level dependencies (SQLite, curl, yyjson) remain statically linked via source-pinned Meson wraps.
 - Added `CODE_OF_CONDUCT.md` adapted from Contributor Covenant v2.1.
+- Fixed intermittent 403 in rate-limit cross-user isolation test: `registration_token_file()` now
+  creates a process-unique filename (random salt + atomic counter) so parallel `meson test` jobs
+  no longer truncate each other's token file during concurrent `std::ofstream` construction.
 
 ## 0.2.1
 

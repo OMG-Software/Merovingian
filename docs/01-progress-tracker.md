@@ -103,10 +103,17 @@ deployment milestone.
   metadata, RPM spec metadata, and BSD package metadata exist for early
   deployment-shape testing.
 - Distribution packaging: installable `.deb` (Debian/Ubuntu), `.rpm` (Fedora),
-  and `.pkg` (FreeBSD) packages are produced by CI on every push. Binaries are
-  fully statically linked against application dependencies (libsodium, OpenSSL,
-  libpq, libcurl, sqlite3); the `.deb` binary is built on Alpine (musl) and
-  carries zero shared-library runtime requirements.
+  and `.pkg` (FreeBSD) packages are produced by CI on every push. All three
+  packages include a sample config file. Security libraries (OpenSSL, libsodium,
+  libpq) link dynamically from OS packages so distro security updates (`apt
+  upgrade`, `dnf upgrade`) patch them without rebuilding Merovingian; the `.deb`
+  declares `libssl3`, `libsodium23`, and `libpq5` as runtime `Depends`.
+  Application dependencies (libcurl, SQLite, yyjson) remain statically linked via
+  source-pinned Meson wraps.
+- Test isolation: `registration_token_file()` now generates a process-unique
+  filename (random salt + atomic counter) so parallel `meson test` jobs do not
+  truncate each other's token file mid-write, eliminating intermittent 403
+  failures in the rate-limit cross-user isolation test.
 - Supply-chain automation: release publication, secret scanning, dependency
   vulnerability triage, and SBOM workflows exist and are checked by the
   release-readiness gate.
