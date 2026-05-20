@@ -223,6 +223,9 @@ Listen 8448
     ProxyPreserveHost On
     RequestHeader set X-Forwarded-Proto "https"
 
+    # Exclude /.well-known/ from proxying so the Alias below is reached.
+    # Without this, Apache forwards /.well-known/ requests to Merovingian.
+    ProxyPass        "/.well-known/" "!"
     ProxyPass        "/_matrix/" "http://127.0.0.1:8008/_matrix/"
     ProxyPassReverse "/_matrix/" "http://127.0.0.1:8008/_matrix/"
 
@@ -236,14 +239,15 @@ Listen 8448
         Require all granted
     </Directory>
 
+    # This Location must come AFTER <Location "/"> so it takes precedence.
+    <Location "/">
+        Require all denied
+    </Location>
+
     <Location "/.well-known/matrix/client">
         Require all granted
         ForceType application/json
         Header always set Access-Control-Allow-Origin "*"
-    </Location>
-
-    <Location "/">
-        Require all denied
     </Location>
 </VirtualHost>
 
