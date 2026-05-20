@@ -229,19 +229,20 @@ Listen 8448
     ProxyPass        "/_matrix/" "http://127.0.0.1:8008/_matrix/"
     ProxyPassReverse "/_matrix/" "http://127.0.0.1:8008/_matrix/"
 
-    <Location "/_matrix/">
-        Require all granted
-    </Location>
-
     Alias "/.well-known/matrix/client" "/var/www/merovingian/.well-known/matrix/client"
 
     <Directory "/var/www/merovingian/.well-known/matrix">
         Require all granted
     </Directory>
 
-    # This Location must come AFTER <Location "/"> so it takes precedence.
+    # Deny everything by default. Specific allows below must come AFTER this
+    # block — Apache Location merging uses document order; later = wins.
     <Location "/">
         Require all denied
+    </Location>
+
+    <Location "/_matrix/">
+        Require all granted
     </Location>
 
     <Location "/.well-known/matrix/client">
