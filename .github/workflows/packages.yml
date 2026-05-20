@@ -29,6 +29,45 @@ jobs:
           path: merovingian_*.deb
           retention-days: 30
 
+  static-linux-fallback:
+    name: Static Linux fallback binary
+    runs-on: ubuntu-latest
+    container: alpine:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          apk add --no-cache \
+            bison \
+            binutils \
+            clang \
+            flex \
+            g++ \
+            git \
+            libsodium-dev \
+            libsodium-static \
+            linux-headers \
+            make \
+            meson \
+            m4 \
+            musl-dev \
+            ninja \
+            openssl-dev \
+            openssl-libs-static \
+            perl \
+            libpq-dev \
+            pkgconf \
+            zlib-static
+      - name: Build static Linux fallback tarball
+        run: sh scripts/build-static-linux.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static-linux-fallback-package
+          path: |
+            merovingian-*-linux-static-x86_64.tar.gz
+            merovingian-*-linux-static-x86_64.tar.gz.sha256
+          retention-days: 30
+
   rpm:
     name: Fedora RPM package
     runs-on: ubuntu-latest
@@ -77,7 +116,7 @@ jobs:
   publish-latest:
     name: Publish rolling latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [deb, rpm, freebsd-pkg]
+    needs: [deb, static-linux-fallback, rpm, freebsd-pkg]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -85,6 +124,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: deb-package
+          path: packages/
+      - uses: actions/download-artifact@v4
+        with:
+          name: static-linux-fallback-package
           path: packages/
       - uses: actions/download-artifact@v4
         with:

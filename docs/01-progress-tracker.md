@@ -109,8 +109,10 @@ deployment milestone.
   upgrade`, `dnf upgrade`) patch them without rebuilding Merovingian; the `.deb`
   declares `libssl3`, `libsodium23`, and `libpq5` as runtime `Depends`.
   Application dependencies (libcurl, SQLite, yyjson) remain statically linked via
-  source-pinned Meson wraps. Pushes to `main` also replace the rolling GitHub
-  `latest` prerelease through repo-scoped `gh release` commands so the artifact
+  source-pinned Meson wraps. CI also builds an Alpine/musl static Linux fallback
+  tarball with `-static-pie` for older distributions that cannot easily consume
+  the distro packages. Pushes to `main` replace the rolling GitHub `latest`
+  prerelease through repo-scoped `gh release` commands so the artifact
   publication job does not retain stale release state.
 - Test isolation: `registration_token_file()` now generates a process-unique
   filename (random salt + atomic counter) so parallel `meson test` jobs do not
@@ -367,7 +369,7 @@ With the Alpha gates closed, Beta priorities take over from here:
 | Runtime hardening | `integrated` | Systemd/OpenRC/rc.d packaging, hardening plan, startup self-check with `HardeningStatus::alpha_exception` + documented notes, `merovingian-server` refusing to bind when any control reports `disabled`, alpha-only exceptions enumerated in `docs/hardening-alpha-exceptions.md`, and release-readiness gating on the new doc | Implement the in-process probes that retire each documented alpha exception: ELF program-header probe for linker/RELRO status, Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Linux and FreeBSD CI, setup-command planning for OpenBSD and NetBSD | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `integrated` | Canonical JSON and HTTP fuzz targets build with `-fsanitize=fuzzer,address,undefined`, the `fuzz` GitHub Actions workflow runs each target for a bounded duration on every push (and longer on a Sunday schedule), and crash inputs/corpora are uploaded as artifacts | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
-| Supply chain and release | `integrated` | Release-readiness script, installable `.deb`/`.rpm`/`.pkg` packages built by CI (statically linked, zero runtime deps for the `.deb`), tag-driven alpha prerelease workflow, SHA-256 checksums, alpha hardening exceptions documentation, plus dedicated secret-scan, dependency-vulnerability-triage, and SBOM workflows | Add dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
+| Supply chain and release | `integrated` | Release-readiness script, installable `.deb`/`.rpm`/`.pkg` packages built by CI, Alpine/musl static Linux fallback tarball, tag-driven alpha prerelease workflow, SHA-256 checksums, alpha hardening exceptions documentation, plus dedicated secret-scan, dependency-vulnerability-triage, and SBOM workflows | Add dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
 
 ## Matrix v1.18 protocol coverage
 

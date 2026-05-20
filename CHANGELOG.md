@@ -2,11 +2,17 @@
 
 ## 0.2.3
 
+- Added an Alpine/musl static Linux fallback tarball to `.github/workflows/packages.yml`
+  for older Linux distributions that cannot easily consume the `.deb` or `.rpm`.
+- Added `scripts/build-static-linux.sh`, which builds `merovingian-server` and
+  `merovingian-db-migrate` as `-static-pie` binaries and rejects artifacts that
+  still contain a dynamic interpreter.
 - Fixed `.github/workflows/packages.yml` so the rolling `latest` GitHub release
   is looked up and deleted with explicit `--repo "${{ github.repository }}"`
   scoping before it is recreated from `main`.
 - Added tooling coverage for `.github/workflows/packages.yml` so CI rejects
   repo-implicit `gh release` usage in the artifact-only rolling release job.
+- Aligned Debian, RPM, and FreeBSD package metadata with version `0.2.3`.
 - Aligned `merovingian-server`, `merovingian-db-migrate`, and the Meson project
   version to `0.2.3`.
 - Updated the release-process and progress-tracker docs for the rolling

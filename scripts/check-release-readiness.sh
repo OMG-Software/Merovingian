@@ -40,6 +40,7 @@ require_file docs/dependencies/postgresql-libpq.md
 require_file docs/dependencies/sqlite.md
 require_file docs/dependencies/yyjson.md
 require_file scripts/build-linux.sh
+require_file scripts/build-static-linux.sh
 require_file scripts/build-bsd.sh
 require_file scripts/build-wsl.ps1
 require_file scripts/wsl-setup.sh
