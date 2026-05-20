@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.5
+Version:        0.2.6
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -65,6 +65,13 @@ fi
 %systemd_post merovingian.service
 install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
 install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
+# Generate a registration token on first install. Never overwrite an existing token.
+TOKEN_FILE=%{_sysconfdir}/merovingian/registration-token
+if [ ! -f "${TOKEN_FILE}" ]; then
+    openssl rand -base64 48 > "${TOKEN_FILE}"
+    chmod 0640 "${TOKEN_FILE}"
+    chown root:merovingian "${TOKEN_FILE}"
+fi
 
 %preun
 %systemd_preun merovingian.service
@@ -82,6 +89,10 @@ install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.6-1
+- Generate /etc/merovingian/registration-token on first install
+- Default config search path baked in via MEROVINGIAN_SYSCONFDIR at build time
+
 * Wed May 20 2026 James Chapman <james@merovingian-homeserver.example> - 0.2.5-1
 - Move the default internal federation listener away from public port 8448
 

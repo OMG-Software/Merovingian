@@ -1,5 +1,5 @@
 name: merovingian
-version: "0.2.5"
+version: "0.2.6"
 origin: net/merovingian
 comment: Secure Matrix Protocol homeserver
 desc: "Merovingian is an alpha Matrix Protocol homeserver."
@@ -9,3 +9,16 @@ prefix: /usr/local
 licenselogic: single
 licenses: [GPL3]
 flatsize: 0
+scripts: {
+  post-install: <<EOD
+#!/bin/sh
+# Generate a registration token on first install. Never overwrite an existing token.
+TOKEN_FILE=/usr/local/etc/merovingian/registration-token
+if [ ! -f "${TOKEN_FILE}" ]; then
+    mkdir -p /usr/local/etc/merovingian
+    openssl rand -base64 48 > "${TOKEN_FILE}"
+    chmod 0640 "${TOKEN_FILE}"
+    chown root:merovingian "${TOKEN_FILE}"
+fi
+EOD
+}
