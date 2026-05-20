@@ -1,26 +1,26 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build a Debian binary package (.deb) for merovingian 0.2.1.
+# Build a Debian binary package (.deb) for merovingian 0.2.2.
 set -e
 
-VERSION="0.2.1"
+VERSION="0.2.2"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 
 # 1. Configure with meson.
-#    --prefer-static: use .a archives over .so for all dependencies.
-#    -static-pie: fully static binary with ASLR preserved (musl libc on Alpine
-#    supports static PIE natively; -static-pie = -static -pie combined).
+#    --wrap-mode=forcefallback: app-level deps (SQLite, curl, yyjson) are
+#    built from source-pinned wraps; OS-supplied security libs (OpenSSL,
+#    libsodium, libpq) are resolved from the system with allow_fallback=false.
+#    -pie: position-independent executable so the kernel applies ASLR.
 CC=clang CXX=clang++ meson setup build-deb \
     --prefix=/usr \
     --sysconfdir=/etc \
     --wrap-mode=forcefallback \
-    --prefer-static \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
-    -Dcpp_link_args='-static-pie' \
-    -Dc_link_args='-static-pie'
+    -Dcpp_link_args='-pie' \
+    -Dc_link_args='-pie'
 
 # 2. Compile
 meson compile -C build-deb
@@ -49,6 +49,7 @@ Version: ${VERSION}
 Architecture: ${ARCH}
 Maintainer: James Chapman <james@merovingian-homeserver.example>
 Installed-Size: ${INSTALLED_SIZE}
+Depends: libssl3, libsodium23, libpq5
 Recommends: ca-certificates
 Section: net
 Priority: optional
@@ -67,4 +68,4 @@ chmod 0755 "${STAGING}/DEBIAN/postinst" "${STAGING}/DEBIAN/prerm"
 dpkg-deb --root-owner-group --build "${STAGING}/" \
     "${PKG_NAME}_${VERSION}_${ARCH}.deb"
 
-echo "Built (static): ${PKG_NAME}_${VERSION}_${ARCH}.deb"
+echo "Built: ${PKG_NAME}_${VERSION}_${ARCH}.deb"
