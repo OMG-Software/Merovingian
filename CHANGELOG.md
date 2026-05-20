@@ -2,7 +2,11 @@
 
 ## 0.2.7
 
-- Bumped version to 0.2.7.
+- Fixed malformed SQL in `insert_device_statement` and `persist_token_hash_statement`
+  (`src/auth/client_server_api.cpp`): column lists and value tuples were missing
+  parentheses, causing every login and registration request to fail at the database
+  layer. Added a BDD unit test that asserts all INSERT statements in the login and
+  register boundary plans use valid `INSERT INTO table (cols) VALUES ($1, …)` syntax.
 
 ## 0.2.6
 

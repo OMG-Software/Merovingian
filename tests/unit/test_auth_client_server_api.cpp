@@ -144,6 +144,64 @@ SCENARIO("Client-server auth boundary plan covers device logout and global logou
     }
 }
 
+SCENARIO("Client-server auth INSERT statements use valid SQL syntax with parenthesised column lists",
+         "[auth][client-api][database][sql]")
+{
+    GIVEN("login and register routes with a token hash")
+    {
+        auto const token_hash = merovingian::auth::TokenHash{"external-kdf", "abcdefghijklmnopqrstuvwxyz0123456789"};
+        auto const login = merovingian::auth::match_client_auth_route("POST", "/_matrix/client/v3/login");
+        auto const registration =
+            merovingian::auth::match_client_auth_route("POST", "/_matrix/client/v3/register");
+
+        WHEN("database statements are planned for login and register")
+        {
+            auto const login_plan = merovingian::auth::make_client_auth_boundary_plan(
+                login.route, "@alice:example.org", "DEVICE123", token_hash, true, "");
+            auto const register_plan = merovingian::auth::make_client_auth_boundary_plan(
+                registration.route, "@alice:example.org", "DEVICE123", token_hash, true, "");
+
+            THEN("all INSERT statements have parenthesised column lists and value tuples")
+            {
+                // Valid form: INSERT INTO table (col1, col2) VALUES ($1, $2)
+                // Both a '(' before VALUES and a '(' after VALUES are required.
+                auto const insert_syntax_is_valid = [](merovingian::database::PreparedStatement const& stmt) -> bool
+                {
+                    if (!stmt.sql.starts_with("INSERT "))
+                    {
+                        return true; // not an INSERT — skip
+                    }
+                    auto const values_pos = stmt.sql.find(" VALUES ");
+                    if (values_pos == std::string::npos)
+                    {
+                        return false;
+                    }
+                    // Column list must be parenthesised: '(' must appear before VALUES
+                    auto const col_lparen = stmt.sql.find('(');
+                    if (col_lparen == std::string::npos || col_lparen >= values_pos)
+                    {
+                        return false;
+                    }
+                    // Value tuple must be parenthesised: '(' must appear after VALUES
+                    auto const val_lparen = stmt.sql.find('(', values_pos + 8U);
+                    return val_lparen != std::string::npos;
+                };
+
+                for (auto const& stmt : login_plan.database_statements)
+                {
+                    INFO("login statement: " << stmt.name << " sql: " << stmt.sql);
+                    REQUIRE(insert_syntax_is_valid(stmt));
+                }
+                for (auto const& stmt : register_plan.database_statements)
+                {
+                    INFO("register statement: " << stmt.name << " sql: " << stmt.sql);
+                    REQUIRE(insert_syntax_is_valid(stmt));
+                }
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server auth boundary plan emits audit events for route decisions", "[auth][client-api][audit]")
 {
     GIVEN("a denied device route decision")
