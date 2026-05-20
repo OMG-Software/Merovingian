@@ -16,7 +16,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates \
-            clang meson ninja-build pkg-config git make \
+            clang meson ninja-build pkg-config git make binutils \
             libssl-dev \
             libsodium-dev \
             libpq-dev \
