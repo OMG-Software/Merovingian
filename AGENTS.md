@@ -32,7 +32,7 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Tests should test behaviour and state rather than specific outcomes.
 - Create a new test(s) for the desired outcome prior to making the code change.
 - After code change, run the new test(s).
-- Increment the version number on each new PR.
+- Bump the version number on creating a new branch.
 - Record changes for each version in CHANGELOG.md
 - Ignore `.clwb` folder.
 - Always work in feature or bug branches, never main.
