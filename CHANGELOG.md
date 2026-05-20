@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.2.6
+
+- `merovingian-server` now searches `$sysconfdir/merovingian/merovingian.conf`
+  automatically when started with no `--config` flag. The sysconfdir is baked in
+  at build time via Meson's `get_option('sysconfdir')` so packages install to
+  `/etc` and FreeBSD packages install to `/usr/local/etc` without any runtime
+  detection.
+- `.deb`, `.rpm`, and FreeBSD `.pkg` post-install scripts now generate
+  `/etc/merovingian/registration-token` (or `/usr/local/etc/…` on FreeBSD) using
+  `openssl rand -base64 48` if the file does not already exist. The file is owned
+  `root:merovingian` mode `0640` so the server process can read it but it is not
+  world-readable. Existing tokens are never overwritten on upgrade.
+
 ## 0.2.5
 
 - Changed the default and example internal federation listener from

@@ -270,8 +270,12 @@ class DependencyWrapTests(unittest.TestCase):
             self.assertIn(token, deb_control)
         for token in ("Requires:       libsodium", "Requires:       libpq"):
             self.assertNotIn(token, rpm_spec)
+        # Only inspect the dependency-declaration section, not post-install
+        # scripts: the scripts block may invoke openssl/curl as shell tools
+        # without those being package-level runtime dependencies.
+        freebsd_manifest_deps = freebsd_manifest.split("scripts:")[0]
         for token in ("openssl", "libsodium", "postgresql17-client", "curl"):
-            self.assertNotIn(token, freebsd_manifest)
+            self.assertNotIn(token, freebsd_manifest_deps)
 
         # THEN NetBSD and OpenBSD scaffolds declare their OS-supplied runtime deps.
         for token in ("openssl", "libsodium", "postgresql17-client", "curl"):

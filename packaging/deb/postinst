@@ -11,6 +11,16 @@ case "$1" in
         fi
         install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
         install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
+
+        # Generate a registration token on first install so the server can
+        # start without manual setup. Never overwrite an existing token.
+        TOKEN_FILE=/etc/merovingian/registration-token
+        if [ ! -f "${TOKEN_FILE}" ]; then
+            install -d -m 0755 /etc/merovingian
+            openssl rand -base64 48 > "${TOKEN_FILE}"
+            chmod 0640 "${TOKEN_FILE}"
+            chown root:merovingian "${TOKEN_FILE}"
+        fi
         ;;
 esac
 if [ -d /run/systemd/system ] && [ "$1" = "configure" ]; then

@@ -20,6 +20,7 @@
 
 #include <cerrno>
 #include <cstdint>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <mutex>
@@ -35,7 +36,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.2.5"};
+constexpr auto version = std::string_view{"0.2.6"};
 
 struct BootstrapConfigResult final
 {
@@ -336,6 +337,14 @@ struct ParsedArgs final
 {
     if (positional.empty())
     {
+        // Try the system config file installed by the package manager before
+        // falling back to compiled-in defaults (which fail validation and are
+        // only useful for --dry-run inspection during development).
+        auto constexpr system_config = std::string_view{MEROVINGIAN_SYSCONFDIR "/merovingian/merovingian.conf"};
+        if (std::filesystem::exists(system_config))
+        {
+            return load_config_from_file(std::string{system_config});
+        }
         auto const config = merovingian::config::Config{};
         return classify_config_findings({config, merovingian::config::validate(config)}, "defaults");
     }
