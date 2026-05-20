@@ -268,12 +268,12 @@ Listen 8448
     ProxyPass        "/_matrix/" "http://127.0.0.1:8009/_matrix/"
     ProxyPassReverse "/_matrix/" "http://127.0.0.1:8009/_matrix/"
 
-    <Location "/_matrix/">
-        Require all granted
-    </Location>
-
     <Location "/">
         Require all denied
+    </Location>
+
+    <Location "/_matrix/">
+        Require all granted
     </Location>
 </VirtualHost>
 ```
