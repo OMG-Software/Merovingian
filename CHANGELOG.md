@@ -5,6 +5,8 @@
 - Changed the default and example internal federation listener from
   `127.0.0.1:8448` to `127.0.0.1:8009` so Apache or another reverse proxy can
   own the public Matrix federation port `8448`.
+- Added Apache httpd and nginx reverse-proxy examples for the recommended
+  loopback listener deployment.
 - Added BDD coverage proving runtime listener planning preserves a configured
   custom federation bind address.
 - Bumped project, executable, and package metadata versions to `0.2.5`.

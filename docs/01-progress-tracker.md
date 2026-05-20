@@ -53,8 +53,8 @@ deployment milestone.
 - Runtime listener: `merovingian::homeserver::serve_http` and
   `serve_tls_http` bind configured listeners, accept HTTP/1.1 requests, dispatch
   client traffic through the Matrix JSON adapter, keep the internal federation
-  default on loopback port `8009` for reverse-proxy deployments, and handle
-  shutdown.
+  default on loopback port `8009` for reverse-proxy deployments, document
+  Apache httpd/nginx proxy examples, and handle shutdown.
 - HTTP transport: request-head parsing, request limits, per-endpoint rate-limit
   policies, response serialization, dispatch-mode separation, OpenSSL RAII
   boundary, libcurl-backed outbound HTTPS client, pinned-address DNS through

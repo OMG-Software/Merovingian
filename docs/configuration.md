@@ -154,6 +154,178 @@ certificate chain and private key before binding the listener, verifies that the
 private key matches the certificate, and fails closed if OpenSSL rejects either
 file.
 
+## Reverse proxy examples
+
+The recommended deployment shape is TLS at the reverse proxy and loopback
+cleartext from the proxy to Merovingian:
+
+```text
+listeners.client.bind=127.0.0.1:8008
+listeners.client.tls=false
+listeners.federation.bind=127.0.0.1:8009
+listeners.federation.tls=false
+```
+
+Serve `/.well-known/matrix/client` from the proxy. Merovingian does not need to
+own that static discovery response:
+
+```json
+{
+  "m.homeserver": {
+    "base_url": "https://pong.ping.me.uk"
+  }
+}
+```
+
+### Apache httpd
+
+This example assumes `mod_ssl`, `mod_headers`, `mod_proxy`,
+`mod_proxy_http`, and `mod_rewrite` are enabled. Apache owns public ports `443`
+and `8448`; Merovingian listens only on loopback ports `8008` and `8009`.
+
+```apache
+Listen 8448
+
+<VirtualHost *:80>
+    ServerName pong.ping.me.uk
+    RewriteEngine On
+    RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
+</VirtualHost>
+
+<VirtualHost *:443>
+    ServerName pong.ping.me.uk
+
+    SSLEngine on
+    SSLCertificateFile    /etc/letsencrypt/live/pong.ping.me.uk/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/pong.ping.me.uk/privkey.pem
+    SSLProtocol           -all +TLSv1.2 +TLSv1.3
+
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    Header always set X-Content-Type-Options "nosniff"
+    Header always set X-Frame-Options "DENY"
+    Header always set Access-Control-Allow-Origin "*"
+    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
+    Header always set Access-Control-Allow-Headers "X-Requested-With, Content-Type, Authorization, Date"
+
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "https"
+
+    ProxyPass        "/_matrix/" "http://127.0.0.1:8008/_matrix/"
+    ProxyPassReverse "/_matrix/" "http://127.0.0.1:8008/_matrix/"
+
+    <Location "/_matrix/">
+        Require all granted
+    </Location>
+
+    Alias "/.well-known/matrix/client" "/var/www/merovingian/.well-known/matrix/client"
+
+    <Directory "/var/www/merovingian/.well-known/matrix">
+        Require all granted
+    </Directory>
+
+    <Location "/.well-known/matrix/client">
+        Require all granted
+        ForceType application/json
+        Header always set Access-Control-Allow-Origin "*"
+    </Location>
+
+    <Location "/">
+        Require all denied
+    </Location>
+</VirtualHost>
+
+<VirtualHost *:8448>
+    ServerName pong.ping.me.uk
+
+    SSLEngine on
+    SSLCertificateFile    /etc/letsencrypt/live/pong.ping.me.uk/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/pong.ping.me.uk/privkey.pem
+    SSLProtocol           -all +TLSv1.2 +TLSv1.3
+
+    Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+
+    ProxyPreserveHost On
+    RequestHeader set X-Forwarded-Proto "https"
+
+    ProxyPass        "/_matrix/" "http://127.0.0.1:8009/_matrix/"
+    ProxyPassReverse "/_matrix/" "http://127.0.0.1:8009/_matrix/"
+
+    <Location "/_matrix/">
+        Require all granted
+    </Location>
+
+    <Location "/">
+        Require all denied
+    </Location>
+</VirtualHost>
+```
+
+### nginx
+
+This example terminates TLS in nginx, serves the client discovery JSON directly,
+and proxies Matrix traffic to Merovingian's loopback listeners.
+
+```nginx
+server {
+    listen 80;
+    server_name pong.ping.me.uk;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name pong.ping.me.uk;
+
+    ssl_certificate     /etc/letsencrypt/live/pong.ping.me.uk/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pong.ping.me.uk/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Access-Control-Allow-Origin "*" always;
+    add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+    add_header Access-Control-Allow-Headers "X-Requested-With, Content-Type, Authorization, Date" always;
+
+    location = /.well-known/matrix/client {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin "*" always;
+        return 200 '{"m.homeserver":{"base_url":"https://pong.ping.me.uk"}}';
+    }
+
+    location /_matrix/ {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location / {
+        return 403;
+    }
+}
+
+server {
+    listen 8448 ssl http2;
+    server_name pong.ping.me.uk;
+
+    ssl_certificate     /etc/letsencrypt/live/pong.ping.me.uk/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pong.ping.me.uk/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    location /_matrix/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location / {
+        return 403;
+    }
+}
+```
+
 ## Registration Token Policy
 
 Public registration is disabled by default. If it is enabled, startup requires
