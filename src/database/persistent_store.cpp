@@ -119,6 +119,13 @@ namespace
         });
     }
 
+    [[nodiscard]] auto refresh_token_exists(PersistentStore const& store, std::string_view token_hash) -> bool
+    {
+        return std::ranges::any_of(store.refresh_tokens, [token_hash](PersistentRefreshToken const& existing) {
+            return existing.token_hash == token_hash;
+        });
+    }
+
     [[nodiscard]] auto federation_transaction_is_valid(PersistentFederationTransaction const& transaction) noexcept
         -> bool
     {
@@ -216,6 +223,13 @@ namespace
         if (!token_is_hash(token.token_hash))
         {
             return {false, "access token is not stored as a hash"};
+        }
+    }
+    for (auto const& token : store.refresh_tokens)
+    {
+        if (!token_is_hash(token.token_hash))
+        {
+            return {false, "refresh token is not stored as a hash"};
         }
     }
     for (auto const& media : store.local_media)
@@ -320,6 +334,27 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool
+{
+    if (!token_is_hash(token.token_hash) || refresh_token_exists(store, token.token_hash))
+    {
+        return false;
+    }
+    if (!record_and_persist(store, record_statement("insert_refresh_token",
+                                                    "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4)",
+                                                    {
+                                                        {token.token_hash,                 true },
+                                                        {token.user_id,                    false},
+                                                        {token.device_id,                  false},
+                                                        {token.revoked ? "true" : "false", false}
+    })))
+    {
+        return false;
+    }
+    store.refresh_tokens.push_back(std::move(token));
+    return true;
+}
+
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
                                                  PersistentAccessToken token) -> bool
 {
@@ -382,6 +417,172 @@ namespace
         }
     }
     return revoked;
+}
+
+[[nodiscard]] auto revoke_refresh_token(PersistentStore& store, std::string_view token_hash) -> std::size_t
+{
+    if (!record_and_persist(store, record_statement("revoke_refresh_token",
+                                                    "UPDATE refresh_tokens SET revoked = $1 WHERE token_hash = $2",
+                                                    {
+                                                        {"true",                  false},
+                                                        {std::string{token_hash}, true }
+    })))
+    {
+        return 0U;
+    }
+    auto revoked = std::size_t{0U};
+    for (auto& token : store.refresh_tokens)
+    {
+        if (token.token_hash == token_hash && !token.revoked)
+        {
+            token.revoked = true;
+            ++revoked;
+        }
+    }
+    return revoked;
+}
+
+[[nodiscard]] auto revoke_access_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t
+{
+    if (!record_and_persist(store, record_statement("revoke_user_access_tokens",
+                                                    "UPDATE access_tokens SET revoked = $1 WHERE user_id = $2",
+                                                    {
+                                                        {"true",               false},
+                                                        {std::string{user_id}, false}
+    })))
+    {
+        return 0U;
+    }
+    auto revoked = std::size_t{0U};
+    for (auto& token : store.access_tokens)
+    {
+        if (token.user_id == user_id && !token.revoked)
+        {
+            token.revoked = true;
+            ++revoked;
+        }
+    }
+    return revoked;
+}
+
+[[nodiscard]] auto revoke_access_tokens_for_device(PersistentStore& store, std::string_view user_id,
+                                                   std::string_view device_id) -> std::size_t
+{
+    if (!record_and_persist(
+            store,
+            record_statement("revoke_device_access_tokens",
+                             "UPDATE access_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                             "device_id = $3",
+                             {
+                                 {"true",                 false},
+                                 {std::string{user_id},   false},
+                                 {std::string{device_id}, false}
+    })))
+    {
+        return 0U;
+    }
+    auto revoked = std::size_t{0U};
+    for (auto& token : store.access_tokens)
+    {
+        if (token.user_id == user_id && token.device_id == device_id && !token.revoked)
+        {
+            token.revoked = true;
+            ++revoked;
+        }
+    }
+    return revoked;
+}
+
+[[nodiscard]] auto revoke_refresh_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t
+{
+    if (!record_and_persist(store, record_statement("revoke_user_refresh_tokens",
+                                                    "UPDATE refresh_tokens SET revoked = $1 WHERE user_id = $2",
+                                                    {
+                                                        {"true",               false},
+                                                        {std::string{user_id}, false}
+    })))
+    {
+        return 0U;
+    }
+    auto revoked = std::size_t{0U};
+    for (auto& token : store.refresh_tokens)
+    {
+        if (token.user_id == user_id && !token.revoked)
+        {
+            token.revoked = true;
+            ++revoked;
+        }
+    }
+    return revoked;
+}
+
+[[nodiscard]] auto revoke_refresh_tokens_for_device(PersistentStore& store, std::string_view user_id,
+                                                    std::string_view device_id) -> std::size_t
+{
+    if (!record_and_persist(
+            store,
+            record_statement("revoke_device_refresh_tokens",
+                             "UPDATE refresh_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                             "device_id = $3",
+                             {
+                                 {"true",                 false},
+                                 {std::string{user_id},   false},
+                                 {std::string{device_id}, false}
+    })))
+    {
+        return 0U;
+    }
+    auto revoked = std::size_t{0U};
+    for (auto& token : store.refresh_tokens)
+    {
+        if (token.user_id == user_id && token.device_id == device_id && !token.revoked)
+        {
+            token.revoked = true;
+            ++revoked;
+        }
+    }
+    return revoked;
+}
+
+[[nodiscard]] auto update_device_display_name(PersistentStore& store, std::string_view user_id,
+                                              std::string_view device_id, std::string_view display_name) -> bool
+{
+    auto const existing = std::ranges::find_if(store.devices, [user_id, device_id](PersistentDevice const& device) {
+        return device.user_id == user_id && device.device_id == device_id;
+    });
+    if (existing == store.devices.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store, record_statement("update_device_display_name",
+                                    "UPDATE devices SET display_name = $1 WHERE user_id = $2 AND "
+                                    "device_id = $3",
+                                    {public_value(display_name), public_value(user_id), public_value(device_id)})))
+    {
+        return false;
+    }
+    existing->display_name = std::string{display_name};
+    return true;
+}
+
+[[nodiscard]] auto delete_device(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> bool
+{
+    auto const existing = std::ranges::find_if(store.devices, [user_id, device_id](PersistentDevice const& device) {
+        return device.user_id == user_id && device.device_id == device_id;
+    });
+    if (existing == store.devices.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store, record_statement("delete_device",
+                                                    "DELETE FROM devices WHERE user_id = $1 AND device_id = $2",
+                                                    {public_value(user_id), public_value(device_id)})))
+    {
+        return false;
+    }
+    store.devices.erase(existing);
+    return true;
 }
 
 [[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool
@@ -786,12 +987,14 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id)
-    -> std::optional<PersistentOneTimeKey>
+[[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id,
+                                      std::string_view algorithm) -> std::optional<PersistentOneTimeKey>
 {
-    auto const existing =
-        std::ranges::find_if(store.one_time_keys, [user_id, device_id](PersistentOneTimeKey const& key) {
-            return key.user_id == user_id && key.device_id == device_id;
+    auto const prefix = std::string{algorithm} + ':';
+    auto const existing = std::ranges::find_if(
+        store.one_time_keys, [user_id, device_id, algorithm, &prefix](PersistentOneTimeKey const& key) {
+            return key.user_id == user_id && key.device_id == device_id &&
+                   (algorithm.empty() || key.key_id.starts_with(prefix));
         });
     if (existing == store.one_time_keys.end())
     {
@@ -1114,11 +1317,10 @@ namespace
     {
         return false;
     }
-    auto const existing =
-        std::ranges::find_if(store.account_data, [&data](PersistentAccountData const& current) {
-            return current.user_id == data.user_id && current.room_id == data.room_id &&
-                   current.event_type == data.event_type;
-        });
+    auto const existing = std::ranges::find_if(store.account_data, [&data](PersistentAccountData const& current) {
+        return current.user_id == data.user_id && current.room_id == data.room_id &&
+               current.event_type == data.event_type;
+    });
     if (existing != store.account_data.end())
     {
         *existing = std::move(data);
@@ -1138,13 +1340,13 @@ namespace
     store.next_sync_stream_id += 1U;
     message.stream_id = store.next_sync_stream_id;
     if (!record_and_persist(
-            store, record_statement("insert_to_device_message",
-                                    "INSERT INTO to_device_messages (stream_id, sender_user_id, target_user_id, "
-                                    "target_device_id, message_type, content) VALUES ($1, $2, $3, $4, $5, $6)",
-                                    {public_value(std::to_string(message.stream_id)),
-                                     public_value(message.sender_user_id), public_value(message.target_user_id),
-                                     public_value(message.target_device_id), public_value(message.message_type),
-                                     sensitive_value(message.content_json)})))
+            store,
+            record_statement("insert_to_device_message",
+                             "INSERT INTO to_device_messages (stream_id, sender_user_id, target_user_id, "
+                             "target_device_id, message_type, content) VALUES ($1, $2, $3, $4, $5, $6)",
+                             {public_value(std::to_string(message.stream_id)), public_value(message.sender_user_id),
+                              public_value(message.target_user_id), public_value(message.target_device_id),
+                              public_value(message.message_type), sensitive_value(message.content_json)})))
     {
         return false;
     }
@@ -1180,23 +1382,20 @@ namespace
     // can't race a row in between drain and delete.
     for (auto const& message : drained)
     {
-        auto const targeted_device =
-            !message.target_device_id.empty() && message.target_device_id != "*";
+        auto const targeted_device = !message.target_device_id.empty() && message.target_device_id != "*";
         if (!targeted_device)
         {
             continue;
         }
         std::ignore = record_and_persist(
-            store, record_statement(
-                       "delete_to_device_message",
-                       "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
-                       "target_device_id = $3",
-                       {public_value(std::to_string(message.stream_id)), public_value(message.target_user_id),
-                        public_value(message.target_device_id)}));
-        auto const [first, last] = std::ranges::remove_if(
-            store.to_device_messages, [&message](PersistentToDeviceMessage const& candidate) {
-                return candidate.stream_id == message.stream_id &&
-                       candidate.target_user_id == message.target_user_id &&
+            store, record_statement("delete_to_device_message",
+                                    "DELETE FROM to_device_messages WHERE stream_id = $1 AND target_user_id = $2 AND "
+                                    "target_device_id = $3",
+                                    {public_value(std::to_string(message.stream_id)),
+                                     public_value(message.target_user_id), public_value(message.target_device_id)}));
+        auto const [first, last] =
+            std::ranges::remove_if(store.to_device_messages, [&message](PersistentToDeviceMessage const& candidate) {
+                return candidate.stream_id == message.stream_id && candidate.target_user_id == message.target_user_id &&
                        candidate.target_device_id == message.target_device_id;
             });
         store.to_device_messages.erase(first, last);
@@ -1251,8 +1450,9 @@ namespace
     {
         return false;
     }
-    auto const existing = std::ranges::find_if(
-        store.presence_states, [&state](PersistentPresence const& current) { return current.user_id == state.user_id; });
+    auto const existing = std::ranges::find_if(store.presence_states, [&state](PersistentPresence const& current) {
+        return current.user_id == state.user_id;
+    });
     if (existing != store.presence_states.end())
     {
         *existing = std::move(state);
@@ -1296,11 +1496,11 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     {
         return false;
     }
-    auto const statement = record_statement(
-        "upsert_filter",
-        "INSERT INTO filters (user_id, filter_id, json) VALUES ($1, $2, $3) "
-        "ON CONFLICT (user_id, filter_id) DO UPDATE SET json = $3",
-        {public_value(filter.user_id), public_value(filter.filter_id), sensitive_value(filter.json)});
+    auto const statement =
+        record_statement("upsert_filter",
+                         "INSERT INTO filters (user_id, filter_id, json) VALUES ($1, $2, $3) "
+                         "ON CONFLICT (user_id, filter_id) DO UPDATE SET json = $3",
+                         {public_value(filter.user_id), public_value(filter.filter_id), sensitive_value(filter.json)});
     if (!record_and_persist(store, statement))
     {
         return false;
@@ -1318,8 +1518,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
-[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id,
-                               std::string_view filter_id) -> std::optional<PersistentFilter>
+[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id, std::string_view filter_id)
+    -> std::optional<PersistentFilter>
 {
     auto const it = std::ranges::find_if(store.filters, [user_id, filter_id](PersistentFilter const& f) {
         return f.user_id == user_id && f.filter_id == filter_id;

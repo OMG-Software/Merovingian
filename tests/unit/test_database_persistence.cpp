@@ -89,10 +89,9 @@ SCENARIO("Database statement validation allows SET and RESET role switching SQL"
 {
     GIVEN("SET ROLE and RESET ROLE statements with no placeholders")
     {
-        auto const set_role = merovingian::database::PreparedStatement{
-            "set_postgresql_role", R"(SET ROLE "merovingian_runtime")", {}};
-        auto const reset_role =
-            merovingian::database::PreparedStatement{"reset_postgresql_role", "RESET ROLE", {}};
+        auto const set_role =
+            merovingian::database::PreparedStatement{"set_postgresql_role", R"(SET ROLE "merovingian_runtime")", {}};
+        auto const reset_role = merovingian::database::PreparedStatement{"reset_postgresql_role", "RESET ROLE", {}};
 
         WHEN("each statement is validated")
         {
@@ -356,6 +355,8 @@ SCENARIO("Persistent store records MVP homeserver data with hashed tokens only",
                 merovingian::database::store_access_token(store, {"@alice:example.org", "DEVICE1", "plaintext", false});
             auto const token_ok = merovingian::database::store_access_token(
                 store, {"@alice:example.org", "DEVICE1", "token-hash:v2:123", false});
+            auto const refresh_ok = merovingian::database::store_refresh_token(
+                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:refresh123", false});
             auto const room_ok = merovingian::database::store_room(store, {"!room1:example.org", "@alice:example.org"});
             auto const membership_ok =
                 merovingian::database::store_membership(store, {"!room1:example.org", "@alice:example.org"});
@@ -374,6 +375,7 @@ SCENARIO("Persistent store records MVP homeserver data with hashed tokens only",
             auto const admin_ok = merovingian::database::append_admin_action(
                 store, {"@alice:example.org", "quarantine", "!room1:example.org"});
             auto const revoked = merovingian::database::revoke_access_token(store, "token-hash:v2:123");
+            auto const refresh_revoked = merovingian::database::revoke_refresh_token(store, "token-hash:v2:refresh123");
             auto const valid = merovingian::database::validate_persistent_store(store);
 
             THEN("state rows are only accepted for matching state events")
@@ -382,6 +384,7 @@ SCENARIO("Persistent store records MVP homeserver data with hashed tokens only",
                 REQUIRE(device_ok);
                 REQUIRE_FALSE(bad_token_ok);
                 REQUIRE(token_ok);
+                REQUIRE(refresh_ok);
                 REQUIRE(room_ok);
                 REQUIRE(membership_ok);
                 REQUIRE(message_event_ok);
@@ -391,10 +394,12 @@ SCENARIO("Persistent store records MVP homeserver data with hashed tokens only",
                 REQUIRE(audit_ok);
                 REQUIRE(admin_ok);
                 REQUIRE(revoked == 1U);
+                REQUIRE(refresh_revoked == 1U);
                 REQUIRE(valid.valid);
                 REQUIRE(store.users.size() == 1U);
                 REQUIRE(store.devices.size() == 1U);
                 REQUIRE(store.access_tokens.front().revoked);
+                REQUIRE(store.refresh_tokens.front().revoked);
                 REQUIRE(store.events.size() == 2U);
                 REQUIRE(store.state.size() == 1U);
                 REQUIRE(store.audit_log.size() == 1U);

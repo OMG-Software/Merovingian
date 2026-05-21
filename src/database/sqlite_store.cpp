@@ -299,6 +299,11 @@ namespace
                              store.access_tokens.push_back({column_text(row, 0), column_text(row, 1),
                                                             column_text(row, 2), text_is_true(column_text(row, 3))});
                          }) &&
+               load_rows(connection, "SELECT user_id, device_id, token_hash, revoked FROM refresh_tokens",
+                         [&store](sqlite3_stmt& row) {
+                             store.refresh_tokens.push_back({column_text(row, 0), column_text(row, 1),
+                                                             column_text(row, 2), text_is_true(column_text(row, 3))});
+                         }) &&
                load_rows(connection, "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys",
                          [&store](sqlite3_stmt& row) {
                              store.server_signing_keys.push_back({column_text(row, 0), column_text(row, 1),
@@ -422,8 +427,7 @@ namespace
                              store.admin_actions.push_back(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          }) &&
-               load_rows(connection,
-                         "SELECT user_id, event_type, json, stream_id FROM account_data ORDER BY stream_id",
+               load_rows(connection, "SELECT user_id, event_type, json, stream_id FROM account_data ORDER BY stream_id",
                          [&store](sqlite3_stmt& row) {
                              auto entry = PersistentAccountData{};
                              entry.user_id = column_text(row, 0);
@@ -481,12 +485,9 @@ namespace
                              entry.currently_active = text_is_true(column_text(row, 5));
                              store.presence_states.push_back(std::move(entry));
                          }) &&
-               load_rows(connection,
-                         "SELECT user_id, filter_id, json FROM filters",
-                         [&store](sqlite3_stmt& row) {
-                             store.filters.push_back(
-                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
-                         });
+               load_rows(connection, "SELECT user_id, filter_id, json FROM filters", [&store](sqlite3_stmt& row) {
+                   store.filters.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+               });
     }
 
     [[nodiscard]] auto bind_statement_parameters(sqlite3_stmt& statement, PreparedStatement const& prepared) -> bool

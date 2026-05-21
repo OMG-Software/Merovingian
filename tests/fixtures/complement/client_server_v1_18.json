@@ -1,0 +1,529 @@
+{
+  "name": "v1.18 client-server beta endpoint coverage",
+  "description": "Complement-style fixture that exercises authentication, devices, rooms, sync, media, reports, and E2EE key APIs through the Matrix client-server adapter, including rejected unauthenticated, malformed, stale-token, cross-user, and missing-resource cases.",
+  "steps": [
+    {
+      "method": "GET",
+      "path": "/_matrix/client/versions",
+      "expect_status": 200,
+      "expect_keys_present": ["versions", "unstable_features"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/login",
+      "expect_status": 200,
+      "expect_keys_present": ["flows"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/account/whoami",
+      "expect_status": 401,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/register",
+      "body": {
+        "username": "blocked",
+        "password": "CorrectHorse7!"
+      },
+      "expect_status": 403,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/register",
+      "body": {
+        "username": "alice",
+        "password": "CorrectHorse7!",
+        "auth": {
+          "type": "m.login.registration_token",
+          "token": "test-registration-token"
+        }
+      },
+      "expect_status": 200,
+      "expect_keys_present": ["user_id"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "body": {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+        "password": "wrong-password",
+        "device_id": "BADDEVICE"
+      },
+      "expect_status": 403,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "body": {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+        "password": "CorrectHorse7!",
+        "device_id": "DEVICE1",
+        "refresh_token": true
+      },
+      "expect_status": 200,
+      "expect_keys_present": ["access_token", "refresh_token", "user_id", "device_id", "expires_in_ms"],
+      "save_string": {
+        "alice_token": "access_token",
+        "alice_refresh": "refresh_token"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/refresh",
+      "body": {"refresh_token": "{{alice_refresh}}"},
+      "expect_status": 200,
+      "expect_keys_present": ["access_token", "refresh_token", "expires_in_ms"],
+      "save_string": {"refreshed_token": "access_token"}
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/account/whoami",
+      "auth_from": "alice_token",
+      "expect_status": 401,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/refresh",
+      "body": {"refresh_token": "{{alice_refresh}}"},
+      "expect_status": 401,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/refresh",
+      "body": {},
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "body": {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+        "password": "CorrectHorse7!",
+        "device_id": "DEVICE-NO-REFRESH"
+      },
+      "expect_status": 200,
+      "expect_keys_present": ["access_token", "user_id", "device_id"],
+      "expect_keys_absent": ["refresh_token", "expires_in_ms"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/account/whoami",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["user_id"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/capabilities",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["capabilities", "capabilities.m.change_password", "capabilities.m.room_versions"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/pushrules/",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["global", "global.override", "global.underride"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/profile/%40alice%3Aexample.org",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["displayname", "avatar_url"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/voip/turnServer",
+      "auth_from": "refreshed_token",
+      "expect_status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/devices",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["devices"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/devices/DEVICE1",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["device_id", "display_name"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/devices/MISSING",
+      "auth_from": "refreshed_token",
+      "expect_status": 404,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/devices/DEVICE1",
+      "auth_from": "refreshed_token",
+      "body": {"unexpected": "value"},
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/devices/DEVICE1",
+      "auth_from": "refreshed_token",
+      "body": {"display_name": "Alice beta laptop"},
+      "expect_status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "body": {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+        "password": "CorrectHorse7!",
+        "device_id": "DEVICE2",
+        "refresh_token": true
+      },
+      "expect_status": 200,
+      "expect_keys_present": ["access_token", "refresh_token", "device_id"]
+    },
+    {
+      "method": "DELETE",
+      "path": "/_matrix/client/v3/devices/DEVICE2",
+      "auth_from": "refreshed_token",
+      "body": {},
+      "expect_status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/devices/DEVICE2",
+      "auth_from": "refreshed_token",
+      "expect_status": 404
+    },
+    {
+      "method": "DELETE",
+      "path": "/_matrix/client/v3/devices/DEVICE2",
+      "auth_from": "refreshed_token",
+      "body": {},
+      "expect_status": 404,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/createRoom",
+      "body": {},
+      "expect_status": 401,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/createRoom",
+      "auth_from": "refreshed_token",
+      "body": {},
+      "expect_status": 200,
+      "expect_keys_present": ["room_id"],
+      "save_string": {"room_id": "room_id"}
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/send/m.room.message/txn-fixture-1",
+      "auth_from": "refreshed_token",
+      "body": {"msgtype": "m.text", "body": "fixture message"},
+      "expect_status": 200,
+      "expect_keys_present": ["event_id"],
+      "save_string": {"event_id": "event_id"}
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/send/m.room.message/txn-fixture-bad",
+      "auth_from": "refreshed_token",
+      "raw_body": "not-json",
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/state/m.room.topic/",
+      "auth_from": "refreshed_token",
+      "body": {"topic": "fixture topic"},
+      "expect_status": 200,
+      "expect_keys_present": ["event_id"]
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/state/m.room.topic/",
+      "auth_from": "refreshed_token",
+      "raw_body": "[]",
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/state",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["state"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/joined_rooms",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["joined_rooms"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/sync",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["next_batch", "rooms", "rooms.join", "to_device", "device_lists"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/user/%40alice%3Aexample.org/filter",
+      "auth_from": "refreshed_token",
+      "body": {"room": {"timeline": {"limit": 5}}},
+      "expect_status": 200,
+      "expect_keys_present": ["filter_id"],
+      "save_string": {"filter_id": "filter_id"}
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/user/%40bob%3Aexample.org/filter",
+      "auth_from": "refreshed_token",
+      "body": {"room": {"timeline": {"limit": 5}}},
+      "expect_status": 403,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/user/%40alice%3Aexample.org/filter/{{filter_id}}",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["room"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/user/%40alice%3Aexample.org/filter/does-not-exist",
+      "auth_from": "refreshed_token",
+      "expect_status": 404,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct",
+      "auth_from": "refreshed_token",
+      "raw_body": "",
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct",
+      "auth_from": "refreshed_token",
+      "body": {"@bob:example.org": ["{{room_id}}"]},
+      "expect_status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["@bob:example.org"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.missing",
+      "auth_from": "refreshed_token",
+      "expect_status": 404,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/user/%40bob%3Aexample.org/account_data/m.direct",
+      "auth_from": "refreshed_token",
+      "body": {"@bob:example.org": ["{{room_id}}"]},
+      "expect_status": 403,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/media/v3/config",
+      "expect_status": 401,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/media/v3/config",
+      "auth_from": "refreshed_token",
+      "expect_status": 200,
+      "expect_keys_present": ["m.upload.size"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/media/v3/upload",
+      "raw_body": "text/plain|text/plain|clean|fixture-bytes",
+      "expect_status": 401,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/media/v3/upload",
+      "auth_from": "refreshed_token",
+      "raw_body": "malformed-upload",
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/media/v3/upload",
+      "auth_from": "refreshed_token",
+      "raw_body": "text/plain|text/plain|clean|fixture-bytes",
+      "expect_status": 200,
+      "expect_keys_present": ["content_uri"],
+      "save_mxc_media_id": {"media_id": "content_uri"}
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/media/v3/download/example.org/{{media_id}}",
+      "expect_status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/media/v3/download/example.org/missing-media",
+      "expect_status": 404,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/report/{{event_id}}",
+      "auth_from": "refreshed_token",
+      "raw_body": "[]",
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/report/{{event_id}}",
+      "auth_from": "refreshed_token",
+      "body": {"reason": "score too high", "score": 101},
+      "expect_status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/report/{{event_id}}",
+      "auth_from": "refreshed_token",
+      "body": {"reason": "fixture report"},
+      "expect_status": 200
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/keys/upload",
+      "auth_from": "refreshed_token",
+      "raw_body": "not-json",
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/keys/query",
+      "auth_from": "refreshed_token",
+      "body": {"device_keys": {"@alice:example.org": "DEVICE1"}},
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/keys/claim",
+      "auth_from": "refreshed_token",
+      "body": {"one_time_keys": {"@alice:example.org": {"DEVICE1": 42}}},
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/keys/upload",
+      "auth_from": "refreshed_token",
+      "body": {
+        "device_keys": {
+          "algorithms": ["m.olm.v1.curve25519-aes-sha2"],
+          "device_id": "DEVICE1",
+          "keys": {"curve25519:DEVICE1": "curve-key"},
+          "signatures": {},
+          "user_id": "@alice:example.org"
+        },
+        "one_time_keys": {"signed_curve25519:AAAA": "one-time-key"},
+        "fallback_keys": {"signed_curve25519:BBBB": "fallback-key"}
+      },
+      "expect_status": 200,
+      "expect_keys_present": ["one_time_key_counts"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/keys/query",
+      "auth_from": "refreshed_token",
+      "body": {"device_keys": {"@alice:example.org": ["DEVICE1"]}},
+      "expect_status": 200,
+      "expect_keys_present": ["device_keys"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/keys/claim",
+      "auth_from": "refreshed_token",
+      "body": {"one_time_keys": {"@alice:example.org": {"DEVICE1": "signed_curve25519"}}},
+      "expect_status": 200,
+      "expect_keys_present": ["one_time_keys"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "body": {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+        "password": "CorrectHorse7!",
+        "device_id": "DEVICE3",
+        "refresh_token": true
+      },
+      "expect_status": 200,
+      "expect_keys_present": ["access_token", "refresh_token", "device_id"],
+      "save_string": {"logout_token": "access_token"}
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/logout",
+      "auth_from": "logout_token",
+      "body": {},
+      "expect_status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/account/whoami",
+      "auth_from": "logout_token",
+      "expect_status": 401
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/logout/all",
+      "auth_from": "refreshed_token",
+      "body": {},
+      "expect_status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/account/whoami",
+      "auth_from": "refreshed_token",
+      "expect_status": 401
+    }
+  ]
+}

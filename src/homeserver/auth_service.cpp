@@ -328,6 +328,95 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
 
+auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
+    -> OperationResult
+{
+    if (find_user(runtime.database, user_id) == nullptr || !auth::device_id_is_valid(device_id))
+    {
+        return make_operation_result(false, {}, "invalid refresh subject", 400U);
+    }
+    auto const refresh_token = issue_token();
+    if (!refresh_token.has_value())
+    {
+        return make_operation_result(false, {}, "refresh token generation failed", 500U);
+    }
+    auto const refresh_hash = hash_token(*refresh_token);
+    if (!refresh_hash.has_value())
+    {
+        return make_operation_result(false, {}, "refresh token hashing failed", 500U);
+    }
+    if (!database::store_refresh_token(runtime.database.persistent_store,
+                                       {std::string{user_id}, std::string{device_id}, *refresh_hash, false}))
+    {
+        return make_operation_result(false, {}, "refresh token persistence failed", 500U);
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh.issue", std::string{user_id},
+                       std::string{device_id}, "issued");
+    return make_operation_result(true, *refresh_token);
+}
+
+auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token) -> SessionRefreshResult
+{
+    auto const refresh_hash = hash_token(refresh_token);
+    if (!refresh_hash.has_value())
+    {
+        return {false, 401U, {}, {}, {}, {}, "unauthenticated"};
+    }
+
+    auto const refresh = std::ranges::find_if(
+        runtime.database.persistent_store.refresh_tokens, [&refresh_hash](database::PersistentRefreshToken const& row) {
+            return token_hash_matches(row.token_hash, *refresh_hash) && !row.revoked;
+        });
+    if (refresh == runtime.database.persistent_store.refresh_tokens.end())
+    {
+        return {false, 401U, {}, {}, {}, {}, "refresh token rejected"};
+    }
+
+    auto const user_id = refresh->user_id;
+    auto const device_id = refresh->device_id;
+    if (find_user(runtime.database, user_id) == nullptr || !auth::device_id_is_valid(device_id))
+    {
+        return {false, 401U, {}, {}, {}, {}, "refresh subject rejected"};
+    }
+    if (database::revoke_refresh_token(runtime.database.persistent_store, *refresh_hash) == 0U)
+    {
+        return {false, 500U, {}, {}, {}, {}, "refresh token revocation failed"};
+    }
+    std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    for (auto& session : runtime.database.sessions)
+    {
+        if (session.user_id == user_id && session.device_id == device_id)
+        {
+            session.revoked = true;
+        }
+    }
+
+    auto const access_token = issue_token();
+    auto const new_refresh_token = issue_token();
+    if (!access_token.has_value() || !new_refresh_token.has_value())
+    {
+        return {false, 500U, {}, {}, {}, {}, "token generation failed"};
+    }
+    auto const access_hash = hash_token(*access_token);
+    auto const new_refresh_hash = hash_token(*new_refresh_token);
+    if (!access_hash.has_value() || !new_refresh_hash.has_value())
+    {
+        return {false, 500U, {}, {}, {}, {}, "token hashing failed"};
+    }
+    if (!database::store_access_token(runtime.database.persistent_store, {user_id, device_id, *access_hash, false}) ||
+        !database::store_refresh_token(runtime.database.persistent_store,
+                                       {user_id, device_id, *new_refresh_hash, false}))
+    {
+        return {false, 500U, {}, {}, {}, {}, "refreshed token persistence failed"};
+    }
+
+    ++runtime.database.next_session_id;
+    runtime.database.sessions.push_back({user_id, device_id, *access_hash, false});
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh", user_id, device_id,
+                       "rotated");
+    return {true, 200U, *access_token, *new_refresh_token, user_id, device_id, {}};
+}
+
 auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token) -> std::optional<std::string>
 {
     auto const token_hash = hash_token(access_token);
@@ -414,6 +503,58 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout", user_id, device_id,
                        "revoked");
     return make_operation_result(true, user_id);
+}
+
+auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
+{
+    auto const session = authenticated_session(runtime, access_token);
+    if (!session.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    auto const access_revoked =
+        database::revoke_access_tokens_for_user(runtime.database.persistent_store, session->user_id);
+    auto const refresh_revoked =
+        database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, session->user_id);
+    if (access_revoked == 0U && refresh_revoked == 0U)
+    {
+        return make_operation_result(false, {}, "session revocation persistence failed", 500U);
+    }
+    for (auto& candidate : runtime.database.sessions)
+    {
+        if (candidate.user_id == session->user_id)
+        {
+            candidate.revoked = true;
+        }
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.logout_all", session->user_id,
+                       session->device_id, "revoked");
+    return make_operation_result(true, session->user_id);
+}
+
+auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
+    -> OperationResult
+{
+    if (!auth::user_id_is_valid(user_id) || !auth::device_id_is_valid(device_id))
+    {
+        return make_operation_result(false, {}, "invalid device", 400U);
+    }
+    if (!database::delete_device(runtime.database.persistent_store, user_id, device_id))
+    {
+        return make_operation_result(false, {}, "device not found", 404U);
+    }
+    std::ignore = database::revoke_access_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    std::ignore = database::revoke_refresh_tokens_for_device(runtime.database.persistent_store, user_id, device_id);
+    for (auto& session : runtime.database.sessions)
+    {
+        if (session.user_id == user_id && session.device_id == device_id)
+        {
+            session.revoked = true;
+        }
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "device.deleted", user_id, device_id,
+                       "deleted");
+    return make_operation_result(true, std::string{device_id});
 }
 
 } // namespace merovingian::homeserver

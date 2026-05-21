@@ -190,11 +190,14 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
             REQUIRE(restarted.started);
             auto& runtime = restarted.runtime;
             auto const query = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/keys/query", token, R"({"device_keys":{}})"});
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/query", token, R"({"device_keys":{"@keys:example.org":["KEYS1"]}})"});
             auto const first_claim = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/keys/claim", token, R"({"one_time_keys":{}})"});
+                runtime, {"POST", "/_matrix/client/v3/keys/claim", token,
+                          R"({"one_time_keys":{"@keys:example.org":{"KEYS1":"signed_curve25519"}}})"});
             auto const second_claim = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/keys/claim", token, R"({"one_time_keys":{}})"});
+                runtime, {"POST", "/_matrix/client/v3/keys/claim", token,
+                          R"({"one_time_keys":{"@keys:example.org":{"KEYS1":"signed_curve25519"}}})"});
 
             THEN("device keys survive restart and fallback keys are reused after one-time keys are consumed")
             {

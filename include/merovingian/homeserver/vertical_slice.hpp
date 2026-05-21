@@ -86,6 +86,17 @@ struct OperationResult final
     std::string reason{};
 };
 
+struct SessionRefreshResult final
+{
+    bool ok{false};
+    std::uint16_t status{500U};
+    std::string access_token{};
+    std::string refresh_token{};
+    std::string user_id{};
+    std::string device_id{};
+    std::string reason{};
+};
+
 struct LocalHttpRequest final
 {
     std::string method{};
@@ -122,6 +133,10 @@ struct LocalHttpResponse final
                                         std::string_view password) -> OperationResult;
 [[nodiscard]] auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                                     std::string_view device_id) -> OperationResult;
+[[nodiscard]] auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_view user_id,
+                                                   std::string_view device_id) -> OperationResult;
+[[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)
+    -> SessionRefreshResult;
 [[nodiscard]] auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>;
 // Returns the active session for a presented access token, including the
@@ -134,6 +149,9 @@ struct LocalHttpResponse final
 [[nodiscard]] auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>;
 [[nodiscard]] auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
+[[nodiscard]] auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
+[[nodiscard]] auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
+    -> OperationResult;
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult;

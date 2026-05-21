@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.2.16
+
+- Added a beta Matrix v1.18 Complement-style fixture covering authentication,
+  devices, rooms, sync, filter/account-data, capabilities, push rules, media
+  config/upload/download, reports, and E2EE key APIs through the client-server
+  adapter, including rejected unauthenticated, malformed, stale-token,
+  cross-user, and missing-resource endpoint cases.
+- Implemented refresh-token issuance/rotation, global logout, single-device
+  fetch/delete, global/device refresh-token revocation, durable device
+  display-name updates, spec-shaped room
+  `PUT /send/{eventType}/{txnId}` and `PUT /state/{eventType}/{stateKey}`
+  aliases, and client-server media upload/download adapter coverage.
+- Persisted refresh-token rows and added persistent-store helpers for revoking
+  all user/device access tokens and mutating device metadata.
+- `GET /_matrix/media/v3/config` now reports `m.upload.size` from
+  `security.media.max_upload_size` instead of a hard-coded 100 MiB value.
+- Spec-shaped room send/state aliases now reject malformed or non-object JSON
+  event content instead of silently wrapping it as `null`.
+- Login now only returns refresh-token fields when the Matrix login body sets
+  `refresh_token: true`, and event reports follow Matrix v1.18 by accepting an
+  optional `reason` and ignoring the removed legacy `score` field.
+- `/keys/query` and `/keys/claim` now honor their Matrix request-body maps
+  instead of returning or claiming only the caller's current device keys.
+
 ## 0.2.15
 
 - Generalised the MSC2965 OIDC discovery handling: the entire

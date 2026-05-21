@@ -25,10 +25,13 @@ production-gated.
 - `/keys/query` returns persisted device keys, and `/keys/claim` consumes
   one-time keys before reusing fallback keys.
 - Redacted key payload summaries in runtime records and audit events.
-- Client-server registration, password login, logout, whoami, device listing,
-  and device update routes use runtime token validation.
+- Client-server registration, password login, refresh-token rotation, logout,
+  global logout, whoami, device listing, single-device fetch, device update,
+  and device delete routes use runtime token validation.
 - Access-token hashes are durable and hydrate back into runtime sessions after
   restart.
+- Refresh-token hashes are persisted, rotated, and revoked on global logout or
+  device deletion without storing plaintext token material.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.
@@ -57,13 +60,10 @@ The boundary establishes these guarantees:
 
 These remain deferred:
 
-- Full Matrix `/login`, `/logout`, `/register`, or device-management endpoint
-  conformance.
-- Refresh-token rotation.
+- Full Matrix UI-auth fallback flows and account recovery endpoints.
 - Admin bootstrap flow.
 - Registration token storage.
 - Rate-limit integration.
-- Session invalidation.
 - Device-list stream tokens and cross-device key update semantics.
 - Complete backup retrieval/deletion semantics.
 
@@ -72,4 +72,5 @@ These remain deferred:
 1. Add a reviewed crypto dependency boundary for random token generation and password hashing.
 2. Add Matrix device-list update stream semantics and full key-count responses.
 3. Complete backup retrieval/deletion semantics.
-4. Add conformance fixtures for login, registration, devices, and E2EE key APIs.
+4. Extend conformance fixtures beyond the beta auth/device/key happy paths into
+   UI auth, interactive auth, and negative-device-list cases.
