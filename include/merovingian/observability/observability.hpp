@@ -135,8 +135,12 @@ struct ObservabilitySnapshot final
     -> AuditLogEvent;
 [[nodiscard]] auto audit_log_insert_statement(AuditLogEvent const& event) -> database::PreparedStatement;
 [[nodiscard]] auto audit_event_summary(AuditLogEvent const& event) -> std::string;
+[[nodiscard]] auto log_field_is_sensitive(std::string_view key) -> bool;
+[[nodiscard]] auto sanitized_http_target(std::string_view target) -> std::string;
 [[nodiscard]] auto redact_log_value(StructuredLogField const& field) -> std::string;
 [[nodiscard]] auto structured_log_summary(StructuredLogEvent const& event) -> std::string;
+[[nodiscard]] auto diagnostic_log_summary(std::string_view logger, std::string_view event,
+                                          std::vector<StructuredLogField> fields) -> std::string;
 [[nodiscard]] auto logging_boundary_notes() -> std::vector<std::string>;
 [[nodiscard]] auto metrics_are_safe(std::vector<MetricSample> const& metrics) noexcept -> bool;
 [[nodiscard]] auto health_snapshot_summary(HealthCheckSnapshot const& snapshot) -> std::string;

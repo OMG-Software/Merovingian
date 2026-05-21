@@ -29,7 +29,7 @@ executable(
   'merovingian-db-migrate',
   sources: files('db_migrate.cpp'),
   include_directories: inc,
-  dependencies: [libpq_dep, sqlite_dep],
-  link_with: [config_lib, database_lib],
+  dependencies: [thread_dep, libpq_dep, sqlite_dep],
+  link_with: [config_lib, database_lib, observability_lib],
   install: true,
 )

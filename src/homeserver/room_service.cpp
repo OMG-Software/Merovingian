@@ -11,6 +11,8 @@
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
@@ -23,6 +25,7 @@
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 #include <sodium.h>
 
@@ -30,6 +33,11 @@ namespace merovingian::homeserver
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("rooms", event, std::move(fields)));
+    }
 
     struct ComposedEvent final
     {
@@ -296,6 +304,12 @@ namespace
         auto fallback = canonicaljson::Object{};
         if (parsed.error != canonicaljson::ParseError::none || input == nullptr)
         {
+            log_diagnostic("event.compose.body_fallback",
+                           {
+                               {"room_id",    std::string{room_id},                     false},
+                               {"sender",     std::string{sender},                      false},
+                               {"body_bytes", std::to_string(client_event_json.size()), false}
+            });
             fallback.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.message"}}));
             fallback.push_back(
                 canonicaljson::make_member("content", canonicaljson::Value{std::string{client_event_json}}));
@@ -330,6 +344,12 @@ namespace
         auto const content_hash = events::make_content_hash(unsigned_event);
         if (!content_hash.error.empty())
         {
+            log_diagnostic("event.compose.rejected", {
+                                                         {"room_id",    std::string{room_id}, false},
+                                                         {"sender",     std::string{sender},  false},
+                                                         {"event_type", event_type,           false},
+                                                         {"reason",     content_hash.error,   false}
+            });
             return std::nullopt;
         }
         auto hashes = canonicaljson::Object{};
@@ -344,12 +364,24 @@ namespace
         auto const event_id = events::make_reference_hash_event_id(hash_event, *policy);
         if (!event_id.error.empty())
         {
+            log_diagnostic("event.compose.rejected", {
+                                                         {"room_id",    std::string{room_id}, false},
+                                                         {"sender",     std::string{sender},  false},
+                                                         {"event_type", event_type,           false},
+                                                         {"reason",     event_id.error,       false}
+            });
             return std::nullopt;
         }
 
         auto key = ensure_runtime_server_signing_key(runtime);
         if (!key.has_value())
         {
+            log_diagnostic("event.compose.rejected", {
+                                                         {"room_id",    std::string{room_id},             false},
+                                                         {"sender",     std::string{sender},              false},
+                                                         {"event_type", event_type,                       false},
+                                                         {"reason",     "server signing key unavailable", false}
+            });
             return std::nullopt;
         }
         auto key_store = RuntimeSigningKeyStore{runtime.config.server().server_name, *key};
@@ -364,6 +396,12 @@ namespace
                                                                 runtime.config.server().server_name);
         if (!signed_event.error.empty())
         {
+            log_diagnostic("event.compose.rejected", {
+                                                         {"room_id",    std::string{room_id}, false},
+                                                         {"sender",     std::string{sender},  false},
+                                                         {"event_type", event_type,           false},
+                                                         {"reason",     signed_event.error,   false}
+            });
             return std::nullopt;
         }
         auto signed_event_value = canonicaljson::parse_lossless(signed_event.event_json);
@@ -381,6 +419,14 @@ namespace
                         events::authorize_event_against_auth_events(signed_event_value.value, *auth_policy, auth_map);
                     if (!auth_decision.allowed)
                     {
+                        log_diagnostic("event.auth.rejected", {
+                                                                  {"room_id",    std::string{room_id},    false},
+                                                                  {"sender",     std::string{sender},     false},
+                                                                  {"event_type", event_type,              false},
+                                                                  {"rule_hook",  auth_decision.rule_hook, false},
+                                                                  {"rule_step",  auth_decision.step,      false},
+                                                                  {"reason",     auth_decision.reason,    false}
+                        });
                         return std::nullopt;
                     }
                 }
@@ -494,9 +540,16 @@ namespace
 
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
 {
+    log_diagnostic("room.create.started", {
+                                              {"has_access_token", access_token.empty() ? "false" : "true", false}
+    });
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
+        log_diagnostic("room.create.rejected", {
+                                                   {"status", "401",             false},
+                                                   {"reason", "unauthenticated", false}
+        });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
@@ -505,45 +558,102 @@ namespace
     auto const room_decision = trust_safety::evaluate_room_policy({room_id, false, false, {}});
     if (!room_decision.allowed)
     {
+        log_diagnostic(
+            "room.create.rejected",
+            {
+                {"actor",   *user_id,                  false},
+                {"room_id", room_id,                   false},
+                {"reason",  room_decision.reason.code, false}
+        });
         return make_operation_result(false, {}, room_decision.reason.code);
     }
 
     if (!database::store_room_with_membership(runtime.database.persistent_store, {room_id, *user_id},
                                               {room_id, *user_id}))
     {
+        log_diagnostic("room.create.rejected", {
+                                                   {"actor",   *user_id,                  false},
+                                                   {"room_id", room_id,                   false},
+                                                   {"status",  "500",                     false},
+                                                   {"reason",  "room persistence failed", false}
+        });
         return make_operation_result(false, {}, "room persistence failed", 500U);
     }
     runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}});
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.created", *user_id, room_id,
                        "created");
+    log_diagnostic("room.create.accepted", {
+                                               {"actor",   *user_id, false},
+                                               {"room_id", room_id,  false}
+    });
     return make_operation_result(true, room_id);
 }
 
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult
 {
+    log_diagnostic("room.join.started", {
+                                            {"room_id",          std::string{room_id},                    false},
+                                            {"has_access_token", access_token.empty() ? "false" : "true", false}
+    });
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
+        log_diagnostic("room.join.rejected", {
+                                                 {"room_id", std::string{room_id}, false},
+                                                 {"status",  "401",                false},
+                                                 {"reason",  "unauthenticated",    false}
+        });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
+        log_diagnostic("room.join.rejected", {
+                                                 {"actor",   *user_id,             false},
+                                                 {"room_id", std::string{room_id}, false},
+                                                 {"status",  "403",                false},
+                                                 {"reason",  "unknown room",       false}
+        });
         return make_operation_result(false, {}, "unknown room", 403U);
     }
     if (!room_has_member(*room, *user_id))
     {
         if (!database::store_membership(runtime.database.persistent_store, {std::string{room_id}, *user_id}))
         {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                        false},
+                                                     {"room_id", std::string{room_id},            false},
+                                                     {"status",  "500",                           false},
+                                                     {"reason",  "membership persistence failed", false}
+            });
             return make_operation_result(false, {}, "membership persistence failed", 500U);
         }
         room->members.push_back(*user_id);
+        log_diagnostic("room.join.membership_persisted",
+                       {
+                           {"actor",        *user_id,                             false},
+                           {"room_id",      std::string{room_id},                 false},
+                           {"member_count", std::to_string(room->members.size()), false}
+        });
+    }
+    else
+    {
+        log_diagnostic("room.join.already_member", {
+                                                       {"actor",        *user_id,                             false},
+                                                       {"room_id",      std::string{room_id},                 false},
+                                                       {"member_count", std::to_string(room->members.size()), false}
+        });
     }
 
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.joined", *user_id, room_id,
                        "joined");
+    log_diagnostic("room.join.accepted", {
+                                             {"actor",        *user_id,                             false},
+                                             {"room_id",      std::string{room_id},                 false},
+                                             {"member_count", std::to_string(room->members.size()), false}
+    });
     return make_operation_result(true, std::string{room_id});
 }
 
@@ -551,29 +661,62 @@ namespace
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view event_json) -> OperationResult
 {
+    log_diagnostic("room.event.started", {
+                                             {"room_id",          std::string{room_id},                    false},
+                                             {"body_bytes",       std::to_string(event_json.size()),       false},
+                                             {"has_access_token", access_token.empty() ? "false" : "true", false}
+    });
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
+        log_diagnostic("room.event.rejected", {
+                                                  {"room_id", std::string{room_id}, false},
+                                                  {"status",  "401",                false},
+                                                  {"reason",  "unauthenticated",    false}
+        });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
+        log_diagnostic("room.event.rejected", {
+                                                  {"actor",   *user_id,             false},
+                                                  {"room_id", std::string{room_id}, false},
+                                                  {"reason",  "unknown room",       false}
+        });
         return make_operation_result(false, {}, "unknown room");
     }
     if (!room_has_member(*room, *user_id))
     {
+        log_diagnostic(
+            "room.event.rejected",
+            {
+                {"actor",   *user_id,             false},
+                {"room_id", std::string{room_id}, false},
+                {"reason",  "not joined",         false}
+        });
         return make_operation_result(false, {}, "not joined");
     }
     if (event_json.empty())
     {
+        log_diagnostic("room.event.rejected", {
+                                                  {"actor",   *user_id,             false},
+                                                  {"room_id", std::string{room_id}, false},
+                                                  {"reason",  "empty event",        false}
+        });
         return make_operation_result(false, {}, "empty event");
     }
 
     auto const composed = compose_signed_event(runtime, room_id, *user_id, event_json);
     if (!composed.has_value())
     {
+        log_diagnostic("room.event.rejected", {
+                                                  {"actor",   *user_id,                                false},
+                                                  {"room_id", std::string{room_id},                    false},
+                                                  {"status",  "403",                                   false},
+                                                  {"reason",  "event authorization or signing failed", false}
+        });
         return make_operation_result(false, {}, "event authorization or signing failed", 403U);
     }
     auto const stream_ordering = runtime.database.next_stream_ordering++;
@@ -589,11 +732,28 @@ namespace
                                            composed->auth_event_ids, composed->signatures},
                                           std::move(state)))
     {
+        log_diagnostic("room.event.rejected", {
+                                                  {"actor",      *user_id,                   false},
+                                                  {"room_id",    std::string{room_id},       false},
+                                                  {"event_id",   composed->event_id,         false},
+                                                  {"event_type", composed->event_type,       false},
+                                                  {"status",     "500",                      false},
+                                                  {"reason",     "event persistence failed", false}
+        });
         return make_operation_result(false, {}, "event persistence failed", 500U);
     }
     room->events.push_back(composed->json);
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.event_sent", *user_id, room_id,
                        "stored");
+    log_diagnostic("room.event.accepted", {
+                                              {"actor",       *user_id,                                        false},
+                                              {"room_id",     std::string{room_id},                            false},
+                                              {"event_id",    composed->event_id,                              false},
+                                              {"event_type",  composed->event_type,                            false},
+                                              {"depth",       std::to_string(composed->depth),                 false},
+                                              {"prev_events", std::to_string(composed->prev_event_ids.size()), false},
+                                              {"auth_events", std::to_string(composed->auth_event_ids.size()), false}
+    });
     return make_operation_result(true, composed->event_id);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)

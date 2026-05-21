@@ -4,6 +4,8 @@
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/session.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
@@ -23,6 +25,11 @@ namespace merovingian::homeserver
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("auth", event, std::move(fields)));
+    }
 
     auto constexpr token_secret_bytes = std::size_t{32U};
     auto constexpr token_hash_bytes = std::size_t{crypto_generichash_BYTES};
@@ -267,18 +274,40 @@ auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart
 auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
                       std::string_view device_id) -> OperationResult
 {
+    log_diagnostic("login.started",
+                   {
+                       {"user_id",   std::string{user_id},   false},
+                       {"device_id", std::string{device_id}, false}
+    });
     auto* user = find_user(runtime.database, user_id);
     if (user == nullptr)
     {
         // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
+        log_diagnostic("login.rejected", {
+                                             {"user_id",   std::string{user_id},   false},
+                                             {"device_id", std::string{device_id}, false},
+                                             {"status",    "403",                  false},
+                                             {"reason",    "unknown user",         false}
+        });
         return make_operation_result(false, {}, "unknown user", 403U);
     }
     if (!password_matches(user->password_hash, password))
     {
+        log_diagnostic("login.rejected", {
+                                             {"user_id",   std::string{user_id},   false},
+                                             {"device_id", std::string{device_id}, false},
+                                             {"status",    "403",                  false},
+                                             {"reason",    "bad credentials",      false}
+        });
         return make_operation_result(false, {}, "bad credentials", 403U);
     }
     if (!auth::device_id_is_valid(device_id))
     {
+        log_diagnostic("login.rejected", {
+                                             {"user_id",   std::string{user_id},   false},
+                                             {"device_id", std::string{device_id}, false},
+                                             {"reason",    "invalid device id",    false}
+        });
         return make_operation_result(false, {}, "invalid device id");
     }
 
@@ -295,17 +324,33 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     if (!login.allowed)
     {
         // Account locked or suspended: still a 403, not a 400.
+        log_diagnostic("login.rejected", {
+                                             {"user_id",   user->user_id,          false},
+                                             {"device_id", std::string{device_id}, false},
+                                             {"status",    "403",                  false},
+                                             {"reason",    login.reason,           false}
+        });
         return make_operation_result(false, {}, login.reason, 403U);
     }
 
     auto const token = issue_token();
     if (!token.has_value())
     {
+        log_diagnostic("login.rejected", {
+                                             {"user_id",   user->user_id,             false},
+                                             {"device_id", std::string{device_id},    false},
+                                             {"reason",    "token generation failed", false}
+        });
         return make_operation_result(false, {}, "token generation failed");
     }
     auto const token_hash = hash_token(*token);
     if (!token_hash.has_value())
     {
+        log_diagnostic("login.rejected", {
+                                             {"user_id",   user->user_id,          false},
+                                             {"device_id", std::string{device_id}, false},
+                                             {"reason",    "token hashing failed", false}
+        });
         return make_operation_result(false, {}, "token hashing failed");
     }
     auto const device_exists = std::ranges::any_of(
@@ -320,12 +365,23 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     if (!database::store_device_and_access_token(runtime.database.persistent_store, std::move(device),
                                                  {user->user_id, std::string{device_id}, *token_hash, false}))
     {
+        log_diagnostic("login.rejected", {
+                                             {"user_id",   user->user_id,              false},
+                                             {"device_id", std::string{device_id},     false},
+                                             {"status",    "500",                      false},
+                                             {"reason",    "login persistence failed", false}
+        });
         return make_operation_result(false, {}, "login persistence failed", 500U);
     }
     ++runtime.database.next_session_id;
     runtime.database.sessions.push_back({user->user_id, std::string{device_id}, *token_hash, false});
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user->user_id,
                        std::string{device_id}, "accepted");
+    log_diagnostic("login.accepted",
+                   {
+                       {"user_id",   user->user_id,          false},
+                       {"device_id", std::string{device_id}, false}
+    });
     return make_operation_result(true, *token);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)
@@ -424,13 +480,24 @@ auto authenticated_user(HomeserverRuntime const& runtime, std::string_view acces
     auto const token_hash = hash_token(access_token);
     if (!token_hash.has_value())
     {
+        log_diagnostic("access_token.rejected", {
+                                                    {"reason", "token hashing failed", false}
+        });
         return std::nullopt;
     }
     auto const* session = find_session(runtime.database, *token_hash);
     if (session == nullptr || find_user(runtime.database, session->user_id) == nullptr)
     {
+        log_diagnostic("access_token.rejected", {
+                                                    {"reason", "session or user not found", false}
+        });
         return std::nullopt;
     }
+    log_diagnostic("access_token.accepted",
+                   {
+                       {"user_id",   session->user_id,   false},
+                       {"device_id", session->device_id, false}
+    });
     return session->user_id;
 }
 
@@ -581,8 +648,9 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
         return make_operation_result(false, {}, "password update failed", 500U);
     }
     // Mirror the change into the in-memory LocalUser so subsequent logins see the new hash.
-    auto const it = std::ranges::find_if(runtime.database.users,
-                                         [&](LocalUser const& u) { return u.user_id == *user_id; });
+    auto const it = std::ranges::find_if(runtime.database.users, [&](LocalUser const& u) {
+        return u.user_id == *user_id;
+    });
     if (it != runtime.database.users.end())
     {
         it->password_hash = *new_hash;

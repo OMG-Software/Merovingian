@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.1
+
+- Added redaction-aware debug diagnostics for HTTP request ingress/egress,
+  client-server auth and route decisions, local room join/send/state handling,
+  event authorization rejections, persistent-store writes, federation ingress,
+  and outbound federation membership transaction composition.
+- Added diagnostic log sanitization for sensitive field names and Matrix request
+  targets containing token-like query parameters.
+- Added `merovingian-server --debug` and `--log-file <path>` so operators can
+  enable console and file diagnostics during room-join triage.
+- Documented the operator debug logging workflow for diagnosing failed room
+  joins without logging access tokens, passwords, Matrix event bodies, media
+  payloads, or signatures.
+- Bumped project, executable, and package metadata versions to `0.3.1`.
+
 ## 0.3.0
 
 - Added Matrix UI-Interactive Authentication for `POST /register`: when the
