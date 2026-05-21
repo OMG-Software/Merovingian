@@ -45,6 +45,11 @@ that cannot federate is a single-server preview, not a Matrix homeserver alpha.
 Alpha is still a test-user milestone with bugs expected, not a production
 deployment milestone.
 
+#### TODO
+
+_None — all Alpha gates are closed. The alpha release itself remains a
+separate operator decision once this branch is approved._
+
 #### DONE
 
 - Build and warning policy: Meson C++26 build, warnings-as-errors, hardening
@@ -262,26 +267,11 @@ deployment milestone.
   documented in `docs/hardening-alpha-exceptions.md`, which the
   release-readiness script requires.
 
-#### TODO
-
-_None — all Alpha gates are closed. The alpha release itself remains a
-separate operator decision once this branch is approved._
-
 ### Beta
 
 Beta means the homeserver has broad Matrix v1.18 behavior coverage, can survive
 realistic operator testing, and can federate with selected remote homeservers in
 a non-production environment.
-
-#### DONE
-
-- Alpha foundations listed above.
-- Federation request signing and PDU signature verification boundaries exist for
-  known keys.
-- PostgreSQL schema bootstrap, hydration, write-through path, and database role
-  separation scaffolding exist.
-- Admin health, metrics, audit, media moderation, and trust-and-safety review
-  routes exist.
 
 #### TODO
 
@@ -306,25 +296,21 @@ a non-production environment.
 - Add corpus management, broader fuzz execution, property tests, load tests,
   and chaos tests.
 
-### Production
+#### DONE
+
+- Alpha foundations listed above.
+- Federation request signing and PDU signature verification boundaries exist for
+  known keys.
+- PostgreSQL schema bootstrap, hydration, write-through path, and database role
+  separation scaffolding exist.
+- Admin health, metrics, audit, media moderation, and trust-and-safety review
+  routes exist.
+
+### Production v1.0.0
 
 Production means all security, correctness, conformance, platform, packaging,
 and release evidence is closed for a signed release artifact. Packages must not
 be published as production releases while any blocking gate remains open.
-
-#### DONE
-
-- Packaging files exist for Linux and BSD deployment-shape testing:
-  `packaging/systemd/merovingian.service`, `packaging/openrc/merovingian`,
-  `packaging/rc.d/merovingian`, and `Dockerfile`.
-- Release-readiness script exists and rejects missing required release files or
-  known unsafe legacy hashing primitives.
-- Alpha prerelease publishing exists: `.github/workflows/release.yml` builds
-  hardened Linux and FreeBSD tarballs for `v*-alpha*` tags, runs tests and
-  release-readiness gates, emits SHA-256 checksum files, and publishes a
-  GitHub prerelease.
-- CodeQL, coverage, sanitizer, static-analysis, and Linux CI jobs install
-  LibSodium development headers before configuring Meson.
 
 #### TODO
 
@@ -353,6 +339,20 @@ be published as production releases while any blocking gate remains open.
 - Record compiler version, linker flags, dependency versions, test logs,
   sanitizer logs, fuzz target names, package checksums, and artifact signatures
   in release notes.
+
+#### DONE
+
+- Packaging files exist for Linux and BSD deployment-shape testing:
+  `packaging/systemd/merovingian.service`, `packaging/openrc/merovingian`,
+  `packaging/rc.d/merovingian`, and `Dockerfile`.
+- Release-readiness script exists and rejects missing required release files or
+  known unsafe legacy hashing primitives.
+- Alpha prerelease publishing exists: `.github/workflows/release.yml` builds
+  hardened Linux and FreeBSD tarballs for `v*-alpha*` tags, runs tests and
+  release-readiness gates, emits SHA-256 checksum files, and publishes a
+  GitHub prerelease.
+- CodeQL, coverage, sanitizer, static-analysis, and Linux CI jobs install
+  LibSodium development headers before configuring Meson.
 
 ## Immediate priority order
 
