@@ -345,6 +345,21 @@ namespace
             }
         }
 
+        auto refresh_tokens =
+            query_rows(connection, "postgresql_load_refresh_tokens",
+                       "SELECT user_id, device_id, token_hash, revoked FROM refresh_tokens ORDER BY token_hash");
+        if (!refresh_tokens.ok)
+        {
+            return false;
+        }
+        for (auto const& row : refresh_tokens.rows)
+        {
+            if (row.size() >= 4U)
+            {
+                store.refresh_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3])});
+            }
+        }
+
         auto server_signing_keys =
             query_rows(connection, "postgresql_load_server_signing_keys",
                        "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys ORDER BY "
@@ -728,10 +743,9 @@ namespace
             }
         }
 
-        auto device_list_changes =
-            query_rows(connection, "postgresql_load_device_list_changes",
-                       "SELECT stream_id, observer_user_id, subject_user_id, change_type FROM "
-                       "device_list_changes ORDER BY stream_id");
+        auto device_list_changes = query_rows(connection, "postgresql_load_device_list_changes",
+                                              "SELECT stream_id, observer_user_id, subject_user_id, change_type FROM "
+                                              "device_list_changes ORDER BY stream_id");
         if (!device_list_changes.ok)
         {
             return false;
@@ -1025,8 +1039,7 @@ namespace
         }
         for (auto const character : name)
         {
-            auto const allowed = (character >= 'a' && character <= 'z') ||
-                                 (character >= 'A' && character <= 'Z') ||
+            auto const allowed = (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
                                  (character >= '0' && character <= '9') || character == '_';
             if (!allowed)
             {
@@ -1074,8 +1087,7 @@ auto current_postgresql_user(PostgresqlConnection& connection) -> std::string
     {
         return {};
     }
-    auto const result =
-        connection.execute({"postgresql_current_user", "SELECT CURRENT_USER::text", {}});
+    auto const result = connection.execute({"postgresql_current_user", "SELECT CURRENT_USER::text", {}});
     if (!result.ok || result.rows.empty() || result.rows.front().empty())
     {
         return {};

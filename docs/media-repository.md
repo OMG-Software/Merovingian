@@ -6,6 +6,9 @@ current in-process runtime path.
 ## Runtime Behavior
 
 - Authenticated local uploads run through the homeserver media route.
+- `GET /_matrix/media/v3/config` reports `m.upload.size` from
+  `security.media.max_upload_size`, so client upload hints match the policy
+  enforced by the repository.
 - Downloads serve only local media owned by the configured server name.
 - Remote media fetches remain disabled and fail closed until a later capability
   change.

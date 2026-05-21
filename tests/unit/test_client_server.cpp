@@ -464,7 +464,8 @@ SCENARIO("Client-server runtime wires server-blind E2EE key API routes", "[homes
                 runtime, {"POST", "/_matrix/client/v3/keys/upload", token,
                           R"({"device_keys":{"sensitive":"curve25519-secret"},"one_time_keys":{}})"});
             auto const query = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/keys/query", token, R"({"device_keys":{}})"});
+                runtime, {"POST", "/_matrix/client/v3/keys/query", token,
+                          R"({"device_keys":{"@alice:example.org":["DEVICE1"]}})"});
             auto const unauthenticated = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/keys/upload", {}, R"({"device_keys":{}})"});
 
@@ -989,9 +990,10 @@ SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[hom
         WHEN("a user registers and then logs in with the wrong password")
         {
             auto const registered = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/register", {},
-                 merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json("alice", "CorrectHorse7!")});
             REQUIRE(registered.status == 200U);
 
             auto const response = merovingian::homeserver::handle_client_server_request(
@@ -1083,13 +1085,17 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(reg.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.status == 200U);
         auto const token = login_token(login.body);
@@ -1129,13 +1135,17 @@ SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated 
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(reg.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.status == 200U);
         auto const token = login_token(login.body);
@@ -1174,13 +1184,17 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(reg.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.status == 200U);
         auto const token = login_token(login.body);
@@ -1189,10 +1203,14 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
         {
             // Simulate a real Cinny OTK bundle: device keys + many one-time keys.
             // The body must exceed 4096 bytes to prove the old limit is gone.
-            auto large_body = std::string{R"({"device_keys":{"@alice:example.org":{"DEVICE1":{"algorithms":[],"device_id":"DEVICE1","keys":{},"signatures":{},"user_id":"@alice:example.org"}}},"one_time_keys":{)"};
+            auto large_body = std::string{
+                R"({"device_keys":{"@alice:example.org":{"DEVICE1":{"algorithms":[],"device_id":"DEVICE1","keys":{},"signatures":{},"user_id":"@alice:example.org"}}},"one_time_keys":{)"};
             for (int i = 0; i < 40; ++i)
             {
-                if (i != 0) { large_body += ','; }
+                if (i != 0)
+                {
+                    large_body += ',';
+                }
                 large_body += "\"signed_curve25519:KEY" + std::to_string(i) + "\":\"" + std::string(80U, 'a') + "\"";
             }
             large_body += "}}";
@@ -1209,8 +1227,7 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
     }
 }
 
-SCENARIO("OIDC discovery endpoints return 404 without authentication",
-         "[homeserver][client-server]")
+SCENARIO("OIDC discovery endpoints return 404 without authentication", "[homeserver][client-server]")
 {
     GIVEN("a started runtime")
     {
@@ -1221,8 +1238,7 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication",
         WHEN("GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata is called without a token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"GET", "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata", {}, {}});
+                runtime, {"GET", "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata", {}, {}});
 
             THEN("the response is 404, not 401")
             {
@@ -1235,8 +1251,7 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication",
         WHEN("GET /_matrix/client/unstable/org.matrix.msc2965/auth_issuer is called without a token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"GET", "/_matrix/client/unstable/org.matrix.msc2965/auth_issuer", {}, {}});
+                runtime, {"GET", "/_matrix/client/unstable/org.matrix.msc2965/auth_issuer", {}, {}});
 
             THEN("the response is 404, not 401")
             {
@@ -1246,8 +1261,7 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication",
     }
 }
 
-SCENARIO("VoIP turn server endpoint returns an empty object for authenticated clients",
-         "[homeserver][client-server]")
+SCENARIO("VoIP turn server endpoint returns an empty object for authenticated clients", "[homeserver][client-server]")
 {
     GIVEN("a started runtime with a registered and logged-in user")
     {
@@ -1256,13 +1270,17 @@ SCENARIO("VoIP turn server endpoint returns an empty object for authenticated cl
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(reg.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.status == 200U);
         auto const token = login_token(login.body);
@@ -1281,8 +1299,7 @@ SCENARIO("VoIP turn server endpoint returns an empty object for authenticated cl
     }
 }
 
-SCENARIO("Profile endpoint returns a user profile stub for authenticated clients",
-         "[homeserver][client-server]")
+SCENARIO("Profile endpoint returns a user profile stub for authenticated clients", "[homeserver][client-server]")
 {
     GIVEN("a started runtime with a registered and logged-in user")
     {
@@ -1291,13 +1308,17 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(reg.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.status == 200U);
         auto const token = login_token(login.body);
@@ -1305,8 +1326,7 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
         WHEN("GET /profile/{userId} is called with a percent-encoded user id")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", token, {}});
+                runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", token, {}});
 
             THEN("the response is 200 and contains displayname and avatar_url fields")
             {
@@ -1319,8 +1339,7 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
         WHEN("GET /profile/{userId} is called without an access token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
+                runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
 
             THEN("the response is 401")
             {
@@ -1330,8 +1349,7 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
     }
 }
 
-SCENARIO("Media config endpoint returns upload size limit for authenticated clients",
-         "[homeserver][client-server]")
+SCENARIO("Media config endpoint returns upload size limit for authenticated clients", "[homeserver][client-server]")
 {
     GIVEN("a started runtime with a registered and logged-in user")
     {
@@ -1340,13 +1358,17 @@ SCENARIO("Media config endpoint returns upload size limit for authenticated clie
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(reg.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.status == 200U);
         auto const token = login_token(login.body);
@@ -1385,20 +1407,24 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(reg.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.status == 200U);
         auto const token = login_token(login.body);
 
         // @alice:example.org percent-encoded as it appears in a real browser URL
         auto constexpr user_filter_url = "/_matrix/client/v3/user/%40alice%3Aexample.org/filter";
-        auto constexpr filter_body     = R"({"room":{"timeline":{"limit":50}}})";
+        auto constexpr filter_body = R"({"room":{"timeline":{"limit":50}}})";
 
         WHEN("POST /user/{userId}/filter is called with a valid filter body")
         {
@@ -1420,9 +1446,9 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
             REQUIRE(store_resp.status == 200U);
             auto const fid = json_value(store_resp.body, "\"filter_id\":\"");
 
-            auto const get_url  = std::string{user_filter_url} + "/" + fid;
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", get_url, token, {}});
+            auto const get_url = std::string{user_filter_url} + "/" + fid;
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", get_url, token, {}});
 
             THEN("the response is 200 and returns the stored filter body")
             {
@@ -1455,8 +1481,7 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
     }
 }
 
-SCENARIO("Join-by-id endpoint joins a room through the local join handler",
-         "[homeserver][client-server]")
+SCENARIO("Join-by-id endpoint joins a room through the local join handler", "[homeserver][client-server]")
 {
     GIVEN("a logged-in user who has created a room")
     {
@@ -1465,12 +1490,16 @@ SCENARIO("Join-by-id endpoint joins a room through the local join handler",
         auto& runtime = started.runtime;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.status == 200U);
         auto const token = login_token(login.body);
@@ -1505,8 +1534,7 @@ SCENARIO("Join-by-id endpoint joins a room through the local join handler",
     }
 }
 
-SCENARIO("Account data endpoint stores and retrieves global account data",
-         "[homeserver][client-server]")
+SCENARIO("Account data endpoint stores and retrieves global account data", "[homeserver][client-server]")
 {
     GIVEN("a logged-in client-server user")
     {
@@ -1515,19 +1543,22 @@ SCENARIO("Account data endpoint stores and retrieves global account data",
         auto& runtime = started.runtime;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.status == 200U);
         auto const token = login_token(login.body);
 
         // @alice:example.org percent-encoded as a browser sends it
-        auto constexpr account_data_url =
-            "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct";
+        auto constexpr account_data_url = "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct";
         auto constexpr direct_body = R"({"@bob:example.org":["!room1:example.org"]})";
 
         WHEN("PUT /account_data/{type} is called with a body")
@@ -1547,8 +1578,8 @@ SCENARIO("Account data endpoint stores and retrieves global account data",
                 runtime, {"PUT", account_data_url, token, direct_body});
             REQUIRE(put.status == 200U);
 
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", account_data_url, token, {}});
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", account_data_url, token, {}});
 
             THEN("the response is 200 and returns the stored content")
             {
@@ -1559,8 +1590,8 @@ SCENARIO("Account data endpoint stores and retrieves global account data",
 
         WHEN("GET /account_data/{type} is called for an unset type")
         {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", account_data_url, token, {}});
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", account_data_url, token, {}});
 
             THEN("the response is 404")
             {
@@ -1572,8 +1603,7 @@ SCENARIO("Account data endpoint stores and retrieves global account data",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"PUT", "/_matrix/client/v3/user/%40bob%3Aexample.org/account_data/m.direct", token,
-                 direct_body});
+                {"PUT", "/_matrix/client/v3/user/%40bob%3Aexample.org/account_data/m.direct", token, direct_body});
 
             THEN("the response is 403")
             {

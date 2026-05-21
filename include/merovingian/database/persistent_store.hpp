@@ -46,6 +46,14 @@ struct PersistentAccessToken final
     bool revoked{false};
 };
 
+struct PersistentRefreshToken final
+{
+    std::string user_id{};
+    std::string device_id{};
+    std::string token_hash{};
+    bool revoked{false};
+};
+
 struct PersistentServerSigningKey final
 {
     std::string server_name{};
@@ -296,6 +304,7 @@ struct PersistentStore final
     std::vector<PersistentUser> users{};
     std::vector<PersistentDevice> devices{};
     std::vector<PersistentAccessToken> access_tokens{};
+    std::vector<PersistentRefreshToken> refresh_tokens{};
     std::vector<PersistentServerSigningKey> server_signing_keys{};
     std::vector<PersistentFederationDestination> federation_destinations{};
     std::vector<PersistentFederationTransaction> federation_transactions{};
@@ -345,9 +354,20 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
+[[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
 [[nodiscard]] auto store_device_and_access_token(PersistentStore& store, std::optional<PersistentDevice> device,
                                                  PersistentAccessToken token) -> bool;
 [[nodiscard]] auto revoke_access_token(PersistentStore& store, std::string_view token_hash) -> std::size_t;
+[[nodiscard]] auto revoke_refresh_token(PersistentStore& store, std::string_view token_hash) -> std::size_t;
+[[nodiscard]] auto revoke_access_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t;
+[[nodiscard]] auto revoke_access_tokens_for_device(PersistentStore& store, std::string_view user_id,
+                                                   std::string_view device_id) -> std::size_t;
+[[nodiscard]] auto revoke_refresh_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t;
+[[nodiscard]] auto revoke_refresh_tokens_for_device(PersistentStore& store, std::string_view user_id,
+                                                    std::string_view device_id) -> std::size_t;
+[[nodiscard]] auto update_device_display_name(PersistentStore& store, std::string_view user_id,
+                                              std::string_view device_id, std::string_view display_name) -> bool;
+[[nodiscard]] auto delete_device(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> bool;
 [[nodiscard]] auto store_server_signing_key(PersistentStore& store, PersistentServerSigningKey key) -> bool;
 [[nodiscard]] auto find_server_signing_key(PersistentStore const& store, std::string_view server_name,
                                            std::string_view key_id) -> std::optional<PersistentServerSigningKey>;
@@ -368,8 +388,8 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
     -> std::optional<PersistentDeviceKey>;
 [[nodiscard]] auto store_one_time_key(PersistentStore& store, PersistentOneTimeKey key) -> bool;
-[[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id)
-    -> std::optional<PersistentOneTimeKey>;
+[[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id,
+                                      std::string_view algorithm = {}) -> std::optional<PersistentOneTimeKey>;
 [[nodiscard]] auto store_fallback_key(PersistentStore& store, PersistentFallbackKey key) -> bool;
 [[nodiscard]] auto find_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
     -> std::optional<PersistentFallbackKey>;
@@ -393,8 +413,8 @@ struct PersistentStoreOpenResult final
 // Store a sync filter uploaded by a client. On conflict the JSON is replaced.
 [[nodiscard]] auto store_filter(PersistentStore& store, PersistentFilter filter) -> bool;
 // Return the filter for (user_id, filter_id), or nullopt when not found.
-[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id,
-                               std::string_view filter_id) -> std::optional<PersistentFilter>;
+[[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id, std::string_view filter_id)
+    -> std::optional<PersistentFilter>;
 // Sets `store.next_sync_stream_id` to the maximum stream_id observed
 // across every sync-surface row already loaded into memory (account_data,
 // room account_data, to_device_messages, device_list_changes,

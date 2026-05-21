@@ -17,8 +17,6 @@
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
-#include <sodium.h>
-
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -35,6 +33,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <sodium.h>
 
 namespace merovingian::homeserver
 {
@@ -151,6 +151,12 @@ namespace
         std::string user_id{};
         std::string password{};
         std::string device_id{};
+        bool supports_refresh_tokens{false};
+    };
+
+    struct MatrixRefreshBody final
+    {
+        std::string refresh_token{};
     };
 
     struct MatrixDeviceUpdateBody final
@@ -161,7 +167,6 @@ namespace
     struct MatrixSafetyReportBody final
     {
         std::string reason{};
-        std::int32_t score{0};
     };
 
     struct MatrixAdminReviewBody final
@@ -173,6 +178,19 @@ namespace
     {
         std::string room_id{};
         std::string event_id{};
+    };
+
+    struct RoomSendPathParts final
+    {
+        std::string room_id{};
+        std::string event_type{};
+    };
+
+    struct RoomStatePathParts final
+    {
+        std::string room_id{};
+        std::string event_type{};
+        std::string state_key{};
     };
 
     struct AdminReviewPathParts final
@@ -205,15 +223,14 @@ namespace
         return std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::int64_t const*
+    [[nodiscard]] auto boolean_member(canonicaljson::Object const& object, std::string_view key) noexcept -> bool const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
         {
             return nullptr;
         }
-        return std::get_if<std::int64_t>(&value->storage());
+        return std::get_if<bool>(&value->storage());
     }
 
     [[nodiscard]] auto ascii_equal_case_insensitive(std::string_view left, std::string_view right) noexcept -> bool
@@ -418,8 +435,25 @@ namespace
             return std::nullopt;
         }
         auto const* device_id = string_member(*object, "device_id");
+        auto const* supports_refresh_tokens = boolean_member(*object, "refresh_token");
         return MatrixLoginBody{matrix_user_id(server_name, *user), *password,
-                               device_id == nullptr ? "MEROVINGIAN" : *device_id};
+                               device_id == nullptr ? "MEROVINGIAN" : *device_id,
+                               supports_refresh_tokens != nullptr && *supports_refresh_tokens};
+    }
+
+    [[nodiscard]] auto parse_refresh_body(std::string_view body) -> std::optional<MatrixRefreshBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* refresh_token = string_member(*object, "refresh_token");
+        if (refresh_token == nullptr || refresh_token->empty())
+        {
+            return std::nullopt;
+        }
+        return MatrixRefreshBody{*refresh_token};
     }
 
     [[nodiscard]] auto parse_device_update_body(std::string_view body) -> std::optional<MatrixDeviceUpdateBody>
@@ -444,19 +478,17 @@ namespace
         {
             return std::nullopt;
         }
-        auto const* reason = string_member(*object, "reason");
-        auto const* score = integer_member(*object, "score");
+        auto const* reason_value = object_member(*object, "reason");
+        if (reason_value == nullptr)
+        {
+            return MatrixSafetyReportBody{};
+        }
+        auto const* reason = std::get_if<std::string>(&reason_value->storage());
         if (reason == nullptr)
         {
             return std::nullopt;
         }
-        if (score != nullptr && (*score < static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::min()) ||
-                                 *score > static_cast<std::int64_t>(std::numeric_limits<std::int32_t>::max())))
-        {
-            return std::nullopt;
-        }
-        auto const bounded_score = score == nullptr ? 0 : static_cast<std::int32_t>(*score);
-        return MatrixSafetyReportBody{*reason, bounded_score};
+        return MatrixSafetyReportBody{*reason};
     }
 
     [[nodiscard]] auto parse_admin_review_body(std::string_view body) -> std::optional<MatrixAdminReviewBody>
@@ -629,6 +661,14 @@ namespace
             }));
         }
         return json_serialize(json_obj({json_member("devices", json_arr(std::move(devices)))}));
+    }
+
+    [[nodiscard]] auto device_json(ClientDevice const& device) -> std::string
+    {
+        return json_serialize(json_obj({
+            json_member("device_id", json_str(device.device_id)),
+            json_member("display_name", json_str(device.display_name)),
+        }));
     }
 
     [[nodiscard]] auto joined(LocalRoom const& room, std::string_view user) -> bool
@@ -879,7 +919,8 @@ namespace
                 auto const observed_id = notifier.current_stream_id();
                 if (observed_id <= since_sync_stream_id)
                 {
-                    std::ignore = notifier.wait_for_change(since_sync_stream_id, std::chrono::milliseconds{*request.timeout});
+                    std::ignore =
+                        notifier.wait_for_change(since_sync_stream_id, std::chrono::milliseconds{*request.timeout});
                 }
             }
         }
@@ -1143,54 +1184,207 @@ namespace
                               std::to_string(one_time_key_count(rt, user, device_id)) + "}}");
     }
 
-    [[nodiscard]] auto handle_key_query(ClientServerRuntime const& rt, std::string_view user,
-                                        std::string_view device_id) -> LocalHttpResponse
+    [[nodiscard]] auto key_id_matches_algorithm(std::string_view key_id, std::string_view algorithm) -> bool
     {
-        auto const key = database::find_device_key(rt.homeserver.database.persistent_store, user, device_id);
-        if (!key.has_value())
-        {
-            return resp(200U, R"({"device_keys":{}})");
-        }
-        return resp(200U,
-                    json_serialize(json_obj({json_member(
-                        "device_keys", json_obj({json_member(std::string{user},
-                                                             json_obj({json_member(std::string{device_id},
-                                                                                   json_embed_raw(key->json))}))}))})));
+        return key_id.size() > algorithm.size() && key_id.substr(0U, algorithm.size()) == algorithm &&
+               key_id[algorithm.size()] == ':';
     }
 
-    [[nodiscard]] auto handle_key_claim(ClientServerRuntime& rt, std::string_view user, std::string_view device_id)
-        -> LocalHttpResponse
+    [[nodiscard]] auto handle_key_query(ClientServerRuntime const& rt, std::string_view body) -> LocalHttpResponse
     {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "key query body must be Matrix JSON");
+        }
+        auto const* requests = object_member_object(*object, "device_keys");
+        if (requests == nullptr)
+        {
+            return err(400U, "M_BAD_JSON", "key query body must contain device_keys");
+        }
+
+        auto users = canonicaljson::Object{};
+        auto const& store = rt.homeserver.database.persistent_store;
+        for (auto const& user_request : *requests)
+        {
+            auto const* requested_devices = std::get_if<canonicaljson::Array>(&user_request.value->storage());
+            if (requested_devices == nullptr)
+            {
+                return err(400U, "M_BAD_JSON", "device_keys values must be device ID arrays");
+            }
+
+            auto devices = canonicaljson::Object{};
+            if (requested_devices->empty())
+            {
+                for (auto const& key : store.device_keys)
+                {
+                    if (key.user_id == user_request.key)
+                    {
+                        devices.push_back(json_member(key.device_id, json_embed_raw(key.json)));
+                    }
+                }
+            }
+            else
+            {
+                for (auto const& requested_device : *requested_devices)
+                {
+                    auto const* requested_device_id = std::get_if<std::string>(&requested_device.storage());
+                    if (requested_device_id == nullptr)
+                    {
+                        return err(400U, "M_BAD_JSON", "device_keys entries must be device IDs");
+                    }
+                    auto const key = database::find_device_key(store, user_request.key, *requested_device_id);
+                    if (key.has_value())
+                    {
+                        devices.push_back(json_member(*requested_device_id, json_embed_raw(key->json)));
+                    }
+                }
+            }
+            users.push_back(json_member(user_request.key, json_obj(std::move(devices))));
+        }
+        return resp(200U, json_serialize(json_obj({json_member("device_keys", json_obj(std::move(users)))})));
+    }
+
+    [[nodiscard]] auto handle_key_claim(ClientServerRuntime& rt, std::string_view body) -> LocalHttpResponse
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "key claim body must be Matrix JSON");
+        }
+        auto const* requests = object_member_object(*object, "one_time_keys");
+        if (requests == nullptr)
+        {
+            return err(400U, "M_BAD_JSON", "key claim body must contain one_time_keys");
+        }
+
         auto& store = rt.homeserver.database.persistent_store;
-        if (auto claimed = database::claim_one_time_key(store, user, device_id); claimed.has_value())
+        auto users = canonicaljson::Object{};
+        for (auto const& user_request : *requests)
         {
-            return resp(200U,
-                        json_serialize(json_obj({json_member(
-                            "one_time_keys",
-                            json_obj({json_member(
-                                std::string{user},
-                                json_obj({json_member(
-                                    std::string{device_id},
-                                    json_obj({json_member(claimed->key_id, json_embed_raw(claimed->json))}))}))}))})));
+            auto const* requested_devices = std::get_if<canonicaljson::Object>(&user_request.value->storage());
+            if (requested_devices == nullptr)
+            {
+                return err(400U, "M_BAD_JSON", "one_time_keys values must be device maps");
+            }
+
+            auto devices = canonicaljson::Object{};
+            for (auto const& device_request : *requested_devices)
+            {
+                auto const* algorithm = std::get_if<std::string>(&device_request.value->storage());
+                if (algorithm == nullptr || algorithm->empty())
+                {
+                    return err(400U, "M_BAD_JSON", "one_time_keys entries must name a key algorithm");
+                }
+                auto keys = canonicaljson::Object{};
+                auto claimed = database::claim_one_time_key(store, user_request.key, device_request.key, *algorithm);
+                if (claimed.has_value())
+                {
+                    keys.push_back(json_member(claimed->key_id, json_embed_raw(claimed->json)));
+                }
+                else
+                {
+                    auto const fallback = database::find_fallback_key(store, user_request.key, device_request.key);
+                    if (fallback.has_value() && key_id_matches_algorithm(fallback->key_id, *algorithm))
+                    {
+                        keys.push_back(json_member(fallback->key_id, json_embed_raw(fallback->json)));
+                    }
+                }
+                if (!keys.empty())
+                {
+                    devices.push_back(json_member(device_request.key, json_obj(std::move(keys))));
+                }
+            }
+            if (!devices.empty())
+            {
+                users.push_back(json_member(user_request.key, json_obj(std::move(devices))));
+            }
         }
-        auto const fallback = database::find_fallback_key(store, user, device_id);
-        if (!fallback.has_value())
-        {
-            return resp(200U, R"({"one_time_keys":{}})");
-        }
-        return resp(200U,
-                    json_serialize(json_obj({json_member(
-                        "one_time_keys",
-                        json_obj({json_member(
-                            std::string{user},
-                            json_obj({json_member(
-                                std::string{device_id},
-                                json_obj({json_member(fallback->key_id, json_embed_raw(fallback->json))}))}))}))})));
+        return resp(200U, json_serialize(json_obj({json_member("one_time_keys", json_obj(std::move(users)))})));
     }
 
     [[nodiscard]] auto route_suffix(std::string_view target, std::string_view prefix) noexcept -> std::string_view
     {
         return starts_with(target, prefix) ? target.substr(prefix.size()) : std::string_view{};
+    }
+
+    [[nodiscard]] auto room_send_path_parts(std::string_view target) -> std::optional<RoomSendPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/send/"};
+        auto const suffix = route_suffix(target, prefix);
+        auto const marker_pos = suffix.find(marker);
+        if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
+            marker_pos + marker.size() >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        auto const event_and_txn = suffix.substr(marker_pos + marker.size());
+        auto const separator = event_and_txn.find('/');
+        if (separator == std::string_view::npos || separator == 0U || separator + 1U >= event_and_txn.size())
+        {
+            return std::nullopt;
+        }
+        return RoomSendPathParts{std::string{suffix.substr(0U, marker_pos)},
+                                 std::string{event_and_txn.substr(0U, separator)}};
+    }
+
+    [[nodiscard]] auto room_state_path_parts(std::string_view target) -> std::optional<RoomStatePathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/state/"};
+        auto const suffix = route_suffix(target, prefix);
+        auto const marker_pos = suffix.find(marker);
+        if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
+            marker_pos + marker.size() > suffix.size())
+        {
+            return std::nullopt;
+        }
+        auto const event_and_state = suffix.substr(marker_pos + marker.size());
+        if (event_and_state.empty())
+        {
+            return std::nullopt;
+        }
+        auto const separator = event_and_state.find('/');
+        auto const event_type =
+            separator == std::string_view::npos ? event_and_state : event_and_state.substr(0U, separator);
+        auto const state_key =
+            separator == std::string_view::npos ? std::string_view{} : event_and_state.substr(separator + 1U);
+        if (event_type.empty())
+        {
+            return std::nullopt;
+        }
+        return RoomStatePathParts{std::string{suffix.substr(0U, marker_pos)}, std::string{event_type},
+                                  core::percent_decode(state_key)};
+    }
+
+    [[nodiscard]] auto event_body_from_content(std::string_view event_type, std::string_view content,
+                                               std::optional<std::string> state_key = std::nullopt)
+        -> std::optional<std::string>
+    {
+        auto parsed_content = canonicaljson::parse_lossless(content);
+        if (parsed_content.error != canonicaljson::ParseError::none ||
+            std::get_if<canonicaljson::Object>(&parsed_content.value.storage()) == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto members = canonicaljson::Object{
+            json_member("type", json_str(event_type)),
+            json_member("content", std::move(parsed_content.value)),
+        };
+        if (state_key.has_value())
+        {
+            members.push_back(json_member("state_key", json_str(*state_key)));
+        }
+        return json_serialize(json_obj(std::move(members)));
+    }
+
+    [[nodiscard]] auto media_upload_response_json(std::string_view operation_value) -> std::string
+    {
+        auto const content_uri_end = operation_value.find('|');
+        auto const content_uri =
+            content_uri_end == std::string_view::npos ? operation_value : operation_value.substr(0U, content_uri_end);
+        return json_serialize(json_obj({json_member("content_uri", json_str(content_uri))}));
     }
 
     [[nodiscard]] auto report_path_parts(std::string_view target) -> std::optional<ReportPathParts>
@@ -1298,9 +1492,9 @@ namespace
         case auth::KeyApiEndpoint::upload_keys:
             return handle_key_upload(rt, user, device_id, req.body);
         case auth::KeyApiEndpoint::query_keys:
-            return handle_key_query(rt, user, device_id);
+            return handle_key_query(rt, req.body);
         case auth::KeyApiEndpoint::claim_keys:
-            return handle_key_claim(rt, user, device_id);
+            return handle_key_claim(rt, req.body);
         case auth::KeyApiEndpoint::get_key_backup_version:
             if (auto const& versions = rt.homeserver.database.persistent_store.key_backup_versions; !versions.empty())
             {
@@ -1353,10 +1547,10 @@ namespace
         auto const body = parse_safety_report_body(req.body);
         if (!path.has_value() || !body.has_value())
         {
-            return err(400U, "M_BAD_JSON", "report body must include reason and optional score");
+            return err(400U, "M_BAD_JSON", "report body must be a JSON object with optional string reason");
         }
-        auto const decision = trust_safety::validate_safety_report(
-            {std::string{user}, path->room_id, path->event_id, body->reason, body->score});
+        auto const decision =
+            trust_safety::validate_safety_report({std::string{user}, path->room_id, path->event_id, body->reason, 0});
         auto const audit = trust_safety::make_safety_audit_event(user, path->event_id, decision);
         append_policy_audit(rt, audit);
         if (!decision.allowed)
@@ -1504,10 +1698,9 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     if (req.method == "GET" && req.target == "/.well-known/matrix/client")
     {
         auto const& base_url = rt.homeserver.config.server().public_baseurl;
-        return resp(200U,
-                    json_serialize(json_obj({
-                        json_member("m.homeserver", json_obj({json_member("base_url", json_str(base_url))})),
-                    })));
+        return resp(200U, json_serialize(json_obj({
+                              json_member("m.homeserver", json_obj({json_member("base_url", json_str(base_url))})),
+                          })));
     }
 
     // GET /_matrix/client/versions is the unauthenticated discovery endpoint
@@ -1541,9 +1734,10 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/login")
     {
-        return resp(200U, json_serialize(json_obj({
-                              json_member("flows", json_arr({json_obj({json_member("type", json_str("m.login.password"))})})),
-                          })));
+        return resp(200U,
+                    json_serialize(json_obj({
+                        json_member("flows", json_arr({json_obj({json_member("type", json_str("m.login.password"))})})),
+                    })));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
     {
@@ -1561,10 +1755,43 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             rt.devices.push_back({body->user_id, body->device_id, body->device_id});
         }
+        auto response_body = canonicaljson::Object{
+            json_member("access_token", json_str(result.value)),
+            json_member("user_id", json_str(body->user_id)),
+            json_member("device_id", json_str(body->device_id)),
+        };
+        if (body->supports_refresh_tokens)
+        {
+            auto const refresh_token = issue_refresh_token_for_session(rt.homeserver, body->user_id, body->device_id);
+            if (!refresh_token.ok)
+            {
+                return err(refresh_token.status, "M_UNKNOWN", refresh_token.reason);
+            }
+            response_body.push_back(json_member("refresh_token", json_str(refresh_token.value)));
+            response_body.push_back(json_member("expires_in_ms", json_int(3600000)));
+        }
+        return resp(200U, json_serialize(json_obj(std::move(response_body))));
+    }
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/refresh")
+    {
+        auto const body = parse_refresh_body(req.body);
+        if (!body.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "refresh body must contain refresh_token");
+        }
+        auto const refreshed = refresh_local_session(rt.homeserver, body->refresh_token);
+        if (!refreshed.ok)
+        {
+            return err(refreshed.status, refreshed.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", refreshed.reason);
+        }
+        if (find_device(rt, refreshed.user_id, refreshed.device_id) == nullptr)
+        {
+            rt.devices.push_back({refreshed.user_id, refreshed.device_id, refreshed.device_id});
+        }
         return resp(200U, json_serialize(json_obj({
-                              json_member("access_token", json_str(result.value)),
-                              json_member("user_id", json_str(body->user_id)),
-                              json_member("device_id", json_str(body->device_id)),
+                              json_member("access_token", json_str(refreshed.access_token)),
+                              json_member("refresh_token", json_str(refreshed.refresh_token)),
+                              json_member("expires_in_ms", json_int(3600000)),
                           })));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout")
@@ -1577,16 +1804,28 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // auth_issuer before login to detect OIDC support.  We do not implement
     // OIDC, so return 404 for the whole msc2965 namespace before the
     // access-token gate, otherwise the probes produce a misleading 401.
-    if (req.method == "GET" &&
-        starts_with(req.target, "/_matrix/client/unstable/org.matrix.msc2965/"))
+    if (req.method == "GET" && starts_with(req.target, "/_matrix/client/unstable/org.matrix.msc2965/"))
     {
         return err(404U, "M_UNRECOGNIZED", "OIDC not supported");
+    }
+
+    auto constexpr media_download_prefix = std::string_view{"/_matrix/media/v3/download/"};
+    if (req.method == "GET" && starts_with(req.target, media_download_prefix))
+    {
+        auto const r = handle_local_http_request(rt.homeserver, req);
+        return r.status == 200U ? resp(200U, r.body)
+                                : err(r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
     }
 
     auto const user = auth(rt, req.access_token);
     if (!user.has_value())
     {
         return err(401U, "M_UNKNOWN_TOKEN", "unauthenticated");
+    }
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/logout/all")
+    {
+        auto const r = logout_all_local_user(rt.homeserver, req.access_token);
+        return r.ok ? resp(200U, "{}") : err(r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", r.reason);
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/whoami")
     {
@@ -1614,16 +1853,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // global ruleset so clients can proceed to open their sync connection.
     if (req.method == "GET" && req.target == "/_matrix/client/v3/pushrules/")
     {
-        return resp(200U,
-                    json_serialize(json_obj({json_member(
-                        "global",
-                        json_obj({
-                            json_member("content", json_arr({})),
-                            json_member("override", json_arr({})),
-                            json_member("room", json_arr({})),
-                            json_member("sender", json_arr({})),
-                            json_member("underride", json_arr({})),
-                        }))})));
+        return resp(200U, json_serialize(json_obj({json_member("global", json_obj({
+                                                                             json_member("content", json_arr({})),
+                                                                             json_member("override", json_arr({})),
+                                                                             json_member("room", json_arr({})),
+                                                                             json_member("sender", json_arr({})),
+                                                                             json_member("underride", json_arr({})),
+                                                                         }))})));
     }
     // GET /_matrix/client/v3/profile/{userId}
     // Returns a stub profile (empty displayname, no avatar).  Cinny fetches
@@ -1639,12 +1875,21 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
 
     // GET /_matrix/media/v3/config
     // Reports the maximum upload size so clients know how large a file they
-    // may attach.  100 MiB is a safe default until media uploads are wired.
+    // may attach. The value is sourced from security.media.max_upload_size so
+    // client hints match the repository policy enforced during upload.
     if (req.method == "GET" && req.target == "/_matrix/media/v3/config")
     {
-        auto constexpr max_upload_bytes = std::int64_t{104857600}; // 100 MiB
-        return resp(200U,
-                    json_serialize(json_obj({json_member("m.upload.size", json_int(max_upload_bytes))})));
+        auto const parsed_limit = config::parse_size_limit(rt.homeserver.config.security().media.max_upload_size);
+        auto const bounded_limit = std::min(parsed_limit.valid ? parsed_limit.bytes : std::uint64_t{104857600U},
+                                            static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
+        auto const max_upload_bytes = static_cast<std::int64_t>(bounded_limit);
+        return resp(200U, json_serialize(json_obj({json_member("m.upload.size", json_int(max_upload_bytes))})));
+    }
+    if (req.method == "POST" && req.target == "/_matrix/media/v3/upload")
+    {
+        auto const r = handle_local_http_request(rt.homeserver, req);
+        return r.status == 200U ? resp(200U, media_upload_response_json(r.body))
+                                : err(r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_BAD_REQUEST", r.body);
     }
 
     // GET /_matrix/client/v3/voip/turnServer
@@ -1666,6 +1911,16 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         return resp(200U, devices_json(rt, *user));
     }
     auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+    if (req.method == "GET" && starts_with(req.target, dev_prefix))
+    {
+        auto const device_id = std::string_view{req.target}.substr(dev_prefix.size());
+        auto const* device = find_device(rt, *user, device_id);
+        if (device == nullptr)
+        {
+            return err(404U, "M_NOT_FOUND", "device not found");
+        }
+        return resp(200U, device_json(*device));
+    }
     if (req.method == "PUT" && starts_with(req.target, dev_prefix))
     {
         auto const device_id = std::string_view{req.target}.substr(dev_prefix.size());
@@ -1679,9 +1934,28 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
         }
+        if (!database::update_device_display_name(rt.homeserver.database.persistent_store, *user, device_id,
+                                                  body->display_name))
+        {
+            return err(500U, "M_UNKNOWN", "device update persistence failed");
+        }
         device->display_name = body->display_name;
         append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", *user,
                            device->device_id, "display_name_updated");
+        return resp(200U, "{}");
+    }
+    if (req.method == "DELETE" && starts_with(req.target, dev_prefix))
+    {
+        auto const device_id = std::string_view{req.target}.substr(dev_prefix.size());
+        auto const result = delete_local_device(rt.homeserver, *user, device_id);
+        if (!result.ok)
+        {
+            return err(result.status, result.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", result.reason);
+        }
+        auto const [first, last] = std::ranges::remove_if(rt.devices, [user, device_id](ClientDevice const& device) {
+            return device.user_id == *user && device.device_id == device_id;
+        });
+        rt.devices.erase(first, last);
         return resp(200U, "{}");
     }
     auto const safety_route = trust_safety::match_reporting_api_route(req.method, req.target);
@@ -1723,6 +1997,35 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto constexpr send_s = std::string_view{"/send"};
         auto constexpr state_s = std::string_view{"/state"};
         auto const suffix = std::string_view{req.target}.substr(room_prefix.size());
+        if (req.method == "PUT")
+        {
+            if (auto const path = room_send_path_parts(req.target); path.has_value())
+            {
+                auto rewritten = req;
+                auto event_body = event_body_from_content(path->event_type, req.body);
+                if (!event_body.has_value())
+                {
+                    return err(400U, "M_BAD_JSON", "event content must be a JSON object");
+                }
+                rewritten.method = "POST";
+                rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
+                rewritten.body = *event_body;
+                return wrap(handle_local_http_request(rt.homeserver, rewritten), "event_id");
+            }
+            if (auto const path = room_state_path_parts(req.target); path.has_value())
+            {
+                auto rewritten = req;
+                auto event_body = event_body_from_content(path->event_type, req.body, path->state_key);
+                if (!event_body.has_value())
+                {
+                    return err(400U, "M_BAD_JSON", "state content must be a JSON object");
+                }
+                rewritten.method = "POST";
+                rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
+                rewritten.body = *event_body;
+                return wrap(handle_local_http_request(rt.homeserver, rewritten), "event_id");
+            }
+        }
         if (req.method == "POST" && suffix.size() > join_s.size() &&
             suffix.substr(suffix.size() - join_s.size()) == join_s)
         {
@@ -1756,7 +2059,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             return err(400U, "M_INVALID_PARAM", "room id or alias must not be empty");
         }
-        auto rewritten   = req;
+        auto rewritten = req;
         rewritten.target = std::string{"/_matrix/client/v3/rooms/"} + std::string{room_segment} + "/join";
         return wrap(handle_local_http_request(rt.homeserver, rewritten), "room_id");
     }
@@ -1768,15 +2071,15 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     auto constexpr user_prefix = std::string_view{"/_matrix/client/v3/user/"};
     if (starts_with(req.target, user_prefix))
     {
-        auto const suffix        = std::string_view{req.target}.substr(user_prefix.size());
-        auto constexpr filter_s  = std::string_view{"/filter"};
-        auto constexpr filter_m  = std::string_view{"/filter/"};
+        auto const suffix = std::string_view{req.target}.substr(user_prefix.size());
+        auto constexpr filter_s = std::string_view{"/filter"};
+        auto constexpr filter_m = std::string_view{"/filter/"};
 
         if (req.method == "POST" && ends_with(suffix, filter_s))
         {
             // Extract and decode the userId from the URL path segment
             auto const encoded_user = suffix.substr(0U, suffix.size() - filter_s.size());
-            auto const path_user    = core::percent_decode(encoded_user);
+            auto const path_user = core::percent_decode(encoded_user);
             if (path_user != *user)
             {
                 return err(403U, "M_FORBIDDEN", "cannot upload filter for another user");
@@ -1786,8 +2089,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 return err(400U, "M_BAD_JSON", "filter body must not be empty");
             }
             auto const filter_id = generate_filter_id();
-            if (!database::store_filter(rt.homeserver.database.persistent_store,
-                                        {path_user, filter_id, req.body}))
+            if (!database::store_filter(rt.homeserver.database.persistent_store, {path_user, filter_id, req.body}))
             {
                 return err(500U, "M_UNKNOWN", "failed to persist filter");
             }
@@ -1798,14 +2100,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         if (req.method == "GET" && mid_pos != std::string_view::npos)
         {
             auto const encoded_user = suffix.substr(0U, mid_pos);
-            auto const path_user    = core::percent_decode(encoded_user);
+            auto const path_user = core::percent_decode(encoded_user);
             if (path_user != *user)
             {
                 return err(403U, "M_FORBIDDEN", "cannot access filter for another user");
             }
             auto const filter_id = std::string{suffix.substr(mid_pos + filter_m.size())};
-            auto const stored    = database::find_filter(rt.homeserver.database.persistent_store,
-                                                         path_user, filter_id);
+            auto const stored = database::find_filter(rt.homeserver.database.persistent_store, path_user, filter_id);
             if (!stored.has_value())
             {
                 return err(404U, "M_NOT_FOUND", "filter not found");
@@ -1821,7 +2122,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         if (auto const ad_pos = suffix.find(account_data_m); ad_pos != std::string_view::npos)
         {
             auto const encoded_user = suffix.substr(0U, ad_pos);
-            auto const type         = std::string{suffix.substr(ad_pos + account_data_m.size())};
+            auto const type = std::string{suffix.substr(ad_pos + account_data_m.size())};
             if (encoded_user.find('/') == std::string_view::npos && !type.empty())
             {
                 auto const path_user = core::percent_decode(encoded_user);
@@ -1844,7 +2145,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 if (req.method == "GET")
                 {
                     auto const& store = rt.homeserver.database.persistent_store;
-                    auto const found  = std::ranges::find_if(
+                    auto const found = std::ranges::find_if(
                         store.account_data, [&path_user, &type](database::PersistentAccountData const& d) {
                             return d.user_id == path_user && d.room_id.empty() && d.event_type == type;
                         });

@@ -23,12 +23,15 @@ remaining work before PostgreSQL-backed production operation.
 - SQLite RAII wrappers around database connections and prepared statements.
 - SQLite current-schema bootstrap for new database files.
 - SQLite row hydration for users, devices, access tokens, rooms, memberships,
-  events (with depth), current state, server signing keys (with server_name),
-  event DAG rows, event signatures, E2EE key state, media metadata, remote
-  media metadata, audit events, and admin actions.
+  refresh tokens, events (with depth), current state, server signing keys (with
+  server_name), event DAG rows, event signatures, E2EE key state, media
+  metadata, remote media metadata, audit events, and admin actions.
 - Write-through SQLite persistence behind the existing store mutation helpers.
 - Transaction-aware persistent-store commits with SQLite rollback support.
 - Atomic helpers for multi-row login, room creation, and state-event writes.
+- Persistent helpers for refresh-token rotation, global/device access-token
+  and refresh-token revocation, device display-name updates, and device
+  deletion.
 - SQLite hydration fails closed when a row query cannot be prepared or stepped
   to completion.
 - SQLite connections use a non-zero busy timeout for short-lived lock
@@ -95,8 +98,8 @@ The boundary provides these guarantees:
 - Existing SQLite database files apply pending project-owned migrations before
   runtime state is hydrated.
 - Auth and room mutations fail the request when required persistent writes fail.
-- Device/token, room/membership, and event/current-state mutations are committed
-  atomically before in-memory runtime state is updated.
+- Device/token, refresh-token, room/membership, and event/current-state
+  mutations are committed before in-memory runtime state is updated.
 - Signed event DAG rows are committed before the runtime room timeline is
   updated.
 - Multi-row runtime mutations commit through one backend transaction so partial

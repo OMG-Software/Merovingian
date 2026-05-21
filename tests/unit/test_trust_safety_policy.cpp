@@ -185,7 +185,7 @@ SCENARIO("Reporting API scaffold validates reports and exposes admin routes", "[
         valid_report.reason = "spam";
         valid_report.score = 50;
         auto invalid_report = valid_report;
-        invalid_report.reason.clear();
+        invalid_report.reporter_user_id.clear();
 
         WHEN("routes are matched and reports validated")
         {
@@ -202,7 +202,7 @@ SCENARIO("Reporting API scaffold validates reports and exposes admin routes", "[
             auto const valid_decision = merovingian::trust_safety::validate_safety_report(valid_report);
             auto const invalid_decision = merovingian::trust_safety::validate_safety_report(invalid_report);
 
-            THEN("client and admin reporting APIs exist and invalid reports fail closed")
+            THEN("client and admin reporting APIs exist and malformed reports fail closed")
             {
                 REQUIRE(report_route.matched);
                 REQUIRE_FALSE(report_route.route.requires_admin);
@@ -214,7 +214,7 @@ SCENARIO("Reporting API scaffold validates reports and exposes admin routes", "[
                 REQUIRE(valid_decision.allowed);
                 REQUIRE(valid_decision.action == merovingian::trust_safety::PolicyAction::accept_report);
                 REQUIRE_FALSE(invalid_decision.allowed);
-                REQUIRE(invalid_decision.reason.code == "report_reason_required");
+                REQUIRE(invalid_decision.reason.code == "invalid_report");
             }
         }
     }

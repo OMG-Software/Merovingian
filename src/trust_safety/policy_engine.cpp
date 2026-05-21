@@ -454,17 +454,6 @@ auto validate_safety_report(SafetyReportRequest const& request) -> PolicyDecisio
         return deny(PolicySurface::room, enforcement_reason("invalid_report", "report cannot be processed",
                                                             "report is missing reporter, room, or event"));
     }
-    if (request.reason.empty())
-    {
-        return deny(PolicySurface::room, enforcement_reason("report_reason_required", "report reason is required",
-                                                            "report reason is empty"));
-    }
-    if (request.score < -100 || request.score > 100)
-    {
-        return deny(PolicySurface::room, enforcement_reason("report_score_out_of_range", "report score is invalid",
-                                                            "report score must be between -100 and 100"));
-    }
-
     return {true, PolicySurface::room, PolicyAction::accept_report, {}, false, {}};
 }
 

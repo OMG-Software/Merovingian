@@ -22,7 +22,9 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 ## General Rules
 - Top level namespace should be `merovingian`
 - RAII is non negotiable, use it.
-- Prefer references over pointers
+- Prefer references over pointers.
+- No raw pointers, use smart pointers.
+- No calls to new/delete, malloc/free etc. 
 - Format C++ code with clang-format using the .clang-format file in the project root.
 - If something is ambiguous, ask clarifying questions, never assume.
 - Prefer simple, readable solutions over clever ones.
@@ -37,5 +39,5 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Record changes for each version in CHANGELOG.md
 - Ignore `.clwb` folder.
 - Always work in feature or bug branches, never main.
-- Prefer meson wraps over system installed libs.
+- Make the correct change for the ask, not the smallest.
 - Update docs\01-progress-tracker.md on each change, along with the other docs including CHANGELOG.
