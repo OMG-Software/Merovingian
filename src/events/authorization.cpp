@@ -430,6 +430,19 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 return make_denied("5", "banned user cannot join");
             }
 
+            // Matrix auth rule: the room creator's initial join is allowed when
+            // the only prior state is m.room.create — i.e. they have no existing
+            // membership event yet. This bootstraps every room before join rules
+            // or power levels exist.
+            if (!value_has_content(auth_events.sender_member) && !value_has_content(auth_events.target_member))
+            {
+                auto const* creator = event_content_string(auth_events.create, "creator");
+                if (creator != nullptr && *creator == *sender)
+                {
+                    return make_allowed("5");
+                }
+            }
+
             // Check join rules
             auto join_rule = std::string{"invite"};
             if (value_has_content(auth_events.join_rules))

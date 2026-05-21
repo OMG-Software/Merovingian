@@ -497,7 +497,7 @@ namespace
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return make_operation_result(false, {}, "unauthenticated");
+        return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
     auto const room_id =
@@ -525,13 +525,13 @@ namespace
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return make_operation_result(false, {}, "unauthenticated");
+        return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
-        return make_operation_result(false, {}, "unknown room");
+        return make_operation_result(false, {}, "unknown room", 403U);
     }
     if (!room_has_member(*room, *user_id))
     {
@@ -554,7 +554,7 @@ namespace
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return make_operation_result(false, {}, "unauthenticated");
+        return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
     auto* room = find_room(runtime.database, room_id);
@@ -604,21 +604,39 @@ namespace
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return make_operation_result(false, {}, "unauthenticated");
+        return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
     auto const* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
-        return make_operation_result(false, {}, "unknown room");
+        return make_operation_result(false, {}, "unknown room", 403U);
     }
     if (!room_has_member(*room, *user_id))
     {
-        return make_operation_result(false, {}, "not joined");
+        return make_operation_result(false, {}, "not joined", 403U);
     }
 
-    return make_operation_result(true, "room_id=" + room->room_id + " members=" + std::to_string(room->members.size()) +
-                                           " events=" + std::to_string(room->events.size()));
+    // Build a JSON array of the current state events for this room.
+    auto state_array = canonicaljson::Array{};
+    for (auto const& state : runtime.database.persistent_store.state)
+    {
+        if (state.room_id != room_id)
+        {
+            continue;
+        }
+        auto event_value = find_event_json(runtime.database.persistent_store, state.event_id);
+        if (!std::holds_alternative<std::nullptr_t>(event_value.storage()))
+        {
+            state_array.push_back(std::move(event_value));
+        }
+    }
+    auto serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(state_array)});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return make_operation_result(false, {}, "state serialization failed", 500U);
+    }
+    return make_operation_result(true, std::move(serialized.output));
 }
 
 [[nodiscard]] auto audit_event_count(HomeserverRuntime const& runtime) noexcept -> std::size_t

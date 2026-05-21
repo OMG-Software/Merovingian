@@ -363,6 +363,12 @@ namespace
         return MatrixRegisterBody{*username, *password, token == nullptr ? std::string{} : *token};
     }
 
+    [[nodiscard]] auto has_auth_field(std::string_view body) -> bool
+    {
+        auto const object = parsed_json_object(body);
+        return object.has_value() && object_member_object(*object, "auth") != nullptr;
+    }
+
     [[nodiscard]] auto configured_registration_token(config::Config const& config) -> std::string
     {
         if (!config.security().registration.require_token || config.security().registration.token_file.empty())
@@ -1070,11 +1076,28 @@ namespace
         }));
     }
 
+    [[nodiscard]] auto error_code_for_status(std::uint16_t status) -> std::string_view
+    {
+        if (status == 404U)
+        {
+            return "M_NOT_FOUND";
+        }
+        if (status == 403U)
+        {
+            return "M_FORBIDDEN";
+        }
+        if (status == 401U)
+        {
+            return "M_UNKNOWN_TOKEN";
+        }
+        return "M_UNKNOWN";
+    }
+
     [[nodiscard]] auto wrap(LocalHttpResponse const& r, std::string_view key) -> LocalHttpResponse
     {
         if (r.status != 200U)
         {
-            return err(r.status, "M_FORBIDDEN", r.body);
+            return err(r.status, error_code_for_status(r.status), r.body);
         }
         return resp(200U, json_serialize(json_obj({json_member(std::string{key}, json_str(r.body))})));
     }
@@ -1727,6 +1750,18 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             return err(400U, "M_BAD_JSON", "registration body must be Matrix JSON");
         }
+        // Matrix UI-auth: if no auth object is present, return 401 with the available flow.
+        if (!has_auth_field(req.body))
+        {
+            return resp(401U,
+                        json_serialize(json_obj({
+                            json_member("flows",
+                                        json_arr({json_obj({json_member(
+                                            "stages", json_arr({json_str("m.login.registration_token")}))})})),
+                            json_member("params", json_obj({})),
+                            json_member("session", json_str("merovingian-ui-auth")),
+                        })));
+        }
         auto const result =
             register_local_user(rt.homeserver, body->localpart, body->password, body->registration_token);
         return result.ok ? resp(200U, json_serialize(json_obj({json_member("user_id", json_str(result.value))})))
@@ -1817,6 +1852,51 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                 : err(r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
     }
 
+    // GET /_matrix/client/v3/profile/{userId}            (getUserProfile)
+    // GET /_matrix/client/v3/profile/{userId}/{keyName}   (getProfileField)
+    // Unauthenticated — served before the access-token gate. Returns 404
+    // when the user does not exist on this server.
+    auto constexpr profile_prefix = std::string_view{"/_matrix/client/v3/profile/"};
+    if (req.method == "GET" && starts_with(req.target, profile_prefix))
+    {
+        auto const path_remainder = std::string_view{req.target}.substr(profile_prefix.size());
+        // A sub-path selects a single profile field (Matrix getProfileField);
+        // no sub-path returns the whole profile object (getUserProfile).
+        auto const slash = path_remainder.find('/');
+        auto const encoded_target = slash == std::string_view::npos ? path_remainder : path_remainder.substr(0U, slash);
+        auto const field = slash == std::string_view::npos ? std::string_view{} : path_remainder.substr(slash + 1U);
+        auto const target_user = core::percent_decode(encoded_target);
+        auto const& store = rt.homeserver.database.persistent_store;
+        auto const user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
+            return u.user_id == target_user;
+        });
+        if (!user_exists)
+        {
+            return err(404U, "M_NOT_FOUND", "user not found");
+        }
+        auto const profile = database::find_profile(store, target_user);
+        auto const displayname = profile.has_value() ? profile->displayname : std::string{};
+        auto const avatar_url = profile.has_value() ? profile->avatar_url : std::string{};
+        if (field.empty())
+        {
+            return resp(200U, json_serialize(json_obj({
+                                  json_member("displayname", json_str(displayname)),
+                                  json_member("avatar_url", json_str(avatar_url)),
+                              })));
+        }
+        // getProfileField returns only the requested key; an unset or unknown
+        // field is reported as 404 M_NOT_FOUND per the Matrix spec.
+        if (field == "displayname" && !displayname.empty())
+        {
+            return resp(200U, json_serialize(json_obj({json_member("displayname", json_str(displayname))})));
+        }
+        if (field == "avatar_url" && !avatar_url.empty())
+        {
+            return resp(200U, json_serialize(json_obj({json_member("avatar_url", json_str(avatar_url))})));
+        }
+        return err(404U, "M_NOT_FOUND", "profile field not found");
+    }
+
     auto const user = auth(rt, req.access_token);
     if (!user.has_value())
     {
@@ -1830,6 +1910,25 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/whoami")
     {
         return resp(200U, json_serialize(json_obj({json_member("user_id", json_str(*user))})));
+    }
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/password")
+    {
+        auto const object = parsed_json_object(req.body);
+        if (!object.has_value())
+        {
+            return err(400U, "M_BAD_JSON", "password change body must be JSON");
+        }
+        auto const* new_password = string_member(*object, "new_password");
+        if (new_password == nullptr || new_password->empty())
+        {
+            return err(400U, "M_BAD_JSON", "new_password is required");
+        }
+        auto const result = change_local_user_password(rt.homeserver, req.access_token, *new_password);
+        if (!result.ok)
+        {
+            return err(result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN", result.reason);
+        }
+        return resp(200U, "{}");
     }
     // Clients (Cinny, Element) fetch /capabilities immediately after login to
     // discover what the server supports. Return a minimal stable set; extend
@@ -1861,16 +1960,49 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                                              json_member("underride", json_arr({})),
                                                                          }))})));
     }
-    // GET /_matrix/client/v3/profile/{userId}
-    // Returns a stub profile (empty displayname, no avatar).  Cinny fetches
-    // this immediately after login to populate the user-info header.
-    auto constexpr profile_prefix = std::string_view{"/_matrix/client/v3/profile/"};
-    if (req.method == "GET" && starts_with(req.target, profile_prefix))
+    // PUT /_matrix/client/v3/profile/{userId}/displayname
+    // PUT /_matrix/client/v3/profile/{userId}/avatar_url
+    // Both endpoints require the authenticated user to match the path userId.
+    auto constexpr profile_put_prefix = std::string_view{"/_matrix/client/v3/profile/"};
+    if (req.method == "PUT" && starts_with(req.target, profile_put_prefix))
     {
-        return resp(200U, json_serialize(json_obj({
-                              json_member("displayname", json_str("")),
-                              json_member("avatar_url", json_str("")),
-                          })));
+        auto const path_remainder = std::string_view{req.target}.substr(profile_put_prefix.size());
+        auto constexpr displayname_suffix = std::string_view{"/displayname"};
+        auto constexpr avatar_url_suffix = std::string_view{"/avatar_url"};
+        auto const is_displayname = path_remainder.ends_with(displayname_suffix);
+        auto const is_avatar_url = !is_displayname && path_remainder.ends_with(avatar_url_suffix);
+        if (is_displayname || is_avatar_url)
+        {
+            auto const sub_len = is_displayname ? displayname_suffix.size() : avatar_url_suffix.size();
+            auto const encoded_target = path_remainder.substr(0U, path_remainder.size() - sub_len);
+            auto const target_user = core::percent_decode(encoded_target);
+            if (target_user != *user)
+            {
+                return err(403U, "M_FORBIDDEN", "cannot update another user's profile");
+            }
+            auto const parsed = canonicaljson::parse_lossless(req.body);
+            auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (parsed.error != canonicaljson::ParseError::none || obj == nullptr)
+            {
+                return err(400U, "M_BAD_JSON", "profile update body must be a JSON object");
+            }
+            auto& store = rt.homeserver.database.persistent_store;
+            if (!database::find_profile(store, *user).has_value())
+            {
+                std::ignore = database::store_profile(store, {*user, {}, {}});
+            }
+            if (is_displayname)
+            {
+                auto const* val = string_member(*obj, "displayname");
+                std::ignore = database::update_profile_displayname(store, *user, val != nullptr ? *val : "");
+            }
+            else
+            {
+                auto const* val = string_member(*obj, "avatar_url");
+                std::ignore = database::update_profile_avatar_url(store, *user, val != nullptr ? *val : "");
+            }
+            return resp(200U, "{}");
+        }
     }
 
     // GET /_matrix/media/v3/config
@@ -1970,7 +2102,68 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/createRoom")
     {
-        return wrap(handle_local_http_request(rt.homeserver, req), "room_id");
+        // Parse optional body parameters.
+        auto const body_parsed = canonicaljson::parse_lossless(req.body);
+        auto const* body_obj = std::get_if<canonicaljson::Object>(&body_parsed.value.storage());
+        auto const* name_val  = body_obj != nullptr ? string_member(*body_obj, "name")  : nullptr;
+        auto const* topic_val = body_obj != nullptr ? string_member(*body_obj, "topic") : nullptr;
+        auto const* preset_val = body_obj != nullptr ? string_member(*body_obj, "preset") : nullptr;
+        auto const join_rule = (preset_val != nullptr && *preset_val == "public_chat") ? "public" : "invite";
+        auto const history_vis = (preset_val != nullptr && *preset_val == "public_chat") ? "world_readable" : "shared";
+
+        // Create the room record (returns the raw room_id string on success).
+        auto const create_r = handle_local_http_request(rt.homeserver, req);
+        if (create_r.status != 200U)
+        {
+            return err(create_r.status, error_code_for_status(create_r.status), create_r.body);
+        }
+        auto const room_id = create_r.body;
+
+        // Send one initial state event via the internal send path. The
+        // optional state_key defaults to "" for room-scoped state events;
+        // m.room.member must be keyed by the joining user's MXID.
+        auto const send_state = [&](std::string_view event_type, std::string_view content_json,
+                                    std::string_view state_key = std::string_view{}) {
+            auto ev = event_body_from_content(event_type, content_json, std::string{state_key});
+            if (!ev.has_value())
+            {
+                return;
+            }
+            auto inner = req;
+            inner.method = "POST";
+            inner.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
+            inner.body = std::move(*ev);
+            std::ignore = handle_local_http_request(rt.homeserver, inner);
+        };
+
+        send_state("m.room.create",
+                   json_serialize(json_obj({json_member("creator", json_str(*user)),
+                                            json_member("room_version", json_str("12"))})));
+        send_state("m.room.member",
+                   json_serialize(json_obj({json_member("membership", json_str("join")),
+                                            json_member("displayname", json_str(""))})),
+                   *user);
+        send_state("m.room.power_levels",
+                   json_serialize(json_obj({json_member("ban", json_int(50)),
+                                            json_member("events_default", json_int(0)),
+                                            json_member("kick", json_int(50)),
+                                            json_member("redact", json_int(50)),
+                                            json_member("state_default", json_int(50)),
+                                            json_member("users_default", json_int(0)),
+                                            json_member("users", json_obj({json_member(*user, json_int(100))}))})));
+        send_state("m.room.join_rules",
+                   json_serialize(json_obj({json_member("join_rule", json_str(join_rule))})));
+        send_state("m.room.history_visibility",
+                   json_serialize(json_obj({json_member("history_visibility", json_str(history_vis))})));
+        if (name_val != nullptr)
+        {
+            send_state("m.room.name", json_serialize(json_obj({json_member("name", json_str(*name_val))})));
+        }
+        if (topic_val != nullptr)
+        {
+            send_state("m.room.topic", json_serialize(json_obj({json_member("topic", json_str(*topic_val))})));
+        }
+        return resp(200U, json_serialize(json_obj({json_member("room_id", json_str(room_id))})));
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/joined_rooms")
     {
@@ -2039,7 +2232,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         if (req.method == "GET" && suffix.size() > state_s.size() &&
             suffix.substr(suffix.size() - state_s.size()) == state_s)
         {
-            return wrap(handle_local_http_request(rt.homeserver, req), "state");
+            // Matrix spec: GET /rooms/{roomId}/state returns the array directly.
+            auto result = handle_local_http_request(rt.homeserver, req);
+            if (result.status != 200U)
+            {
+                return err(result.status, error_code_for_status(result.status), result.body);
+            }
+            return result;
         }
     }
 

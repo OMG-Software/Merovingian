@@ -3,6 +3,7 @@
 #include "local_services.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <string>
 
@@ -90,7 +91,16 @@ auto run_local_vertical_slice(config::Config const& config) -> OperationResult
     {
         return make_operation_result(false, {}, "audit log did not record demo flow");
     }
-    return state;
+    // Build a diagnostic summary from runtime state for test assertions.
+    auto const& rooms = runtime.database.rooms;
+    auto const room_it = std::ranges::find_if(rooms, [&](LocalRoom const& r) { return r.room_id == room.value; });
+    if (room_it == rooms.end())
+    {
+        return make_operation_result(false, {}, "room not found in runtime database after demo flow");
+    }
+    auto const summary = "room_id=" + room.value + " members=" + std::to_string(room_it->members.size()) +
+                         " events=" + std::to_string(room_it->events.size());
+    return make_operation_result(true, summary);
 }
 
 } // namespace merovingian::homeserver

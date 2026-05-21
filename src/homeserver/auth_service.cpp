@@ -215,6 +215,8 @@ namespace
             return make_operation_result(false, {}, "user persistence failed", 500U);
         }
         runtime.database.users.push_back({user_id, *password_hash, false, false, admin});
+        // Create empty profile so GET /profile returns real data from first login.
+        std::ignore = database::store_profile(runtime.database.persistent_store, {user_id, {}, {}});
         append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.user_registered", user_id,
                            user_id, audit_outcome);
         return make_operation_result(true, user_id);
@@ -555,6 +557,39 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
     append_local_audit(runtime.database, observability::AuditCategory::auth, "device.deleted", user_id, device_id,
                        "deleted");
     return make_operation_result(true, std::string{device_id});
+}
+
+auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
+                                std::string_view new_password) -> OperationResult
+{
+    auto const user_id = authenticated_user(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+    if (!auth::password_is_acceptable(new_password))
+    {
+        return make_operation_result(false, {}, "password rejected", 400U);
+    }
+    auto const new_hash = hash_password(new_password);
+    if (!new_hash.has_value())
+    {
+        return make_operation_result(false, {}, "password hashing failed", 500U);
+    }
+    if (!database::update_user_password(runtime.database.persistent_store, *user_id, *new_hash))
+    {
+        return make_operation_result(false, {}, "password update failed", 500U);
+    }
+    // Mirror the change into the in-memory LocalUser so subsequent logins see the new hash.
+    auto const it = std::ranges::find_if(runtime.database.users,
+                                         [&](LocalUser const& u) { return u.user_id == *user_id; });
+    if (it != runtime.database.users.end())
+    {
+        it->password_hash = *new_hash;
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.password_changed", *user_id, {},
+                       "changed");
+    return make_operation_result(true, *user_id);
 }
 
 } // namespace merovingian::homeserver

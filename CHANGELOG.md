@@ -1,5 +1,28 @@
 # Changelog
 
+## 0.3.0
+
+- Added Matrix UI-Interactive Authentication for `POST /register`: when the
+  request body omits the `auth` field the server returns 401 with the
+  `m.login.registration_token` flow, a `params` object, and a `session` token
+  rather than a flat 403 error.
+- Added `POST /_matrix/client/v3/account/password` endpoint: authenticated users
+  can change their password; the new value is validated, hashed with Argon2id,
+  and written through to both the in-memory runtime and the persistent store.
+- Added `PUT /_matrix/client/v3/profile/{userId}/displayname` and
+  `PUT /_matrix/client/v3/profile/{userId}/avatar_url` endpoints with
+  cross-user 403 protection and JSON-body validation.
+- Moved `GET /_matrix/client/v3/profile/{userId}` before the access-token gate
+  so it is unauthenticated per the Matrix spec; returns 404 for unknown users.
+- Fixed `GET /_matrix/client/v3/profile/{userId}/{keyName}` (`getProfileField`)
+  to return only the requested field instead of the whole profile object; an
+  unset or unknown field now returns 404 M_NOT_FOUND.
+- Extended the client-server v1.18 Complement-style conformance fixture with
+  profile negative cases (unknown-user 404, cross-user PUT 403), unknown-room
+  state GET (403), and password-change coverage (unauthenticated 401,
+  weak-password 400, valid change 200).
+- Bumped project, executable, and package metadata versions to `0.3.0`.
+
 ## 0.2.17
 
 - Added durable media blob storage, policy-rule persistence, and media-blob
