@@ -148,3 +148,19 @@ SCENARIO("URL percent-decoding handles reserved characters", "[core][http][query
         }
     }
 }
+
+SCENARIO("URL path component decoding preserves path literal characters", "[core][http][routing]")
+{
+    GIVEN("a Matrix path segment containing percent-encoded reserved characters")
+    {
+        WHEN("the segment is decoded as a path component")
+        {
+            auto const decoded = merovingian::core::percent_decode_path_component("!room2%3Apong.ping.me.uk+mobile");
+
+            THEN("encoded delimiters are restored and plus remains literal")
+            {
+                REQUIRE(decoded == "!room2:pong.ping.me.uk+mobile");
+            }
+        }
+    }
+}

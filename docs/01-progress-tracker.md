@@ -74,7 +74,8 @@ separate operator decision once this branch is approved._
   are runtime-wired with canonical JSON, Matrix content hashes, reference-hash
   event IDs, persisted signing keys, signed runtime event JSON, event DAG rows,
   room-version-aware redaction, v6+ auth rules, v2 state resolution, encrypted
-  room policy, and restart-survival coverage.
+  room policy, decoded Matrix room path components for browser-encoded join,
+  send, and state routes, and restart-survival coverage.
 - Sync foundation: stream tokens, initial sync, incremental event diffing via
   `since`, Matrix-shaped sync responses with event bodies, invite/leave room
   categories, and top-level `presence`, `account_data`, `to_device`,
