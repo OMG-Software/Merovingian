@@ -223,17 +223,6 @@ namespace
         return std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::int64_t const*
-    {
-        auto const* value = object_member(object, key);
-        if (value == nullptr)
-        {
-            return nullptr;
-        }
-        return std::get_if<std::int64_t>(&value->storage());
-    }
-
     [[nodiscard]] auto boolean_member(canonicaljson::Object const& object, std::string_view key) noexcept -> bool const*
     {
         auto const* value = object_member(object, key);

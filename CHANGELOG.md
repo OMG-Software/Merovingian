@@ -23,6 +23,8 @@
   optional `reason` and ignoring the removed legacy `score` field.
 - `/keys/query` and `/keys/claim` now honor their Matrix request-body maps
   instead of returning or claiming only the caller's current device keys.
+- Added a generated Matrix v1.18 Client-Server API reference document from the
+  official OpenAPI description, plus a deterministic regeneration script.
 
 ## 0.2.15
 

@@ -9,6 +9,9 @@ whether a capability is ready.
 The latest repository code-audit report is tracked in
 `docs/security-code-audit-alpha.md`.
 
+The generated Matrix v1.18 Client-Server API reference used to audit endpoint
+coverage is tracked in `docs/matrix-v1.18-client-server-api.md`.
+
 No milestone is complete until every listed `TODO` item for that milestone is
 closed and the evidence is recorded in CI or release notes.
 
