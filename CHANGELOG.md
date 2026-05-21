@@ -10,6 +10,9 @@
   targets containing token-like query parameters.
 - Added `merovingian-server --debug` and `--log-file <path>` so operators can
   enable console and file diagnostics during room-join triage.
+- Fixed client-server room joins for browser-encoded room IDs such as
+  `!room%3Aserver`: Matrix path components are decoded before local room
+  lookup, so join-by-id no longer rejects existing rooms as unknown.
 - Documented the operator debug logging workflow for diagnosing failed room
   joins without logging access tokens, passwords, Matrix event bodies, media
   payloads, or signatures.

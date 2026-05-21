@@ -57,6 +57,29 @@ auto percent_decode(std::string_view encoded) -> std::string
     return result;
 }
 
+auto percent_decode_path_component(std::string_view encoded) -> std::string
+{
+    auto result = std::string{};
+    result.reserve(encoded.size());
+    auto i = std::size_t{0U};
+    while (i < encoded.size())
+    {
+        if (encoded[i] == '%' && i + 2U < encoded.size())
+        {
+            auto const high = from_hex(encoded[i + 1U]);
+            auto const low = from_hex(encoded[i + 2U]);
+            result.push_back(static_cast<char>((high << 4U) | low));
+            i += 3U;
+        }
+        else
+        {
+            result.push_back(encoded[i]);
+            ++i;
+        }
+    }
+    return result;
+}
+
 auto parse_query_params(std::string_view target) -> SyncRequest
 {
     auto request = SyncRequest{};

@@ -1355,8 +1355,8 @@ namespace
         {
             return std::nullopt;
         }
-        return RoomSendPathParts{std::string{suffix.substr(0U, marker_pos)},
-                                 std::string{event_and_txn.substr(0U, separator)}};
+        return RoomSendPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
+                                 core::percent_decode_path_component(event_and_txn.substr(0U, separator))};
     }
 
     [[nodiscard]] auto room_state_path_parts(std::string_view target) -> std::optional<RoomStatePathParts>
@@ -1384,8 +1384,9 @@ namespace
         {
             return std::nullopt;
         }
-        return RoomStatePathParts{std::string{suffix.substr(0U, marker_pos)}, std::string{event_type},
-                                  core::percent_decode(state_key)};
+        return RoomStatePathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
+                                  core::percent_decode_path_component(event_type),
+                                  core::percent_decode_path_component(state_key)};
     }
 
     [[nodiscard]] auto event_body_from_content(std::string_view event_type, std::string_view content,
@@ -1897,7 +1898,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const slash = path_remainder.find('/');
         auto const encoded_target = slash == std::string_view::npos ? path_remainder : path_remainder.substr(0U, slash);
         auto const field = slash == std::string_view::npos ? std::string_view{} : path_remainder.substr(slash + 1U);
-        auto const target_user = core::percent_decode(encoded_target);
+        auto const target_user = core::percent_decode_path_component(encoded_target);
         auto const& store = rt.homeserver.database.persistent_store;
         auto const user_exists = std::ranges::any_of(store.users, [&target_user](database::PersistentUser const& u) {
             return u.user_id == target_user;
@@ -2018,7 +2019,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             auto const sub_len = is_displayname ? displayname_suffix.size() : avatar_url_suffix.size();
             auto const encoded_target = path_remainder.substr(0U, path_remainder.size() - sub_len);
-            auto const target_user = core::percent_decode(encoded_target);
+            auto const target_user = core::percent_decode_path_component(encoded_target);
             if (target_user != *user)
             {
                 return err(403U, "M_FORBIDDEN", "cannot update another user's profile");
@@ -2261,7 +2262,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         if (req.method == "POST" && suffix.size() > join_s.size() &&
             suffix.substr(suffix.size() - join_s.size()) == join_s)
         {
-            auto const room_id = std::string{suffix.substr(0U, suffix.size() - join_s.size())};
+            auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - join_s.size()));
             log_diagnostic("room.join.dispatch",
                            {
                                {"actor",   *user,                                            false},
@@ -2319,12 +2320,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             });
             return err(400U, "M_INVALID_PARAM", "room id or alias must not be empty");
         }
+        auto const decoded_room_segment = core::percent_decode_path_component(room_segment);
         auto rewritten = req;
-        rewritten.target = std::string{"/_matrix/client/v3/rooms/"} + std::string{room_segment} + "/join";
+        rewritten.target = std::string{"/_matrix/client/v3/rooms/"} + decoded_room_segment + "/join";
         log_diagnostic("room.join_by_id.rewrite",
                        {
                            {"actor",            *user,                                                  false},
-                           {"room_id_or_alias", std::string{room_segment},                              false},
+                           {"room_id_or_alias", decoded_room_segment,                                   false},
                            {"target",           observability::sanitized_http_target(req.target),       false},
                            {"rewritten_target", observability::sanitized_http_target(rewritten.target), false}
         });
@@ -2332,7 +2334,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         log_diagnostic(result.status == 200U ? "room.join_by_id.accepted" : "room.join_by_id.rejected",
                        {
                            {"actor",            *user,                                                   false},
-                           {"room_id_or_alias", std::string{room_segment},                               false},
+                           {"room_id_or_alias", decoded_room_segment,                                    false},
                            {"status",           std::to_string(result.status),                           false},
                            {"reason",           result.status == 200U ? std::string{"ok"} : result.body, false}
         });
@@ -2354,7 +2356,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             // Extract and decode the userId from the URL path segment
             auto const encoded_user = suffix.substr(0U, suffix.size() - filter_s.size());
-            auto const path_user = core::percent_decode(encoded_user);
+            auto const path_user = core::percent_decode_path_component(encoded_user);
             if (path_user != *user)
             {
                 return err(403U, "M_FORBIDDEN", "cannot upload filter for another user");
@@ -2375,7 +2377,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         if (req.method == "GET" && mid_pos != std::string_view::npos)
         {
             auto const encoded_user = suffix.substr(0U, mid_pos);
-            auto const path_user = core::percent_decode(encoded_user);
+            auto const path_user = core::percent_decode_path_component(encoded_user);
             if (path_user != *user)
             {
                 return err(403U, "M_FORBIDDEN", "cannot access filter for another user");
@@ -2400,7 +2402,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             auto const type = std::string{suffix.substr(ad_pos + account_data_m.size())};
             if (encoded_user.find('/') == std::string_view::npos && !type.empty())
             {
-                auto const path_user = core::percent_decode(encoded_user);
+                auto const path_user = core::percent_decode_path_component(encoded_user);
                 if (path_user != *user)
                 {
                     return err(403U, "M_FORBIDDEN", "cannot access account data for another user");

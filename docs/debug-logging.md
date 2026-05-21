@@ -23,7 +23,8 @@ logger names:
   TLS handshake failures, and listener accept failures.
 - `client_server`: Matrix client-server route dispatch, access-token acceptance
   or rejection, `/rooms/{roomId}/join`, and `/join/{roomIdOrAlias}` rewrite
-  outcomes.
+  outcomes. Room identifiers in join diagnostics are decoded from Matrix URL
+  path components before lookup, so `%3A` appears as `:` in the room ID.
 - `local_router`: internal local route dispatch into room, media, admin, and
   federation handlers.
 - `auth`: login and access-token lookup decisions without exposing token values.

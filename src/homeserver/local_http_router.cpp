@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -384,14 +385,14 @@ namespace
     if (request.method == "POST" && suffix.size() > join_suffix.size() &&
         suffix.substr(suffix.size() - join_suffix.size()) == join_suffix)
     {
-        auto const room_id = suffix.substr(0U, suffix.size() - join_suffix.size());
+        auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - join_suffix.size()));
         log_diagnostic("room.join.dispatch", {
-                                                 {"room_id", std::string{room_id}, false}
+                                                 {"room_id", room_id, false}
         });
         auto result = join_room(runtime, request.access_token, room_id);
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
                        {
-                           {"room_id", std::string{room_id},                                       false},
+                           {"room_id", room_id,                                                    false},
                            {"status",  std::to_string(result.status != 0U ? result.status : 403U), false},
                            {"reason",  result.ok ? std::string{"ok"} : result.reason,              false}
         });
@@ -401,15 +402,16 @@ namespace
     if (request.method == "POST" && suffix.size() > send_suffix.size() &&
         suffix.substr(suffix.size() - send_suffix.size()) == send_suffix)
     {
-        auto const room_id = suffix.substr(0U, suffix.size() - send_suffix.size());
-        log_diagnostic("room.event.dispatch", {
-                                                  {"room_id",    std::string{room_id},                false},
-                                                  {"body_bytes", std::to_string(request.body.size()), false}
+        auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - send_suffix.size()));
+        log_diagnostic("room.event.dispatch",
+                       {
+                           {"room_id",    room_id,                             false},
+                           {"body_bytes", std::to_string(request.body.size()), false}
         });
         auto result = send_event(runtime, request.access_token, room_id, request.body);
         log_diagnostic(result.ok ? "room.event.accepted" : "room.event.rejected",
                        {
-                           {"room_id", std::string{room_id},                                       false},
+                           {"room_id", room_id,                                                    false},
                            {"status",  std::to_string(result.status != 0U ? result.status : 403U), false},
                            {"reason",  result.ok ? std::string{"ok"} : result.reason,              false}
         });
@@ -419,8 +421,9 @@ namespace
     if (request.method == "GET" && suffix.size() > state_suffix.size() &&
         suffix.substr(suffix.size() - state_suffix.size()) == state_suffix)
     {
-        auto result =
-            fetch_room_state(runtime, request.access_token, suffix.substr(0U, suffix.size() - state_suffix.size()));
+        auto const room_id =
+            core::percent_decode_path_component(suffix.substr(0U, suffix.size() - state_suffix.size()));
+        auto result = fetch_room_state(runtime, request.access_token, room_id);
         return result.ok ? response(200U, result.value)
                          : response(result.status != 0U ? result.status : 403U, result.reason);
     }

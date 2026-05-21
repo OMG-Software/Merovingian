@@ -46,6 +46,17 @@ namespace
     return body.substr(value_begin, value_end - value_begin);
 }
 
+[[nodiscard]] auto percent_encode_colons(std::string value) -> std::string
+{
+    auto pos = value.find(':');
+    while (pos != std::string::npos)
+    {
+        value.replace(pos, 1U, "%3A");
+        pos = value.find(':', pos + 3U);
+    }
+    return value;
+}
+
 [[nodiscard]] auto event_id(std::string const& body) -> std::string
 {
     auto const key = std::string{"\"event_id\":\""};
@@ -1537,6 +1548,20 @@ SCENARIO("Join-by-id endpoint joins a room through the local join handler", "[ho
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(response.body.find(id) != std::string::npos);
+            }
+        }
+
+        WHEN("POST /_matrix/client/v3/join/{roomId} is called with a percent-encoded room ID")
+        {
+            auto const encoded_id = percent_encode_colons(id);
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/join/" + encoded_id, token, "{}"});
+
+            THEN("the path segment is decoded before the local room lookup")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find(id) != std::string::npos);
+                REQUIRE(response.body.find(encoded_id) == std::string::npos);
             }
         }
 
