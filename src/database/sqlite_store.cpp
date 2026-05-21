@@ -410,6 +410,13 @@ namespace
                                                     text_is_true(column_text(row, 7))});
                    }) &&
                load_rows(connection,
+                         "SELECT storage_id, hash_algorithm, digest, size_bytes, bytes, ref_count FROM media_blobs",
+                         [&store](sqlite3_stmt& row) {
+                             store.media_blobs.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                          parse_u64(column_text(row, 3)), column_text(row, 4),
+                                                          parse_u64(column_text(row, 5))});
+                         }) &&
+               load_rows(connection,
                          "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM "
                          "remote_media",
                          [&store](sqlite3_stmt& row) {
@@ -426,6 +433,12 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.admin_actions.push_back(
                                  {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection, "SELECT rule_id, scope, entity, action, reason FROM policy_rules ORDER BY rule_id",
+                         [&store](sqlite3_stmt& row) {
+                             store.policy_rules.push_back({column_text(row, 0), column_text(row, 1),
+                                                           column_text(row, 2), column_text(row, 3),
+                                                           column_text(row, 4)});
                          }) &&
                load_rows(connection, "SELECT user_id, event_type, json, stream_id FROM account_data ORDER BY stream_id",
                          [&store](sqlite3_stmt& row) {

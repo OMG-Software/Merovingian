@@ -602,6 +602,45 @@ SCENARIO("Persistent store replays outbound federation queue state after restart
     }
 }
 
+SCENARIO("Persistent store replays policy rules and durable media blobs after restart",
+         "[database][persistence][media][policy]")
+{
+    GIVEN("a SQLite persistent store with policy and media blob rows")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        WHEN("policy rules and blob bytes are stored and the database is reopened")
+        {
+            auto const policy_ok = merovingian::database::store_policy_rule(
+                store, {"deny-evil", "server", "evil.example.org", "deny", "trusted policy list"});
+            auto const digest = std::string(64U, 'a');
+            auto const blob_ok = merovingian::database::store_media_blob(
+                store, {"blob_" + digest + "_5", "blake2b", digest, 5U, "hello", 2U});
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+
+            THEN("policy enforcement inputs and blob payloads are hydrated durably")
+            {
+                REQUIRE(policy_ok);
+                REQUIRE(blob_ok);
+                REQUIRE(reopened.store.policy_rules.size() == 1U);
+                REQUIRE(reopened.store.policy_rules.front().rule_id == "deny-evil");
+                REQUIRE(reopened.store.policy_rules.front().action == "deny");
+                REQUIRE(reopened.store.media_blobs.size() == 1U);
+                REQUIRE(reopened.store.media_blobs.front().storage_id == "blob_" + digest + "_5");
+                REQUIRE(reopened.store.media_blobs.front().bytes == "hello");
+                REQUIRE(reopened.store.media_blobs.front().ref_count == 2U);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
 SCENARIO("Persistent store records durable server-blind E2EE key state", "[database][persistence][key-api]")
 {
     GIVEN("an opened persistent store")
@@ -801,10 +840,11 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
 
             THEN("required Matrix storage areas have table-specific definitions")
             {
-                // 41 = the 37 baseline tables plus four sync-surface tables
+                // 42 = the 37 baseline tables plus four sync-surface tables
+                // plus durable media blob storage
                 // (room_account_data, to_device_messages, device_list_changes,
                 // presence_state) folded into the initial schema.
-                REQUIRE(tables.size() == 41U);
+                REQUIRE(tables.size() == 42U);
                 REQUIRE(merovingian::database::current_schema_version() == 1U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());

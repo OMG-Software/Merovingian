@@ -635,6 +635,22 @@ namespace
             }
         }
 
+        auto media_blobs =
+            query_rows(connection, "postgresql_load_media_blobs",
+                       "SELECT storage_id, hash_algorithm, digest, size_bytes, bytes, ref_count FROM media_blobs "
+                       "ORDER BY storage_id");
+        if (!media_blobs.ok)
+        {
+            return false;
+        }
+        for (auto const& row : media_blobs.rows)
+        {
+            if (row.size() >= 6U)
+            {
+                store.media_blobs.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4], parse_u64(row[5])});
+            }
+        }
+
         auto remote_media = query_rows(connection, "postgresql_load_remote_media",
                                        "SELECT server_name, media_id, content_type, size_bytes, quarantined FROM "
                                        "remote_media ORDER BY server_name, media_id");
@@ -677,6 +693,21 @@ namespace
             if (row.size() >= 3U)
             {
                 store.admin_actions.push_back({row[0], row[1], row[2]});
+            }
+        }
+
+        auto policy_rules = query_rows(connection, "postgresql_load_policy_rules",
+                                       "SELECT rule_id, scope, entity, action, reason FROM policy_rules ORDER BY "
+                                       "rule_id");
+        if (!policy_rules.ok)
+        {
+            return false;
+        }
+        for (auto const& row : policy_rules.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                store.policy_rules.push_back({row[0], row[1], row[2], row[3], row[4]});
             }
         }
 

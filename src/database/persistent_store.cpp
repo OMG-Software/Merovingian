@@ -239,6 +239,20 @@ namespace
             return {false, "local media metadata is incomplete"};
         }
     }
+    for (auto const& blob : store.media_blobs)
+    {
+        if (blob.storage_id.empty() || !media_hash_is_valid(blob.hash_algorithm, blob.digest) || blob.size_bytes == 0U)
+        {
+            return {false, "media blob metadata is incomplete"};
+        }
+    }
+    for (auto const& rule : store.policy_rules)
+    {
+        if (rule.rule_id.empty() || rule.scope.empty() || rule.entity.empty() || rule.action.empty())
+        {
+            return {false, "policy rule metadata is incomplete"};
+        }
+    }
     return {true, {}};
 }
 
@@ -1253,6 +1267,40 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto store_media_blob(PersistentStore& store, PersistentMediaBlob blob) -> bool
+{
+    if (blob.storage_id.empty() || blob.hash_algorithm.empty() || blob.digest.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement("upsert_media_blob",
+                             "INSERT INTO media_blobs VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (storage_id) DO "
+                             "UPDATE SET hash_algorithm = $2, digest = $3, size_bytes = $4, bytes = $5, ref_count = $6",
+                             {
+                                 {blob.storage_id,                 false},
+                                 {blob.hash_algorithm,             false},
+                                 {blob.digest,                     false},
+                                 {std::to_string(blob.size_bytes), false},
+                                 {blob.bytes,                      true },
+                                 {std::to_string(blob.ref_count),  false}
+    })))
+    {
+        return false;
+    }
+    auto existing = std::ranges::find_if(store.media_blobs, [&blob](PersistentMediaBlob const& current) {
+        return current.storage_id == blob.storage_id;
+    });
+    if (existing != store.media_blobs.end())
+    {
+        *existing = std::move(blob);
+        return true;
+    }
+    store.media_blobs.push_back(std::move(blob));
+    return true;
+}
+
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool
 {
     if (!record_and_persist(store, record_statement("append_audit", "INSERT INTO audit_log VALUES ($1, $2, $3, $4, $5)",
@@ -1284,6 +1332,39 @@ namespace
         return false;
     }
     store.admin_actions.push_back(std::move(action));
+    return true;
+}
+
+[[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool
+{
+    if (rule.rule_id.empty() || rule.scope.empty() || rule.entity.empty() || rule.action.empty())
+    {
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement("upsert_policy_rule",
+                             "INSERT INTO policy_rules VALUES ($1, $2, $3, $4, $5) ON CONFLICT (rule_id) DO UPDATE "
+                             "SET scope = $2, entity = $3, action = $4, reason = $5",
+                             {
+                                 {rule.rule_id, false},
+                                 {rule.scope,   false},
+                                 {rule.entity,  false},
+                                 {rule.action,  false},
+                                 {rule.reason,  false}
+    })))
+    {
+        return false;
+    }
+    auto existing = std::ranges::find_if(store.policy_rules, [&rule](PersistentPolicyRule const& current) {
+        return current.rule_id == rule.rule_id;
+    });
+    if (existing != store.policy_rules.end())
+    {
+        *existing = std::move(rule);
+        return true;
+    }
+    store.policy_rules.push_back(std::move(rule));
     return true;
 }
 

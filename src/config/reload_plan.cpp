@@ -222,6 +222,10 @@ auto build_reload_plan(Config const& current, Config const& next) -> ReloadPlan
     {
         add_change(plan, "security.media.remote_fetch_timeout");
     }
+    if (current.security().media.remote_fetch_enabled != next.security().media.remote_fetch_enabled)
+    {
+        add_change(plan, "security.media.remote_fetch_enabled");
+    }
     if (current.security().media.decode_in_sandbox != next.security().media.decode_in_sandbox)
     {
         add_change(plan, "security.media.decode_in_sandbox");

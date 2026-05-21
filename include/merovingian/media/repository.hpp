@@ -29,6 +29,16 @@ struct LocalMediaBlob final
     std::uint64_t ref_count{0U};
 };
 
+struct LocalMediaThumbnail final
+{
+    std::string media_id{};
+    std::string storage_id{};
+    std::uint32_t width{0U};
+    std::uint32_t height{0U};
+    std::string content_type{"image/png"};
+    std::uint64_t size_bytes{0U};
+};
+
 struct LocalMediaRecord final
 {
     std::string media_id{};
@@ -54,6 +64,9 @@ struct MediaRepositoryMetrics final
     std::uint64_t admin_releases{0U};
     std::uint64_t admin_removals{0U};
     std::uint64_t remote_fetch_rejections{0U};
+    std::uint64_t remote_fetches_accepted{0U};
+    std::uint64_t processing_rejections{0U};
+    std::uint64_t thumbnails_generated{0U};
     std::uint64_t stored_blobs{0U};
     std::uint64_t stored_bytes{0U};
 };
@@ -63,6 +76,7 @@ struct LocalMediaRepository final
     RuntimeMediaConfig config{};
     std::vector<LocalMediaRecord> records{};
     std::vector<LocalMediaBlob> blobs{};
+    std::vector<LocalMediaThumbnail> thumbnails{};
     MediaRepositoryMetrics metrics{};
     std::uint64_t next_media_sequence{1U};
 };
@@ -74,6 +88,10 @@ struct LocalMediaUploadRequest final
     std::string sniffed_mime_type{};
     std::string bytes{};
     bool scanner_clean{true};
+    std::uint64_t decoded_size_bytes{0U};
+    std::uint64_t pixel_count{0U};
+    std::uint64_t animation_frame_count{1U};
+    bool decoder_marked_safe{true};
 };
 
 struct LocalMediaUploadResult final
@@ -115,6 +133,13 @@ struct RemoteMediaDownloadRequest final
     std::string media_id{};
     std::string resolved_host{};
     std::vector<std::string> resolved_addresses{};
+    std::string content_type{};
+    std::string bytes{};
+    bool scanner_clean{true};
+    std::uint64_t decoded_size_bytes{0U};
+    std::uint64_t pixel_count{0U};
+    std::uint64_t animation_frame_count{1U};
+    bool decoder_marked_safe{true};
 };
 
 struct RemoteMediaDownloadResult final
@@ -122,16 +147,28 @@ struct RemoteMediaDownloadResult final
     bool ok{false};
     std::uint16_t status{500U};
     std::string reason{};
+    std::string content_type{};
+    std::string bytes{};
+    std::uint64_t size_bytes{0U};
+    std::string hash_algorithm{};
+    std::string digest{};
+    std::string storage_id{};
+    bool quarantined{false};
 };
 
 [[nodiscard]] auto local_media_state_name(LocalMediaState state) noexcept -> char const*;
 [[nodiscard]] auto make_local_media_repository(RuntimeMediaConfig config) -> LocalMediaRepository;
+[[nodiscard]] auto make_local_media_storage_id(std::string_view digest, std::uint64_t size_bytes) -> std::string;
 [[nodiscard]] auto calculate_media_digest(std::string_view bytes) -> std::string;
 [[nodiscard]] auto media_repository_summary(LocalMediaRepository const& repository) -> std::string;
 [[nodiscard]] auto media_repository_metrics(LocalMediaRepository const& repository)
     -> std::vector<observability::MetricSample>;
 [[nodiscard]] auto find_local_media_record(LocalMediaRepository const& repository, std::string_view media_id) noexcept
     -> LocalMediaRecord const*;
+[[nodiscard]] auto find_local_media_blob(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
+    -> LocalMediaBlob const*;
+auto restore_local_media_repository(LocalMediaRepository& repository, std::vector<LocalMediaRecord> records,
+                                    std::vector<LocalMediaBlob> blobs) -> void;
 [[nodiscard]] auto upload_local_media(LocalMediaRepository& repository, std::string_view server_name,
                                       LocalMediaUploadRequest const& request) -> LocalMediaUploadResult;
 [[nodiscard]] auto download_local_media(LocalMediaRepository& repository, std::string_view server_name,
@@ -144,5 +181,7 @@ struct RemoteMediaDownloadResult final
                                       std::string_view reason) -> LocalMediaAdminResult;
 [[nodiscard]] auto fetch_remote_media_disabled(LocalMediaRepository& repository,
                                                RemoteMediaDownloadRequest const& request) -> RemoteMediaDownloadResult;
+[[nodiscard]] auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
+    -> RemoteMediaDownloadResult;
 
 } // namespace merovingian::media

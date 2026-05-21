@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.2.17
+
+- Added durable media blob storage, policy-rule persistence, and media-blob
+  hydration for SQLite/PostgreSQL-backed runtime restarts.
+- Added hardened media processing boundaries for uploads and remote media
+  ingestion: sandbox requirement, AV scanner boundary, decoder/decompression
+  limits, thumbnail metadata generation, and fail-closed tests.
+- Added a configurable remote media fetch boundary and repository-level remote
+  media ingest flow while keeping remote downloads disabled unless explicitly
+  enabled by configuration.
+- Bumped project, executable, and package metadata versions to `0.2.17`.
+
 ## 0.2.16
 
 - Added a beta Matrix v1.18 Complement-style fixture covering authentication,

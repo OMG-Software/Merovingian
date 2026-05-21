@@ -214,6 +214,25 @@ struct PersistentRemoteMedia final
     bool quarantined{false};
 };
 
+struct PersistentMediaBlob final
+{
+    std::string storage_id{};
+    std::string hash_algorithm{};
+    std::string digest{};
+    std::uint64_t size_bytes{0U};
+    std::string bytes{};
+    std::uint64_t ref_count{0U};
+};
+
+struct PersistentPolicyRule final
+{
+    std::string rule_id{};
+    std::string scope{};
+    std::string entity{};
+    std::string action{};
+    std::string reason{};
+};
+
 struct PersistentAuditEvent final
 {
     std::string category{};
@@ -324,8 +343,10 @@ struct PersistentStore final
     std::vector<PersistentKeyBackupSession> key_backup_sessions{};
     std::vector<PersistentLocalMedia> local_media{};
     std::vector<PersistentRemoteMedia> remote_media{};
+    std::vector<PersistentMediaBlob> media_blobs{};
     std::vector<PersistentAuditEvent> audit_log{};
     std::vector<PersistentAdminAction> admin_actions{};
+    std::vector<PersistentPolicyRule> policy_rules{};
     std::vector<PersistentAccountData> account_data{};
     std::vector<PersistentToDeviceMessage> to_device_messages{};
     std::vector<PersistentDeviceListChange> device_list_changes{};
@@ -401,8 +422,10 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,
                                             bool removed) -> bool;
 [[nodiscard]] auto store_remote_media(PersistentStore& store, PersistentRemoteMedia media) -> bool;
+[[nodiscard]] auto store_media_blob(PersistentStore& store, PersistentMediaBlob blob) -> bool;
 [[nodiscard]] auto append_audit_event(PersistentStore& store, PersistentAuditEvent event) -> bool;
 [[nodiscard]] auto append_admin_action(PersistentStore& store, PersistentAdminAction action) -> bool;
+[[nodiscard]] auto store_policy_rule(PersistentStore& store, PersistentPolicyRule rule) -> bool;
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
 [[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool;
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,

@@ -82,6 +82,7 @@ SCENARIO("Local media repository quarantines scanner failures and blocks downloa
                 REQUIRE(uploaded.ok);
                 REQUIRE(uploaded.quarantined);
                 REQUIRE(repository.metrics.uploads_quarantined == 1U);
+                REQUIRE(repository.thumbnails.empty());
                 REQUIRE_FALSE(blocked.ok);
                 REQUIRE(blocked.status == 451U);
                 REQUIRE(released.ok);
@@ -176,6 +177,85 @@ SCENARIO("Remote media fetches fail closed for the MVP", "[media][repository][re
                 REQUIRE(result.status == 502U);
                 REQUIRE(result.reason == "remote media fetch disabled");
                 REQUIRE(repository.metrics.remote_fetch_rejections == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Remote media fetch stores fetched bytes only after policy and processing boundaries pass",
+         "[media][repository][remote]")
+{
+    GIVEN("remote media fetching is enabled with sandboxed processing")
+    {
+        auto repository = test_repository();
+        repository.config.remote_fetch_enabled = true;
+
+        WHEN("safe remote content and unsafe decoder work are requested")
+        {
+            auto const fetched = merovingian::media::fetch_remote_media(repository, {"remote.example.org",
+                                                                                     "media123",
+                                                                                     "remote.example.org",
+                                                                                     {"203.0.113.20"},
+                                                                                     "image/png",
+                                                                                     "png-bytes",
+                                                                                     true,
+                                                                                     16U,
+                                                                                     64U,
+                                                                                     1U,
+                                                                                     true});
+            auto const unsafe_decoder = merovingian::media::fetch_remote_media(repository, {"remote.example.org",
+                                                                                            "media124",
+                                                                                            "remote.example.org",
+                                                                                            {"203.0.113.20"},
+                                                                                            "image/png",
+                                                                                            "png-bytes",
+                                                                                            true,
+                                                                                            2048U,
+                                                                                            64U,
+                                                                                            1U,
+                                                                                            false});
+
+            THEN("accepted remote media is durable-repository ready and unsafe processing fails closed")
+            {
+                REQUIRE(fetched.ok);
+                REQUIRE(fetched.status == 200U);
+                REQUIRE(fetched.content_type == "image/png");
+                REQUIRE(fetched.bytes == "png-bytes");
+                REQUIRE(fetched.hash_algorithm == "blake2b");
+                REQUIRE_FALSE(fetched.storage_id.empty());
+                REQUIRE(repository.records.size() == 1U);
+                REQUIRE(repository.blobs.size() == 1U);
+                REQUIRE(repository.thumbnails.size() == 1U);
+                REQUIRE(repository.metrics.remote_fetches_accepted == 1U);
+                REQUIRE(repository.metrics.thumbnails_generated == 1U);
+                REQUIRE_FALSE(unsafe_decoder.ok);
+                REQUIRE(unsafe_decoder.reason == "decoder is not allowed");
+                REQUIRE(repository.metrics.processing_rejections == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Local media processing rejects decompression bombs before blob storage", "[media][repository]")
+{
+    GIVEN("a repository with strict decoder limits")
+    {
+        auto repository = test_repository();
+
+        WHEN("an upload estimates excessive decoded output")
+        {
+            auto request = merovingian::media::LocalMediaUploadRequest{
+                "@alice:example.org", "image/png", "image/png", "png-bytes", true, 2048U, 64U, 1U, true};
+            auto const rejected = merovingian::media::upload_local_media(repository, "example.org", request);
+
+            THEN("the upload fails closed and no blob is retained")
+            {
+                REQUIRE_FALSE(rejected.ok);
+                REQUIRE(rejected.status == 413U);
+                REQUIRE(rejected.reason == "decoded output exceeds limit");
+                REQUIRE(repository.blobs.empty());
+                REQUIRE(repository.records.empty());
+                REQUIRE(repository.metrics.processing_rejections == 1U);
             }
         }
     }

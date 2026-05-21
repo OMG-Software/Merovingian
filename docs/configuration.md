@@ -430,6 +430,11 @@ security.media.remote_fetch_timeout=30s
 
 Values such as `0s`, `30`, `30ms`, and `forever` are rejected.
 
+Remote media fetching is opt-in. `security.media.remote_fetch_enabled=false`
+is the default; setting it to `true` enables the repository remote-ingest
+boundary, while private and loopback resolved addresses remain blocked when
+`security.media.block_private_ip_fetches=true`.
+
 ## Reloadability policy
 
 Configuration parsing and validation are restart-safe today. Runtime hot reload is a Phase 2 boundary, not a completed control plane. The server now classifies keys by reload policy so later SIGHUP or admin-socket reload work can apply reloadable settings without treating every config change as a whole homeserver restart.
