@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.15
+
+- Generalised the MSC2965 OIDC discovery handling: the entire
+  `org.matrix.msc2965` namespace (`auth_metadata`, `auth_issuer`) now returns
+  404 M_UNRECOGNIZED before the access-token gate. `auth_issuer` was still
+  producing a misleading 401.
+- Added `GET /_matrix/client/v3/voip/turnServer` returning an empty object.
+  No TURN server is configured; an empty 200 lets clients disable VoIP
+  gracefully instead of treating a 404 as an error.
+
 ## 0.2.14
 
 - Raised `ClientApiLimits::max_body_bytes` from 4 KiB to 64 KiB so real E2EE
@@ -10,13 +20,10 @@
   login to populate the user-info header; the previous 404 left it blank.
 - Added `GET /_matrix/media/v3/config` returning `{"m.upload.size": 104857600}`
   (100 MiB). Cinny fetches this to know the maximum attachment size.
-- The entire `org.matrix.msc2965` OIDC discovery namespace (`auth_metadata`,
-  `auth_issuer`) now returns 404 M_UNRECOGNIZED before the access-token gate.
-  Cinny probes these for OIDC support; the previous 401 could mislead clients
-  into thinking OIDC was configured but broken.
-- Added `GET /_matrix/client/v3/voip/turnServer` returning an empty object.
-  No TURN server is configured; an empty 200 lets clients disable VoIP
-  gracefully instead of treating a 404 as an error.
+- `GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata` now returns
+  404 M_UNRECOGNIZED before the access-token gate. Cinny probes this for OIDC
+  support; the previous 401 could mislead clients into thinking OIDC was
+  configured but broken.
 
 ## 0.2.13
 
