@@ -1218,7 +1218,7 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        WHEN("GET .../org.matrix.msc2965/auth_metadata is called without a token")
+        WHEN("GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata is called without a token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime,
@@ -1232,7 +1232,7 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication",
             }
         }
 
-        WHEN("GET .../org.matrix.msc2965/auth_issuer is called without a token")
+        WHEN("GET /_matrix/client/unstable/org.matrix.msc2965/auth_issuer is called without a token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime,
