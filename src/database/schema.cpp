@@ -117,6 +117,9 @@ namespace
                               "user_id TEXT PRIMARY KEY, stream_id TEXT NOT NULL DEFAULT '0', presence TEXT NOT NULL "
                               "DEFAULT 'offline', status_msg TEXT NOT NULL DEFAULT '', last_active_ago TEXT NOT NULL "
                               "DEFAULT '0', currently_active TEXT NOT NULL DEFAULT 'false'"                                                                    },
+        SchemaTableDefinition{"profiles",
+                              "user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', "
+                              "avatar_url TEXT NOT NULL DEFAULT ''"                                                                                             },
     };
 
 } // namespace

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.17
+Version:        0.3.0
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,14 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.3.0-1
+- Add Matrix UI-auth challenge for POST /register (returns 401 with flows/session when auth field absent)
+- Add POST /account/password endpoint for authenticated password change
+- Add PUT /profile/{userId}/displayname and avatar_url endpoints
+- Move GET /profile/{userId} before the auth gate (unauthenticated per Matrix spec)
+- Fix GET /profile/{userId}/{keyName} to return only the requested field (404 for unset/unknown fields)
+- Extend client-server v1.18 conformance fixture with profile negative cases, unknown-room state, and password-change coverage
+
 * Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.2.17-1
 - Add durable media blob persistence, policy-rule hydration, and hardened media processing boundaries
 - Add remote media ingest boundary, thumbnail metadata, and media repository restart coverage

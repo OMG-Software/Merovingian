@@ -326,7 +326,8 @@ namespace
     if (request.method == "POST" && request.target == "/_matrix/client/v3/createRoom")
     {
         auto result = create_room(runtime, request.access_token);
-        return result.ok ? response(200U, result.value) : response(401U, result.reason);
+        return result.ok ? response(200U, result.value)
+                         : response(result.status != 0U ? result.status : 403U, result.reason);
     }
 
     auto constexpr rooms_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
@@ -343,21 +344,24 @@ namespace
         suffix.substr(suffix.size() - join_suffix.size()) == join_suffix)
     {
         auto result = join_room(runtime, request.access_token, suffix.substr(0U, suffix.size() - join_suffix.size()));
-        return result.ok ? response(200U, result.value) : response(401U, result.reason);
+        return result.ok ? response(200U, result.value)
+                         : response(result.status != 0U ? result.status : 403U, result.reason);
     }
     if (request.method == "POST" && suffix.size() > send_suffix.size() &&
         suffix.substr(suffix.size() - send_suffix.size()) == send_suffix)
     {
         auto result = send_event(runtime, request.access_token, suffix.substr(0U, suffix.size() - send_suffix.size()),
                                  request.body);
-        return result.ok ? response(200U, result.value) : response(401U, result.reason);
+        return result.ok ? response(200U, result.value)
+                         : response(result.status != 0U ? result.status : 403U, result.reason);
     }
     if (request.method == "GET" && suffix.size() > state_suffix.size() &&
         suffix.substr(suffix.size() - state_suffix.size()) == state_suffix)
     {
         auto result =
             fetch_room_state(runtime, request.access_token, suffix.substr(0U, suffix.size() - state_suffix.size()));
-        return result.ok ? response(200U, result.value) : response(401U, result.reason);
+        return result.ok ? response(200U, result.value)
+                         : response(result.status != 0U ? result.status : 403U, result.reason);
     }
     return response(404U, "route not found");
 }

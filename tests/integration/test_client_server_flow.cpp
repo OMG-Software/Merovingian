@@ -73,3 +73,341 @@ SCENARIO("Integrated client-server flow fails closed on invalid config", "[homes
         }
     }
 }
+
+SCENARIO("POST /register without auth returns 401 UI-auth challenge", "[homeserver][client-server][register][uiauth]")
+{
+    GIVEN("a registration-enabled server")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        WHEN("a client sends a register request without an auth field")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 R"({"username":"alice","password":"CorrectHorse7!"})"});
+
+            THEN("the server returns 401 with the registration_token flow and a session")
+            {
+                REQUIRE(response.status == 401U);
+                REQUIRE(response.body.find("m.login.registration_token") != std::string::npos);
+                REQUIRE(response.body.find("flows") != std::string::npos);
+                REQUIRE(response.body.find("session") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /register with auth completes registration", "[homeserver][client-server][register][uiauth]")
+{
+    GIVEN("a registration-enabled server")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        WHEN("a client sends a register request with a valid auth token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+
+            THEN("the server returns 200 with the new user_id")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("user_id") != std::string::npos);
+                REQUIRE(response.body.find("@alice:") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /account/password changes the authenticated user's password",
+         "[homeserver][client-server][account][password]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        std::ignore = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
+        REQUIRE(login.status == 200U);
+        auto const key = std::string{"\"access_token\":\""};
+        auto const begin = login.body.find(key);
+        REQUIRE(begin != std::string::npos);
+        auto const value_begin = begin + key.size();
+        auto const value_end = login.body.find('"', value_begin);
+        auto const token = login.body.substr(value_begin, value_end - value_begin);
+
+        WHEN("the user changes their password")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/account/password",
+                 token,
+                 R"({"new_password":"NewHorse99!!"})"});
+
+            THEN("the server returns 200 and the new password is accepted at login")
+            {
+                REQUIRE(response.status == 200U);
+                auto const relogin = merovingian::homeserver::handle_client_server_request(
+                    rt,
+                    {"POST",
+                     "/_matrix/client/v3/login",
+                     {},
+                     R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"NewHorse99!!","device_id":"DEV2"})"});
+                REQUIRE(relogin.status == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /account/password without an access token returns 401",
+         "[homeserver][client-server][account][password]")
+{
+    GIVEN("a registration-enabled server with no authenticated session")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        WHEN("a password change is attempted without providing an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/account/password", {}, R"({"new_password":"NewHorse99!!"})"});
+
+            THEN("the server returns 401 M_UNKNOWN_TOKEN")
+            {
+                REQUIRE(response.status == 401U);
+                REQUIRE(response.body.find("M_UNKNOWN_TOKEN") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /profile/{userId} for an unknown user returns 404",
+         "[homeserver][client-server][profile]")
+{
+    GIVEN("a registration-enabled server with no registered users")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        WHEN("a client requests the profile for a user that does not exist")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40missing%3Aexample.org", {}, {}});
+
+            THEN("the server returns 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("PUT /profile/{userId}/displayname updates the authenticated user's displayname",
+         "[homeserver][client-server][profile]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        std::ignore = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
+        REQUIRE(login.status == 200U);
+        auto const key = std::string{"\"access_token\":\""};
+        auto const begin = login.body.find(key);
+        REQUIRE(begin != std::string::npos);
+        auto const token = login.body.substr(begin + key.size(), login.body.find('"', begin + key.size()) - begin - key.size());
+
+        WHEN("the user updates their displayname")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"PUT",
+                 "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
+                 token,
+                 R"({"displayname":"Alice Beta"})"});
+
+            THEN("the server returns 200 and the profile reflects the new displayname")
+            {
+                REQUIRE(response.status == 200U);
+                auto const profile = merovingian::homeserver::handle_client_server_request(
+                    rt, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
+                REQUIRE(profile.status == 200U);
+                REQUIRE(profile.body.find("Alice Beta") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("PUT /profile/{userId}/displayname for another user returns 403",
+         "[homeserver][client-server][profile]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        std::ignore = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
+        REQUIRE(login.status == 200U);
+        auto const key = std::string{"\"access_token\":\""};
+        auto const begin = login.body.find(key);
+        REQUIRE(begin != std::string::npos);
+        auto const token = login.body.substr(begin + key.size(), login.body.find('"', begin + key.size()) - begin - key.size());
+
+        WHEN("the user attempts to update another user's displayname")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"PUT",
+                 "/_matrix/client/v3/profile/%40bob%3Aexample.org/displayname",
+                 token,
+                 R"({"displayname":"Bob Impersonated"})"});
+
+            THEN("the server returns 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /profile/{userId}/{keyName} returns only the requested field",
+         "[homeserver][client-server][profile]")
+{
+    GIVEN("a registered user with a displayname set")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        std::ignore = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
+        REQUIRE(login.status == 200U);
+        auto const key = std::string{"\"access_token\":\""};
+        auto const begin = login.body.find(key);
+        REQUIRE(begin != std::string::npos);
+        auto const token = login.body.substr(begin + key.size(), login.body.find('"', begin + key.size()) - begin - key.size());
+        std::ignore = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", token, R"({"displayname":"Alice Beta"})"});
+
+        WHEN("the displayname field is requested")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", {}, {}});
+
+            THEN("the server returns 200 with only that field")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("Alice Beta") != std::string::npos);
+                REQUIRE(response.body.find("avatar_url") == std::string::npos);
+            }
+        }
+
+        WHEN("an unset field is requested")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url", {}, {}});
+
+            THEN("the server returns 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /rooms/{roomId}/state for an unknown room returns 403",
+         "[homeserver][client-server][rooms][state]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        std::ignore = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
+        REQUIRE(login.status == 200U);
+        auto const key = std::string{"\"access_token\":\""};
+        auto const begin = login.body.find(key);
+        REQUIRE(begin != std::string::npos);
+        auto const token = login.body.substr(begin + key.size(), login.body.find('"', begin + key.size()) - begin - key.size());
+
+        WHEN("the user requests state for a room that does not exist")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"GET",
+                 "/_matrix/client/v3/rooms/!bad-room%3Aexample.org/state",
+                 token,
+                 {}});
+
+            THEN("the server returns 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}

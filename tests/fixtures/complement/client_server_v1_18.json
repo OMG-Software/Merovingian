@@ -27,8 +27,8 @@
         "username": "blocked",
         "password": "CorrectHorse7!"
       },
-      "expect_status": 403,
-      "expect_keys_present": ["errcode", "error"]
+      "expect_status": 401,
+      "expect_keys_present": ["flows", "session"]
     },
     {
       "method": "POST",
@@ -142,6 +142,40 @@
       "auth_from": "refreshed_token",
       "expect_status": 200,
       "expect_keys_present": ["displayname", "avatar_url"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/profile/%40missing%3Aexample.org",
+      "expect_status": 404,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
+      "auth_from": "refreshed_token",
+      "body": {"displayname": "Alice Beta"},
+      "expect_status": 200
+    },
+    {
+      "method": "PUT",
+      "path": "/_matrix/client/v3/profile/%40bob%3Aexample.org/displayname",
+      "auth_from": "refreshed_token",
+      "body": {"displayname": "Bob Impersonated"},
+      "expect_status": 403,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
+      "expect_status": 200,
+      "expect_keys_present": ["displayname"],
+      "expect_keys_absent": ["avatar_url"]
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url",
+      "expect_status": 404,
+      "expect_keys_present": ["errcode", "error"]
     },
     {
       "method": "GET",
@@ -272,8 +306,14 @@
       "method": "GET",
       "path": "/_matrix/client/v3/rooms/{{room_id}}/state",
       "auth_from": "refreshed_token",
-      "expect_status": 200,
-      "expect_keys_present": ["state"]
+      "expect_status": 200
+    },
+    {
+      "method": "GET",
+      "path": "/_matrix/client/v3/rooms/!bad-room%3Aexample.org/state",
+      "auth_from": "refreshed_token",
+      "expect_status": 403,
+      "expect_keys_present": ["errcode", "error"]
     },
     {
       "method": "GET",
@@ -511,6 +551,27 @@
       "path": "/_matrix/client/v3/account/whoami",
       "auth_from": "logout_token",
       "expect_status": 401
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/account/password",
+      "expect_status": 401,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/account/password",
+      "auth_from": "refreshed_token",
+      "body": {"new_password": "weak"},
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/client/v3/account/password",
+      "auth_from": "refreshed_token",
+      "body": {"new_password": "NewCorrectHorse99!!"},
+      "expect_status": 200
     },
     {
       "method": "POST",

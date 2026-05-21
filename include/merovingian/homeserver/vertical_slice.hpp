@@ -152,6 +152,8 @@ struct LocalHttpResponse final
 [[nodiscard]] auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
     -> OperationResult;
+[[nodiscard]] auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
+                                              std::string_view new_password) -> OperationResult;
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult;

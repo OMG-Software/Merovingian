@@ -500,7 +500,12 @@ namespace
                          }) &&
                load_rows(connection, "SELECT user_id, filter_id, json FROM filters", [&store](sqlite3_stmt& row) {
                    store.filters.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
-               });
+               }) &&
+               load_rows(connection, "SELECT user_id, displayname, avatar_url FROM profiles",
+                         [&store](sqlite3_stmt& row) {
+                             store.profiles.push_back(
+                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         });
     }
 
     [[nodiscard]] auto bind_statement_parameters(sqlite3_stmt& statement, PreparedStatement const& prepared) -> bool

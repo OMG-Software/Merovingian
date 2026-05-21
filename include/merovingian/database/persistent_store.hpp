@@ -313,6 +313,13 @@ struct PersistentFilter final
     std::string json{};
 };
 
+struct PersistentProfile final
+{
+    std::string user_id{};
+    std::string displayname{};
+    std::string avatar_url{};
+};
+
 struct PersistentStore final
 {
     bool open{false};
@@ -352,6 +359,7 @@ struct PersistentStore final
     std::vector<PersistentDeviceListChange> device_list_changes{};
     std::vector<PersistentPresence> presence_states{};
     std::vector<PersistentFilter> filters{};
+    std::vector<PersistentProfile> profiles{};
     std::vector<PreparedStatement> prepared_statements{};
     // Monotonic stream id used by /sync surfaces (to_device, device_list
     // changes, presence). Incremented before each new row is persisted so
@@ -373,6 +381,8 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
+[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id,
+                                        std::string_view new_hash) -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
@@ -438,6 +448,17 @@ struct PersistentStoreOpenResult final
 // Return the filter for (user_id, filter_id), or nullopt when not found.
 [[nodiscard]] auto find_filter(PersistentStore const& store, std::string_view user_id, std::string_view filter_id)
     -> std::optional<PersistentFilter>;
+// Create or replace a user profile row.
+[[nodiscard]] auto store_profile(PersistentStore& store, PersistentProfile profile) -> bool;
+// Return the profile for user_id, or nullopt when not found.
+[[nodiscard]] auto find_profile(PersistentStore const& store, std::string_view user_id)
+    -> std::optional<PersistentProfile>;
+// Update only displayname for an existing profile row.
+[[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
+                                              std::string_view displayname) -> bool;
+// Update only avatar_url for an existing profile row.
+[[nodiscard]] auto update_profile_avatar_url(PersistentStore& store, std::string_view user_id,
+                                             std::string_view avatar_url) -> bool;
 // Sets `store.next_sync_stream_id` to the maximum stream_id observed
 // across every sync-surface row already loaded into memory (account_data,
 // room account_data, to_device_messages, device_list_changes,

@@ -302,6 +302,27 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id,
+                                        std::string_view new_hash) -> bool
+{
+    auto const it = std::ranges::find_if(store.users, [user_id](PersistentUser const& u) {
+        return u.user_id == user_id;
+    });
+    if (it == store.users.end())
+    {
+        return false;
+    }
+    auto const statement = record_statement("update_user_password",
+                                            "UPDATE users SET password_hash = $2 WHERE user_id = $1",
+                                            {public_value(user_id), sensitive_value(new_hash)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    it->password_hash = std::string{new_hash};
+    return true;
+}
+
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool
 {
     if (device_exists(store, device))
@@ -1606,6 +1627,87 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         return f.user_id == user_id && f.filter_id == filter_id;
     });
     return it == store.filters.end() ? std::nullopt : std::optional<PersistentFilter>{*it};
+}
+
+[[nodiscard]] auto store_profile(PersistentStore& store, PersistentProfile profile) -> bool
+{
+    if (profile.user_id.empty())
+    {
+        return false;
+    }
+    auto const statement =
+        record_statement("upsert_profile",
+                         "INSERT INTO profiles (user_id, displayname, avatar_url) VALUES ($1, $2, $3) "
+                         "ON CONFLICT (user_id) DO UPDATE SET displayname = $2, avatar_url = $3",
+                         {public_value(profile.user_id), public_value(profile.displayname),
+                          public_value(profile.avatar_url)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.profiles, [&profile](PersistentProfile const& p) {
+        return p.user_id == profile.user_id;
+    });
+    if (existing != store.profiles.end())
+    {
+        *existing = std::move(profile);
+        return true;
+    }
+    store.profiles.push_back(std::move(profile));
+    return true;
+}
+
+[[nodiscard]] auto find_profile(PersistentStore const& store, std::string_view user_id)
+    -> std::optional<PersistentProfile>
+{
+    auto const it = std::ranges::find_if(store.profiles, [user_id](PersistentProfile const& p) {
+        return p.user_id == user_id;
+    });
+    return it == store.profiles.end() ? std::nullopt : std::optional<PersistentProfile>{*it};
+}
+
+[[nodiscard]] auto update_profile_displayname(PersistentStore& store, std::string_view user_id,
+                                              std::string_view displayname) -> bool
+{
+    auto const it = std::ranges::find_if(store.profiles, [user_id](PersistentProfile const& p) {
+        return p.user_id == user_id;
+    });
+    if (it == store.profiles.end())
+    {
+        return false;
+    }
+    auto const statement =
+        record_statement("update_profile_displayname",
+                         "UPDATE profiles SET displayname = $2 WHERE user_id = $1",
+                         {public_value(std::string{user_id}), public_value(std::string{displayname})});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    it->displayname = std::string{displayname};
+    return true;
+}
+
+[[nodiscard]] auto update_profile_avatar_url(PersistentStore& store, std::string_view user_id,
+                                             std::string_view avatar_url) -> bool
+{
+    auto const it = std::ranges::find_if(store.profiles, [user_id](PersistentProfile const& p) {
+        return p.user_id == user_id;
+    });
+    if (it == store.profiles.end())
+    {
+        return false;
+    }
+    auto const statement =
+        record_statement("update_profile_avatar_url",
+                         "UPDATE profiles SET avatar_url = $2 WHERE user_id = $1",
+                         {public_value(std::string{user_id}), public_value(std::string{avatar_url})});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    it->avatar_url = std::string{avatar_url};
+    return true;
 }
 
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool
