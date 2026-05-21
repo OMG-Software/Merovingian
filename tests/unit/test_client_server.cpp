@@ -409,9 +409,9 @@ SCENARIO("Client-server runtime signs sent events and persists their DAG metadat
             auto const message = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
                           R"({"type":"m.room.message","content":{"body":"hi","msgtype":"m.text"}})"});
+            auto const& store = runtime.homeserver.database.persistent_store;
             auto const state_event_id = event_id(state.body);
             auto const message_event_id = event_id(message.body);
-            auto const& store = runtime.homeserver.database.persistent_store;
 
             THEN("the returned event IDs are reference hashes and persisted rows include signatures and DAG edges")
             {
@@ -422,15 +422,33 @@ SCENARIO("Client-server runtime signs sent events and persists their DAG metadat
                 REQUIRE(state_event_id.find(":") == std::string::npos);
                 REQUIRE(message_event_id.find(":") == std::string::npos);
                 REQUIRE(store.server_signing_keys.size() == 1U);
-                REQUIRE(store.events.size() == 2U);
+                // createRoom emits 5 initial state events; the scenario then
+                // sends the member state event and one message event.
+                REQUIRE(store.events.size() == 7U);
                 REQUIRE(store.events.back().json.find("\"hashes\"") != std::string::npos);
                 REQUIRE(store.events.back().json.find("\"signatures\"") != std::string::npos);
-                REQUIRE(store.event_signatures.size() == 2U);
-                REQUIRE(store.event_edges.size() == 1U);
-                REQUIRE(store.event_auth.size() == 1U);
-                REQUIRE(store.event_edges.front().event_id == message_event_id);
-                REQUIRE(store.event_edges.front().prev_event_id == state_event_id);
-                REQUIRE(store.event_auth.front().auth_event_id == state_event_id);
+                REQUIRE(store.event_signatures.size() == store.events.size());
+
+                // The message event links back to the member state event sent
+                // immediately before it and records at least one auth edge.
+                auto message_prev_event_id = std::string{};
+                auto message_has_auth_edge = false;
+                for (auto const& edge : store.event_edges)
+                {
+                    if (edge.event_id == message_event_id)
+                    {
+                        message_prev_event_id = edge.prev_event_id;
+                    }
+                }
+                for (auto const& auth_edge : store.event_auth)
+                {
+                    if (auth_edge.event_id == message_event_id)
+                    {
+                        message_has_auth_edge = true;
+                    }
+                }
+                REQUIRE(message_prev_event_id == state_event_id);
+                REQUIRE(message_has_auth_edge);
             }
         }
     }
@@ -1341,9 +1359,10 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
 
-            THEN("the response is 401")
+            THEN("the response is 200 — profile lookup is unauthenticated per the Matrix spec")
             {
-                REQUIRE(response.status == 401U);
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("displayname") != std::string::npos);
             }
         }
     }

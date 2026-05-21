@@ -2119,9 +2119,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         }
         auto const room_id = create_r.body;
 
-        // Send one initial state event via the internal send path.
-        auto const send_state = [&](std::string_view event_type, std::string_view content_json) {
-            auto ev = event_body_from_content(event_type, content_json, std::string{""});
+        // Send one initial state event via the internal send path. The
+        // optional state_key defaults to "" for room-scoped state events;
+        // m.room.member must be keyed by the joining user's MXID.
+        auto const send_state = [&](std::string_view event_type, std::string_view content_json,
+                                    std::string_view state_key = std::string_view{}) {
+            auto ev = event_body_from_content(event_type, content_json, std::string{state_key});
             if (!ev.has_value())
             {
                 return;
@@ -2138,7 +2141,8 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                             json_member("room_version", json_str("12"))})));
         send_state("m.room.member",
                    json_serialize(json_obj({json_member("membership", json_str("join")),
-                                            json_member("displayname", json_str(""))})));
+                                            json_member("displayname", json_str(""))})),
+                   *user);
         send_state("m.room.power_levels",
                    json_serialize(json_obj({json_member("ban", json_int(50)),
                                             json_member("events_default", json_int(0)),

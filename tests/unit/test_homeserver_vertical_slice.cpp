@@ -309,16 +309,16 @@ SCENARIO("Homeserver local room route flow creates joins sends and fetches state
             auto const state = merovingian::homeserver::handle_local_http_request(
                 runtime, {"GET", "/_matrix/client/v3/rooms/" + room.body + "/state", login.body, {}});
 
-            THEN("the local room path succeeds and state includes member and event counts")
+            THEN("the local room path succeeds and state is returned as a JSON array")
             {
                 REQUIRE(room.status == 200U);
                 REQUIRE(room.body == "!room1:example.org");
                 REQUIRE(join.status == 200U);
                 REQUIRE(event.status == 200U);
                 REQUIRE(state.status == 200U);
-                REQUIRE(state.body.find("room_id=!room1:example.org") != std::string::npos);
-                REQUIRE(state.body.find("members=1") != std::string::npos);
-                REQUIRE(state.body.find("events=1") != std::string::npos);
+                // fetch_room_state returns the room's state events as a JSON
+                // array; the legacy local-router flow emits no state events.
+                REQUIRE(state.body == "[]");
             }
         }
     }

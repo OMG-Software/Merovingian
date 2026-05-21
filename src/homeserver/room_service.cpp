@@ -497,7 +497,7 @@ namespace
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return make_operation_result(false, {}, "unauthenticated");
+        return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
     auto const room_id =
@@ -525,13 +525,13 @@ namespace
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return make_operation_result(false, {}, "unauthenticated");
+        return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
-        return make_operation_result(false, {}, "unknown room");
+        return make_operation_result(false, {}, "unknown room", 403U);
     }
     if (!room_has_member(*room, *user_id))
     {
@@ -554,7 +554,7 @@ namespace
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        return make_operation_result(false, {}, "unauthenticated");
+        return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
     auto* room = find_room(runtime.database, room_id);

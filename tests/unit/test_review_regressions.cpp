@@ -162,7 +162,9 @@ SCENARIO("Public registration enforces configured token policy and never bootstr
 
             THEN("only the valid token creates a non-admin user")
             {
-                REQUIRE(missing_token.status == 403U);
+                // No auth field yields the UI-auth challenge (401); a present
+                // but invalid token is rejected outright (403).
+                REQUIRE(missing_token.status == 401U);
                 REQUIRE(invalid_token.status == 403U);
                 REQUIRE(accepted.status == 200U);
                 REQUIRE_FALSE(runtime.homeserver.database.users.empty());
