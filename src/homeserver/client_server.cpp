@@ -537,6 +537,11 @@ namespace
         {
             return identity + req.method + " /_matrix/client/v3/user/{userId}/filter/{filterId}";
         }
+        auto constexpr profile_prefix = std::string_view{"/_matrix/client/v3/profile/"};
+        if (starts_with(target, profile_prefix))
+        {
+            return identity + req.method + " /_matrix/client/v3/profile/{userId}";
+        }
         if (trust_safety::match_reporting_api_route(req.method, target).matched)
         {
             return identity + req.method + " /_matrix/client/v3/trust-safety/{route}";
@@ -1560,6 +1565,15 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         return r.status == 200U ? resp(200U, "{}") : err(401U, "M_UNKNOWN_TOKEN", r.body);
     }
 
+    // MSC2965 OIDC authentication metadata: Cinny and Element probe this before
+    // login to detect OIDC support.  We do not implement OIDC, so return 404
+    // before the access-token gate so the probe never produces a misleading 401.
+    if (req.method == "GET" &&
+        req.target == "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata")
+    {
+        return err(404U, "M_UNRECOGNIZED", "OIDC not supported");
+    }
+
     auto const user = auth(rt, req.access_token);
     if (!user.has_value())
     {
@@ -1602,6 +1616,28 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                             json_member("underride", json_arr({})),
                         }))})));
     }
+    // GET /_matrix/client/v3/profile/{userId}
+    // Returns a stub profile (empty displayname, no avatar).  Cinny fetches
+    // this immediately after login to populate the user-info header.
+    auto constexpr profile_prefix = std::string_view{"/_matrix/client/v3/profile/"};
+    if (req.method == "GET" && starts_with(req.target, profile_prefix))
+    {
+        return resp(200U, json_serialize(json_obj({
+                              json_member("displayname", json_str("")),
+                              json_member("avatar_url", json_str("")),
+                          })));
+    }
+
+    // GET /_matrix/media/v3/config
+    // Reports the maximum upload size so clients know how large a file they
+    // may attach.  100 MiB is a safe default until media uploads are wired.
+    if (req.method == "GET" && req.target == "/_matrix/media/v3/config")
+    {
+        auto constexpr max_upload_bytes = std::int64_t{104857600}; // 100 MiB
+        return resp(200U,
+                    json_serialize(json_obj({json_member("m.upload.size", json_int(max_upload_bytes))})));
+    }
+
     auto const key_route = auth::match_key_api_route(req.method, req.target);
     if (key_route.matched && key_route.route.endpoint != auth::KeyApiEndpoint::device_list_update)
     {

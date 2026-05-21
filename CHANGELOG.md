@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.2.14
+
+- Raised `ClientApiLimits::max_body_bytes` from 4 KiB to 64 KiB so real E2EE
+  key uploads (device keys + many one-time keys) are no longer rejected with
+  413 M_TOO_LARGE.
+- Added `GET /_matrix/client/v3/profile/{userId}` returning an empty stub
+  profile (`displayname` / `avatar_url`). Cinny fetches this immediately after
+  login to populate the user-info header; the previous 404 left it blank.
+- Added `GET /_matrix/media/v3/config` returning `{"m.upload.size": 104857600}`
+  (100 MiB). Cinny fetches this to know the maximum attachment size.
+- `GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata` now returns
+  404 M_UNRECOGNIZED before the access-token gate. Cinny probes this for OIDC
+  support; the previous 401 could mislead clients into thinking OIDC was
+  configured but broken.
+
 ## 0.2.13
 
 - Added `POST /_matrix/client/v3/user/{userId}/filter` to store a sync filter and
@@ -16,8 +31,8 @@
   full rebuild without reusing stale extracted curl sources. Updated
   `scripts/wsl-setup.sh`, `scripts/build-wsl.ps1`, and `build-wsl.cmd` to point
   at the new script, and removed the hardcoded `Ubuntu-24.04` launcher
-  dependency so the default WSL distro works out of the box. The WSL wrapper now stages an
-  executable `make` shim under the Linux filesystem so Meson's
+  dependency so the default WSL distro works out of the box. The WSL wrapper
+  now stages an executable `make` shim under the Linux filesystem so Meson's
   `external_project` helper can invoke it even when the repo lives on `/mnt/c`,
   and rewrites that shim with LF line endings so the shebang stays executable.
 - Replaced all `static_cast<void>(expr)` and `(void)expr` return-value discards
