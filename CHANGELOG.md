@@ -9,6 +9,13 @@
 - Added `GET /_matrix/client/v3/voip/turnServer` returning an empty object.
   No TURN server is configured; an empty 200 lets clients disable VoIP
   gracefully instead of treating a 404 as an error.
+- Added `POST /_matrix/client/v3/join/{roomIdOrAlias}` which joins by room ID
+  or alias. It delegates to the same local join handler as
+  `/rooms/{roomId}/join` by rewriting the request target.
+- Added `PUT` and `GET /_matrix/client/v3/user/{userId}/account_data/{type}`
+  for global (non-room) account data. Cinny stores `m.direct` (the
+  direct-message room list) here immediately after creating a room.
+  Room-scoped account data is not yet implemented.
 
 ## 0.2.14
 

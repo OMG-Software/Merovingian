@@ -1454,3 +1454,142 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
         }
     }
 }
+
+SCENARIO("Join-by-id endpoint joins a room through the local join handler",
+         "[homeserver][client-server]")
+{
+    GIVEN("a logged-in user who has created a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.status == 200U);
+        auto const id = room_id(room.body);
+
+        WHEN("POST /_matrix/client/v3/join/{roomId} is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/join/" + id, token, {}});
+
+            THEN("the response is 200 and reports the joined room id")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find(id) != std::string::npos);
+            }
+        }
+
+        WHEN("POST /_matrix/client/v3/join/{roomId} is called without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/join/" + id, {}, {}});
+
+            THEN("the response is 401")
+            {
+                REQUIRE(response.status == 401U);
+            }
+        }
+    }
+}
+
+SCENARIO("Account data endpoint stores and retrieves global account data",
+         "[homeserver][client-server]")
+{
+    GIVEN("a logged-in client-server user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        // @alice:example.org percent-encoded as a browser sends it
+        auto constexpr account_data_url =
+            "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct";
+        auto constexpr direct_body = R"({"@bob:example.org":["!room1:example.org"]})";
+
+        WHEN("PUT /account_data/{type} is called with a body")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", account_data_url, token, direct_body});
+
+            THEN("the response is 200")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
+
+        WHEN("GET /account_data/{type} is called after a PUT")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", account_data_url, token, direct_body});
+            REQUIRE(put.status == 200U);
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", account_data_url, token, {}});
+
+            THEN("the response is 200 and returns the stored content")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("@bob:example.org") != std::string::npos);
+            }
+        }
+
+        WHEN("GET /account_data/{type} is called for an unset type")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", account_data_url, token, {}});
+
+            THEN("the response is 404")
+            {
+                REQUIRE(response.status == 404U);
+            }
+        }
+
+        WHEN("PUT /account_data/{type} is called for another user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/user/%40bob%3Aexample.org/account_data/m.direct", token,
+                 direct_body});
+
+            THEN("the response is 403")
+            {
+                REQUIRE(response.status == 403U);
+            }
+        }
+
+        WHEN("PUT /account_data/{type} is called without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", account_data_url, {}, direct_body});
+
+            THEN("the response is 401")
+            {
+                REQUIRE(response.status == 401U);
+            }
+        }
+    }
+}

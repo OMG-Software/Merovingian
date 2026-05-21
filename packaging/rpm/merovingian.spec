@@ -92,6 +92,8 @@ fi
 * Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.2.15-1
 - Return 404 for the whole org.matrix.msc2965 OIDC discovery namespace
 - Add GET /voip/turnServer stub returning an empty object
+- Add POST /join/{roomIdOrAlias} join-by-id endpoint
+- Add PUT/GET /user/{userId}/account_data/{type} for global account data
 
 * Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.2.14-1
 - Raise the client API body limit to 64 KiB so E2EE key uploads are not rejected with 413
