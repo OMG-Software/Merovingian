@@ -537,6 +537,14 @@ namespace
         {
             return identity + req.method + " /_matrix/client/v3/user/{userId}/filter/{filterId}";
         }
+        if (starts_with(target, user_prefix) && target.find("/account_data/") != std::string_view::npos)
+        {
+            return identity + req.method + " /_matrix/client/v3/user/{userId}/account_data/{type}";
+        }
+        if (starts_with(target, "/_matrix/client/v3/join/"))
+        {
+            return identity + req.method + " /_matrix/client/v3/join/{roomIdOrAlias}";
+        }
         auto constexpr profile_prefix = std::string_view{"/_matrix/client/v3/profile/"};
         if (starts_with(target, profile_prefix))
         {
@@ -1565,11 +1573,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         return r.status == 200U ? resp(200U, "{}") : err(401U, "M_UNKNOWN_TOKEN", r.body);
     }
 
-    // MSC2965 OIDC authentication metadata: Cinny and Element probe this before
-    // login to detect OIDC support.  We do not implement OIDC, so return 404
-    // before the access-token gate so the probe never produces a misleading 401.
+    // MSC2965 OIDC discovery: Cinny and Element probe auth_metadata and
+    // auth_issuer before login to detect OIDC support.  We do not implement
+    // OIDC, so return 404 for the whole msc2965 namespace before the
+    // access-token gate, otherwise the probes produce a misleading 401.
     if (req.method == "GET" &&
-        req.target == "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata")
+        starts_with(req.target, "/_matrix/client/unstable/org.matrix.msc2965/"))
     {
         return err(404U, "M_UNRECOGNIZED", "OIDC not supported");
     }
@@ -1636,6 +1645,14 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto constexpr max_upload_bytes = std::int64_t{104857600}; // 100 MiB
         return resp(200U,
                     json_serialize(json_obj({json_member("m.upload.size", json_int(max_upload_bytes))})));
+    }
+
+    // GET /_matrix/client/v3/voip/turnServer
+    // No TURN server is configured.  Return an empty object so clients disable
+    // VoIP gracefully rather than treating a 404 as an error.
+    if (req.method == "GET" && req.target == "/_matrix/client/v3/voip/turnServer")
+    {
+        return resp(200U, "{}");
     }
 
     auto const key_route = auth::match_key_api_route(req.method, req.target);
@@ -1723,8 +1740,31 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         }
     }
 
+    // POST /_matrix/client/v3/join/{roomIdOrAlias}
+    // Joins by room ID or alias. Delegates to the same local join handler as
+    // /rooms/{roomId}/join by rewriting the request target.
+    auto constexpr join_by_id_prefix = std::string_view{"/_matrix/client/v3/join/"};
+    if (req.method == "POST" && starts_with(req.target, join_by_id_prefix))
+    {
+        auto room_segment = std::string_view{req.target}.substr(join_by_id_prefix.size());
+        // Drop any ?server_name=... query string; local joins do not need it.
+        if (auto const query = room_segment.find('?'); query != std::string_view::npos)
+        {
+            room_segment = room_segment.substr(0U, query);
+        }
+        if (room_segment.empty())
+        {
+            return err(400U, "M_INVALID_PARAM", "room id or alias must not be empty");
+        }
+        auto rewritten   = req;
+        rewritten.target = std::string{"/_matrix/client/v3/rooms/"} + std::string{room_segment} + "/join";
+        return wrap(handle_local_http_request(rt.homeserver, rewritten), "room_id");
+    }
+
     // POST  /_matrix/client/v3/user/{userId}/filter   — upload and store a sync filter
     // GET   /_matrix/client/v3/user/{userId}/filter/{filterId} — retrieve a stored filter
+    // PUT   /_matrix/client/v3/user/{userId}/account_data/{type} — store account data
+    // GET   /_matrix/client/v3/user/{userId}/account_data/{type} — retrieve account data
     auto constexpr user_prefix = std::string_view{"/_matrix/client/v3/user/"};
     if (starts_with(req.target, user_prefix))
     {
@@ -1771,6 +1811,50 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 return err(404U, "M_NOT_FOUND", "filter not found");
             }
             return resp(200U, stored->json);
+        }
+
+        // Global (non-room) account data. The userId path segment is
+        // percent-encoded and contains no '/', so a pre-marker segment that
+        // contains '/' is room-scoped and falls through to the 404 below
+        // until room-scoped account data is implemented.
+        auto constexpr account_data_m = std::string_view{"/account_data/"};
+        if (auto const ad_pos = suffix.find(account_data_m); ad_pos != std::string_view::npos)
+        {
+            auto const encoded_user = suffix.substr(0U, ad_pos);
+            auto const type         = std::string{suffix.substr(ad_pos + account_data_m.size())};
+            if (encoded_user.find('/') == std::string_view::npos && !type.empty())
+            {
+                auto const path_user = core::percent_decode(encoded_user);
+                if (path_user != *user)
+                {
+                    return err(403U, "M_FORBIDDEN", "cannot access account data for another user");
+                }
+                if (req.method == "PUT")
+                {
+                    if (req.body.empty())
+                    {
+                        return err(400U, "M_BAD_JSON", "account data body must not be empty");
+                    }
+                    if (!set_account_data(rt, {path_user, std::string{}, type, req.body, 0U}))
+                    {
+                        return err(500U, "M_UNKNOWN", "failed to persist account data");
+                    }
+                    return resp(200U, "{}");
+                }
+                if (req.method == "GET")
+                {
+                    auto const& store = rt.homeserver.database.persistent_store;
+                    auto const found  = std::ranges::find_if(
+                        store.account_data, [&path_user, &type](database::PersistentAccountData const& d) {
+                            return d.user_id == path_user && d.room_id.empty() && d.event_type == type;
+                        });
+                    if (found == store.account_data.end())
+                    {
+                        return err(404U, "M_NOT_FOUND", "account data not found");
+                    }
+                    return resp(200U, found->content_json);
+                }
+            }
         }
     }
 
