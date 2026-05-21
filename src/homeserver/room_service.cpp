@@ -424,7 +424,7 @@ namespace
                                                                   {"sender",     std::string{sender},     false},
                                                                   {"event_type", event_type,              false},
                                                                   {"rule_hook",  auth_decision.rule_hook, false},
-                                                                  {"rule_step",  auth_decision.step,      false},
+                                                                  {"rule_step",  auth_decision.rule_step, false},
                                                                   {"reason",     auth_decision.reason,    false}
                         });
                         return std::nullopt;
