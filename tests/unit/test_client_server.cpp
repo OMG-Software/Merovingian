@@ -1209,7 +1209,7 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
     }
 }
 
-SCENARIO("OIDC auth metadata discovery endpoint returns 404 without authentication",
+SCENARIO("OIDC discovery endpoints return 404 without authentication",
          "[homeserver][client-server]")
 {
     GIVEN("a started runtime")
@@ -1218,7 +1218,7 @@ SCENARIO("OIDC auth metadata discovery endpoint returns 404 without authenticati
         REQUIRE(started.started);
         auto& runtime = started.runtime;
 
-        WHEN("GET /_matrix/client/unstable/org.matrix.msc2965/auth_metadata is called without a token")
+        WHEN("GET .../org.matrix.msc2965/auth_metadata is called without a token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime,
@@ -1229,6 +1229,53 @@ SCENARIO("OIDC auth metadata discovery endpoint returns 404 without authenticati
                 // We do not implement OIDC; the endpoint must be absent (404) rather
                 // than access-denied (401) so clients can probe and fall back gracefully.
                 REQUIRE(response.status == 404U);
+            }
+        }
+
+        WHEN("GET .../org.matrix.msc2965/auth_issuer is called without a token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/unstable/org.matrix.msc2965/auth_issuer", {}, {}});
+
+            THEN("the response is 404, not 401")
+            {
+                REQUIRE(response.status == 404U);
+            }
+        }
+    }
+}
+
+SCENARIO("VoIP turn server endpoint returns an empty object for authenticated clients",
+         "[homeserver][client-server]")
+{
+    GIVEN("a started runtime with a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+
+        WHEN("GET /_matrix/client/v3/voip/turnServer is called with a valid token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/voip/turnServer", token, {}});
+
+            THEN("the response is 200 with an empty object, not 404")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body == "{}");
             }
         }
     }

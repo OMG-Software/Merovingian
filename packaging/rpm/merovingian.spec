@@ -91,8 +91,8 @@ fi
 %changelog
 * Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.2.14-1
 - Raise the client API body limit to 64 KiB so E2EE key uploads are not rejected with 413
-- Add GET /profile/{userId} and GET /_matrix/media/v3/config stubs
-- Return 404 for the org.matrix.msc2965 OIDC auth_metadata probe
+- Add GET /profile/{userId}, GET /_matrix/media/v3/config, and GET /voip/turnServer stubs
+- Return 404 for the org.matrix.msc2965 OIDC discovery namespace
 
 * Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.2.13-1
 - Fix the Windows-to-WSL build launch chain to use scripts/build-wsl.sh

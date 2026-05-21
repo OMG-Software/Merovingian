@@ -1565,11 +1565,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         return r.status == 200U ? resp(200U, "{}") : err(401U, "M_UNKNOWN_TOKEN", r.body);
     }
 
-    // MSC2965 OIDC authentication metadata: Cinny and Element probe this before
-    // login to detect OIDC support.  We do not implement OIDC, so return 404
-    // before the access-token gate so the probe never produces a misleading 401.
+    // MSC2965 OIDC discovery: Cinny and Element probe auth_metadata and
+    // auth_issuer before login to detect OIDC support.  We do not implement
+    // OIDC, so return 404 for the whole msc2965 namespace before the
+    // access-token gate, otherwise the probes produce a misleading 401.
     if (req.method == "GET" &&
-        req.target == "/_matrix/client/unstable/org.matrix.msc2965/auth_metadata")
+        starts_with(req.target, "/_matrix/client/unstable/org.matrix.msc2965/"))
     {
         return err(404U, "M_UNRECOGNIZED", "OIDC not supported");
     }
@@ -1636,6 +1637,14 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto constexpr max_upload_bytes = std::int64_t{104857600}; // 100 MiB
         return resp(200U,
                     json_serialize(json_obj({json_member("m.upload.size", json_int(max_upload_bytes))})));
+    }
+
+    // GET /_matrix/client/v3/voip/turnServer
+    // No TURN server is configured.  Return an empty object so clients disable
+    // VoIP gracefully rather than treating a 404 as an error.
+    if (req.method == "GET" && req.target == "/_matrix/client/v3/voip/turnServer")
+    {
+        return resp(200U, "{}");
     }
 
     auto const key_route = auth::match_key_api_route(req.method, req.target);
