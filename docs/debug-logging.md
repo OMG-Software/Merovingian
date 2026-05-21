@@ -1,0 +1,53 @@
+# Debug Logging
+
+Merovingian emits structured diagnostic log summaries through the existing
+`SingleLog` logger. Console output defaults to `info`; pass `--debug` to
+`merovingian-server` to show debug diagnostics on the console. Pass
+`--log-file <path>` to write trace/debug diagnostics to a file.
+
+Example:
+
+```sh
+merovingian-server --debug --log-file /var/log/merovingian/debug.log --config /etc/merovingian/merovingian.conf
+```
+
+This starts the server with console debug output and a durable diagnostic log
+file for join-failure triage.
+
+## Join Failure Diagnostics
+
+For failed room joins, enable debug/file logging and inspect events with these
+logger names:
+
+- `http_server`: request parsing, body limits, dispatch start, response status,
+  TLS handshake failures, and listener accept failures.
+- `client_server`: Matrix client-server route dispatch, access-token acceptance
+  or rejection, `/rooms/{roomId}/join`, and `/join/{roomIdOrAlias}` rewrite
+  outcomes.
+- `local_router`: internal local route dispatch into room, media, admin, and
+  federation handlers.
+- `auth`: login and access-token lookup decisions without exposing token values.
+- `rooms`: room creation, join membership writes, event composition, signing,
+  event authorization, and persistence outcomes.
+- `event_auth`: Matrix event-auth rule rejection step and reason.
+- `persistent_store`: membership, room-membership, and event/state persistence
+  acceptance or rejection.
+- `federation`: inbound federation policy/signature/transaction decisions and
+  outbound membership transaction composition.
+
+## Redaction Boundary
+
+Diagnostic summaries preserve route, actor, room, status, and reason fields, but
+the formatter redacts fields whose names indicate secrets or payloads:
+
+- Authorization headers, access tokens, refresh tokens, sessions, passwords, and
+  secrets.
+- Signatures and signing material.
+- Request bodies, event content, content JSON, media bytes, and E2EE key payload
+  maps.
+- Query-string values with sensitive token-like names, such as
+  `access_token=<redacted>`.
+
+Do not add raw request bodies, Matrix event `content`, media bytes, passwords, or
+token values to diagnostic fields. Prefer metadata such as `body_bytes`,
+`event_type`, `room_id`, `event_id`, `status`, and failure `reason`.

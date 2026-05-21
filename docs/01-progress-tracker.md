@@ -107,9 +107,13 @@ separate operator decision once this branch is approved._
   scaffold, database role separation, durable trust-and-safety rows, policy
   rules, account data, federation queues, media blob rows, and
   restart-survival integration coverage exist.
-- Observability and audit: structured logging, health snapshots, safe metrics
-  summaries, redaction helpers, durable audit events, admin health/metrics/audit
-  runtime endpoints, and client-server audit persistence exist.
+- Observability and audit: structured logging, redaction-aware debug
+  diagnostics across HTTP dispatch, client-server auth/routing, room joins,
+  room events, event authorization, persistence, and federation decision paths,
+  operator-facing `--debug` and `--log-file <path>` startup controls,
+  health snapshots, safe metrics summaries, redaction helpers, durable audit
+  events, admin health/metrics/audit runtime endpoints, and client-server audit
+  persistence exist.
 - Trust and safety: registration/account/invite/federation/media/report policy
   engine, runtime client event reporting, admin safety report listing/review,
   durable policy audit rows, and durable admin action rows exist.
@@ -311,6 +315,10 @@ a non-production environment.
 - `GET /profile/{userId}` moved before the auth gate (unauthenticated per spec).
 - Client-server v1.18 conformance fixture extended with profile negative cases,
   unknown-room state 403, and password-change coverage.
+- Redaction-aware debug diagnostics are wired into room join, auth, HTTP,
+  persistence, and federation paths, exposed through `--debug` and
+  `--log-file <path>`, with operator notes in
+  `docs/debug-logging.md`.
 
 ### Production v1.0.0
 
@@ -481,6 +489,7 @@ adapters.
 | Media moderation | Quarantine, release, remove, metrics | `partial` | Admin media actions exist locally with durable state, audit, and metrics. Needs richer authorization model and operator docs. |
 | Trust and safety review | Reports and admin review | `partial` | Admin safety report listing and review actions are runtime-wired through authenticated client-server routes with durable policy audit and admin action rows. Needs policy rule management, Matrix v1.18 fixtures, and policy server transport. |
 | Metrics | Exported metrics | `partial` | Admin metrics summaries are runtime-wired and avoid secret fields. Needs production scrape/export contract and trace correlation. |
+| Debug logging | Redaction-aware diagnostic summaries | `partial` | HTTP dispatch, client-server auth/routing, room joins/events, event auth, persistent-store writes, and federation decisions emit structured debug diagnostics. `merovingian-server --debug` enables console diagnostics and `--log-file <path>` writes file diagnostics. `docs/debug-logging.md` documents join-failure triage and the redaction boundary. Needs production log-format contract and request trace correlation IDs. |
 
 ## Completed capability notes
 

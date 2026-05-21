@@ -144,6 +144,48 @@ SCENARIO("Structured log summaries redact sensitive values and document boundari
     }
 }
 
+SCENARIO("Diagnostic log summaries preserve join context while redacting unsafe fields",
+         "[observability][logging][diagnostics]")
+{
+    GIVEN("a client request diagnostic with a join target and unsafe fields")
+    {
+        auto const target = merovingian::observability::sanitized_http_target(
+            "/_matrix/client/v3/join/!room:example.org?server_name=example.org&access_token=secret-token");
+        auto fields = std::vector<merovingian::observability::StructuredLogField>{
+            {"method",       "POST",         false},
+            {"target",       target,         false},
+            {"actor",        "@alice:test",  false},
+            {"body",         "raw-json",     false},
+            {"body_bytes",   "123",          false},
+            {"access_token", "secret-token", false},
+            {"status",       "403",          false},
+            {"reason",       "unknown room", false},
+        };
+
+        WHEN("the diagnostic summary is rendered")
+        {
+            auto const summary = merovingian::observability::diagnostic_log_summary(
+                "client_server", "room.join.rejected", std::move(fields));
+
+            THEN("route, actor, status, and reason survive, but secrets and request bodies do not")
+            {
+                REQUIRE(summary.find("event=room.join.rejected") != std::string::npos);
+                REQUIRE(summary.find("method=POST") != std::string::npos);
+                REQUIRE(summary.find("target=/_matrix/client/v3/join/"
+                                     "!room:example.org?server_name=example.org&access_token=<redacted>") !=
+                        std::string::npos);
+                REQUIRE(summary.find("actor=@alice:test") != std::string::npos);
+                REQUIRE(summary.find("status=403") != std::string::npos);
+                REQUIRE(summary.find("reason=unknown room") != std::string::npos);
+                REQUIRE(summary.find("secret-token") == std::string::npos);
+                REQUIRE(summary.find("raw-json") == std::string::npos);
+                REQUIRE(summary.find("body=<redacted>") != std::string::npos);
+                REQUIRE(summary.find("body_bytes=123") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Metrics and health-check summaries avoid secrets and event contents", "[observability][metrics][health]")
 {
     GIVEN("safe metrics and health components")

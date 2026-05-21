@@ -3,6 +3,7 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <string>
 #include <utility>
 #include <vector>
@@ -53,6 +54,69 @@ namespace
     [[nodiscard]] auto worst_status(HealthStatus left, HealthStatus right) noexcept -> HealthStatus
     {
         return status_rank(left) >= status_rank(right) ? left : right;
+    }
+
+    [[nodiscard]] auto lower_ascii(std::string_view value) -> std::string
+    {
+        auto lowered = std::string{};
+        lowered.reserve(value.size());
+        for (auto const character : value)
+        {
+            lowered.push_back(static_cast<char>(std::tolower(static_cast<unsigned char>(character))));
+        }
+        return lowered;
+    }
+
+    [[nodiscard]] auto contains_sensitive_marker(std::string_view key) -> bool
+    {
+        auto const lowered = lower_ascii(key);
+        if (lowered == "body" || lowered.ends_with("_body") || lowered == "authorization" || lowered == "password" ||
+            lowered == "secret" || lowered == "session")
+        {
+            return true;
+        }
+        for (auto const marker :
+             {"access_token", "refresh_token", "password", "secret", "session_token", "signature", "event_content",
+              "content_json", "media_bytes", "device_keys", "one_time_keys", "fallback_keys"})
+        {
+            if (lowered.find(marker) != std::string::npos)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    [[nodiscard]] auto sanitize_query(std::string_view query) -> std::string
+    {
+        auto output = std::string{};
+        auto remaining = query;
+        auto first = true;
+        while (!remaining.empty())
+        {
+            auto const ampersand = remaining.find('&');
+            auto const segment = remaining.substr(0U, ampersand);
+            auto const equals = segment.find('=');
+            auto const key = equals == std::string_view::npos ? segment : segment.substr(0U, equals);
+            auto const value = equals == std::string_view::npos ? std::string_view{} : segment.substr(equals + 1U);
+            if (!first)
+            {
+                output.push_back('&');
+            }
+            first = false;
+            output.append(key);
+            if (equals != std::string_view::npos)
+            {
+                output.push_back('=');
+                output.append(contains_sensitive_marker(key) ? std::string_view{"<redacted>"} : value);
+            }
+            if (ampersand == std::string_view::npos)
+            {
+                break;
+            }
+            remaining = remaining.substr(ampersand + 1U);
+        }
+        return output;
     }
 
 } // namespace
@@ -227,9 +291,27 @@ auto audit_event_summary(AuditLogEvent const& event) -> std::string
            " actor=" + event.actor + " target=" + event.target + " reason=" + event.reason_code;
 }
 
+auto log_field_is_sensitive(std::string_view key) -> bool
+{
+    return contains_sensitive_marker(key);
+}
+
+auto sanitized_http_target(std::string_view target) -> std::string
+{
+    auto const query_start = target.find('?');
+    if (query_start == std::string_view::npos)
+    {
+        return std::string{target};
+    }
+    auto sanitized = std::string{target.substr(0U, query_start)};
+    sanitized.push_back('?');
+    sanitized.append(sanitize_query(target.substr(query_start + 1U)));
+    return sanitized;
+}
+
 auto redact_log_value(StructuredLogField const& field) -> std::string
 {
-    return field.sensitive ? "<redacted>" : field.value;
+    return field.sensitive || log_field_is_sensitive(field.key) ? "<redacted>" : field.value;
 }
 
 auto structured_log_summary(StructuredLogEvent const& event) -> std::string
@@ -242,12 +324,19 @@ auto structured_log_summary(StructuredLogEvent const& event) -> std::string
     return summary;
 }
 
+auto diagnostic_log_summary(std::string_view logger, std::string_view event, std::vector<StructuredLogField> fields)
+    -> std::string
+{
+    fields.insert(fields.begin(), {"event", std::string{event}, false});
+    return structured_log_summary({std::string{logger}, "debug", std::move(fields)});
+}
+
 auto logging_boundary_notes() -> std::vector<std::string>
 {
     return {
         "Structured logs include request identifiers, actor identifiers, route names, and result codes.",
         "Structured logs must not include access tokens, refresh tokens, device keys, signing keys, event content, "
-        "media bytes, or plaintext passwords.",
+        "media bytes, request bodies, signatures, authorization headers, or plaintext passwords.",
         "Sensitive structured fields are rendered as <redacted> before they leave the logging boundary.",
     };
 }

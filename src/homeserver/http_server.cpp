@@ -6,6 +6,8 @@
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/http/request_limits.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <array>
 #include <cerrno>
@@ -17,6 +19,7 @@
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <poll.h>
 #include <sys/socket.h>
@@ -26,6 +29,11 @@ namespace merovingian::homeserver
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("http_server", event, std::move(fields)));
+    }
 
     // Conservative deadlines for the minimal serve loop. The slowloris policy
     // scaffolding in http/connection_guard.cpp will replace these once
@@ -342,10 +350,21 @@ namespace
             }
             if (buffer.size() >= head_cap)
             {
+                log_diagnostic("request.rejected", {
+                                                       {"status",         "413",                         false},
+                                                       {"received_bytes", std::to_string(buffer.size()), false},
+                                                       {"limit_bytes",    std::to_string(head_cap),      false},
+                                                       {"reason",         "request head too large",      false}
+                });
                 write_error_response(stream, 413U, "request head too large");
             }
             else
             {
+                log_diagnostic("request.rejected", {
+                                                       {"status",         "408",                                  false},
+                                                       {"received_bytes", std::to_string(buffer.size()),          false},
+                                                       {"reason",         "request head incomplete or timed out", false}
+                });
                 write_error_response(stream, 408U, "request head incomplete or timed out");
             }
             return;
@@ -360,6 +379,11 @@ namespace
             }
             auto reason = std::string{"request rejected: "};
             reason.append(http::request_error_name(parse.error));
+            log_diagnostic("request.rejected",
+                           {
+                               {"status", std::to_string(http::request_error_status(parse.error)), false},
+                               {"reason", http::request_error_name(parse.error),                   false}
+            });
             write_error_response(stream, http::request_error_status(parse.error), reason);
             return;
         }
@@ -376,12 +400,28 @@ namespace
                     auto guard = std::lock_guard<std::mutex>{runtime_lock};
                     ++stats.rejected_requests;
                 }
+                log_diagnostic("request.rejected",
+                               {
+                                   {"method",              parse.request.method,                                       false},
+                                   {"target",              observability::sanitized_http_target(parse.request.target), false},
+                                   {"status",              "408",                                                      false},
+                                   {"expected_body_bytes", std::to_string(expected),                                   false},
+                                   {"received_body_bytes", std::to_string(body.size()),                                false},
+                                   {"reason",              "request body incomplete or timed out",                     false}
+                });
                 write_error_response(stream, 408U, "request body incomplete or timed out");
                 return;
             }
         }
 
         auto const local_request = build_local_request(parse.request, std::move(body));
+        log_diagnostic("request.dispatch",
+                       {
+                           {"method",           local_request.method,                                       false},
+                           {"target",           observability::sanitized_http_target(local_request.target), false},
+                           {"body_bytes",       std::to_string(local_request.body.size()),                  false},
+                           {"has_access_token", local_request.access_token.empty() ? "false" : "true",      false}
+        });
 
         auto response = LocalHttpResponse{};
         {
@@ -390,6 +430,13 @@ namespace
             ++stats.completed_requests;
         }
 
+        log_diagnostic("request.completed",
+                       {
+                           {"method",         local_request.method,                                       false},
+                           {"target",         observability::sanitized_http_target(local_request.target), false},
+                           {"status",         std::to_string(response.status),                            false},
+                           {"response_bytes", std::to_string(response.body.size()),                       false}
+        });
         auto const formatted = format_response(response.status, response.body);
         std::ignore = send_all(stream, formatted);
     }
@@ -455,6 +502,9 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::m
             {
                 continue;
             }
+            log_diagnostic("connection.accept_failed", {
+                                                           {"errno", std::to_string(errno), false}
+            });
             return;
         }
         auto client = core::SocketHandle{raw_client};
@@ -504,6 +554,9 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
             {
                 continue;
             }
+            log_diagnostic("tls.connection.accept_failed", {
+                                                               {"errno", std::to_string(errno), false}
+            });
             return;
         }
         auto client = core::SocketHandle{raw_client};
@@ -517,6 +570,9 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
         {
             auto guard = std::lock_guard<std::mutex>{runtime_lock};
             ++stats.rejected_requests;
+            log_diagnostic("tls.handshake.rejected", {
+                                                         {"reason", accepted_tls.error, false}
+            });
             continue;
         }
 

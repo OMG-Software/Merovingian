@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <array>
 #include <cstdint>
@@ -9,11 +11,17 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace merovingian::homeserver
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("local_router", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto response(std::uint16_t status, std::string body) -> LocalHttpResponse
     {
@@ -208,8 +216,21 @@ namespace
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse
 {
+    log_diagnostic("request.received",
+                   {
+                       {"method",           request.method,                                       false},
+                       {"target",           observability::sanitized_http_target(request.target), false},
+                       {"body_bytes",       std::to_string(request.body.size()),                  false},
+                       {"has_access_token", request.access_token.empty() ? "false" : "true",      false}
+    });
     if (!runtime.started)
     {
+        log_diagnostic("request.rejected", {
+                                               {"method", request.method,                                       false},
+                                               {"target", observability::sanitized_http_target(request.target), false},
+                                               {"status", "503",                                                false},
+                                               {"reason", "runtime not started",                                false}
+        });
         return response(503U, "runtime not started");
     }
     if (request.method == "GET" && request.target == "/_merovingian/admin/health")
@@ -245,10 +266,24 @@ namespace
         auto signed_request = parse_signed_federation_request(request);
         if (!signed_request.has_value())
         {
+            log_diagnostic("federation.auth.rejected",
+                           {
+                               {"method", request.method,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"status", "401",                                                false},
+                               {"reason", "malformed federation authorization",                 false}
+            });
             return response(401U, "malformed federation authorization");
         }
         auto const federation_response =
             federation::handle_inbound_federation_request(runtime.federation, *signed_request);
+        log_diagnostic("federation.dispatched",
+                       {
+                           {"method", request.method,                                       false},
+                           {"target", observability::sanitized_http_target(request.target), false},
+                           {"origin", signed_request->origin,                               false},
+                           {"status", std::to_string(federation_response.status),           false}
+        });
         return response(federation_response.status, federation_response.body);
     }
     if (request.method == "POST" && request.target == "/_matrix/client/v3/register")
@@ -333,6 +368,12 @@ namespace
     auto constexpr rooms_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
     if (!starts_with(request.target, rooms_prefix))
     {
+        log_diagnostic("request.route_not_found",
+                       {
+                           {"method", request.method,                                       false},
+                           {"target", observability::sanitized_http_target(request.target), false},
+                           {"status", "404",                                                false}
+        });
         return response(404U, "route not found");
     }
     auto const suffix = std::string_view{request.target}.substr(rooms_prefix.size());
@@ -343,15 +384,35 @@ namespace
     if (request.method == "POST" && suffix.size() > join_suffix.size() &&
         suffix.substr(suffix.size() - join_suffix.size()) == join_suffix)
     {
-        auto result = join_room(runtime, request.access_token, suffix.substr(0U, suffix.size() - join_suffix.size()));
+        auto const room_id = suffix.substr(0U, suffix.size() - join_suffix.size());
+        log_diagnostic("room.join.dispatch", {
+                                                 {"room_id", std::string{room_id}, false}
+        });
+        auto result = join_room(runtime, request.access_token, room_id);
+        log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
+                       {
+                           {"room_id", std::string{room_id},                                       false},
+                           {"status",  std::to_string(result.status != 0U ? result.status : 403U), false},
+                           {"reason",  result.ok ? std::string{"ok"} : result.reason,              false}
+        });
         return result.ok ? response(200U, result.value)
                          : response(result.status != 0U ? result.status : 403U, result.reason);
     }
     if (request.method == "POST" && suffix.size() > send_suffix.size() &&
         suffix.substr(suffix.size() - send_suffix.size()) == send_suffix)
     {
-        auto result = send_event(runtime, request.access_token, suffix.substr(0U, suffix.size() - send_suffix.size()),
-                                 request.body);
+        auto const room_id = suffix.substr(0U, suffix.size() - send_suffix.size());
+        log_diagnostic("room.event.dispatch", {
+                                                  {"room_id",    std::string{room_id},                false},
+                                                  {"body_bytes", std::to_string(request.body.size()), false}
+        });
+        auto result = send_event(runtime, request.access_token, room_id, request.body);
+        log_diagnostic(result.ok ? "room.event.accepted" : "room.event.rejected",
+                       {
+                           {"room_id", std::string{room_id},                                       false},
+                           {"status",  std::to_string(result.status != 0U ? result.status : 403U), false},
+                           {"reason",  result.ok ? std::string{"ok"} : result.reason,              false}
+        });
         return result.ok ? response(200U, result.value)
                          : response(result.status != 0U ? result.status : 403U, result.reason);
     }
@@ -363,6 +424,12 @@ namespace
         return result.ok ? response(200U, result.value)
                          : response(result.status != 0U ? result.status : 403U, result.reason);
     }
+    log_diagnostic("request.route_not_found",
+                   {
+                       {"method", request.method,                                       false},
+                       {"target", observability::sanitized_http_target(request.target), false},
+                       {"status", "404",                                                false}
+    });
     return response(404U, "route not found");
 }
 

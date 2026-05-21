@@ -3,11 +3,14 @@
 #include "merovingian/events/authorization.hpp"
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 namespace merovingian::events
 {
@@ -84,6 +87,11 @@ namespace
 
     [[nodiscard]] auto make_denied(std::string step, std::string reason) -> EventAuthorizationDecision
     {
+        LOG_DEBUG(observability::diagnostic_log_summary("event_auth", "authorization.rejected",
+                                                        {
+                                                            {"rule_step", step,   false},
+                                                            {"reason",    reason, false}
+        }));
         return {false, {}, std::move(step), std::move(reason)};
     }
 

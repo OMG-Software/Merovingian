@@ -10,6 +10,8 @@
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
@@ -26,6 +28,11 @@ namespace merovingian::federation
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("federation", event, std::move(fields)));
+    }
 
     auto constexpr clock_skew_seconds = std::uint64_t{300U};
 
@@ -338,7 +345,8 @@ namespace
         event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{tmpl.user_id}));
         event.push_back(canonicaljson::make_member("sender", canonicaljson::Value{tmpl.user_id}));
         event.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{tmpl.room_id}));
-        event.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(tmpl.depth)}));
+        event.push_back(
+            canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(tmpl.depth)}));
         auto content_value = canonicaljson::Value{};
         auto content_parsed = canonicaljson::parse_lossless(tmpl.content_json);
         if (content_parsed.error == canonicaljson::ParseError::none)
@@ -487,8 +495,7 @@ namespace
             room_id = std::string{remainder.substr(0U, slash)};
             event_id = std::string{remainder.substr(slash + 1U)};
         }
-        auto invite_request =
-            parse_invite_body(request.body, room_id, event_id, FederationEndpoint::invite);
+        auto invite_request = parse_invite_body(request.body, room_id, event_id, FederationEndpoint::invite);
         if (!invite_request.has_value())
         {
             return {400U, "invite body is malformed"};
@@ -548,8 +555,8 @@ namespace
 
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
-                                                         FederationRoute const& route,
-                                                         FederationRemoteRuntime& remote) -> FederationResponse
+                                                         FederationRoute const& route, FederationRemoteRuntime& remote)
+        -> FederationResponse
     {
         (void)remote; // remote trust accounting is handled by the caller.
         switch (route.endpoint)
@@ -569,8 +576,7 @@ namespace
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.
-            return {200U,
-                    "accepted endpoint=" + std::string{federation_endpoint_name(route.endpoint)}};
+            return {200U, "accepted endpoint=" + std::string{federation_endpoint_name(route.endpoint)}};
         case FederationEndpoint::transaction:
             return {500U, "transaction endpoint mis-dispatched"};
         }
@@ -615,9 +621,8 @@ auto resolve_federation_public_key(FederationKeyRecord const& key) -> std::strin
         return {};
     }
     auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
-    if (crypto_generichash(seed.data(), seed.size(),
-                           reinterpret_cast<unsigned char const*>(key.verify_token.data()), key.verify_token.size(),
-                           nullptr, 0U) != 0)
+    if (crypto_generichash(seed.data(), seed.size(), reinterpret_cast<unsigned char const*>(key.verify_token.data()),
+                           key.verify_token.size(), nullptr, 0U) != 0)
     {
         return {};
     }
@@ -817,14 +822,35 @@ auto parse_federation_pdu(std::string_view encoded) -> FederationPdu
 auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFederationRequest const& request)
     -> FederationResponse
 {
+    log_diagnostic("request.received", {
+                                           {"method",     request.method,                                       false},
+                                           {"target",     observability::sanitized_http_target(request.target), false},
+                                           {"origin",     request.origin,                                       false},
+                                           {"key_id",     request.key_id,                                       false},
+                                           {"body_bytes", std::to_string(request.body.size()),                  false}
+    });
     auto const route_match = match_federation_route(request.method, request.target);
     if (!route_match.matched)
     {
+        log_diagnostic("request.route_not_found",
+                       {
+                           {"method", request.method,                                       false},
+                           {"target", observability::sanitized_http_target(request.target), false},
+                           {"origin", request.origin,                                       false},
+                           {"status", "404",                                                false},
+                           {"reason", route_match.reason,                                   false}
+        });
         return {404U, route_match.reason};
     }
     auto const server_policy = federation_server_policy(runtime.config, request.origin);
     if (!server_policy.allowed)
     {
+        log_diagnostic("request.rejected", {
+                                               {"origin", request.origin,                                       false},
+                                               {"target", observability::sanitized_http_target(request.target), false},
+                                               {"status", "403",                                                false},
+                                               {"reason", server_policy.reason,                                 false}
+        });
         audit_federation(runtime, "federation.rejected", request.origin, request.target, server_policy.reason);
         return {403U, server_policy.reason};
     }
@@ -854,6 +880,12 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     }
     if (remote == nullptr)
     {
+        log_diagnostic("request.rejected", {
+                                               {"origin", request.origin,                                       false},
+                                               {"target", observability::sanitized_http_target(request.target), false},
+                                               {"status", "403",                                                false},
+                                               {"reason", "remote is unknown",                                  false}
+        });
         audit_federation(runtime, "federation.rejected", request.origin, request.target, "remote is unknown");
         return {403U, "remote is unknown"};
     }
@@ -876,12 +908,24 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     auto const discovery = federation_discovery_policy(remote->discovery);
     if (!discovery.accepted)
     {
+        log_diagnostic("request.rejected", {
+                                               {"origin", request.origin,                                       false},
+                                               {"target", observability::sanitized_http_target(request.target), false},
+                                               {"status", "403",                                                false},
+                                               {"reason", discovery.reason,                                     false}
+        });
         audit_federation(runtime, "federation.rejected", request.origin, request.target, discovery.reason);
         return {403U, discovery.reason};
     }
     auto const trust = remote_trust_policy(remote->trust);
     if (!trust.accepted)
     {
+        log_diagnostic("request.rejected", {
+                                               {"origin", request.origin,                                       false},
+                                               {"target", observability::sanitized_http_target(request.target), false},
+                                               {"status", std::to_string(trust.apply_backoff ? 429U : 403U),    false},
+                                               {"reason", trust.reason,                                         false}
+        });
         audit_federation(runtime, "federation.rejected", request.origin, request.target, trust.reason);
         auto const status = static_cast<std::uint16_t>(trust.apply_backoff ? 429U : 403U);
         return {status, trust.reason};
@@ -890,6 +934,14 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     if (!request_signature.accepted)
     {
         ++remote->trust.consecutive_failures;
+        log_diagnostic("request.rejected",
+                       {
+                           {"origin",               request.origin,                                       false},
+                           {"target",               observability::sanitized_http_target(request.target), false},
+                           {"status",               std::to_string(request_signature.status),             false},
+                           {"reason",               request_signature.reason,                             false},
+                           {"consecutive_failures", std::to_string(remote->trust.consecutive_failures),   false}
+        });
         audit_federation(runtime, "federation.rejected", request.origin, request.target, request_signature.reason);
         return {request_signature.status, request_signature.reason};
     }
@@ -900,11 +952,24 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         if (non_transaction_response.status >= 200U && non_transaction_response.status < 300U)
         {
             remote->trust.consecutive_failures = 0U;
+            log_diagnostic("request.accepted",
+                           {
+                               {"origin", request.origin,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"status", std::to_string(non_transaction_response.status),      false}
+            });
             audit_federation(runtime, "federation.accepted", request.origin, request.target,
                              federation_route_audit_event(route_match.route, request.origin));
         }
         else
         {
+            log_diagnostic("request.rejected",
+                           {
+                               {"origin", request.origin,                                       false},
+                               {"target", observability::sanitized_http_target(request.target), false},
+                               {"status", std::to_string(non_transaction_response.status),      false},
+                               {"reason", non_transaction_response.body,                        false}
+            });
             audit_federation(runtime, "federation.rejected", request.origin, request.target,
                              non_transaction_response.body);
         }
@@ -926,6 +991,14 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     if (!transaction_decision.accepted)
     {
         ++remote->trust.consecutive_failures;
+        log_diagnostic("transaction.rejected", {
+                                                   {"origin",         request.origin,                          false},
+                                                   {"transaction_id", transaction.transaction_id,              false},
+                                                   {"status",         "400",                                   false},
+                                                   {"reason",         transaction_decision.reason,             false},
+                                                   {"pdu_count",      std::to_string(transaction.pdus.size()), false},
+                                                   {"edu_count",      std::to_string(transaction.edus.size()), false}
+        });
         audit_federation(runtime, "federation.rejected", request.origin, request.target, transaction_decision.reason);
         return {400U, transaction_decision.reason};
     }
@@ -946,6 +1019,15 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         if (!pdu_decision.accepted)
         {
             ++remote->trust.consecutive_failures;
+            log_diagnostic("pdu.rejected", {
+                                               {"origin",         request.origin,                      false},
+                                               {"transaction_id", transaction.transaction_id,          false},
+                                               {"event_id",       pdu.event_id,                        false},
+                                               {"room_id",        pdu.room_id,                         false},
+                                               {"event_type",     pdu.event_type,                      false},
+                                               {"status",         std::to_string(pdu_decision.status), false},
+                                               {"reason",         pdu_decision.reason,                 false}
+            });
             audit_federation(runtime, "federation.rejected", request.origin, request.target, pdu_decision.reason);
             return {pdu_decision.status, pdu_decision.reason};
         }
@@ -972,8 +1054,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         case PduIngestionStatus::accepted:
             ++pdus_appended;
             break;
-        case PduIngestionStatus::rejected_state_conflict:
-        {
+        case PduIngestionStatus::rejected_state_conflict: {
             auto merged = false;
             if (runtime.state_conflict_resolver && ingestion.state_conflict.has_value())
             {
@@ -1001,8 +1082,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             break;
         }
         case PduIngestionStatus::rejected_auth:
-            audit_federation(runtime, "federation.pdu_rejected_auth", request.origin, request.target,
-                             ingestion.reason);
+            audit_federation(runtime, "federation.pdu_rejected_auth", request.origin, request.target, ingestion.reason);
             break;
         case PduIngestionStatus::rejected_invalid:
             audit_federation(runtime, "federation.pdu_rejected_invalid", request.origin, request.target,
@@ -1044,19 +1124,28 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     remote->trust.consecutive_failures = 0U;
     runtime.accepted_transactions.push_back(
         {request.origin, transaction.transaction_id, transaction.pdus.size(), transaction.edus.size()});
+    log_diagnostic("transaction.accepted", {
+                                               {"origin",              request.origin,                          false},
+                                               {"transaction_id",      transaction.transaction_id,              false},
+                                               {"pdu_count",           std::to_string(transaction.pdus.size()), false},
+                                               {"pdu_appended",        std::to_string(pdus_appended),           false},
+                                               {"pdu_state_conflicts", std::to_string(pdus_state_conflict),     false},
+                                               {"pdu_state_resolved",  std::to_string(pdus_state_resolved),     false},
+                                               {"edu_count",           std::to_string(transaction.edus.size()), false},
+                                               {"edu_dispatched",      std::to_string(edus_dispatched),         false},
+                                               {"edu_dropped",         std::to_string(edus_dropped),            false}
+    });
     audit_federation(runtime, "federation.accepted", request.origin, request.target,
                      federation_route_audit_event(route_match.route, request.origin));
     if (!runtime.pdu_sink && !runtime.edu_sink && transaction.edus.empty())
     {
         return {200U, "accepted pdus=" + std::to_string(transaction.pdus.size())};
     }
-    auto detail = "accepted pdus=" + std::to_string(transaction.pdus.size()) +
-                  " appended=" + std::to_string(pdus_appended) +
-                  " state_conflicts=" + std::to_string(pdus_state_conflict) +
-                  " state_resolved=" + std::to_string(pdus_state_resolved) +
-                  " edus=" + std::to_string(transaction.edus.size()) +
-                  " edus_dispatched=" + std::to_string(edus_dispatched) +
-                  " edus_dropped=" + std::to_string(edus_dropped);
+    auto detail =
+        "accepted pdus=" + std::to_string(transaction.pdus.size()) + " appended=" + std::to_string(pdus_appended) +
+        " state_conflicts=" + std::to_string(pdus_state_conflict) +
+        " state_resolved=" + std::to_string(pdus_state_resolved) + " edus=" + std::to_string(transaction.edus.size()) +
+        " edus_dispatched=" + std::to_string(edus_dispatched) + " edus_dropped=" + std::to_string(edus_dropped);
     return {200U, std::move(detail)};
 }
 

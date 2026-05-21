@@ -3,17 +3,25 @@
 #include "merovingian/database/persistent_store.hpp"
 
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <optional>
 #include <tuple>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace merovingian::database
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("persistent_store", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto record_statement(std::string name, std::string sql, std::vector<BoundValue> parameters = {})
         -> PreparedStatement
@@ -302,8 +310,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id,
-                                        std::string_view new_hash) -> bool
+[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
+    -> bool
 {
     auto const it = std::ranges::find_if(store.users, [user_id](PersistentUser const& u) {
         return u.user_id == user_id;
@@ -312,9 +320,9 @@ namespace
     {
         return false;
     }
-    auto const statement = record_statement("update_user_password",
-                                            "UPDATE users SET password_hash = $2 WHERE user_id = $1",
-                                            {public_value(user_id), sensitive_value(new_hash)});
+    auto const statement =
+        record_statement("update_user_password", "UPDATE users SET password_hash = $2 WHERE user_id = $1",
+                         {public_value(user_id), sensitive_value(new_hash)});
     if (!record_and_persist(store, statement))
     {
         return false;
@@ -772,6 +780,12 @@ namespace
 {
     if (membership_exists(store, membership))
     {
+        log_diagnostic("membership.rejected", {
+                                                  {"room_id",    membership.room_id,     false},
+                                                  {"user_id",    membership.user_id,     false},
+                                                  {"membership", membership.membership,  false},
+                                                  {"reason",     "duplicate membership", false}
+        });
         return false;
     }
     if (!record_and_persist(store,
@@ -783,8 +797,20 @@ namespace
                                                  {std::to_string(membership.stream_ordering), false}
     })))
     {
+        log_diagnostic("membership.rejected", {
+                                                  {"room_id",    membership.room_id,                    false},
+                                                  {"user_id",    membership.user_id,                    false},
+                                                  {"membership", membership.membership,                 false},
+                                                  {"reason",     "persistence backend rejected insert", false}
+        });
         return false;
     }
+    log_diagnostic("membership.persisted", {
+                                               {"room_id",         membership.room_id,                         false},
+                                               {"user_id",         membership.user_id,                         false},
+                                               {"membership",      membership.membership,                      false},
+                                               {"stream_ordering", std::to_string(membership.stream_ordering), false}
+    });
     store.memberships.push_back(std::move(membership));
     return true;
 }
@@ -794,6 +820,13 @@ namespace
 {
     if (room.room_id != membership.room_id || room_exists(store, room.room_id) || membership_exists(store, membership))
     {
+        log_diagnostic("room_membership.rejected",
+                       {
+                           {"room_id", room.room_id,                                       false},
+                           {"creator", room.creator_user_id,                               false},
+                           {"member",  membership.user_id,                                 false},
+                           {"reason",  "room or membership shape is invalid or duplicate", false}
+        });
         return false;
     }
     auto const room_statement = record_statement("insert_room", "INSERT INTO rooms VALUES ($1, $2)",
@@ -812,8 +845,20 @@ namespace
     auto const statements = std::vector<PreparedStatement>{room_statement, membership_statement};
     if (!commit_persistent_transaction(store, statements))
     {
+        log_diagnostic("room_membership.rejected", {
+                                                       {"room_id", room.room_id,                               false},
+                                                       {"creator", room.creator_user_id,                       false},
+                                                       {"member",  membership.user_id,                         false},
+                                                       {"reason",  "persistence backend rejected transaction", false}
+        });
         return false;
     }
+    log_diagnostic("room_membership.persisted", {
+                                                    {"room_id",    room.room_id,          false},
+                                                    {"creator",    room.creator_user_id,  false},
+                                                    {"member",     membership.user_id,    false},
+                                                    {"membership", membership.membership, false}
+    });
     store.rooms.push_back(std::move(room));
     store.memberships.push_back(std::move(membership));
     return true;
@@ -893,6 +938,13 @@ namespace
 {
     if (event_exists(store, event.event_id) || (state.has_value() && !state_matches_event(event, *state)))
     {
+        log_diagnostic("event_state.rejected", {
+                                                   {"event_id",  event.event_id,                                  false},
+                                                   {"room_id",   event.room_id,                                   false},
+                                                   {"sender",    event.sender_user_id,                            false},
+                                                   {"has_state", state.has_value() ? "true" : "false",            false},
+                                                   {"reason",    "duplicate event or state does not match event", false}
+        });
         return false;
     }
     auto const event_statement = record_statement("insert_event", "INSERT INTO events VALUES ($1, $2, $3, $4, $5, $6)",
@@ -941,8 +993,23 @@ namespace
     }
     if (!commit_persistent_transaction(store, statements))
     {
+        log_diagnostic("event_state.rejected", {
+                                                   {"event_id",  event.event_id,                             false},
+                                                   {"room_id",   event.room_id,                              false},
+                                                   {"sender",    event.sender_user_id,                       false},
+                                                   {"has_state", state.has_value() ? "true" : "false",       false},
+                                                   {"reason",    "persistence backend rejected transaction", false}
+        });
         return false;
     }
+    log_diagnostic("event_state.persisted", {
+                                                {"event_id",        event.event_id,                        false},
+                                                {"room_id",         event.room_id,                         false},
+                                                {"sender",          event.sender_user_id,                  false},
+                                                {"depth",           std::to_string(event.depth),           false},
+                                                {"stream_ordering", std::to_string(event.stream_ordering), false},
+                                                {"has_state",       state.has_value() ? "true" : "false",  false}
+    });
     append_event_graph_rows(store, event);
     store.events.push_back(std::move(event));
     if (state.has_value())
@@ -1635,12 +1702,11 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     {
         return false;
     }
-    auto const statement =
-        record_statement("upsert_profile",
-                         "INSERT INTO profiles (user_id, displayname, avatar_url) VALUES ($1, $2, $3) "
-                         "ON CONFLICT (user_id) DO UPDATE SET displayname = $2, avatar_url = $3",
-                         {public_value(profile.user_id), public_value(profile.displayname),
-                          public_value(profile.avatar_url)});
+    auto const statement = record_statement(
+        "upsert_profile",
+        "INSERT INTO profiles (user_id, displayname, avatar_url) VALUES ($1, $2, $3) "
+        "ON CONFLICT (user_id) DO UPDATE SET displayname = $2, avatar_url = $3",
+        {public_value(profile.user_id), public_value(profile.displayname), public_value(profile.avatar_url)});
     if (!record_and_persist(store, statement))
     {
         return false;
@@ -1677,8 +1743,7 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         return false;
     }
     auto const statement =
-        record_statement("update_profile_displayname",
-                         "UPDATE profiles SET displayname = $2 WHERE user_id = $1",
+        record_statement("update_profile_displayname", "UPDATE profiles SET displayname = $2 WHERE user_id = $1",
                          {public_value(std::string{user_id}), public_value(std::string{displayname})});
     if (!record_and_persist(store, statement))
     {
@@ -1699,8 +1764,7 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
         return false;
     }
     auto const statement =
-        record_statement("update_profile_avatar_url",
-                         "UPDATE profiles SET avatar_url = $2 WHERE user_id = $1",
+        record_statement("update_profile_avatar_url", "UPDATE profiles SET avatar_url = $2 WHERE user_id = $1",
                          {public_value(std::string{user_id}), public_value(std::string{avatar_url})});
     if (!record_and_persist(store, statement))
     {

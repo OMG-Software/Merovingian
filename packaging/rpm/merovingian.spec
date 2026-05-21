@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.3.0
+Version:        0.3.1
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.3.1-1
+- Add redaction-aware debug diagnostics across HTTP dispatch, client-server auth, joins, room events, persistence, and federation membership flows
+
 * Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.3.0-1
 - Add Matrix UI-auth challenge for POST /register (returns 401 with flows/session when auth field absent)
 - Add POST /account/password endpoint for authenticated password change

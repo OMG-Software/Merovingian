@@ -25,6 +25,16 @@ test(
 )
 
 test(
+  'server-debug-help-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable + ' --help 2>&1 | grep -q -- "--debug" && '
+      + server_executable + ' --help 2>&1 | grep -q -- "--log-file"',
+  ],
+)
+
+test(
   'setup-dev-env-help-smoke-test',
   smoke_test,
   args: [

@@ -36,7 +36,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.3.0"};
+constexpr auto version = std::string_view{"0.3.1"};
 
 struct BootstrapConfigResult final
 {
@@ -270,6 +270,8 @@ struct BootstrapConfigResult final
 struct ParsedArgs final
 {
     bool dry_run{false};
+    bool debug_logging{false};
+    std::optional<std::string> log_file{};
     std::optional<std::string> bootstrap_admin_localpart{};
     std::optional<std::string> bootstrap_admin_password_file{};
     std::optional<std::string> error{};
@@ -286,6 +288,26 @@ struct ParsedArgs final
         if (argument == "--dry-run")
         {
             parsed.dry_run = true;
+            continue;
+        }
+        if (argument == "--debug")
+        {
+            parsed.debug_logging = true;
+            continue;
+        }
+        if (argument == "--log-file")
+        {
+            if (parsed.log_file.has_value())
+            {
+                parsed.error = "--log-file specified more than once";
+                return parsed;
+            }
+            if (index + 1 >= argc)
+            {
+                parsed.error = "--log-file requires a path";
+                return parsed;
+            }
+            parsed.log_file = argv[++index];
             continue;
         }
         if (argument == "--bootstrap-admin")
@@ -354,7 +376,7 @@ struct ParsedArgs final
         return load_config_from_file(std::string{positional[1]});
     }
 
-    return usage_error("usage: merovingian-server [--dry-run] [--config <path>] "
+    return usage_error("usage: merovingian-server [--dry-run] [--debug] [--log-file <path>] [--config <path>] "
                        "[--bootstrap-admin <localpart> --bootstrap-admin-password-file <path>] "
                        "[--check-config <path>] [--plan-config-reload <current> <next>] [--help] [--version]");
 }
@@ -394,7 +416,22 @@ auto print_help() -> void
               << "  merovingian-server --version\n"
               << "\n"
               << "Configuration is validated before startup continues.\n"
-              << "--dry-run validates and prints the startup summary without binding listeners.\n";
+              << "--dry-run validates and prints the startup summary without binding listeners.\n"
+              << "--debug enables debug-level console diagnostics for request and room-flow triage.\n"
+              << "--log-file <path> writes trace/debug diagnostics to the selected file.\n";
+}
+
+auto configure_logging(ParsedArgs const& args) -> void
+{
+    if (args.debug_logging)
+    {
+        merovingian::observability::SingleLog::instance().set_console_log_level(
+            merovingian::observability::LogLevel::debug);
+    }
+    if (args.log_file.has_value())
+    {
+        merovingian::observability::SingleLog::instance().set_log_file_path(*args.log_file);
+    }
 }
 
 auto trim_line_ending(std::string& value) -> void
@@ -773,8 +810,6 @@ auto main(int argc, char const* const* argv) -> int
         return plan_config_reload(argv[2], argv[3]);
     }
 
-    LOG_INFO("Starting The Merovingian bootstrap server");
-
     auto const args = parse_args(argc, argv);
     if (args.error.has_value())
     {
@@ -782,6 +817,9 @@ auto main(int argc, char const* const* argv) -> int
         log_config_findings(result);
         return merovingian::bootstrap::to_int(result.failure_code);
     }
+
+    configure_logging(args);
+    LOG_INFO("Starting The Merovingian bootstrap server");
 
     auto const result = build_config_from_positional(args.positional);
     if (!result.parsed.findings.empty())

@@ -12,6 +12,8 @@
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
@@ -40,6 +42,11 @@ namespace merovingian::homeserver
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("client_server", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto starts_with(std::string_view v, std::string_view p) noexcept -> bool
     {
@@ -1694,16 +1701,42 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
 
 auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req) -> LocalHttpResponse
 {
+    log_diagnostic("request.received", {
+                                           {"method",           req.method,                                       false},
+                                           {"target",           observability::sanitized_http_target(req.target), false},
+                                           {"body_bytes",       std::to_string(req.body.size()),                  false},
+                                           {"has_access_token", req.access_token.empty() ? "false" : "true",      false},
+    });
     if (!rt.homeserver.started)
     {
+        log_diagnostic("request.rejected", {
+                                               {"method", req.method,                                       false},
+                                               {"target", observability::sanitized_http_target(req.target), false},
+                                               {"status", "503",                                            false},
+                                               {"reason", "runtime not started",                            false}
+        });
         return err(503U, "M_UNAVAILABLE", "runtime not started");
     }
     if (req.body.size() > rt.limits.max_body_bytes)
     {
+        log_diagnostic("request.rejected", {
+                                               {"method",      req.method,                                       false},
+                                               {"target",      observability::sanitized_http_target(req.target), false},
+                                               {"status",      "413",                                            false},
+                                               {"body_bytes",  std::to_string(req.body.size()),                  false},
+                                               {"limit_bytes", std::to_string(rt.limits.max_body_bytes),         false},
+                                               {"reason",      "request body too large",                         false}
+        });
         return err(413U, "M_TOO_LARGE", "request body too large");
     }
     if (!allow(rt, req))
     {
+        log_diagnostic("request.rejected", {
+                                               {"method", req.method,                                       false},
+                                               {"target", observability::sanitized_http_target(req.target), false},
+                                               {"status", "429",                                            false},
+                                               {"reason", "rate limit exceeded",                            false}
+        });
         return err(429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
     }
 
@@ -1755,9 +1788,8 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             return resp(401U,
                         json_serialize(json_obj({
-                            json_member("flows",
-                                        json_arr({json_obj({json_member(
-                                            "stages", json_arr({json_str("m.login.registration_token")}))})})),
+                            json_member("flows", json_arr({json_obj({json_member(
+                                                     "stages", json_arr({json_str("m.login.registration_token")}))})})),
                             json_member("params", json_obj({})),
                             json_member("session", json_str("merovingian-ui-auth")),
                         })));
@@ -1900,8 +1932,19 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     auto const user = auth(rt, req.access_token);
     if (!user.has_value())
     {
+        log_diagnostic("request.auth.rejected", {
+                                                    {"method", req.method,                                       false},
+                                                    {"target", observability::sanitized_http_target(req.target), false},
+                                                    {"status", "401",                                            false},
+                                                    {"reason", "unauthenticated",                                false}
+        });
         return err(401U, "M_UNKNOWN_TOKEN", "unauthenticated");
     }
+    log_diagnostic("request.auth.accepted", {
+                                                {"method", req.method,                                       false},
+                                                {"target", observability::sanitized_http_target(req.target), false},
+                                                {"actor",  *user,                                            false}
+    });
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout/all")
     {
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);
@@ -2105,7 +2148,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         // Parse optional body parameters.
         auto const body_parsed = canonicaljson::parse_lossless(req.body);
         auto const* body_obj = std::get_if<canonicaljson::Object>(&body_parsed.value.storage());
-        auto const* name_val  = body_obj != nullptr ? string_member(*body_obj, "name")  : nullptr;
+        auto const* name_val = body_obj != nullptr ? string_member(*body_obj, "name") : nullptr;
         auto const* topic_val = body_obj != nullptr ? string_member(*body_obj, "topic") : nullptr;
         auto const* preset_val = body_obj != nullptr ? string_member(*body_obj, "preset") : nullptr;
         auto const join_rule = (preset_val != nullptr && *preset_val == "public_chat") ? "public" : "invite";
@@ -2136,23 +2179,19 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             std::ignore = handle_local_http_request(rt.homeserver, inner);
         };
 
-        send_state("m.room.create",
-                   json_serialize(json_obj({json_member("creator", json_str(*user)),
-                                            json_member("room_version", json_str("12"))})));
+        send_state("m.room.create", json_serialize(json_obj({json_member("creator", json_str(*user)),
+                                                             json_member("room_version", json_str("12"))})));
         send_state("m.room.member",
-                   json_serialize(json_obj({json_member("membership", json_str("join")),
-                                            json_member("displayname", json_str(""))})),
+                   json_serialize(json_obj(
+                       {json_member("membership", json_str("join")), json_member("displayname", json_str(""))})),
                    *user);
         send_state("m.room.power_levels",
-                   json_serialize(json_obj({json_member("ban", json_int(50)),
-                                            json_member("events_default", json_int(0)),
-                                            json_member("kick", json_int(50)),
-                                            json_member("redact", json_int(50)),
-                                            json_member("state_default", json_int(50)),
-                                            json_member("users_default", json_int(0)),
-                                            json_member("users", json_obj({json_member(*user, json_int(100))}))})));
-        send_state("m.room.join_rules",
-                   json_serialize(json_obj({json_member("join_rule", json_str(join_rule))})));
+                   json_serialize(
+                       json_obj({json_member("ban", json_int(50)), json_member("events_default", json_int(0)),
+                                 json_member("kick", json_int(50)), json_member("redact", json_int(50)),
+                                 json_member("state_default", json_int(50)), json_member("users_default", json_int(0)),
+                                 json_member("users", json_obj({json_member(*user, json_int(100))}))})));
+        send_state("m.room.join_rules", json_serialize(json_obj({json_member("join_rule", json_str(join_rule))})));
         send_state("m.room.history_visibility",
                    json_serialize(json_obj({json_member("history_visibility", json_str(history_vis))})));
         if (name_val != nullptr)
@@ -2222,7 +2261,22 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         if (req.method == "POST" && suffix.size() > join_s.size() &&
             suffix.substr(suffix.size() - join_s.size()) == join_s)
         {
-            return wrap(handle_local_http_request(rt.homeserver, req), "room_id");
+            auto const room_id = std::string{suffix.substr(0U, suffix.size() - join_s.size())};
+            log_diagnostic("room.join.dispatch",
+                           {
+                               {"actor",   *user,                                            false},
+                               {"room_id", room_id,                                          false},
+                               {"target",  observability::sanitized_http_target(req.target), false}
+            });
+            auto const result = wrap(handle_local_http_request(rt.homeserver, req), "room_id");
+            log_diagnostic(result.status == 200U ? "room.join.accepted" : "room.join.rejected",
+                           {
+                               {"actor",   *user,                                                   false},
+                               {"room_id", room_id,                                                 false},
+                               {"status",  std::to_string(result.status),                           false},
+                               {"reason",  result.status == 200U ? std::string{"ok"} : result.body, false}
+            });
+            return result;
         }
         if (req.method == "POST" && suffix.size() > send_s.size() &&
             suffix.substr(suffix.size() - send_s.size()) == send_s)
@@ -2256,11 +2310,33 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         }
         if (room_segment.empty())
         {
+            log_diagnostic("room.join_by_id.rejected",
+                           {
+                               {"actor",  *user,                                            false},
+                               {"target", observability::sanitized_http_target(req.target), false},
+                               {"status", "400",                                            false},
+                               {"reason", "room id or alias must not be empty",             false}
+            });
             return err(400U, "M_INVALID_PARAM", "room id or alias must not be empty");
         }
         auto rewritten = req;
         rewritten.target = std::string{"/_matrix/client/v3/rooms/"} + std::string{room_segment} + "/join";
-        return wrap(handle_local_http_request(rt.homeserver, rewritten), "room_id");
+        log_diagnostic("room.join_by_id.rewrite",
+                       {
+                           {"actor",            *user,                                                  false},
+                           {"room_id_or_alias", std::string{room_segment},                              false},
+                           {"target",           observability::sanitized_http_target(req.target),       false},
+                           {"rewritten_target", observability::sanitized_http_target(rewritten.target), false}
+        });
+        auto const result = wrap(handle_local_http_request(rt.homeserver, rewritten), "room_id");
+        log_diagnostic(result.status == 200U ? "room.join_by_id.accepted" : "room.join_by_id.rejected",
+                       {
+                           {"actor",            *user,                                                   false},
+                           {"room_id_or_alias", std::string{room_segment},                               false},
+                           {"status",           std::to_string(result.status),                           false},
+                           {"reason",           result.status == 200U ? std::string{"ok"} : result.body, false}
+        });
+        return result;
     }
 
     // POST  /_matrix/client/v3/user/{userId}/filter   — upload and store a sync filter
@@ -2358,6 +2434,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         }
     }
 
+    log_diagnostic("request.route_not_found", {
+                                                  {"method", req.method,                                       false},
+                                                  {"target", observability::sanitized_http_target(req.target), false},
+                                                  {"actor",  *user,                                            false},
+                                                  {"status", "404",                                            false}
+    });
     return err(404U, "M_UNRECOGNIZED", "route not found");
 }
 
