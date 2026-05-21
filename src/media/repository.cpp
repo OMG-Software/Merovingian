@@ -329,6 +329,26 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
                 false,
                 "media digest calculation failed"};
     }
+    auto const scanner_clean = repository.config.enable_av_scanner ? request.scanner_clean : true;
+    auto const decision =
+        evaluate_media_upload(upload_policy(repository.config), {size_bytes, request.declared_mime_type,
+                                                                 request.sniffed_mime_type, digest, scanner_clean});
+
+    if (decision.disposition == MediaDisposition::reject)
+    {
+        ++repository.metrics.uploads_rejected;
+        return {false,
+                upload_rejection_status(decision.reason),
+                {},
+                {},
+                {},
+                size_bytes,
+                "blake2b",
+                digest,
+                false,
+                false,
+                decision.reason};
+    }
     if (!sandboxed_worker_plan_is_hardened(worker_plan(repository.config)))
     {
         ++repository.metrics.processing_rejections;
@@ -362,26 +382,6 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
                 false,
                 false,
                 decoder_decision.reason};
-    }
-    auto const scanner_clean = repository.config.enable_av_scanner ? request.scanner_clean : true;
-    auto const decision =
-        evaluate_media_upload(upload_policy(repository.config), {size_bytes, request.declared_mime_type,
-                                                                 request.sniffed_mime_type, digest, scanner_clean});
-
-    if (decision.disposition == MediaDisposition::reject)
-    {
-        ++repository.metrics.uploads_rejected;
-        return {false,
-                upload_rejection_status(decision.reason),
-                {},
-                {},
-                {},
-                size_bytes,
-                "blake2b",
-                digest,
-                false,
-                false,
-                decision.reason};
     }
 
     auto deduplicated = false;
