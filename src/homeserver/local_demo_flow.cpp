@@ -3,6 +3,7 @@
 #include "local_services.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 
+#include <algorithm>
 #include <fstream>
 #include <string>
 
