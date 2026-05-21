@@ -5,6 +5,7 @@
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/media/repository.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 
@@ -14,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace merovingian::homeserver
 {
@@ -30,6 +32,38 @@ namespace
         auto value = std::string{};
         std::getline(input, value);
         return value;
+    }
+
+    auto hydrate_media_repository(media::LocalMediaRepository& repository,
+                                  database::PersistentStore const& persistent_store) -> void
+    {
+        auto records = std::vector<media::LocalMediaRecord>{};
+        records.reserve(persistent_store.local_media.size());
+        for (auto const& media_row : persistent_store.local_media)
+        {
+            auto record = media::LocalMediaRecord{};
+            record.media_id = media_row.media_id;
+            record.owner_user_id = media_row.owner_user_id;
+            record.content_type = media_row.content_type;
+            record.size_bytes = media_row.size_bytes;
+            record.hash_algorithm = media_row.hash_algorithm;
+            record.digest = media_row.digest;
+            record.storage_id = media::make_local_media_storage_id(media_row.digest, media_row.size_bytes);
+            record.state = media_row.removed ? media::LocalMediaState::removed
+                                             : (media_row.quarantined ? media::LocalMediaState::quarantined
+                                                                      : media::LocalMediaState::available);
+            record.quarantine_reason = media_row.quarantined ? "persisted quarantine" : std::string{};
+            records.push_back(std::move(record));
+        }
+
+        auto blobs = std::vector<media::LocalMediaBlob>{};
+        blobs.reserve(persistent_store.media_blobs.size());
+        for (auto const& blob_row : persistent_store.media_blobs)
+        {
+            blobs.push_back({blob_row.storage_id, blob_row.hash_algorithm, blob_row.digest, blob_row.size_bytes,
+                             blob_row.bytes, blob_row.ref_count});
+        }
+        media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
     }
 
 } // namespace
@@ -167,14 +201,18 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
         !database_has_table(runtime.database, "key_signatures") ||
         !database_has_table(runtime.database, "key_backup_versions") ||
         !database_has_table(runtime.database, "key_backup_sessions") ||
-        !database_has_table(runtime.database, "remote_media") || !database_has_table(runtime.database, "audit_log") ||
-        !database_has_table(runtime.database, "admin_actions"))
+        !database_has_table(runtime.database, "media_blobs") || !database_has_table(runtime.database, "remote_media") ||
+        !database_has_table(runtime.database, "policy_rules") ||
+        !database_has_table(runtime.database, "account_data") ||
+        !database_has_table(runtime.database, "room_account_data") ||
+        !database_has_table(runtime.database, "audit_log") || !database_has_table(runtime.database, "admin_actions"))
     {
         return {false, "database schema validation failed", {}};
     }
 
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
+    hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
     runtime.hardening = platform::run_startup_hardening_self_check();
     append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver",
                        "startup");

@@ -153,6 +153,7 @@ SCENARIO("Config enables media and logging protections by default", "[config][se
                 REQUIRE(media.quarantine_unknown_mime);
                 REQUIRE(media.enable_av_scanner);
                 REQUIRE(media.block_private_ip_fetches);
+                REQUIRE_FALSE(media.remote_fetch_enabled);
                 REQUIRE(media.decode_in_sandbox);
                 REQUIRE(logging.redact_tokens);
                 REQUIRE(logging.redact_event_content);

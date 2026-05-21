@@ -9,14 +9,21 @@ current in-process runtime path.
 - `GET /_matrix/media/v3/config` reports `m.upload.size` from
   `security.media.max_upload_size`, so client upload hints match the policy
   enforced by the repository.
-- Downloads serve only local media owned by the configured server name.
-- Remote media fetches remain disabled and fail closed until a later capability
-  change.
+- Downloads serve local media owned by the configured server name.
+- Remote media fetches remain disabled by default. The repository now has an
+  explicit remote ingest boundary for configured fetchers: remote host/IP policy
+  is checked before bytes enter the local blob store, and rejected fetches are
+  counted/audited.
+- Upload and remote-ingest bytes pass through the same hardened processing
+  boundary: AV scanner result, sandboxed worker requirement, decoder safety,
+  decompression expansion limits, and thumbnail metadata generation.
 - Admin quarantine, release, and remove actions update repository state, persistent metadata, admin actions, and audit events.
-- Media metrics expose accepted uploads, rejected uploads, quarantines, releases, removals, remote fetch rejections, stored blobs, and stored bytes.
+- Media metrics expose accepted uploads, rejected uploads, quarantines,
+  releases, removals, remote fetch accept/reject counts, processing rejections,
+  thumbnail generation, stored blobs, and stored bytes.
 - The media repository is runtime-wired, but still partial against Matrix
-  v1.18 because multipart upload handling, remote fetch, durable blob storage,
-  thumbnailing, and sandboxed processing remain production gaps.
+  v1.18 because multipart upload handling, live remote server discovery/fetch
+  transport wiring, and real image resampling remain production gaps.
 
 ## Status Codes
 
@@ -38,6 +45,10 @@ Local media deduplication uses a LibSodium `crypto_generichash` (`blake2b`) dige
 
 ## Persistence
 
-Schema version `2` adds media metadata columns for `hash_algorithm`, `digest`, and `removed`. Existing version `1` schemas migrate through the `media_metadata_columns` step before startup is considered compatible. New local uploads use LibSodium `crypto_generichash` (`blake2b`) for deduplication digests instead of project-local hash code.
+The collapsed initial schema includes `media` metadata, `remote_media`
+metadata, and `media_blobs` durable byte storage. New local uploads use
+LibSodium `crypto_generichash` (`blake2b`) for deduplication digests, store the
+blob bytes through `media_blobs`, and hydrate the runtime repository from those
+rows after a SQLite/PostgreSQL restart.
 
 Media moderation events are persisted with the `moderation` audit category so operator filtering can distinguish media policy and admin moderation events from auth or generic admin activity.

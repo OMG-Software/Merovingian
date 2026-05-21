@@ -35,7 +35,7 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Create a new test(s) for the desired outcome prior to making the code change.
 - After code change, run the new test(s).
 - Before creating a new branch from main, pull from origin so that main is up to date.
-- Bump the version number on creating a new branch.
+- Bump the version number on creating a new branch. See versioning doc for all the places where the version number needs updating.
 - Record changes for each version in CHANGELOG.md
 - Ignore `.clwb` folder.
 - Always work in feature or bug branches, never main.

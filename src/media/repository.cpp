@@ -110,6 +110,75 @@ namespace
         return "blob_" + std::string{digest} + "_" + std::to_string(size_bytes);
     }
 
+    [[nodiscard]] auto decoder_policy(RuntimeMediaConfig const& config) -> DecoderSafetyPolicy
+    {
+        auto const max_input =
+            config.max_decode_input_bytes == 0U ? config.max_upload_bytes : config.max_decode_input_bytes;
+        auto const max_output = config.max_decode_output_bytes == 0U
+                                    ? config.max_upload_bytes * config.max_decompression_ratio
+                                    : config.max_decode_output_bytes;
+        return {max_input,
+                max_output,
+                config.max_decode_pixels,
+                static_cast<std::uint32_t>(config.max_animation_frames),
+                static_cast<std::uint32_t>(config.max_decompression_ratio),
+                true};
+    }
+
+    [[nodiscard]] auto decoder_request(RuntimeMediaConfig const& config, std::uint64_t size_bytes,
+                                       std::uint64_t decoded_size_bytes, std::uint64_t pixel_count,
+                                       std::uint64_t animation_frame_count, bool decoder_marked_safe)
+        -> DecoderSafetyRequest
+    {
+        auto const output_bytes = decoded_size_bytes == 0U ? size_bytes : decoded_size_bytes;
+        auto const pixels =
+            pixel_count == 0U ? std::min<std::uint64_t>(size_bytes, config.max_decode_pixels) : pixel_count;
+        return {size_bytes, output_bytes, pixels, static_cast<std::uint32_t>(animation_frame_count),
+                decoder_marked_safe};
+    }
+
+    [[nodiscard]] auto worker_plan(RuntimeMediaConfig const& config) -> SandboxedMediaWorkerPlan
+    {
+        auto plan = SandboxedMediaWorkerPlan{};
+        plan.dedicated_worker = config.decode_in_sandbox;
+        plan.network_disabled = true;
+        plan.read_only_root = true;
+        plan.private_tmp = true;
+        plan.seccomp_required = true;
+        plan.decode_timeout_seconds = 10U;
+        plan.memory_limit_bytes = config.max_decode_output_bytes == 0U
+                                      ? std::max<std::uint64_t>(268435456U, config.max_upload_bytes * 64U)
+                                      : config.max_decode_output_bytes;
+        return plan;
+    }
+
+    [[nodiscard]] auto processing_rejection_status(std::string_view reason) noexcept -> std::uint16_t
+    {
+        if (reason.find("limit") != std::string_view::npos || reason.find("exceeds") != std::string_view::npos ||
+            reason.find("dimensions") != std::string_view::npos || reason.find("expansion") != std::string_view::npos)
+        {
+            return 413U;
+        }
+        return 400U;
+    }
+
+    [[nodiscard]] auto content_type_is_thumbnailable(std::string_view content_type) noexcept -> bool
+    {
+        return content_type == "image/png" || content_type == "image/jpeg" || content_type == "image/gif";
+    }
+
+    auto record_thumbnail(LocalMediaRepository& repository, LocalMediaRecord const& record) -> void
+    {
+        if (!repository.config.thumbnailing_enabled || !content_type_is_thumbnailable(record.content_type) ||
+            record.state != LocalMediaState::available)
+        {
+            return;
+        }
+        repository.thumbnails.push_back({record.media_id, record.storage_id, 64U, 64U, "image/png",
+                                         std::min<std::uint64_t>(record.size_bytes, 4096U)});
+        ++repository.metrics.thumbnails_generated;
+    }
+
     [[nodiscard]] auto upload_rejection_status(std::string_view reason) noexcept -> std::uint16_t
     {
         if (reason == "media upload exceeds size limit")
@@ -153,6 +222,11 @@ auto make_local_media_repository(RuntimeMediaConfig config) -> LocalMediaReposit
     return repository;
 }
 
+auto make_local_media_storage_id(std::string_view digest, std::uint64_t size_bytes) -> std::string
+{
+    return make_storage_id(digest, size_bytes);
+}
+
 auto calculate_media_digest(std::string_view bytes) -> std::string
 {
     if (!sodium_is_ready())
@@ -194,6 +268,9 @@ auto media_repository_metrics(LocalMediaRepository const& repository) -> std::ve
         make_metric("media_admin_releases_total", repository.metrics.admin_releases),
         make_metric("media_admin_removals_total", repository.metrics.admin_removals),
         make_metric("media_remote_fetch_rejections_total", repository.metrics.remote_fetch_rejections),
+        make_metric("media_remote_fetches_accepted_total", repository.metrics.remote_fetches_accepted),
+        make_metric("media_processing_rejections_total", repository.metrics.processing_rejections),
+        make_metric("media_thumbnails_generated_total", repository.metrics.thumbnails_generated),
         make_metric("media_stored_blobs", repository.metrics.stored_blobs),
         make_metric("media_stored_bytes", repository.metrics.stored_bytes),
     };
@@ -206,6 +283,29 @@ auto find_local_media_record(LocalMediaRepository const& repository, std::string
         return record.media_id == media_id;
     });
     return iterator == repository.records.end() ? nullptr : &(*iterator);
+}
+
+auto find_local_media_blob(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
+    -> LocalMediaBlob const*
+{
+    auto const iterator = std::ranges::find_if(repository.blobs, [storage_id](LocalMediaBlob const& blob) {
+        return blob.storage_id == storage_id;
+    });
+    return iterator == repository.blobs.end() ? nullptr : &(*iterator);
+}
+
+auto restore_local_media_repository(LocalMediaRepository& repository, std::vector<LocalMediaRecord> records,
+                                    std::vector<LocalMediaBlob> blobs) -> void
+{
+    repository.records = std::move(records);
+    repository.blobs = std::move(blobs);
+    repository.thumbnails.clear();
+    repository.next_media_sequence = static_cast<std::uint64_t>(repository.records.size()) + 1U;
+    for (auto const& record : repository.records)
+    {
+        record_thumbnail(repository, record);
+    }
+    refresh_storage_metrics(repository);
 }
 
 auto upload_local_media(LocalMediaRepository& repository, std::string_view server_name,
@@ -249,6 +349,40 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
                 false,
                 decision.reason};
     }
+    if (!sandboxed_worker_plan_is_hardened(worker_plan(repository.config)))
+    {
+        ++repository.metrics.processing_rejections;
+        return {false,
+                500U,
+                {},
+                {},
+                content_type,
+                size_bytes,
+                "blake2b",
+                digest,
+                false,
+                false,
+                "media processing worker is not sandboxed"};
+    }
+    auto const decoder_decision = evaluate_decoder_safety(
+        decoder_policy(repository.config),
+        decoder_request(repository.config, size_bytes, request.decoded_size_bytes, request.pixel_count,
+                        request.animation_frame_count, request.decoder_marked_safe));
+    if (decoder_decision.disposition == MediaDisposition::reject)
+    {
+        ++repository.metrics.processing_rejections;
+        return {false,
+                processing_rejection_status(decoder_decision.reason),
+                {},
+                {},
+                content_type,
+                size_bytes,
+                "blake2b",
+                digest,
+                false,
+                false,
+                decoder_decision.reason};
+    }
 
     auto deduplicated = false;
     auto* blob = find_live_blob(repository, "blake2b", digest, size_bytes);
@@ -284,6 +418,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     record.quarantine_reason = decision.reason;
     auto const media_id = record.media_id;
     repository.records.push_back(std::move(record));
+    record_thumbnail(repository, repository.records.back());
 
     ++repository.metrics.uploads_accepted;
     if (decision.disposition == MediaDisposition::quarantine)
@@ -436,6 +571,56 @@ auto fetch_remote_media_disabled(LocalMediaRepository& repository, RemoteMediaDo
         return {false, 502U, decision.reason};
     }
     return {false, 501U, "remote media fetch is not implemented in this milestone"};
+}
+
+auto fetch_remote_media(LocalMediaRepository& repository, RemoteMediaDownloadRequest const& request)
+    -> RemoteMediaDownloadResult
+{
+    if (!repository.config.remote_fetch_enabled)
+    {
+        ++repository.metrics.remote_fetch_rejections;
+        return {false, 502U, "remote media fetch disabled"};
+    }
+    auto const remote_decision = remote_media_fetch_policy({request.origin_server, request.media_id,
+                                                            request.resolved_host, request.resolved_addresses, true,
+                                                            repository.config.private_address_fetches_blocked});
+    if (remote_decision.disposition == MediaDisposition::reject)
+    {
+        ++repository.metrics.remote_fetch_rejections;
+        return {false, 502U, remote_decision.reason};
+    }
+    if (request.bytes.empty())
+    {
+        ++repository.metrics.remote_fetch_rejections;
+        return {false, 502U, "remote media response body is empty"};
+    }
+
+    auto upload = LocalMediaUploadRequest{};
+    upload.owner_user_id = "@remote-media:" + request.origin_server;
+    upload.declared_mime_type = request.content_type;
+    upload.sniffed_mime_type = request.content_type;
+    upload.bytes = request.bytes;
+    upload.scanner_clean = request.scanner_clean;
+    upload.decoded_size_bytes = request.decoded_size_bytes;
+    upload.pixel_count = request.pixel_count;
+    upload.animation_frame_count = request.animation_frame_count;
+    upload.decoder_marked_safe = request.decoder_marked_safe;
+    auto const result = upload_local_media(repository, request.origin_server, upload);
+    if (!result.ok)
+    {
+        return {false, result.status, result.reason};
+    }
+    ++repository.metrics.remote_fetches_accepted;
+    return {true,
+            result.status,
+            {},
+            result.content_type,
+            request.bytes,
+            result.size_bytes,
+            result.hash_algorithm,
+            result.digest,
+            make_storage_id(result.digest, result.size_bytes),
+            result.quarantined};
 }
 
 } // namespace merovingian::media

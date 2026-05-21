@@ -8,6 +8,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -27,6 +29,30 @@ namespace
         merovingian::config::DatabaseConfig{},
         security,
     };
+}
+
+[[nodiscard]] auto sqlite_media_test_config(std::filesystem::path const& sqlite_path) -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    security.media.max_upload_size = "8B";
+    security.media.quarantine_unknown_mime = false;
+    auto database = merovingian::config::DatabaseConfig{};
+    database.backend = merovingian::config::DatabaseBackend::sqlite;
+    database.sqlite_path = sqlite_path.string();
+    return {
+        merovingian::config::ServerConfig{},
+        merovingian::config::ListenersConfig{},
+        database,
+        security,
+    };
+}
+
+[[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path
+{
+    auto const now = std::chrono::steady_clock::now().time_since_epoch().count();
+    return std::filesystem::temp_directory_path() /
+           ("merovingian-media-integration-" + std::to_string(now) + ".sqlite3");
 }
 
 [[nodiscard]] auto media_id_from_upload_response(std::string_view body) -> std::string
@@ -115,6 +141,45 @@ SCENARIO("Integrated local media repository flow covers upload download dedupe q
                 REQUIRE(metrics.body.find("media_admin_removals_total=1") != std::string::npos);
             }
         }
+    }
+}
+
+SCENARIO("Integrated media repository restores durable blob storage after restart",
+         "[media][repository][integration][persistence]")
+{
+    GIVEN("a SQLite-backed homeserver with uploaded media")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto const config = sqlite_media_test_config(sqlite_path);
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto runtime = std::move(started.runtime);
+        auto const token = register_and_login_admin(runtime);
+        auto const upload = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|hello"});
+        REQUIRE(upload.status == 200U);
+        auto const media_id = media_id_from_upload_response(upload.body);
+
+        WHEN("the runtime is restarted against the same database")
+        {
+            auto restarted = merovingian::homeserver::start_runtime(config);
+            REQUIRE(restarted.started);
+            auto after_restart = std::move(restarted.runtime);
+            auto const downloaded = merovingian::homeserver::handle_local_http_request(
+                after_restart, {"GET", "/_matrix/media/v3/download/example.org/" + media_id, {}, {}});
+
+            THEN("media metadata and blob bytes are available without re-upload")
+            {
+                REQUIRE(downloaded.status == 200U);
+                REQUIRE(downloaded.body == "text/plain|hello");
+                REQUIRE(after_restart.database.persistent_store.media_blobs.size() == 1U);
+                REQUIRE(after_restart.media_repository.blobs.size() == 1U);
+                REQUIRE(after_restart.media_repository.metrics.stored_blobs == 1U);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
     }
 }
 

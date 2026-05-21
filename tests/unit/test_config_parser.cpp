@@ -72,6 +72,7 @@ SCENARIO("Key-value config parser applies booleans and lists", "[config][parser]
                                        "listeners.client.tls_certificate_file=/etc/merovingian/client.crt\n"
                                        "listeners.client.tls_private_key_file=/etc/merovingian/client.key\n"
                                        "security.media.enable_av_scanner=false\n"
+                                       "security.media.remote_fetch_enabled=true\n"
                                        "security.federation.allowed_servers=matrix.org, example.net\n"
                                        "security.federation.denied_servers=bad.example, abuse.example\n"
                                        "security.federation.deny_ip_ranges=127.0.0.0/8, ::1/128\n"};
@@ -88,6 +89,7 @@ SCENARIO("Key-value config parser applies booleans and lists", "[config][parser]
                 REQUIRE(result.config.listeners().client.tls_certificate_file == "/etc/merovingian/client.crt");
                 REQUIRE(result.config.listeners().client.tls_private_key_file == "/etc/merovingian/client.key");
                 REQUIRE_FALSE(result.config.security().media.enable_av_scanner);
+                REQUIRE(result.config.security().media.remote_fetch_enabled);
                 REQUIRE(result.config.security().federation.allowed_servers.size() == 2U);
                 REQUIRE(result.config.security().federation.denied_servers.size() == 2U);
                 REQUIRE(result.config.security().federation.deny_ip_ranges.size() == 2U);

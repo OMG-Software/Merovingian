@@ -251,6 +251,13 @@ namespace
         {
             security.media.remote_fetch_timeout = std::string{value};
         }
+        else if (key == "security.media.remote_fetch_enabled")
+        {
+            if (!parse_bool_value(value, security.media.remote_fetch_enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
         else if (key == "security.media.decode_in_sandbox")
         {
             if (!parse_bool_value(value, security.media.decode_in_sandbox))

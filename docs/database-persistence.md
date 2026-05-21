@@ -15,7 +15,7 @@ remaining work before PostgreSQL-backed production operation.
 - Validated execution helper that rejects invalid statements before they reach an executor.
 - Migration step and migration plan models.
 - Contiguous upgrade and explicit downgrade migration-plan validation.
-- Initial schema deployed at version `1` in its final shape: 41 core
+- Initial schema deployed at version `1` in its final shape: 42 core
   tables covering every Matrix storage area from the project plan. There
   are no live databases to upgrade, so historical per-version migrations
   have been collapsed into the single `initial_schema` step. Future schema
@@ -25,7 +25,8 @@ remaining work before PostgreSQL-backed production operation.
 - SQLite row hydration for users, devices, access tokens, rooms, memberships,
   refresh tokens, events (with depth), current state, server signing keys (with
   server_name), event DAG rows, event signatures, E2EE key state, media
-  metadata, remote media metadata, audit events, and admin actions.
+  metadata, durable media blobs, remote media metadata, account data, policy
+  rules, audit events, and admin actions.
 - Write-through SQLite persistence behind the existing store mutation helpers.
 - Transaction-aware persistent-store commits with SQLite rollback support.
 - Atomic helpers for multi-row login, room creation, and state-event writes.
@@ -46,14 +47,16 @@ remaining work before PostgreSQL-backed production operation.
   statement names.
 - Offline `merovingian-db-migrate` planning scaffold.
 - Database `runtime` and `migration` role separation.
-- Runtime hydration for users, sessions, rooms, memberships, events, and client
-  device listings.
+- Runtime hydration for users, sessions, rooms, memberships, events, client
+  device listings, and durable media repository blobs.
 - Runtime event writes persist previous-event edges, auth-event edges, and
   Matrix event signatures in the same transaction as the event row.
 - Event depth column persisted alongside events so depth survives restarts.
 - Server signing keys scoped by server_name with composite primary key.
 - Runtime trust-and-safety report/review paths append durable policy audit rows
   and admin action rows.
+- Policy rule and media blob helpers upsert durable rows and hydrate them after
+  SQLite/PostgreSQL reopen.
 - Unit coverage for statement validation, executor gating, redaction, migration
   planning, and schema inventory.
 - Migration-plan validation coverage uses explicit hand-built plans, while
@@ -92,7 +95,8 @@ The boundary provides these guarantees:
 - Sensitive parameter values can be summarized without leaking the value.
 - Migration plans are contiguous and direction-aware.
 - Core table inventory is explicit and test-covered.
-- Media rows include hash algorithm, digest, quarantine state, and removal state before runtime media writes are accepted.
+- Media rows include hash algorithm, digest, quarantine state, removal state,
+  and durable blob references before runtime media writes are accepted.
 - Fresh SQLite database files are created with the current schema and recorded
   migration metadata.
 - Existing SQLite database files apply pending project-owned migrations before

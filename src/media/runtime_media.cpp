@@ -29,8 +29,14 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
         config.security().media.enable_av_scanner,
         config.security().media.block_private_ip_fetches,
         remote_timeout.valid ? remote_timeout.seconds : 0U,
-        false,
+        config.security().media.remote_fetch_enabled,
         config.security().media.decode_in_sandbox,
+        upload_limit.valid ? upload_limit.bytes : 0U,
+        upload_limit.valid ? upload_limit.bytes * 64U : 0U,
+        4096000U,
+        1U,
+        64U,
+        true,
     };
 }
 
@@ -42,7 +48,8 @@ auto media_summary(RuntimeMediaConfig const& config) -> std::string
            " remote_fetch_enabled=" + std::string{config.remote_fetch_enabled ? "true" : "false"} +
            " private_address_fetches_blocked=" +
            std::string{config.private_address_fetches_blocked ? "true" : "false"} +
-           " decode_in_sandbox=" + std::string{config.decode_in_sandbox ? "true" : "false"};
+           " decode_in_sandbox=" + std::string{config.decode_in_sandbox ? "true" : "false"} +
+           " thumbnailing_enabled=" + std::string{config.thumbnailing_enabled ? "true" : "false"};
 }
 
 } // namespace merovingian::media

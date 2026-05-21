@@ -21,6 +21,12 @@ struct RuntimeMediaConfig final
     std::uint32_t remote_fetch_timeout_seconds{0U};
     bool remote_fetch_enabled{false};
     bool decode_in_sandbox{true};
+    std::uint64_t max_decode_input_bytes{0U};
+    std::uint64_t max_decode_output_bytes{0U};
+    std::uint64_t max_decode_pixels{4096000U};
+    std::uint64_t max_animation_frames{1U};
+    std::uint64_t max_decompression_ratio{64U};
+    bool thumbnailing_enabled{true};
 };
 
 [[nodiscard]] auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConfig;

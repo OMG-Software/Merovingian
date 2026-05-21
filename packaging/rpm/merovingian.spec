@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.2.16
+Version:        0.2.17
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.2.17-1
+- Add durable media blob persistence, policy-rule hydration, and hardened media processing boundaries
+- Add remote media ingest boundary, thumbnail metadata, and media repository restart coverage
+
 * Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.2.16-1
 - Promote beta client-server v1.18 endpoint coverage with auth/device runtime behavior and conformance fixtures
 - Add refresh-token rotation, global logout, single-device fetch/delete, spec-shaped room send/state aliases, and media adapter coverage

@@ -20,6 +20,23 @@ namespace
                                      result.reason, result.status);
     }
 
+    auto persist_blob_for_media(HomeserverRuntime& runtime, std::string_view media_id) -> void
+    {
+        auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
+        if (record == nullptr)
+        {
+            return;
+        }
+        auto const* blob = media::find_local_media_blob(runtime.media_repository, record->storage_id);
+        if (blob == nullptr)
+        {
+            return;
+        }
+        std::ignore = database::store_media_blob(
+            runtime.database.persistent_store,
+            {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes, blob->bytes, blob->ref_count});
+    }
+
 } // namespace
 
 [[nodiscard]] auto upload_local_media(HomeserverRuntime& runtime, std::string_view access_token,
@@ -43,15 +60,16 @@ namespace
     }
 
     std::ignore = database::store_local_media(runtime.database.persistent_store, {
-                                                                             result.media_id,
-                                                                             *user_id,
-                                                                             result.content_type,
-                                                                             result.size_bytes,
-                                                                             result.hash_algorithm,
-                                                                             result.digest,
-                                                                             result.quarantined,
-                                                                             false,
-                                                                         });
+                                                                                     result.media_id,
+                                                                                     *user_id,
+                                                                                     result.content_type,
+                                                                                     result.size_bytes,
+                                                                                     result.hash_algorithm,
+                                                                                     result.digest,
+                                                                                     result.quarantined,
+                                                                                     false,
+                                                                                 });
+    persist_blob_for_media(runtime, result.media_id);
     append_local_audit(runtime.database, observability::AuditCategory::moderation,
                        result.quarantined ? "media.upload_quarantined" : "media.upload_accepted", *user_id,
                        result.media_id,
@@ -94,7 +112,7 @@ namespace
     {
         std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, true, false);
         std::ignore = database::append_admin_action(runtime.database.persistent_store,
-                                            {*admin_user_id, "media.quarantine", std::string{media_id}});
+                                                    {*admin_user_id, "media.quarantine", std::string{media_id}});
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.quarantined",
                            *admin_user_id, media_id, reason);
     }
@@ -115,7 +133,7 @@ namespace
     {
         std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, false, false);
         std::ignore = database::append_admin_action(runtime.database.persistent_store,
-                                            {*admin_user_id, "media.release", std::string{media_id}});
+                                                    {*admin_user_id, "media.release", std::string{media_id}});
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.released", *admin_user_id,
                            media_id, "released");
     }
@@ -135,8 +153,9 @@ namespace
     if (result.ok)
     {
         std::ignore = database::update_local_media_state(runtime.database.persistent_store, media_id, false, true);
+        persist_blob_for_media(runtime, media_id);
         std::ignore = database::append_admin_action(runtime.database.persistent_store,
-                                            {*admin_user_id, "media.remove", std::string{media_id}});
+                                                    {*admin_user_id, "media.remove", std::string{media_id}});
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.removed", *admin_user_id,
                            media_id, reason);
     }

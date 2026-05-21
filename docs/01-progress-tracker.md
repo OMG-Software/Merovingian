@@ -88,8 +88,10 @@ deployment milestone.
   circuit-breaker policy, `OutboundClient`, `perform_outbound_transaction`,
   and per-platform TLS outbound integration coverage exist.
 - Media repository foundation: authenticated local upload/download, MIME
-  policy, quarantine/release/remove, LibSodium digest, metrics, audit, metadata
-  persistence, and integration coverage exist.
+  policy, quarantine/release/remove, LibSodium digest, metrics, audit,
+  metadata/blob persistence, sandbox/AV/decoder/decompression processing
+  boundary, remote-ingest boundary, thumbnail metadata, and integration
+  coverage exist.
 - Database persistence: prepared-statement boundary, schema inventory,
   migration model, in-memory persistent store, SQLite RAII backend,
   current-schema bootstrap, fail-closed hydration, busy timeout, runtime
@@ -97,7 +99,8 @@ deployment milestone.
   keys/media/audit/admin rows, SQLite rollback coverage, PostgreSQL RAII
   connection/result boundary, PostgreSQL schema bootstrap/pending-migration
   hydration/write-through path, migration file loading, offline migrator
-  scaffold, database role separation, durable trust-and-safety rows, and
+  scaffold, database role separation, durable trust-and-safety rows, policy
+  rules, account data, federation queues, media blob rows, and
   restart-survival integration coverage exist.
 - Observability and audit: structured logging, health snapshots, safe metrics
   summaries, redaction helpers, durable audit events, admin health/metrics/audit
@@ -291,10 +294,9 @@ a non-production environment.
   ingestion, remote key rotation, and TLS-bound origin validation.
 - Add live PostgreSQL integration tests that cover restart survival,
   transaction rollback, migration ordering, and role-grant failures.
-- Persist federation queues, account data, policy rules, and media blob
-  metadata.
-- Add media remote fetch, sandboxed processing worker, AV hook boundary,
-  thumbnailing, decompression limits, and durable blob storage.
+- Wire live media remote-fetch transport and server discovery into the
+  repository remote-ingest boundary, then replace thumbnail metadata with real
+  image resampling output.
 - Define the production scrape/export contract, log format contract, trace
   correlation, and operator docs for observability.
 - Add policy server transport integration, durable policy-rule management, and
@@ -364,8 +366,8 @@ With the Alpha gates closed, Beta priorities take over from here:
    ELF program-header probe (linker hardening / RELRO) and Linux
    seccomp-bpf filter. Update `docs/hardening-alpha-exceptions.md` when an
    exception lands.
-4. Persist account data, policy rules, and media blob metadata; add the
-   sandboxed media processing worker boundary.
+4. Wire live remote media transport/server-discovery into the new remote-ingest
+   boundary and replace thumbnail metadata with real resampling output.
 5. Promote CI from build/test checks to full capability gates with
    conformance, fuzzing (already gated), platform, packaging, and signed
    release evidence.
@@ -383,8 +385,8 @@ With the Alpha gates closed, Beta priorities take over from here:
 | E2EE key APIs | `runtime-wired` | Key API route/planning boundary, authenticated client-server runtime dispatch for upload/query/claim/cross-signing/signature/backup route shapes, durable device/one-time/fallback/cross-signing/signature/backup storage, one-time-key consumption, fallback-key reuse, server-blind payload redaction, audit records, and SQLite restart coverage | Add Matrix device-list stream semantics, full key-count algorithms, complete backup version/session retrieval/deletion, Matrix v1.18 semantics, and conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Strict canonical JSON parser boundary, deterministic serializer, event envelope, content hashes, reference-hash event IDs, redacted signing payloads, Base64 Ed25519 signature attachment/verification, persisted runtime signing key, signed runtime event JSON, durable event DAG rows, room-version-aware redaction, v6+ auth rules, state resolution v2, incremental sync with stream tokens and `since`, Matrix-shaped sync responses with `rooms.join`, `rooms.invite`, `rooms.leave`, and top-level `presence`, `account_data`, `to_device`, `device_lists`, and `device_one_time_keys_count` keys, encrypted-room policy, local room flow, and restart-survival integration coverage | Add sync long polling and filters, real payloads for presence/device/to-device/account-data surfaces, restricted join rule evaluation, third-party invite auth, and broader Matrix v1.18 room-version conformance fixtures. |
 | Federation | `runtime-wired` | Runtime federation listener dispatch through a federation-only router, inbound transaction scaffold, unauthenticated inbound `GET /_matrix/key/v2/server` key publication with a canonical self-signed response, SSRF/TLS policy checks, trust-state logic, duplicate handling, canonical JSON Ed25519 request verification, JSON PDU event-signature verification for known and discovered remote keys, signed-request integration coverage, server discovery with HTTPS well-known fetch, DNS SRV, A/AAAA resolution, IPv6 pins, private/loopback rejection, remote key fetch/cache with every listed verify key self-signed, outbound transaction types with exponential backoff and circuit breaker policy, `merovingian::http::OutboundClient`, `perform_outbound_transaction` wiring, `DispatchWorker` bounded retry queue, durable queue/destination persistence with restart replay, X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, circuit-breaker short-circuit before network I/O, circuit-open requeue, inbound PDU/EDU ingestion hooks, and per-platform TLS integration coverage | Remote PDU state merge, joins/invites/backfill, TLS-bound origin validation, key rotation, and conformance coverage. |
-| Media repository | `runtime-wired` | Runtime media routes for authenticated local upload/download, MIME policy, quarantine/release/remove, LibSodium digest, metrics, audit, persistent metadata writes, and integration coverage | Add sandboxed processing worker, remote fetch, AV hook boundary, thumbnailing, decompression limits, and durable blob storage. |
-| Database persistence | `runtime-wired` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, fail-closed hydration, busy timeout, runtime hydration, write-through users/devices/tokens/rooms/events/E2EE keys/media/audit/admin rows, SQLite transaction rollback, atomic runtime helpers, dependency reviews, PostgreSQL RAII connection/result boundary, PostgreSQL schema bootstrap/pending-migration hydration/write-through path, migration-file loading, offline migrator scaffold, database role separation, durable trust-and-safety rows, and restart-survival integration coverage | Add live PostgreSQL integration tests, enforce runtime/migration grants through separate PostgreSQL users, and persistence for account data, policy rules, and media blob metadata. |
+| Media repository | `runtime-wired` | Runtime media routes for authenticated local upload/download, MIME policy, quarantine/release/remove, LibSodium digest, metrics, audit, persistent metadata/blob writes, SQLite restart hydration, sandboxed processing worker boundary, AV hook boundary, decoder/decompression limits, remote-ingest boundary, thumbnail metadata, and integration coverage | Wire live remote media transport/server-discovery into the remote-ingest boundary, add real image thumbnail resampling, and carry true content headers through the local request model. |
+| Database persistence | `runtime-wired` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, fail-closed hydration, busy timeout, runtime hydration, write-through users/devices/tokens/rooms/events/E2EE keys/media/audit/admin/account-data/federation-queue/policy-rule/media-blob rows, SQLite transaction rollback, atomic runtime helpers, dependency reviews, PostgreSQL RAII connection/result boundary, PostgreSQL schema bootstrap/pending-migration hydration/write-through path, migration-file loading, offline migrator scaffold, database role separation, durable trust-and-safety rows, and restart-survival integration coverage | Add more live PostgreSQL integration tests and enforce runtime/migration grants through separate PostgreSQL users in deployment packaging. |
 | Observability and audit | `runtime-wired` | Structured logging, health snapshots, safe metrics summaries, redaction helpers, durable audit events, admin health/metrics/audit runtime endpoints, and client-server action audit persistence | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
 | Trust and safety | `runtime-wired` | Policy engine for registration, accounts, invites, federation, media, reports, and admin review routes, runtime client event reporting, admin safety report listing/review, durable policy audit rows, and durable admin action rows | Add Matrix v1.18 conformance fixtures, policy server transport integration, durable policy-rule management, and richer moderation workflows. |
 | Runtime hardening | `integrated` | Systemd/OpenRC/rc.d packaging, hardening plan, startup self-check with `HardeningStatus::alpha_exception` + documented notes, `merovingian-server` refusing to bind when any control reports `disabled`, alpha-only exceptions enumerated in `docs/hardening-alpha-exceptions.md`, and release-readiness gating on the new doc | Implement the in-process probes that retire each documented alpha exception: ELF program-header probe for linker/RELRO status, Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
@@ -440,8 +442,8 @@ adapters.
 | Discovery | `GET /_matrix/client/versions` | `spec-covered` | The unauthenticated spec discovery endpoint answers before the auth check with the versions array `v1.1` through `v1.18`, an empty `unstable_features` object, and v1.18 fixture coverage. Needs feature flags for unstable spec extensions once adopted. |
 | Joined rooms | `GET /_matrix/client/v3/joined_rooms` | `spec-covered` | Joined-room list works through the client listener, is hydrated from SQLite memberships, and is covered by the v1.18 fixture. Needs full access checks. |
 | Media | `GET /_matrix/media/v3/config` | `spec-covered` | Returns `m.upload.size` from the configured `security.media.max_upload_size` value and is covered by the v1.18 fixture. Cinny fetches this after login to know the maximum attachment size. |
-| Media | `POST /_matrix/media/v3/upload` | `spec-covered` | Local authenticated upload, MIME checks, quarantine, digest, metrics, audit, metadata persistence, and client-server JSON `content_uri` response are runtime-wired and covered by the v1.18 fixture with unauthenticated and malformed upload rejection. Needs multipart/content handling through real HTTP and durable blob storage. |
-| Media | `GET /_matrix/media/v3/download/{serverName}/{mediaId}` | `spec-covered` | Local download is reachable through the client-server adapter and covered by the v1.18 fixture with missing-media rejection. Remote fetch is disabled and fail-closed. Needs real content headers once the local request model carries headers. |
+| Media | `POST /_matrix/media/v3/upload` | `spec-covered` | Local authenticated upload, MIME checks, quarantine, digest, sandbox/AV/decoder/decompression processing boundary, thumbnail metadata, metrics, audit, metadata/blob persistence, and client-server JSON `content_uri` response are runtime-wired and covered by the v1.18 fixture with unauthenticated and malformed upload rejection. Needs multipart/content handling through real HTTP. |
+| Media | `GET /_matrix/media/v3/download/{serverName}/{mediaId}` | `spec-covered` | Local download is reachable through the client-server adapter and covered by the v1.18 fixture with missing-media rejection. Remote ingest has a repository boundary but route-level live remote transport remains disabled/fail-closed. Needs real content headers once the local request model carries headers. |
 | Reports | `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` | `spec-covered` | Authenticated event reports are runtime-wired through the client-server adapter, validated by the trust-and-safety policy engine, appended to durable policy audit rows, and covered by the v1.18 fixture with optional `reason`, ignored legacy `score`, and malformed-body rejection. Needs richer report storage/query semantics and joined-room membership enforcement. |
 | E2EE keys | Device keys, one-time keys, fallback keys, cross-signing, backup APIs | `spec-covered` | Authenticated key API route shapes are runtime-wired through the client-server adapter with durable server-blind key storage, request-body-driven `/keys/query` and `/keys/claim`, one-time-key consumption, fallback-key reuse, backup rows, payload redaction, audit records, SQLite restart coverage, 64 KiB body limit, and v1.18 fixture coverage for upload/query/claim plus malformed upload/query/claim rejection. Needs Matrix device-list stream semantics, complete backup retrieval/deletion semantics, and full key-count behavior. |
 | Capabilities/push rules | `GET /_matrix/client/v3/capabilities`, `GET /_matrix/client/v3/pushrules/` | `spec-covered` | Authenticated clients receive minimal stable capability and empty global push-rule responses, both covered by the v1.18 fixture. Needs real push-rule storage and richer capability negotiation. |
@@ -466,7 +468,7 @@ adapters.
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
 | Health | `GET /_merovingian/admin/health` | `partial` | In-process admin health exists and is reachable over the TCP listener via the legacy local router. Needs a real admin auth model, JSON response shape, and deployment checks. |
-| Media moderation | Quarantine, release, remove, metrics | `partial` | Admin media actions exist locally with audit and metrics. Needs durable storage, authorization model, and operator docs. |
+| Media moderation | Quarantine, release, remove, metrics | `partial` | Admin media actions exist locally with durable state, audit, and metrics. Needs richer authorization model and operator docs. |
 | Trust and safety review | Reports and admin review | `partial` | Admin safety report listing and review actions are runtime-wired through authenticated client-server routes with durable policy audit and admin action rows. Needs policy rule management, Matrix v1.18 fixtures, and policy server transport. |
 | Metrics | Exported metrics | `partial` | Admin metrics summaries are runtime-wired and avoid secret fields. Needs production scrape/export contract and trace correlation. |
 
