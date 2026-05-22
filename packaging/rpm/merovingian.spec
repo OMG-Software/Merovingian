@@ -89,7 +89,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Thu May 22 2026 James Chapman <claude@ping.me.uk> - 0.3.3-1
+* Fri May 22 2026 James Chapman <claude@ping.me.uk> - 0.3.3-1
 - Complete federation joins/leaves/invites/backfill/PDU delivery/event ingestion
 - Add real X-Matrix header parsing and TLS-bound origin validation
 - Wire remote key rotation with live Ed25519 fetch and cache
