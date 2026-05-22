@@ -3,6 +3,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -24,6 +26,21 @@ namespace
 [[nodiscard]] auto postgresql_uri_from_environment() -> std::string_view
 {
     return env_string("MEROVINGIAN_TEST_POSTGRESQL_URI");
+}
+
+// Returns a process-unique, monotonically distinct suffix. The live
+// PostgreSQL database persists across both the meson-test run and the
+// dedicated integration-test run within one CI job, so restart scenarios
+// must not reuse fixed primary keys or the second run hits duplicate-key
+// failures. The timestamp differs between process invocations; the counter
+// keeps separate scenarios in one invocation distinct.
+[[nodiscard]] auto unique_test_suffix() -> std::string
+{
+    static auto const base = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    static auto counter = std::uint64_t{0U};
+    return std::to_string(base) + "-" + std::to_string(counter++);
 }
 
 // Optional role-separation knobs. The CI workflow creates two PostgreSQL
@@ -164,15 +181,16 @@ SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen 
         auto opened = merovingian::database::open_postgresql_persistent_store(uri);
         REQUIRE(opened.ok);
 
-        auto const user_id = std::string{"@pg-restart-user:example.org"};
-        auto const room_id = std::string{"!pg-restart-room:example.org"};
-        auto const event_id = std::string{"$pg-restart-event:example.org"};
+        auto const suffix = unique_test_suffix();
+        auto const user_id = "@pg-restart-user-" + suffix + ":example.org";
+        auto const room_id = "!pg-restart-room-" + suffix + ":example.org";
+        auto const event_id = "$pg-restart-event-" + suffix + ":example.org";
         REQUIRE(merovingian::database::store_user(opened.store,
                                                   {user_id, "hash:restart-test", false, false, false}));
         // store_access_token requires the versioned hash prefix; a bare string
         // is rejected before the row is ever written.
         REQUIRE(merovingian::database::store_access_token(
-            opened.store, {user_id, "device1", "token-hash:v2:restart", false}));
+            opened.store, {user_id, "device1", "token-hash:v2:restart-" + suffix, false}));
         REQUIRE(merovingian::database::store_room(opened.store, {room_id, user_id}));
         REQUIRE(merovingian::database::store_membership(opened.store, {room_id, user_id, "join", 1U}));
         REQUIRE(merovingian::database::store_event(
@@ -233,10 +251,11 @@ SCENARIO("PostgreSQL account data policy rules and federation queues survive res
         auto opened = merovingian::database::open_postgresql_persistent_store(uri);
         REQUIRE(opened.ok);
 
-        auto const user_id = std::string{"@acct-data-user:example.org"};
-        auto const rule_id = std::string{"pg-restart-rule-001"};
-        auto const dest_name = std::string{"federation.restart.example.org"};
-        auto const txn_id = std::string{"pg-restart-txn-001"};
+        auto const suffix = unique_test_suffix();
+        auto const user_id = "@acct-data-user-" + suffix + ":example.org";
+        auto const rule_id = "pg-restart-rule-" + suffix;
+        auto const dest_name = "federation.restart-" + suffix + ".example.org";
+        auto const txn_id = "pg-restart-txn-" + suffix;
 
         REQUIRE(merovingian::database::store_account_data(
             opened.store, {user_id, "", "m.push_rules", "{\"global\":{}}", 1U}));
@@ -301,9 +320,10 @@ SCENARIO("PostgreSQL media metadata survives an open/close/reopen cycle",
         auto opened = merovingian::database::open_postgresql_persistent_store(uri);
         REQUIRE(opened.ok);
 
-        auto const media_id = std::string{"pg-restart-media-001"};
-        auto const remote_media_id = std::string{"pg-restart-remote-001"};
-        auto const remote_server = std::string{"media.restart.example.org"};
+        auto const suffix = unique_test_suffix();
+        auto const media_id = "pg-restart-media-" + suffix;
+        auto const remote_media_id = "pg-restart-remote-" + suffix;
+        auto const remote_server = "media.restart-" + suffix + ".example.org";
 
         REQUIRE(merovingian::database::store_local_media(
             opened.store,
