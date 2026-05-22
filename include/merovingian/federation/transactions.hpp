@@ -20,6 +20,7 @@ enum class FederationEndpoint
     invite,
     backfill,
     edu,
+    query_profile,
 };
 
 struct FederationTransaction final

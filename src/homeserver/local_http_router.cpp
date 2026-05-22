@@ -405,6 +405,16 @@ namespace
             return {true, 200U, {}, std::move(pdus)};
         };
 
+        runtime.federation.profile_query_provider =
+            [rt](std::string_view user_id) -> federation::FederationProfile {
+            auto const profile = database::find_profile(rt->database.persistent_store, user_id);
+            if (!profile.has_value())
+            {
+                return {};
+            }
+            return {true, profile->displayname, profile->avatar_url};
+        };
+
         if (outbound && discovery)
         {
             runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(

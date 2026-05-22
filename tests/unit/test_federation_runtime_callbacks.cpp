@@ -500,6 +500,94 @@ SCENARIO("Backfill provider is invoked for backfill requests", "[federation][cal
     }
 }
 
+SCENARIO("Profile query provider answers inbound federation query/profile", "[federation][callbacks][query-profile]")
+{
+    GIVEN("a runtime with profile_query_provider wired and a known remote")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"profile-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        runtime.profile_query_provider =
+            [](std::string_view user_id) -> merovingian::federation::FederationProfile {
+            if (user_id == "@alice:local.example.org")
+            {
+                return {true, "Alice", "mxc://local.example.org/avatar"};
+            }
+            return {};
+        };
+
+        WHEN("a query/profile request for a known user is handled")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=%40alice%3Alocal.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, token, target));
+
+            THEN("the response carries the user's displayname and avatar_url")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("Alice") != std::string::npos);
+                REQUIRE(response.body.find("mxc://local.example.org/avatar") != std::string::npos);
+            }
+        }
+
+        WHEN("a query/profile request restricted to the displayname field is handled")
+        {
+            auto const target = std::string{
+                "/_matrix/federation/v1/query/profile?user_id=%40alice%3Alocal.example.org&field=displayname"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, token, target));
+
+            THEN("only the displayname is returned")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("Alice") != std::string::npos);
+                REQUIRE(response.body.find("avatar_url") == std::string::npos);
+            }
+        }
+
+        WHEN("a query/profile request for an unknown user is handled")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=%40nobody%3Alocal.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, token, target));
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a runtime without a profile_query_provider wired")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"profile-no-cb-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto const target =
+            std::string{"/_matrix/federation/v1/query/profile?user_id=%40alice%3Alocal.example.org"};
+
+        WHEN("the query/profile request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, token, target));
+
+            THEN("the response is 501 Not Implemented")
+            {
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
 SCENARIO("Remote key rotation triggers resolver when cached key is stale",
          "[federation][callbacks][key_rotation]")
 {

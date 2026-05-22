@@ -106,6 +106,20 @@ struct FederationRemoteRuntime final
 using RemoteKeyResolver =
     std::function<std::optional<FederationRemoteRuntime>(std::string_view server_name, std::string_view key_id)>;
 
+// Result of a federation `query/profile` lookup. found=false means the user
+// is unknown to this server and the handler responds 404 M_NOT_FOUND.
+struct FederationProfile final
+{
+    bool found{false};
+    std::string displayname{};
+    std::string avatar_url{};
+};
+
+// Resolves a local user's published profile for an inbound federation
+// `GET /_matrix/federation/v1/query/profile`. Optional: when unset the
+// handler responds 501 Not Implemented.
+using ProfileQueryProvider = std::function<FederationProfile(std::string_view user_id)>;
+
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
@@ -136,6 +150,9 @@ struct FederationRuntimeState final
     MembershipAcceptor membership_acceptor{};
     InviteHandler invite_handler{};
     BackfillProvider backfill_provider{};
+    // Optional resolver for inbound `query/profile`. When unset the handler
+    // responds 501 Not Implemented.
+    ProfileQueryProvider profile_query_provider{};
 };
 
 struct FederationDecision final

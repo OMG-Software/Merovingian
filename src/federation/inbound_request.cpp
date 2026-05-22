@@ -5,6 +5,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
@@ -548,6 +549,73 @@ namespace
         return {200U, std::move(body)};
     }
 
+    // Extracts and percent-decodes a single named parameter from the query
+    // string of a request target. Returns an empty string when absent.
+    [[nodiscard]] auto query_param_value(std::string_view target, std::string_view name) -> std::string
+    {
+        auto const query_start = target.find('?');
+        if (query_start == std::string_view::npos)
+        {
+            return {};
+        }
+        auto remaining = target.substr(query_start + 1U);
+        while (!remaining.empty())
+        {
+            auto const amp = remaining.find('&');
+            auto const pair = remaining.substr(0U, amp);
+            auto const eq = pair.find('=');
+            if (eq != std::string_view::npos && pair.substr(0U, eq) == name)
+            {
+                return core::percent_decode(pair.substr(eq + 1U));
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            remaining = remaining.substr(amp + 1U);
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto handle_query_profile(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.profile_query_provider)
+        {
+            return {501U, "query_profile not implemented"};
+        }
+        auto const user_id = query_param_value(request.target, "user_id");
+        if (user_id.empty())
+        {
+            return {400U, "query/profile requires a user_id parameter"};
+        }
+        auto const field = query_param_value(request.target, "field");
+        if (!field.empty() && field != "displayname" && field != "avatar_url")
+        {
+            return {400U, "query/profile field must be displayname or avatar_url"};
+        }
+        auto const profile = runtime.profile_query_provider(user_id);
+        if (!profile.found)
+        {
+            return {404U, R"({"errcode":"M_NOT_FOUND","error":"Profile not found"})"};
+        }
+        auto response = canonicaljson::Object{};
+        if (field.empty() || field == "displayname")
+        {
+            response.push_back(canonicaljson::make_member("displayname", canonicaljson::Value{profile.displayname}));
+        }
+        if (field.empty() || field == "avatar_url")
+        {
+            response.push_back(canonicaljson::make_member("avatar_url", canonicaljson::Value{profile.avatar_url}));
+        }
+        auto body = serialize_response_object(std::move(response));
+        if (body.empty())
+        {
+            return {500U, "failed to serialize profile response"};
+        }
+        return {200U, std::move(body)};
+    }
+
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
                                                          FederationRoute const& route, FederationRemoteRuntime& remote)
@@ -568,6 +636,8 @@ namespace
             return handle_invite(runtime, request, route);
         case FederationEndpoint::backfill:
             return handle_backfill(runtime, request);
+        case FederationEndpoint::query_profile:
+            return handle_query_profile(runtime, request);
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.
