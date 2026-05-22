@@ -4,7 +4,34 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <filesystem>
 #include <string>
+
+SCENARIO("System CA trust detection locates the host trust store", "[http][outbound][tls]")
+{
+    GIVEN("a host that ships a standard system CA trust store")
+    {
+        WHEN("the system CA trust is detected")
+        {
+            auto const trust = merovingian::http::detect_system_ca_trust();
+
+            THEN("at least one trust store location resolves to a real path")
+            {
+                auto const has_file = !trust.bundle_file.empty();
+                auto const has_dir = !trust.bundle_dir.empty();
+                REQUIRE((has_file || has_dir));
+                if (has_file)
+                {
+                    REQUIRE(std::filesystem::is_regular_file(trust.bundle_file));
+                }
+                if (has_dir)
+                {
+                    REQUIRE(std::filesystem::is_directory(trust.bundle_dir));
+                }
+            }
+        }
+    }
+}
 
 SCENARIO("Outbound HTTP request validation enforces method, scheme, host, and address binding",
          "[http][outbound][validation]")

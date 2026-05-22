@@ -88,6 +88,21 @@ struct OutboundResult final
 // it is not part of any Matrix wire protocol.
 [[nodiscard]] auto outbound_error_name(OutboundError error) noexcept -> std::string_view;
 
+// Resolved host CA trust store locations. Either field may be empty when the
+// corresponding location is absent from the host.
+struct SystemCaTrust final
+{
+    std::string bundle_file{}; // concatenated PEM bundle (libcurl CAINFO)
+    std::string bundle_dir{};  // OpenSSL hashed certificate directory (CAPATH)
+};
+
+// Probes the standard system CA trust store locations across the platforms
+// Merovingian targets. The bundled libcurl is built from source without a
+// fixed --with-ca-bundle, so its compiled-in default may not match the
+// deployment host; perform() points libcurl at the resolved locations
+// explicitly when a request carries no in-memory CA bundle.
+[[nodiscard]] auto detect_system_ca_trust() -> SystemCaTrust;
+
 // Pure validator. Returns OutboundError::none when the request is well-formed.
 // Does not perform DNS, TLS, or any network I/O.
 [[nodiscard]] auto validate_outbound_request(OutboundRequest const& request) noexcept -> OutboundError;
