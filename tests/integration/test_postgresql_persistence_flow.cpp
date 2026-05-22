@@ -3,6 +3,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <cstdlib>
 #include <string>
 #include <string_view>
@@ -24,6 +26,21 @@ namespace
 [[nodiscard]] auto postgresql_uri_from_environment() -> std::string_view
 {
     return env_string("MEROVINGIAN_TEST_POSTGRESQL_URI");
+}
+
+// Returns a process-unique, monotonically distinct suffix. The live
+// PostgreSQL database persists across both the meson-test run and the
+// dedicated integration-test run within one CI job, so restart scenarios
+// must not reuse fixed primary keys or the second run hits duplicate-key
+// failures. The timestamp differs between process invocations; the counter
+// keeps separate scenarios in one invocation distinct.
+[[nodiscard]] auto unique_test_suffix() -> std::string
+{
+    static auto const base = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    static auto counter = std::uint64_t{0U};
+    return std::to_string(base) + "-" + std::to_string(counter++);
 }
 
 // Optional role-separation knobs. The CI workflow creates two PostgreSQL
@@ -145,6 +162,197 @@ SCENARIO("PostgreSQL persistent rows survive an open/close/reopen cycle",
                                             return row.action == canary_action;
                                         });
                 REQUIRE(found);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen cycle",
+         "[database][postgresql][integration][restart]")
+{
+    GIVEN("a live PostgreSQL URI and a freshly-bootstrapped store")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+
+        auto const suffix = unique_test_suffix();
+        auto const user_id = "@pg-restart-user-" + suffix + ":example.org";
+        auto const room_id = "!pg-restart-room-" + suffix + ":example.org";
+        auto const event_id = "$pg-restart-event-" + suffix + ":example.org";
+        REQUIRE(merovingian::database::store_user(opened.store,
+                                                  {user_id, "hash:restart-test", false, false, false}));
+        // store_access_token requires the versioned hash prefix; a bare string
+        // is rejected before the row is ever written.
+        REQUIRE(merovingian::database::store_access_token(
+            opened.store, {user_id, "device1", "token-hash:v2:restart-" + suffix, false}));
+        REQUIRE(merovingian::database::store_room(opened.store, {room_id, user_id}));
+        REQUIRE(merovingian::database::store_membership(opened.store, {room_id, user_id, "join", 1U}));
+        REQUIRE(merovingian::database::store_event(
+            opened.store,
+            {event_id, room_id, user_id, "{\"type\":\"m.room.message\"}", 1U, 1U, {}, {}, {}}));
+
+        WHEN("the store is closed and reopened")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("user token room membership and event all survive the restart")
+            {
+                REQUIRE(reopened.ok);
+                auto const user_found = std::ranges::any_of(
+                    reopened.store.users,
+                    [&user_id](merovingian::database::PersistentUser const& u) { return u.user_id == user_id; });
+                REQUIRE(user_found);
+
+                auto const token_found = std::ranges::any_of(
+                    reopened.store.access_tokens, [&user_id](merovingian::database::PersistentAccessToken const& t) {
+                        return t.user_id == user_id;
+                    });
+                REQUIRE(token_found);
+
+                auto const room_found = std::ranges::any_of(
+                    reopened.store.rooms,
+                    [&room_id](merovingian::database::PersistentRoom const& r) { return r.room_id == room_id; });
+                REQUIRE(room_found);
+
+                auto const member_found = std::ranges::any_of(
+                    reopened.store.memberships, [&room_id, &user_id](merovingian::database::PersistentMembership const& m) {
+                        return m.room_id == room_id && m.user_id == user_id && m.membership == "join";
+                    });
+                REQUIRE(member_found);
+
+                auto const event_found = std::ranges::any_of(
+                    reopened.store.events, [&event_id](merovingian::database::PersistentEvent const& e) {
+                        return e.event_id == event_id;
+                    });
+                REQUIRE(event_found);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL account data policy rules and federation queues survive restart",
+         "[database][postgresql][integration][restart]")
+{
+    GIVEN("a live PostgreSQL URI with account data policy rules and federation queue rows")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+
+        auto const suffix = unique_test_suffix();
+        auto const user_id = "@acct-data-user-" + suffix + ":example.org";
+        auto const rule_id = "pg-restart-rule-" + suffix;
+        auto const dest_name = "federation.restart-" + suffix + ".example.org";
+        auto const txn_id = "pg-restart-txn-" + suffix;
+
+        REQUIRE(merovingian::database::store_account_data(
+            opened.store, {user_id, "", "m.push_rules", "{\"global\":{}}", 1U}));
+        REQUIRE(merovingian::database::store_policy_rule(
+            opened.store, {rule_id, "server", "bad.example.org", "block", "test restart"}));
+        REQUIRE(merovingian::database::store_federation_destination(
+            opened.store, {dest_name, "idle", 0U, 0U, 0U}));
+        REQUIRE(merovingian::database::store_federation_transaction(
+            opened.store, {txn_id, dest_name, "PUT", "/_matrix/federation/v1/send/" + txn_id,
+                           "local.example.org", "1000", "{\"pdus\":[]}", 0U, 0U}));
+
+        WHEN("the store is closed and reopened")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("account data policy rules and federation queue entries all survive")
+            {
+                REQUIRE(reopened.ok);
+
+                auto const acct_found = std::ranges::any_of(
+                    reopened.store.account_data,
+                    [&user_id](merovingian::database::PersistentAccountData const& d) {
+                        return d.user_id == user_id && d.event_type == "m.push_rules";
+                    });
+                REQUIRE(acct_found);
+
+                auto const rule_found = std::ranges::any_of(
+                    reopened.store.policy_rules,
+                    [&rule_id](merovingian::database::PersistentPolicyRule const& r) { return r.rule_id == rule_id; });
+                REQUIRE(rule_found);
+
+                auto const dest_found = std::ranges::any_of(
+                    reopened.store.federation_destinations,
+                    [&dest_name](merovingian::database::PersistentFederationDestination const& d) {
+                        return d.server_name == dest_name;
+                    });
+                REQUIRE(dest_found);
+
+                auto const txn_found = std::ranges::any_of(
+                    reopened.store.federation_transactions,
+                    [&txn_id](merovingian::database::PersistentFederationTransaction const& t) {
+                        return t.transaction_id == txn_id;
+                    });
+                REQUIRE(txn_found);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL media metadata survives an open/close/reopen cycle",
+         "[database][postgresql][integration][restart][media]")
+{
+    GIVEN("a live PostgreSQL URI with local and remote media rows")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+        REQUIRE(opened.ok);
+
+        auto const suffix = unique_test_suffix();
+        auto const media_id = "pg-restart-media-" + suffix;
+        auto const remote_media_id = "pg-restart-remote-" + suffix;
+        auto const remote_server = "media.restart-" + suffix + ".example.org";
+
+        REQUIRE(merovingian::database::store_local_media(
+            opened.store,
+            {media_id, "@owner:example.org", "image/png", 1024U, "sha256", "abc123digest", false, false}));
+        REQUIRE(merovingian::database::store_remote_media(
+            opened.store, {remote_server, remote_media_id, "image/jpeg", 2048U, false}));
+
+        WHEN("the store is closed and reopened")
+        {
+            opened = {};
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("both local and remote media metadata survive the restart")
+            {
+                REQUIRE(reopened.ok);
+
+                auto const local_found = std::ranges::any_of(
+                    reopened.store.local_media,
+                    [&media_id](merovingian::database::PersistentLocalMedia const& m) {
+                        return m.media_id == media_id && m.content_type == "image/png";
+                    });
+                REQUIRE(local_found);
+
+                auto const remote_found = std::ranges::any_of(
+                    reopened.store.remote_media,
+                    [&remote_server, &remote_media_id](merovingian::database::PersistentRemoteMedia const& m) {
+                        return m.server_name == remote_server && m.media_id == remote_media_id;
+                    });
+                REQUIRE(remote_found);
             }
         }
     }

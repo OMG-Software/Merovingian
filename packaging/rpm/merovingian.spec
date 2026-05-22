@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.3.2
+Version:        0.3.3
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,13 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri May 22 2026 James Chapman <claude@ping.me.uk> - 0.3.3-1
+- Complete federation joins/leaves/invites/backfill/PDU delivery/event ingestion
+- Add real X-Matrix header parsing and TLS-bound origin validation
+- Wire remote key rotation with live Ed25519 fetch and cache
+- Wire all FederationRuntimeState callbacks into the production runtime
+- Extend PostgreSQL restart-survival tests to cover all persisted data types
+
 * Thu May 21 2026 James Chapman <claude@ping.me.uk> - 0.3.2-1
 - HTML character encoding fix
 

@@ -10,6 +10,8 @@
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
+#include "federation_signing_test_support.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
@@ -39,12 +41,12 @@ namespace
     };
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& verify_token)
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
     -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
-    remote.signing_key = {origin, key_id, verify_token, 2000U};
+    remote.signing_key = {origin, key_id, 2000U, merovingian::federation::test::keypair_from_seed(key_seed).public_key};
     remote.discovery.server_name = origin;
     remote.discovery.well_known_host = origin;
     remote.discovery.resolved_host = origin;
@@ -54,23 +56,22 @@ namespace
     return remote;
 }
 
-[[nodiscard]] auto federation_authorization_with_clock(std::string const& origin, std::string const& key_id,
-                                                       std::string const& verify_token, std::string const& method,
-                                                       std::string const& target, std::string const& body,
-                                                       std::uint64_t origin_server_ts, std::uint64_t received_ts,
-                                                       std::string const& canonical_flag = "canonical") -> std::string
-{
-    auto const signature = merovingian::federation::make_federation_signature(origin, key_id, verify_token, method,
-                                                                              target, origin_server_ts, body);
-    return origin + '|' + key_id + '|' + signature + '|' + std::to_string(origin_server_ts) + '|' +
-           std::to_string(received_ts) + '|' + canonical_flag;
-}
+// The default ServerConfig server name produced by federation_config().
+auto constexpr local_server_name = std::string_view{"example.org"};
 
+// Builds the pipe-delimited federation auth token used by the router's
+// test-fixture fallback path:
+// origin|key_id|signature|destination|now_ts|canonical_flag.
 [[nodiscard]] auto federation_authorization(std::string const& origin, std::string const& key_id,
-                                            std::string const& verify_token, std::string const& method,
-                                            std::string const& target, std::string const& body) -> std::string
+                                            std::string const& key_seed, std::string const& method,
+                                            std::string const& target, std::string const& body,
+                                            std::string const& canonical_flag = "canonical") -> std::string
 {
-    return federation_authorization_with_clock(origin, key_id, verify_token, method, target, body, 1000U, 1000U);
+    auto const destination = std::string{local_server_name};
+    auto const signature = merovingian::federation::make_federation_signature(
+        origin, destination, method, target, body,
+        merovingian::federation::test::keypair_from_seed(key_seed).secret_key);
+    return origin + '|' + key_id + '|' + signature + '|' + destination + "|1000|" + canonical_flag;
 }
 
 [[nodiscard]] auto sodium_is_ready() noexcept -> bool
@@ -347,9 +348,9 @@ SCENARIO("Homeserver rejects malformed overflow and private-address federation r
         auto const body = signed_json_pdu(origin, key_id, token);
         auto const authorization = federation_authorization(origin, key_id, token, "PUT", target, body);
         auto const overflow_authorization =
-            origin + "|" + key_id + "|sig:v1:ignored|184467440737095516160|1000|canonical";
-        auto const uncanonical_authorization = federation_authorization_with_clock(origin, key_id, token, "PUT", target,
-                                                                                   body, 1000U, 1000U, "uncanonical");
+            origin + "|" + key_id + "|sig:v1:ignored|example.org|184467440737095516160|canonical";
+        auto const uncanonical_authorization =
+            federation_authorization(origin, key_id, token, "PUT", target, body, "uncanonical");
 
         WHEN("malformed overflow uncanonical and private-address requests are routed")
         {
@@ -378,34 +379,3 @@ SCENARIO("Homeserver rejects malformed overflow and private-address federation r
     }
 }
 
-SCENARIO("Homeserver rejects stale federation requests using received server time",
-         "[integration][federation][security]")
-{
-    GIVEN("a started runtime with a known remote server")
-    {
-        auto started = merovingian::homeserver::start_runtime(federation_config());
-        REQUIRE(started.started);
-        auto& runtime = started.runtime;
-        auto const origin = std::string{"matrix.example.org"};
-        auto const key_id = std::string{"ed25519:auto"};
-        auto const token = std::string{"verify-token"};
-        merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, token));
-        auto const target = std::string{"/_matrix/federation/v1/send/txn123"};
-        auto const body = signed_json_pdu(origin, key_id, token);
-        auto const stale_authorization =
-            federation_authorization_with_clock(origin, key_id, token, "PUT", target, body, 1000U, 1700U);
-
-        WHEN("the remote replays a signed request after the skew window")
-        {
-            auto const response =
-                merovingian::homeserver::handle_local_http_request(runtime, {"PUT", target, stale_authorization, body});
-
-            THEN("the request is rejected against the received server time")
-            {
-                REQUIRE(response.status == 401U);
-                REQUIRE(response.body == "request timestamp outside allowed bounds");
-                REQUIRE(runtime.federation.accepted_transactions.empty());
-            }
-        }
-    }
-}

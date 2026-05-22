@@ -47,11 +47,13 @@ namespace
         // X-Matrix authorization header per the Matrix federation spec. The
         // signature is produced through the same primitive the inbound
         // verifier uses so the project speaks a single signing scheme.
-        auto signature =
-            make_federation_signature(call.transaction.origin, call.key_id, call.verify_token, call.transaction.method,
-                                      call.transaction.target, call.origin_server_ts, call.transaction.body);
+        auto signature = make_federation_signature(call.transaction.origin, call.transaction.destination,
+                                                   call.transaction.method, call.transaction.target,
+                                                   call.transaction.body, call.secret_key);
         auto header = std::string{"X-Matrix origin=\""};
         header += call.transaction.origin;
+        header += "\",destination=\"";
+        header += call.transaction.destination;
         header += "\",key=\"";
         header += call.key_id;
         header += "\",sig=\"";

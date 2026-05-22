@@ -282,10 +282,8 @@ a non-production environment.
 
 - Promote remaining endpoint behavior from `partial` to `spec-covered` with
   conformance fixtures.
-- Complete federation joins, leaves, invites, backfill, PDU delivery, event
-  ingestion, remote key rotation, and TLS-bound origin validation.
-- Add live PostgreSQL integration tests that cover restart survival,
-  transaction rollback, migration ordering, and role-grant failures.
+- Add live PostgreSQL integration tests that cover transaction rollback,
+  migration ordering, and role-grant failures.
 - Wire live media remote-fetch transport and server discovery into the
   repository remote-ingest boundary, then replace thumbnail metadata with real
   image resampling output.
@@ -320,6 +318,28 @@ a non-production environment.
   persistence, and federation paths, exposed through `--debug` and
   `--log-file <path>`, with operator notes in
   `docs/debug-logging.md`.
+- X-Matrix Authorization header parsing: `parse_x_matrix_authorization_header`
+  extracts `origin`, `destination`, `key_id`, and `sig` from inbound federation
+  Authorization headers. TLS-bound origin validation rejects requests where
+  `tls_peer_server_name` differs from `origin` with a 403 before any further
+  processing. Unit coverage exists for valid, minimal, missing-field, malformed,
+  and wrong-scheme inputs plus TLS match, empty, mismatch, and prefix cases.
+- Federation runtime callbacks wired: `pdu_sink`, `state_conflict_resolver`,
+  `membership_template_provider`, `membership_acceptor`, `invite_handler`,
+  `backfill_provider`, and `remote_key_resolver` are lazily wired into
+  `FederationRuntimeState` on the first inbound federation request.
+  `pdu_sink` persists inbound PDUs through the persistent store.
+  `state_conflict_resolver` runs state-resolution v2 via
+  `apply_state_resolution_v2`. Membership hooks cover `make_join`,
+  `make_leave`, `make_knock`, `send_join`, `send_leave`, `send_knock`, `invite`,
+  and `backfill` from durable event rows. `remote_key_resolver` uses
+  `make_persistent_remote_key_resolver` with a real wall-clock for discovered
+  and rotation-triggered remote key fetch and cache. BDD coverage for all
+  callbacks exists in `test_federation_runtime_callbacks.cpp`.
+- PostgreSQL restart-survival coverage extended: integration tests assert that
+  users, access tokens, rooms, memberships, events, account data, policy rules,
+  federation destinations, federation transactions, local media, and remote media
+  all survive a close/reopen cycle on a real PostgreSQL-backed persistent store.
 
 ### Production v1.0.0
 
@@ -339,11 +359,6 @@ be published as production releases while any blocking gate remains open.
 - Store access tokens only as versioned cryptographic hashes generated from
   LibSodium CSPRNG output.
 - Store passwords only with LibSodium Argon2id password hashes.
-- Verify federation requests and events with Matrix canonical JSON and real
-  Ed25519 verification, including discovered and rotated remote keys.
-- Keep runtime users, tokens, rooms, events, account data, policy rules,
-  federation queues, and media metadata alive across restart for SQLite and
-  PostgreSQL.
 - Enforce PostgreSQL transaction coverage, migration coverage, and role grants
   against real temporary databases.
 - Fail closed when required production hardening controls are unavailable.
@@ -368,6 +383,21 @@ be published as production releases while any blocking gate remains open.
   GitHub prerelease.
 - CodeQL, coverage, sanitizer, static-analysis, and Linux CI jobs install
   LibSodium development headers before configuring Meson.
+- Federation request signing follows the Matrix-spec X-Matrix scheme: the
+  signed payload is the canonical JSON object `{content?, destination, method,
+  origin, uri}`, signed with the server's real Ed25519 secret key and verified
+  against the remote's published `/_matrix/key/v2/server` public key. The prior
+  shared-secret `verify_token` derivation — which could not interoperate with
+  other homeservers — has been removed. PDU event signatures are verified via
+  libsodium against known or on-demand-discovered keys; rotated keys trigger
+  re-fetch through `make_persistent_remote_key_resolver` when `valid_until_ts`
+  has passed or the `key_id` no longer matches, and the refreshed key is
+  persisted before re-verification. Covered by unit and integration tests; a
+  live interoperability test against an external homeserver remains outstanding.
+- Runtime users, tokens, rooms, events, account data, policy rules, federation
+  destinations, federation transactions, local media, and remote media survive
+  restart for both SQLite and PostgreSQL backends, verified by integration tests
+  covering close/reopen cycles on all persisted data types.
 
 ## Immediate priority order
 
@@ -375,8 +405,8 @@ With the Alpha gates closed, Beta priorities take over from here:
 
 1. Complete Matrix v1.18 conformance for client-server endpoints currently
    marked `partial` — promote them to `covered` with conformance fixtures.
-2. Wire federation joins/leaves/invites/backfill into the durable room event
-   graph and ingest remote PDUs through state-resolution v2 end to end.
+2. Add Matrix federation conformance fixtures covering join, leave, invite,
+   backfill, and key-rotation scenarios end to end.
 3. Retire one hardening alpha exception per minor release — start with the
    ELF program-header probe (linker hardening / RELRO) and Linux
    seccomp-bpf filter. Update `docs/hardening-alpha-exceptions.md` when an
@@ -399,7 +429,7 @@ With the Alpha gates closed, Beta priorities take over from here:
 | Authentication and sessions | `runtime-wired` | LibSodium password hashing, CSPRNG access tokens, durable token hashes, SQLite/PostgreSQL hydration into runtime sessions, token-file-enforced public registration, UI-auth challenge for register (401 with flows/session when `auth` absent), explicit admin bootstrap API and startup flag, client-server register/login/logout/whoami/device/account-password routes, policy checks, durable audit events, and restart-survival coverage | Add richer operator bootstrap lifecycle controls, account recovery controls, and Matrix conformance fixtures for remaining auth flows. |
 | E2EE key APIs | `runtime-wired` | Key API route/planning boundary, authenticated client-server runtime dispatch for upload/query/claim/cross-signing/signature/backup route shapes, durable device/one-time/fallback/cross-signing/signature/backup storage, one-time-key consumption, fallback-key reuse, server-blind payload redaction, audit records, and SQLite restart coverage | Add Matrix device-list stream semantics, full key-count algorithms, complete backup version/session retrieval/deletion, Matrix v1.18 semantics, and conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Strict canonical JSON parser boundary, deterministic serializer, event envelope, content hashes, reference-hash event IDs, redacted signing payloads, Base64 Ed25519 signature attachment/verification, persisted runtime signing key, signed runtime event JSON, durable event DAG rows, room-version-aware redaction, v6+ auth rules, state resolution v2, incremental sync with stream tokens and `since`, Matrix-shaped sync responses with `rooms.join`, `rooms.invite`, `rooms.leave`, and top-level `presence`, `account_data`, `to_device`, `device_lists`, and `device_one_time_keys_count` keys, encrypted-room policy, local room flow, and restart-survival integration coverage | Add sync long polling and filters, real payloads for presence/device/to-device/account-data surfaces, restricted join rule evaluation, third-party invite auth, and broader Matrix v1.18 room-version conformance fixtures. |
-| Federation | `runtime-wired` | Runtime federation listener dispatch through a federation-only router, inbound transaction scaffold, unauthenticated inbound `GET /_matrix/key/v2/server` key publication with a canonical self-signed response, SSRF/TLS policy checks, trust-state logic, duplicate handling, canonical JSON Ed25519 request verification, JSON PDU event-signature verification for known and discovered remote keys, signed-request integration coverage, server discovery with HTTPS well-known fetch, DNS SRV, A/AAAA resolution, IPv6 pins, private/loopback rejection, remote key fetch/cache with every listed verify key self-signed, outbound transaction types with exponential backoff and circuit breaker policy, `merovingian::http::OutboundClient`, `perform_outbound_transaction` wiring, `DispatchWorker` bounded retry queue, durable queue/destination persistence with restart replay, X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, circuit-breaker short-circuit before network I/O, circuit-open requeue, inbound PDU/EDU ingestion hooks, and per-platform TLS integration coverage | Remote PDU state merge, joins/invites/backfill, TLS-bound origin validation, key rotation, and conformance coverage. |
+| Federation | `runtime-wired` | Runtime federation listener dispatch through a federation-only router, inbound transaction scaffold, unauthenticated inbound `GET /_matrix/key/v2/server` key publication with a canonical self-signed response, SSRF/TLS policy checks, trust-state logic, duplicate handling, canonical JSON Ed25519 request verification, JSON PDU event-signature verification for known and discovered remote keys, X-Matrix header parsing via `parse_x_matrix_authorization_header`, TLS-bound origin validation, signed-request integration coverage, server discovery with HTTPS well-known fetch, DNS SRV, A/AAAA resolution, IPv6 pins, private/loopback rejection, remote key fetch/cache with every listed verify key self-signed and rotation-triggered refresh via `make_persistent_remote_key_resolver`, outbound transaction types with exponential backoff and circuit breaker policy, `merovingian::http::OutboundClient`, `perform_outbound_transaction` wiring, `DispatchWorker` bounded retry queue, durable queue/destination persistence with restart replay, X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, circuit-breaker short-circuit before network I/O, circuit-open requeue, inbound PDU/EDU ingestion hooks, all seven federation runtime callbacks wired (`pdu_sink`, `state_conflict_resolver`, `membership_template_provider`, `membership_acceptor`, `invite_handler`, `backfill_provider`, `remote_key_resolver`), and per-platform TLS integration coverage | Production runtime worker startup for outbound replay, room-version-specific PDU verification, key rotation publication, multiple active/old keys, and Matrix federation conformance coverage. |
 | Media repository | `runtime-wired` | Runtime media routes for authenticated local upload/download, MIME policy, quarantine/release/remove, LibSodium digest, metrics, audit, persistent metadata/blob writes, SQLite restart hydration, sandboxed processing worker boundary, AV hook boundary, decoder/decompression limits, remote-ingest boundary, thumbnail metadata, and integration coverage | Wire live remote media transport/server-discovery into the remote-ingest boundary, add real image thumbnail resampling, and carry true content headers through the local request model. |
 | Database persistence | `runtime-wired` | Prepared-statement boundary, schema inventory, migration model, in-memory persistent store, SQLite RAII backend, current-schema bootstrap, fail-closed hydration, busy timeout, runtime hydration, write-through users/devices/tokens/rooms/events/E2EE keys/media/audit/admin/account-data/federation-queue/policy-rule/media-blob rows, SQLite transaction rollback, atomic runtime helpers, dependency reviews, PostgreSQL RAII connection/result boundary, PostgreSQL schema bootstrap/pending-migration hydration/write-through path, migration-file loading, offline migrator scaffold, database role separation, durable trust-and-safety rows, and restart-survival integration coverage | Add more live PostgreSQL integration tests and enforce runtime/migration grants through separate PostgreSQL users in deployment packaging. |
 | Observability and audit | `runtime-wired` | Structured logging, health snapshots, safe metrics summaries, redaction helpers, durable audit events, admin health/metrics/audit runtime endpoints, and client-server action audit persistence | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
@@ -474,11 +504,11 @@ adapters.
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (inbound) | `partial` | Inbound transaction handling is runtime-wired through federation-only listener dispatch with request policy, duplicate handling, canonical JSON request-signature verification, JSON PDU event-signature verification for known and on-demand discovered keys, PDU/EDU parsing, sink hooks, and conflict audit. Needs PDU insertion into the durable room event graph, state-conflict merge, joins/backfill, and richer EDU side effects. |
+| Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (inbound) | `partial` | Inbound transaction handling is runtime-wired through federation-only listener dispatch with request policy, duplicate handling, canonical JSON request-signature verification, JSON PDU event-signature verification for known and on-demand discovered keys with rotation-triggered refresh, X-Matrix header parsing, TLS-bound origin validation, PDU/EDU parsing, `pdu_sink` hook persisting PDUs to the durable store, `state_conflict_resolver` merging via state-resolution v2, and conflict audit. Needs richer EDU side effects, room-version-specific PDU verification, and conformance coverage. |
 | Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (outbound) | `partial` | `perform_outbound_transaction` composes the libcurl-backed `merovingian::http::OutboundClient` with X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, and circuit-breaker short-circuit through `destination_should_retry`. `DispatchWorker` provides a bounded retry queue, requeues circuit-open transactions for the destination retry deadline, persists pending rows and destination retry state, and replays pending rows after restart. Per-platform TLS integration coverage exercises valid round-trip, hostname mismatch, untrusted self-signed, and 3xx rejection. Needs production runtime wiring to start the replay worker and Matrix conformance coverage. |
-| Joins/leaves/invites | Federation join, leave, invite, and backfill flows | `scaffolded` | Route planning exists for selected federation surfaces. Full make/send join, leave, invite, and backfill behavior is not implemented. |
+| Joins/leaves/invites | Federation join, leave, invite, and backfill flows | `integrated` | `make_join`, `make_leave`, `make_knock`, `send_join` (v1+v2), `send_leave` (v1+v2), `send_knock`, `invite` (v1+v2), and `backfill` are dispatched through runtime hooks: `membership_template_provider` builds the event template, `membership_acceptor` persists the event and returns auth-chain/state, `invite_handler` echoes back the invite JSON, and `backfill_provider` serves PDUs from durable rows. Unwired endpoints return 501. BDD callback coverage in `test_federation_runtime_callbacks.cpp`. Needs full Matrix conformance fixtures and production join/leave state semantics. |
 | Server discovery | Well-known, DNS, TLS, and key discovery | `partial` | Server discovery now fetches `https://<server>/.well-known/matrix/server` through the pinned outbound client, parses `m.server`, falls back to `_matrix-fed._tcp.<host>` SRV records, resolves A/AAAA addresses, handles public IPv6 pins, rejects private/loopback IPv4 and IPv6 addresses before exposing the pin set to `OutboundClient`, and feeds remote key fetch/cache for on-demand inbound verification. Needs TLS-bound origin validation, richer Matrix edge-case fixtures, and live network conformance coverage. |
-| Signing verification | Request and event signatures | `partial` | Federation requests verify canonical JSON Ed25519 signatures, and JSON PDUs verify Matrix event signatures against known or on-demand discovered remote key material with CI-covered event-ID API linkage. Remote server-key responses must self-sign every listed verify key before caching. Outbound requests are signed through the shared `make_federation_signature` primitive. Needs TLS-bound origin validation, room-version-specific verification, persisted federation key rotation, and inclusion of the destination server name in the X-Matrix payload to match newer Matrix spec versions. |
+| Signing verification | Request and event signatures | `partial` | Federation requests are signed and verified with the Matrix-spec X-Matrix scheme: the signed payload is the canonical JSON object `{content?, destination, method, origin, uri}`, signed with the server's real Ed25519 secret key and verified against the remote's published public key. The prior shared-secret `verify_token` derivation has been removed. JSON PDUs verify Matrix event signatures against known or on-demand-discovered remote keys; `make_persistent_remote_key_resolver` re-fetches when `valid_until_ts` has passed or the `key_id` no longer matches. Remote server-key responses must self-sign every listed verify key before caching. TLS-bound origin validation rejects requests where the TLS peer name differs from the X-Matrix origin. Needs room-version-specific PDU hash verification, a live interoperability test against an external homeserver, and conformance coverage. |
 | Key publication | `GET /_matrix/key/v2/server` (inbound) | `partial` | The federation-only router answers unauthenticated key fetches with the persisted runtime Ed25519 verify key, `valid_until_ts`, empty `old_verify_keys`, and a canonical self-signature verified by integration coverage. Needs key rotation, multiple active/old keys, and Matrix federation conformance fixtures. |
 | Federation queues | Outbound federation and retry/backoff | `partial` | `OutboundClient` is wired through `perform_outbound_transaction` with retry-state mutation via `apply_outbound_result`, circuit-breaker short-circuit via `destination_should_retry`, and a `DispatchWorker` that retries discovery and delivery failures without dropping circuit-open transactions. Pending transactions persist to `federation_transactions`, destination retry state persists to `federation_destinations`, and bounded worker replay hydrates both after restart. Needs production runtime worker startup and live federation delivery coverage. |
 

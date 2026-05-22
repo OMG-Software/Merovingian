@@ -7,6 +7,8 @@
 #include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 
+#include "federation_signing_test_support.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
@@ -33,12 +35,12 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& verify_token)
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
     -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
-    remote.signing_key = {origin, key_id, verify_token, 2000U};
+    remote.signing_key = {origin, key_id, 2000U, merovingian::federation::test::keypair_from_seed(key_seed).public_key};
     remote.discovery.server_name = origin;
     remote.discovery.well_known_host = origin;
     remote.discovery.resolved_host = origin;
@@ -49,7 +51,7 @@ namespace
 }
 
 [[nodiscard]] auto signed_make_request(std::string const& origin, std::string const& key_id,
-                                       std::string const& verify_token, std::string const& target,
+                                       std::string const& key_seed, std::string const& target,
                                        std::string const& method = "GET")
     -> merovingian::federation::SignedFederationRequest
 {
@@ -57,33 +59,33 @@ namespace
     request.method = method;
     request.target = target;
     request.origin = origin;
+    request.destination = "local.example.org";
     request.key_id = key_id;
-    request.origin_server_ts = 1000U;
     request.now_ts = 1000U;
     request.canonical_json_verified = true;
     request.body = "";
     request.signature = merovingian::federation::make_federation_signature(
-        request.origin, request.key_id, verify_token, request.method, request.target, request.origin_server_ts,
-        request.body);
+        request.origin, request.destination, request.method, request.target, request.body,
+        merovingian::federation::test::keypair_from_seed(key_seed).secret_key);
     return request;
 }
 
 [[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id,
-                                      std::string const& verify_token, std::string const& target,
+                                      std::string const& key_seed, std::string const& target,
                                       std::string const& body) -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
     request.target = target;
     request.origin = origin;
+    request.destination = "local.example.org";
     request.key_id = key_id;
-    request.origin_server_ts = 1000U;
     request.now_ts = 1000U;
     request.canonical_json_verified = true;
     request.body = body;
     request.signature = merovingian::federation::make_federation_signature(
-        request.origin, request.key_id, verify_token, request.method, request.target, request.origin_server_ts,
-        request.body);
+        request.origin, request.destination, request.method, request.target, request.body,
+        merovingian::federation::test::keypair_from_seed(key_seed).secret_key);
     return request;
 }
 

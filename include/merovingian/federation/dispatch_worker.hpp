@@ -48,10 +48,11 @@ using DispatchResolver = std::function<std::optional<ServerDiscoveryResult>(std:
 struct DispatchWorkerConfig final
 {
     // Identity used when signing outbound traffic. The signing identity
-    // mirrors the runtime's persisted Ed25519 signing key.
+    // mirrors the runtime's persisted Ed25519 signing key. `secret_key` is
+    // the raw 64-byte libsodium Ed25519 secret key.
     std::string origin{};
     std::string key_id{};
-    std::string verify_token{};
+    std::string secret_key{};
     // Bound on the in-memory enqueue list. Enforced fail-closed: enqueue
     // returns false once the limit is hit. Zero disables the bound for tests.
     std::size_t max_queue_depth{1024U};

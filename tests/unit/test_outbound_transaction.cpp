@@ -3,6 +3,8 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
+#include "federation_signing_test_support.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
@@ -144,8 +146,7 @@ namespace
     call.resolved_port = 8448U;
     call.pinned_addresses = {"203.0.113.10"};
     call.key_id = "ed25519:auto";
-    call.verify_token = "deterministic-test-token";
-    call.origin_server_ts = 1700000000000ULL;
+    call.secret_key = merovingian::federation::test::keypair_from_seed("deterministic-test-token").secret_key;
     return call;
 }
 

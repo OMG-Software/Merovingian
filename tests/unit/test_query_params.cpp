@@ -155,11 +155,11 @@ SCENARIO("URL path component decoding preserves path literal characters", "[core
     {
         WHEN("the segment is decoded as a path component")
         {
-            auto const decoded = merovingian::core::percent_decode_path_component("!room2%3Apong.ping.me.uk+mobile");
+            auto const decoded = merovingian::core::percent_decode_path_component("!room2%3Amatrix.example.org+mobile");
 
             THEN("encoded delimiters are restored and plus remains literal")
             {
-                REQUIRE(decoded == "!room2:pong.ping.me.uk+mobile");
+                REQUIRE(decoded == "!room2:matrix.example.org+mobile");
             }
         }
     }

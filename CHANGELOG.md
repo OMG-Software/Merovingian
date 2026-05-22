@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.3.3
+
+- Added `parse_x_matrix_authorization_header` to extract `origin`, `destination`,
+  `key_id`, and `sig` fields from inbound `X-Matrix` Authorization headers, with
+  unit coverage for valid, minimal, malformed, and wrong-scheme inputs.
+- Added TLS-bound origin validation: inbound federation requests where
+  `tls_peer_server_name` differs from the `X-Matrix` `origin` are rejected with
+  403 before any further processing.
+- Wired all seven `FederationRuntimeState` callbacks lazily on the first inbound
+  federation request: `pdu_sink` persists PDUs through the persistent store;
+  `state_conflict_resolver` merges conflicting state via `apply_state_resolution_v2`;
+  `membership_template_provider` and `membership_acceptor` serve `make_join`,
+  `make_leave`, `make_knock`, `send_join`, `send_leave`, `send_knock`; `invite_handler`
+  echoes back the invite JSON; `backfill_provider` serves PDUs from durable event rows;
+  `remote_key_resolver` uses `make_persistent_remote_key_resolver` for discovered and
+  rotation-triggered remote key fetch, verify, and cache.
+- Extended PostgreSQL restart-survival integration tests to cover users, access
+  tokens, rooms, memberships, events, account data, policy rules, federation
+  destinations, federation transactions, local media, and remote media across a
+  close/reopen cycle.
+- Exposed `make_system_server_discovery_network()` as a public factory and added
+  `std::shared_ptr<OutboundClient>` and `std::shared_ptr<ServerDiscoveryNetwork>`
+  fields to `HomeserverRuntime` so the remote-key resolver can be constructed at
+  startup without lifetime issues.
+- Fixed missing `<memory>` include in `server_discovery.hpp` required by the
+  `make_system_server_discovery_network` declaration.
+- Replaced the federation request-signing scheme with the Matrix-spec X-Matrix
+  scheme so Merovingian can interoperate with other homeservers. The signed
+  payload is now the canonical JSON object `{content?, destination, method,
+  origin, uri}` — `content` is the request body parsed as a JSON object and is
+  omitted for body-less requests; no non-standard `origin_server_ts` is signed.
+  Requests are signed with the server's real Ed25519 secret key and verified
+  against the remote's published `/_matrix/key/v2/server` public key.
+- Removed the prior shared-secret `verify_token` key derivation, which signed
+  and verified with a symmetric secret and therefore could never interoperate
+  with a real Matrix homeserver. `make_federation_signature` now takes the raw
+  Ed25519 secret key; `verify_signed_federation_request` verifies against the
+  remote's public key; `SignedFederationRequest` carries `destination` instead
+  of `origin_server_ts`; the X-Matrix Authorization header now emits
+  `destination`.
+- Bumped project, executable, and package metadata versions to `0.3.3`.
+
 ## 0.3.2
 
 - Fixed client-server room joins for browser-encoded room IDs such as

@@ -243,7 +243,6 @@ SCENARIO("Remote key cache persists and retrieves verified keys", "[federation][
                 REQUIRE(found->key_id == "ed25519:auto");
                 REQUIRE(found->public_key_bytes.size() == crypto_sign_PUBLICKEYBYTES);
                 REQUIRE(found->valid_until_ts == 2000000000000ULL);
-                REQUIRE(found->verify_token.empty());
             }
         }
     }

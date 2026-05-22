@@ -264,8 +264,7 @@ auto DispatchWorker::run_once() -> bool
     call.resolved_port = resolution->resolved_port;
     call.pinned_addresses = resolution->pinned_addresses;
     call.key_id = config_.key_id;
-    call.verify_token = config_.verify_token;
-    call.origin_server_ts = now;
+    call.secret_key = config_.secret_key;
 
     auto& destination = find_or_create_destination(transaction.destination);
     auto const result = perform_outbound_transaction(client_, call, destination, now);

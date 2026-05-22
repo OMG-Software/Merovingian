@@ -172,19 +172,19 @@ own that static discovery response:
 ```json
 {
   "m.homeserver": {
-    "base_url": "https://pong.ping.me.uk"
+    "base_url": "https://matrix.example.org"
   }
 }
 ```
 
-Replace `pong.ping.me.uk` with your `server.public_baseurl` value throughout
+Replace `matrix.example.org` with your `server.public_baseurl` value throughout
 the examples below.
 
 **Apache** serves this from a static file — create it once before reloading:
 
 ```sh
 mkdir -p /var/www/merovingian/.well-known/matrix
-printf '{"m.homeserver":{"base_url":"https://pong.ping.me.uk"}}' \
+printf '{"m.homeserver":{"base_url":"https://matrix.example.org"}}' \
     > /var/www/merovingian/.well-known/matrix/client
 ```
 
@@ -200,17 +200,17 @@ and `8448`; Merovingian listens only on loopback ports `8008` and `8009`.
 Listen 8448
 
 <VirtualHost *:80>
-    ServerName pong.ping.me.uk
+    ServerName matrix.example.org
     RewriteEngine On
     RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
 </VirtualHost>
 
 <VirtualHost *:443>
-    ServerName pong.ping.me.uk
+    ServerName matrix.example.org
 
     SSLEngine on
-    SSLCertificateFile    /etc/letsencrypt/live/pong.ping.me.uk/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/pong.ping.me.uk/privkey.pem
+    SSLCertificateFile    /etc/letsencrypt/live/matrix.example.org/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/matrix.example.org/privkey.pem
     SSLProtocol           -all +TLSv1.2 +TLSv1.3
 
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
@@ -253,11 +253,11 @@ Listen 8448
 </VirtualHost>
 
 <VirtualHost *:8448>
-    ServerName pong.ping.me.uk
+    ServerName matrix.example.org
 
     SSLEngine on
-    SSLCertificateFile    /etc/letsencrypt/live/pong.ping.me.uk/fullchain.pem
-    SSLCertificateKeyFile /etc/letsencrypt/live/pong.ping.me.uk/privkey.pem
+    SSLCertificateFile    /etc/letsencrypt/live/matrix.example.org/fullchain.pem
+    SSLCertificateKeyFile /etc/letsencrypt/live/matrix.example.org/privkey.pem
     SSLProtocol           -all +TLSv1.2 +TLSv1.3
 
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
@@ -286,16 +286,16 @@ and proxies Matrix traffic to Merovingian's loopback listeners.
 ```nginx
 server {
     listen 80;
-    server_name pong.ping.me.uk;
+    server_name matrix.example.org;
     return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl http2;
-    server_name pong.ping.me.uk;
+    server_name matrix.example.org;
 
-    ssl_certificate     /etc/letsencrypt/live/pong.ping.me.uk/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/pong.ping.me.uk/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/matrix.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/matrix.example.org/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
 
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
@@ -308,7 +308,7 @@ server {
     location = /.well-known/matrix/client {
         default_type application/json;
         add_header Access-Control-Allow-Origin "*" always;
-        return 200 '{"m.homeserver":{"base_url":"https://pong.ping.me.uk"}}';
+        return 200 '{"m.homeserver":{"base_url":"https://matrix.example.org"}}';
     }
 
     location /_matrix/ {
@@ -325,10 +325,10 @@ server {
 
 server {
     listen 8448 ssl http2;
-    server_name pong.ping.me.uk;
+    server_name matrix.example.org;
 
-    ssl_certificate     /etc/letsencrypt/live/pong.ping.me.uk/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/pong.ping.me.uk/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/matrix.example.org/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/matrix.example.org/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
 
     location /_matrix/ {
