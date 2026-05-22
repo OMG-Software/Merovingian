@@ -31,35 +31,43 @@ struct FederationKeyRecord final
 {
     std::string server_name{};
     std::string key_id{};
-    // Local-server signing material: hashed to derive the Ed25519 keypair
-    // used to sign outbound traffic. Empty for remote keys, where only the
-    // raw public key is known.
-    std::string verify_token{};
     std::uint64_t valid_until_ts{0U};
-    // Raw Ed25519 public key bytes (32-byte string, not base64) used to
-    // verify signatures from remote servers. Empty for local-server records,
-    // which derive the public key from verify_token. Placed last so existing
-    // 4-field aggregate initializations remain valid.
+    // Raw 32-byte Ed25519 public key (not base64) used to verify signatures
+    // produced by this server. Populated from the remote's published
+    // /_matrix/key/v2/server response.
     std::string public_key_bytes{};
 };
 
-// Resolves the raw 32-byte Ed25519 public key for a key record. Prefers
-// public_key_bytes when populated (remote-cached key); falls back to the
-// verify_token-derived public key for the local-server case. Returns an
-// empty string when neither source is available.
-[[nodiscard]] auto resolve_federation_public_key(FederationKeyRecord const& key) -> std::string;
+// Parsed fields from an Authorization: X-Matrix ... header.
+struct XMatrixCredentials final
+{
+    std::string origin{};
+    std::string destination{};
+    std::string key_id{};
+    std::string signature{};
+};
 
 struct SignedFederationRequest final
 {
     std::string method{};
     std::string target{};
     std::string origin{};
+    // Destination (receiving) server name. Part of the Matrix X-Matrix signed
+    // request object: the verifier rebuilds the signed payload with it, so it
+    // must equal this server's own name.
+    std::string destination{};
     std::string key_id{};
     std::string signature{};
-    std::uint64_t origin_server_ts{0U};
+    // Current wall-clock time in milliseconds. Used only to reject a request
+    // signed with a remote key whose published validity window has lapsed;
+    // the Matrix request-signing scheme itself carries no timestamp.
     std::uint64_t now_ts{0U};
     bool canonical_json_verified{false};
     std::string body{};
+    // Non-empty when the request arrived on a TLS connection. The inbound
+    // handler compares this against the X-Matrix origin claim so a relay
+    // cannot spoof origin through header injection.
+    std::string tls_peer_server_name{};
 };
 
 struct FederationPdu final
@@ -143,16 +151,28 @@ struct FederationResponse final
     std::string body{};
 };
 
+// Parses an Authorization header value that begins with "X-Matrix ". Returns
+// std::nullopt for any malformed input or if the required fields (origin, key,
+// sig) are absent.
+[[nodiscard]] auto parse_x_matrix_authorization_header(std::string_view header_value)
+    -> std::optional<XMatrixCredentials>;
+
 [[nodiscard]] auto load_server_signing_key(std::string_view server_name, std::string_view key_id,
                                            std::string_view key_material) -> FederationSigningKey;
 [[nodiscard]] auto signing_key_summary(FederationSigningKey const& key) -> std::string;
-[[nodiscard]] auto make_federation_signature(std::string_view origin, std::string_view key_id,
-                                             std::string_view verify_token, std::string_view method,
-                                             std::string_view target, std::uint64_t origin_server_ts,
-                                             std::string_view body) -> std::string;
+// Signs a federation request with this server's real Ed25519 secret key.
+// The signed payload is the Matrix canonical JSON object
+// {content?, destination, method, origin, uri} — content is omitted for a
+// body-less request. `secret_key` is the raw 64-byte libsodium secret key.
+// Returns the Base64-encoded signature, or an empty string on any failure.
+[[nodiscard]] auto make_federation_signature(std::string_view origin, std::string_view destination,
+                                             std::string_view method, std::string_view target,
+                                             std::string_view body, std::string_view secret_key) -> std::string;
+// Verifies a federation request against the remote's published Ed25519 public
+// key. Rebuilds the Matrix signed-request object and checks the detached
+// signature; also rejects a request signed with a key past its validity.
 [[nodiscard]] auto verify_signed_federation_request(SignedFederationRequest const& request,
-                                                    FederationKeyRecord const& key,
-                                                    std::uint64_t max_clock_skew_seconds) -> FederationDecision;
+                                                    FederationKeyRecord const& key) -> FederationDecision;
 [[nodiscard]] auto make_federation_runtime_state(RuntimeFederationConfig config) -> FederationRuntimeState;
 auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remote) -> void;
 [[nodiscard]] auto federation_remote_is_known(FederationRuntimeState const& runtime,

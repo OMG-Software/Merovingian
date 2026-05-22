@@ -45,8 +45,9 @@ struct OutboundCall final
     std::uint16_t resolved_port{8448U};
     std::vector<std::string> pinned_addresses{};
     std::string key_id{};
-    std::string verify_token{};
-    std::uint64_t origin_server_ts{0U};
+    // Raw 64-byte libsodium Ed25519 secret key for this server's signing
+    // identity. Used to sign the X-Matrix Authorization header.
+    std::string secret_key{};
     std::uint32_t connect_timeout_seconds{10U};
     std::uint32_t total_timeout_seconds{60U};
 };

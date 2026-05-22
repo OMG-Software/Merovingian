@@ -8,6 +8,8 @@
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
+#include "federation_signing_test_support.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
@@ -33,12 +35,12 @@ namespace
     return config;
 }
 
-[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& verify_token)
+[[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
     -> merovingian::federation::FederationRemoteRuntime
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = origin;
-    remote.signing_key = {origin, key_id, verify_token, 2000U};
+    remote.signing_key = {origin, key_id, 2000U, merovingian::federation::test::keypair_from_seed(key_seed).public_key};
     remote.discovery.server_name = origin;
     remote.discovery.well_known_host = origin;
     remote.discovery.resolved_host = origin;
@@ -48,26 +50,35 @@ namespace
     return remote;
 }
 
-[[nodiscard]] auto signed_request(std::string const& origin, std::string const& key_id, std::string const& verify_token,
+[[nodiscard]] auto signed_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
                                   std::string const& body) -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
     request.target = "/_matrix/federation/v1/send/txn123";
     request.origin = origin;
+    request.destination = "local.example.org";
     request.key_id = key_id;
-    request.origin_server_ts = 1000U;
     request.now_ts = 1000U;
     request.canonical_json_verified = true;
     request.body = body;
-    request.signature =
-        merovingian::federation::make_federation_signature(request.origin, request.key_id, verify_token, request.method,
-                                                           request.target, request.origin_server_ts, request.body);
+    request.signature = merovingian::federation::make_federation_signature(
+        request.origin, request.destination, request.method, request.target, request.body,
+        merovingian::federation::test::keypair_from_seed(key_seed).secret_key);
     return request;
 }
 
 [[nodiscard]] auto pdu_for(std::string const& origin) -> std::string
 {
+    // A minimal valid JSON request body. The Matrix request-signing scheme
+    // embeds the body as a parsed JSON object, so test bodies must be JSON.
+    return R"({"origin":")" + origin + R"("})";
+}
+
+[[nodiscard]] auto comma_delimited_pdu(std::string const& origin) -> std::string
+{
+    // Legacy comma-delimited single-PDU encoding accepted by
+    // parse_federation_pdu: event_id,room_id,type,sender,origin,key_id,signature.
     return "$event1:example.org,!room1:example.org,m.room.message,@alice:" + origin + ',' + origin +
            ",ed25519:auto,signature";
 }
@@ -216,10 +227,14 @@ SCENARIO("Signed federation request verification rejects stale bad mismatched an
         auto const origin = std::string{"matrix.example.org"};
         auto const key_id = std::string{"ed25519:auto"};
         auto const token = std::string{"verify-token"};
-        auto const key = merovingian::federation::FederationKeyRecord{origin, key_id, token, 2000U};
+        auto key = merovingian::federation::FederationKeyRecord{};
+        key.server_name = origin;
+        key.key_id = key_id;
+        key.valid_until_ts = 2000U;
+        key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
+        auto expired_key = key;
+        expired_key.valid_until_ts = 500U;
         auto valid = signed_request(origin, key_id, token, pdu_for(origin));
-        auto stale = valid;
-        stale.origin_server_ts = 10U;
         auto mismatched = valid;
         mismatched.origin = "elsewhere.example.org";
         auto bad_signature = valid;
@@ -227,22 +242,23 @@ SCENARIO("Signed federation request verification rejects stale bad mismatched an
         auto uncanonical = valid;
         uncanonical.canonical_json_verified = false;
 
-        WHEN("requests are verified against the server receive time")
+        WHEN("requests are verified against the remote signing key")
         {
-            auto const accepted = merovingian::federation::verify_signed_federation_request(valid, key, 300U);
-            auto const rejected_stale = merovingian::federation::verify_signed_federation_request(stale, key, 300U);
+            auto const accepted = merovingian::federation::verify_signed_federation_request(valid, key);
+            auto const rejected_expired = merovingian::federation::verify_signed_federation_request(valid, expired_key);
             auto const rejected_mismatch =
-                merovingian::federation::verify_signed_federation_request(mismatched, key, 300U);
+                merovingian::federation::verify_signed_federation_request(mismatched, key);
             auto const rejected_bad_signature =
-                merovingian::federation::verify_signed_federation_request(bad_signature, key, 300U);
+                merovingian::federation::verify_signed_federation_request(bad_signature, key);
             auto const rejected_uncanonical =
-                merovingian::federation::verify_signed_federation_request(uncanonical, key, 300U);
+                merovingian::federation::verify_signed_federation_request(uncanonical, key);
 
-            THEN("only the fresh matching canonical signature is accepted")
+            THEN("only the valid matching canonical signature from a live key is accepted")
             {
                 REQUIRE(accepted.accepted);
-                REQUIRE_FALSE(rejected_stale.accepted);
-                REQUIRE(rejected_stale.status == 401U);
+                REQUIRE_FALSE(rejected_expired.accepted);
+                REQUIRE(rejected_expired.status == 401U);
+                REQUIRE(rejected_expired.reason == "request signing key has expired");
                 REQUIRE_FALSE(rejected_mismatch.accepted);
                 REQUIRE(rejected_mismatch.reason == "request signing key does not match origin");
                 REQUIRE_FALSE(rejected_bad_signature.accepted);
@@ -352,7 +368,8 @@ SCENARIO("Inbound federation handles non-transaction endpoints without PDU valid
         auto request = signed_request(origin, key_id, token, invite_event_json);
         request.target = "/_matrix/federation/v1/invite/!room1:example.org/$event1:example.org";
         request.signature = merovingian::federation::make_federation_signature(
-            origin, key_id, token, request.method, request.target, request.origin_server_ts, request.body);
+            origin, request.destination, request.method, request.target, request.body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
 
         WHEN("the request is handled")
         {
@@ -380,11 +397,9 @@ SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", 
         auto extra_segment = signed_request(origin, key_id, token, pdu_for(origin));
         extra_segment.target = "/_matrix/federation/v1/send/txn123/extra";
         extra_segment.signature = merovingian::federation::make_federation_signature(
-            origin, key_id, token, extra_segment.method, extra_segment.target, extra_segment.origin_server_ts,
-            extra_segment.body);
-        auto missing_signature = signed_request(origin, key_id, token,
-                                                "$event1:example.org,!room1:example.org,m.room.message,@alice:matrix."
-                                                "example.org,matrix.example.org,ed25519:auto");
+            origin, extra_segment.destination, extra_segment.method, extra_segment.target, extra_segment.body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
+        auto missing_signature = signed_request(origin, key_id, token, R"({"type":"m.room.message"})");
 
         WHEN("the requests are handled")
         {
@@ -492,7 +507,7 @@ SCENARIO("Federation PDU authorization rejects sender origin and event signature
 {
     GIVEN("PDUs with mismatched origin and signatures")
     {
-        auto valid = merovingian::federation::parse_federation_pdu(pdu_for("matrix.example.org"));
+        auto valid = merovingian::federation::parse_federation_pdu(comma_delimited_pdu("matrix.example.org"));
         auto bad_sender = valid;
         bad_sender.sender = "@alice:elsewhere.example.org";
         auto spoofed_sender = valid;
@@ -533,8 +548,13 @@ SCENARIO("Federation PDU authorization verifies JSON event signatures with the r
         auto const key_id = std::string{"ed25519:auto"};
         auto const token = std::string{"verify-token"};
         auto const pdu = merovingian::federation::parse_federation_pdu(signed_json_pdu(origin, key_id, token));
-        auto const key = merovingian::federation::FederationKeyRecord{origin, key_id, token, 2000U};
-        auto const wrong_key = merovingian::federation::FederationKeyRecord{origin, key_id, "wrong-token", 2000U};
+        auto key = merovingian::federation::FederationKeyRecord{};
+        key.server_name = origin;
+        key.key_id = key_id;
+        key.valid_until_ts = 2000U;
+        key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
+        auto wrong_key = key;
+        wrong_key.public_key_bytes = merovingian::federation::test::keypair_from_seed("wrong-token").public_key;
 
         WHEN("the PDU is authorized with matching and mismatching key material")
         {
@@ -561,8 +581,11 @@ SCENARIO("Federation PDU authorization rejects comma-delimited PDUs when a signi
                         "matrix.example.org,ed25519:auto,c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nz"
                         "c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzcw=="};
         auto const pdu = merovingian::federation::parse_federation_pdu(pdu_text);
-        auto const key =
-            merovingian::federation::FederationKeyRecord{"matrix.example.org", "ed25519:auto", "verify-token", 2000U};
+        auto key = merovingian::federation::FederationKeyRecord{};
+        key.server_name = "matrix.example.org";
+        key.key_id = "ed25519:auto";
+        key.valid_until_ts = 2000U;
+        key.public_key_bytes = merovingian::federation::test::keypair_from_seed("verify-token").public_key;
 
         WHEN("the comma-delimited PDU is authorized with a key record")
         {

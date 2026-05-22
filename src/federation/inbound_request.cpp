@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -34,42 +35,34 @@ namespace
         LOG_DEBUG(observability::diagnostic_log_summary("federation", event, std::move(fields)));
     }
 
-    auto constexpr clock_skew_seconds = std::uint64_t{300U};
-
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
         static auto const ready = sodium_init() >= 0;
         return ready;
     }
 
-    auto derive_federation_keypair(std::string_view key_material,
-                                   std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
-                                   std::array<unsigned char, crypto_sign_SECRETKEYBYTES>& secret_key) noexcept -> bool
-    {
-        if (!sodium_is_ready())
-        {
-            return false;
-        }
-        auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
-        if (crypto_generichash(seed.data(), seed.size(), reinterpret_cast<unsigned char const*>(key_material.data()),
-                               key_material.size(), nullptr, 0U) != 0)
-        {
-            return false;
-        }
-        return crypto_sign_seed_keypair(public_key.data(), secret_key.data(), seed.data()) == 0;
-    }
-
-    [[nodiscard]] auto federation_request_payload(std::string_view origin, std::string_view method,
-                                                  std::string_view target, std::uint64_t origin_server_ts,
+    // Builds the Matrix canonical-JSON object signed for an X-Matrix request:
+    // {content?, destination, method, origin, uri}. `content` is the request
+    // body parsed as JSON and is omitted entirely for a body-less request.
+    // Returns std::nullopt when a non-empty body is not canonical-parseable.
+    [[nodiscard]] auto federation_request_payload(std::string_view origin, std::string_view destination,
+                                                  std::string_view method, std::string_view uri,
                                                   std::string_view body) -> std::optional<std::string>
     {
         auto object = canonicaljson::Object{};
-        object.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin}}));
+        if (!body.empty())
+        {
+            auto parsed = canonicaljson::parse_lossless(body);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                return std::nullopt;
+            }
+            object.push_back(canonicaljson::make_member("content", std::move(parsed.value)));
+        }
+        object.push_back(canonicaljson::make_member("destination", canonicaljson::Value{std::string{destination}}));
         object.push_back(canonicaljson::make_member("method", canonicaljson::Value{std::string{method}}));
-        object.push_back(canonicaljson::make_member("uri", canonicaljson::Value{std::string{target}}));
-        object.push_back(canonicaljson::make_member("origin_server_ts",
-                                                    canonicaljson::Value{static_cast<std::int64_t>(origin_server_ts)}));
-        object.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::string{body}}));
+        object.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin}}));
+        object.push_back(canonicaljson::make_member("uri", canonicaljson::Value{std::string{uri}}));
         auto serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(object)});
         if (serialized.error != canonicaljson::CanonicalJsonError::none)
         {
@@ -540,10 +533,12 @@ namespace
         {
             return {result.status == 0U ? std::uint16_t{500U} : result.status, result.reason};
         }
+        auto const now_ms = static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
         auto response = canonicaljson::Object{};
         response.push_back(canonicaljson::make_member("origin", canonicaljson::Value{runtime.config.server_name}));
-        response.push_back(canonicaljson::make_member(
-            "origin_server_ts", canonicaljson::Value{static_cast<std::int64_t>(request.origin_server_ts)}));
+        response.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
         response.push_back(canonicaljson::make_member("pdus", build_array_value(result.pdus_json)));
         auto body = serialize_response_object(std::move(response));
         if (body.empty())
@@ -610,31 +605,6 @@ namespace
 
 } // namespace
 
-auto resolve_federation_public_key(FederationKeyRecord const& key) -> std::string
-{
-    if (!key.public_key_bytes.empty())
-    {
-        return key.public_key_bytes;
-    }
-    if (key.verify_token.empty() || sodium_init() < 0)
-    {
-        return {};
-    }
-    auto seed = std::array<unsigned char, crypto_sign_SEEDBYTES>{};
-    if (crypto_generichash(seed.data(), seed.size(), reinterpret_cast<unsigned char const*>(key.verify_token.data()),
-                           key.verify_token.size(), nullptr, 0U) != 0)
-    {
-        return {};
-    }
-    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
-    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-    if (crypto_sign_seed_keypair(public_key.data(), secret_key.data(), seed.data()) != 0)
-    {
-        return {};
-    }
-    return std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()};
-}
-
 auto load_server_signing_key(std::string_view server_name, std::string_view key_id, std::string_view key_material)
     -> FederationSigningKey
 {
@@ -651,53 +621,133 @@ auto signing_key_summary(FederationSigningKey const& key) -> std::string
            " loaded=" + std::string{key.loaded ? "true" : "false"};
 }
 
-auto make_federation_signature(std::string_view origin, std::string_view /*key_id*/, std::string_view verify_token,
-                               std::string_view method, std::string_view target, std::uint64_t origin_server_ts,
-                               std::string_view body) -> std::string
+auto make_federation_signature(std::string_view origin, std::string_view destination, std::string_view method,
+                               std::string_view target, std::string_view body, std::string_view secret_key)
+    -> std::string
 {
-    auto const payload = federation_request_payload(origin, method, target, origin_server_ts, body);
-    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
-    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-    if (!payload.has_value() || !derive_federation_keypair(verify_token, public_key, secret_key))
+    if (!sodium_is_ready() || secret_key.size() != crypto_sign_SECRETKEYBYTES)
+    {
+        return {};
+    }
+    auto const payload = federation_request_payload(origin, destination, method, target, body);
+    if (!payload.has_value())
     {
         return {};
     }
     auto signature = std::string(crypto_sign_BYTES, '\0');
     if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
                              reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),
-                             secret_key.data()) != 0)
+                             reinterpret_cast<unsigned char const*>(secret_key.data())) != 0)
     {
         return {};
     }
     return events::matrix_base64_from_bytes(signature);
 }
 
-auto verify_signed_federation_request(SignedFederationRequest const& request, FederationKeyRecord const& key,
-                                      std::uint64_t max_clock_skew_seconds) -> FederationDecision
+auto parse_x_matrix_authorization_header(std::string_view header_value) -> std::optional<XMatrixCredentials>
+{
+    auto constexpr prefix = std::string_view{"X-Matrix "};
+    if (header_value.size() < prefix.size() || header_value.substr(0U, prefix.size()) != prefix)
+    {
+        return std::nullopt;
+    }
+    auto remaining = header_value.substr(prefix.size());
+    auto credentials = XMatrixCredentials{};
+    auto origin_found = false;
+    auto key_found = false;
+    auto sig_found = false;
+    while (!remaining.empty())
+    {
+        while (!remaining.empty() && (remaining.front() == ' ' || remaining.front() == '\t'))
+        {
+            remaining = remaining.substr(1U);
+        }
+        if (remaining.empty())
+        {
+            break;
+        }
+        auto const eq_pos = remaining.find('=');
+        if (eq_pos == std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        auto name = remaining.substr(0U, eq_pos);
+        while (!name.empty() && (name.back() == ' ' || name.back() == '\t'))
+        {
+            name = name.substr(0U, name.size() - 1U);
+        }
+        remaining = remaining.substr(eq_pos + 1U);
+        while (!remaining.empty() && (remaining.front() == ' ' || remaining.front() == '\t'))
+        {
+            remaining = remaining.substr(1U);
+        }
+        if (remaining.empty() || remaining.front() != '"')
+        {
+            return std::nullopt;
+        }
+        remaining = remaining.substr(1U);
+        auto const close_pos = remaining.find('"');
+        if (close_pos == std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        auto const value = remaining.substr(0U, close_pos);
+        remaining = remaining.substr(close_pos + 1U);
+        if (name == "origin")
+        {
+            credentials.origin = std::string{value};
+            origin_found = true;
+        }
+        else if (name == "key")
+        {
+            credentials.key_id = std::string{value};
+            key_found = true;
+        }
+        else if (name == "sig")
+        {
+            credentials.signature = std::string{value};
+            sig_found = true;
+        }
+        else if (name == "destination")
+        {
+            credentials.destination = std::string{value};
+        }
+        while (!remaining.empty() && (remaining.front() == ' ' || remaining.front() == '\t'))
+        {
+            remaining = remaining.substr(1U);
+        }
+        if (!remaining.empty() && remaining.front() == ',')
+        {
+            remaining = remaining.substr(1U);
+        }
+    }
+    if (!origin_found || !key_found || !sig_found || credentials.origin.empty() || credentials.key_id.empty() ||
+        credentials.signature.empty())
+    {
+        return std::nullopt;
+    }
+    return credentials;
+}
+
+auto verify_signed_federation_request(SignedFederationRequest const& request, FederationKeyRecord const& key)
+    -> FederationDecision
 {
     if (request.origin != key.server_name || request.key_id != key.key_id)
     {
         return make_decision(false, 401U, "request signing key does not match origin");
     }
-    if (request.now_ts > key.valid_until_ts)
+    if (key.valid_until_ts != 0U && request.now_ts > key.valid_until_ts)
     {
         return make_decision(false, 401U, "request signing key has expired");
     }
-    auto const lower_bound = request.now_ts > max_clock_skew_seconds ? request.now_ts - max_clock_skew_seconds : 0U;
-    auto const upper_bound = request.now_ts + max_clock_skew_seconds;
-    if (request.origin_server_ts < lower_bound || request.origin_server_ts > upper_bound)
-    {
-        return make_decision(false, 401U, "request timestamp outside allowed bounds");
-    }
-    auto const payload = federation_request_payload(request.origin, request.method, request.target,
-                                                    request.origin_server_ts, request.body);
+    auto const payload =
+        federation_request_payload(request.origin, request.destination, request.method, request.target, request.body);
     auto const signature = events::matrix_bytes_from_base64(request.signature);
-    auto const public_key = resolve_federation_public_key(key);
     if (!payload.has_value() || !crypto::ed25519_signature_shape_is_valid(crypto::Ed25519Signature{signature}) ||
-        !crypto::ed25519_public_key_shape_is_valid(crypto::Ed25519PublicKey{public_key}) ||
+        !crypto::ed25519_public_key_shape_is_valid(crypto::Ed25519PublicKey{key.public_key_bytes}) ||
         crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.data()),
                                     reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),
-                                    reinterpret_cast<unsigned char const*>(public_key.data())) != 0)
+                                    reinterpret_cast<unsigned char const*>(key.public_key_bytes.data())) != 0)
     {
         return make_decision(false, 401U, "request signature verification failed");
     }
@@ -766,7 +816,7 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
             {
                 return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
             }
-            auto const public_key = resolve_federation_public_key(*key);
+            auto const& public_key = key->public_key_bytes;
             auto verifier = FederationEd25519Verifier{};
             auto const verified =
                 events::verify_event_signature(parsed.value, *room_version, {std::string{expected_origin}, key->key_id},
@@ -841,6 +891,14 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                            {"reason", route_match.reason,                                   false}
         });
         return {404U, route_match.reason};
+    }
+    // Reject early when the TLS peer name is known and does not match the
+    // X-Matrix origin claim: a relay cannot legitimately present a different
+    // server name in the TLS handshake than in the federation auth header.
+    if (!request.tls_peer_server_name.empty() && request.tls_peer_server_name != request.origin)
+    {
+        audit_federation(runtime, "federation.rejected", request.origin, request.target, "TLS origin mismatch");
+        return {403U, "TLS peer name does not match request origin"};
     }
     auto const server_policy = federation_server_policy(runtime.config, request.origin);
     if (!server_policy.allowed)
@@ -930,7 +988,7 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         auto const status = static_cast<std::uint16_t>(trust.apply_backoff ? 429U : 403U);
         return {status, trust.reason};
     }
-    auto const request_signature = verify_signed_federation_request(request, remote->signing_key, clock_skew_seconds);
+    auto const request_signature = verify_signed_federation_request(request, remote->signing_key);
     if (!request_signature.accepted)
     {
         ++remote->trust.consecutive_failures;

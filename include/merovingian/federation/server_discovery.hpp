@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -76,5 +77,10 @@ public:
 [[nodiscard]] auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& network,
                                    std::uint32_t timeout_seconds) -> ServerDiscoveryResult;
 [[nodiscard]] auto discover_server(std::string_view server_name) -> ServerDiscoveryResult;
+
+// Creates a production ServerDiscoveryNetwork backed by real DNS and
+// HTTP well-known lookups. Used by start_runtime to wire the remote key
+// resolver and outbound membership fetch paths.
+[[nodiscard]] auto make_system_server_discovery_network() -> std::unique_ptr<ServerDiscoveryNetwork>;
 
 } // namespace merovingian::federation

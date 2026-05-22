@@ -1,11 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <limits>
 #include <optional>
@@ -162,6 +167,8 @@ namespace
         return std::nullopt;
     }
 
+    // Pipe-delimited federation auth token used by integration-test fixtures:
+    // origin|key_id|signature|destination|now_ts|canonical_json_verified.
     [[nodiscard]] auto parse_signed_federation_request(LocalHttpRequest const& request)
         -> std::optional<federation::SignedFederationRequest>
     {
@@ -170,24 +177,23 @@ namespace
         {
             return std::nullopt;
         }
-        auto const origin_ts = parse_u64((*fields)[3]);
-        auto const received_ts = parse_u64((*fields)[4]);
+        auto const now_ts = parse_u64((*fields)[4]);
         auto const canonical_json_verified = parse_bool_flag((*fields)[5]);
-        if (!origin_ts.has_value() || !received_ts.has_value() || !canonical_json_verified.has_value())
+        if (!now_ts.has_value() || !canonical_json_verified.has_value())
         {
             return std::nullopt;
         }
-        return federation::SignedFederationRequest{
-            request.method,
-            request.target,
-            std::string{(*fields)[0]},
-            std::string{(*fields)[1]},
-            std::string{(*fields)[2]},
-            *origin_ts,
-            *received_ts,
-            *canonical_json_verified,
-            request.body,
-        };
+        auto signed_request = federation::SignedFederationRequest{};
+        signed_request.method = request.method;
+        signed_request.target = request.target;
+        signed_request.origin = std::string{(*fields)[0]};
+        signed_request.key_id = std::string{(*fields)[1]};
+        signed_request.signature = std::string{(*fields)[2]};
+        signed_request.destination = std::string{(*fields)[3]};
+        signed_request.now_ts = *now_ts;
+        signed_request.canonical_json_verified = *canonical_json_verified;
+        signed_request.body = request.body;
+        return signed_request;
     }
 
     [[nodiscard]] auto path_suffix(std::string_view target, std::string_view prefix) noexcept -> std::string_view
@@ -210,6 +216,205 @@ namespace
             return std::nullopt;
         }
         return std::array<std::string_view, 2U>{server_name, media_id};
+    }
+
+    // Wires all FederationRuntimeState callbacks to production implementations.
+    // Called lazily on the first federation request so the runtime is already
+    // at a stable address when the lambdas capture references to its fields.
+    // Idempotent: the pdu_sink check guards against double-wiring.
+    auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
+    {
+        if (!runtime.federation.config.enabled || runtime.federation.pdu_sink)
+        {
+            return;
+        }
+        // Capture the runtime by pointer for all lambdas — safe because the
+        // callbacks are stored inside the same runtime object, which outlives
+        // every call made through handle_federation_http_request.
+        auto* rt = &runtime;
+        auto outbound = runtime.outbound_client;   // shared_ptr copy
+        auto discovery = runtime.discovery_network; // shared_ptr copy
+        auto const timeout = runtime.federation.config.remote_timeout_seconds;
+
+        runtime.federation.pdu_sink = [rt](federation::InboundPduEnvelope const& envelope)
+            -> federation::PduIngestionResult {
+            auto event = database::PersistentEvent{};
+            event.event_id = envelope.event_id;
+            event.room_id = envelope.room_id;
+            event.sender_user_id = envelope.sender;
+            event.json = envelope.json;
+            event.depth = envelope.depth;
+            event.prev_event_ids = envelope.prev_event_ids;
+            event.auth_event_ids = envelope.auth_event_ids;
+            event.signatures = envelope.signatures;
+            auto state = std::optional<database::PersistentStateEvent>{};
+            if (envelope.state_key.has_value())
+            {
+                state = database::PersistentStateEvent{envelope.room_id, envelope.event_type, *envelope.state_key,
+                                                       envelope.event_id};
+            }
+            if (!database::store_event_with_state(rt->database.persistent_store, std::move(event), state))
+            {
+                return {federation::PduIngestionStatus::internal_error, "event persistence failed"};
+            }
+            return {federation::PduIngestionStatus::accepted, {}};
+        };
+
+        runtime.federation.state_conflict_resolver = [rt](federation::PduStateConflictContext const& context)
+            -> federation::PduIngestionResult {
+            return federation::apply_state_resolution_v2(
+                context,
+                [rt, room_id = context.incoming_pdu.room_id](
+                    std::vector<events::StateEventReference> const& resolved) -> bool {
+                    for (auto const& ref : resolved)
+                    {
+                        if (!database::store_state(rt->database.persistent_store,
+                                                   {room_id, ref.key.event_type, ref.key.state_key, ref.event_id}))
+                        {
+                            return false;
+                        }
+                    }
+                    return true;
+                });
+        };
+
+        runtime.federation.membership_template_provider =
+            [rt](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view user_id,
+                 std::vector<std::string> const& /*supported_versions*/)
+            -> std::optional<federation::MembershipEventTemplate> {
+            auto const& store = rt->database.persistent_store;
+            auto const room_it =
+                std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
+                    return r.room_id == room_id;
+                });
+            if (room_it == store.rooms.end())
+            {
+                return std::nullopt;
+            }
+            auto tmpl = federation::MembershipEventTemplate{};
+            tmpl.room_id = std::string{room_id};
+            tmpl.user_id = std::string{user_id};
+            tmpl.room_version = "12";
+            if (endpoint == federation::FederationEndpoint::make_join)
+            {
+                tmpl.membership = "join";
+            }
+            else if (endpoint == federation::FederationEndpoint::make_leave)
+            {
+                tmpl.membership = "leave";
+            }
+            else
+            {
+                tmpl.membership = "knock";
+            }
+            for (auto const& evt : store.events)
+            {
+                if (evt.room_id == room_id)
+                {
+                    tmpl.prev_events.push_back(evt.event_id);
+                }
+            }
+            tmpl.content_json = "{\"membership\":\"" + tmpl.membership + "\"}";
+            return tmpl;
+        };
+
+        runtime.federation.membership_acceptor =
+            [rt](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view event_id,
+                 federation::InboundPduEnvelope const& envelope) -> federation::MembershipAcceptResult {
+            auto& store = rt->database.persistent_store;
+            auto const room_it =
+                std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
+                    return r.room_id == room_id;
+                });
+            if (room_it == store.rooms.end())
+            {
+                return {false, 404U, "room not found", {}, {}};
+            }
+            auto event = database::PersistentEvent{};
+            event.event_id = envelope.event_id;
+            event.room_id = envelope.room_id;
+            event.sender_user_id = envelope.sender;
+            event.json = envelope.json;
+            event.depth = envelope.depth;
+            auto state = std::optional<database::PersistentStateEvent>{};
+            if (envelope.state_key.has_value())
+            {
+                state = database::PersistentStateEvent{envelope.room_id, envelope.event_type, *envelope.state_key,
+                                                       std::string{event_id}};
+            }
+            if (!database::store_event_with_state(store, std::move(event), state))
+            {
+                return {false, 500U, "event persistence failed", {}, {}};
+            }
+            auto auth_chain = std::vector<std::string>{};
+            auto state_events = std::vector<std::string>{};
+            if (endpoint == federation::FederationEndpoint::send_join)
+            {
+                for (auto const& evt : store.events)
+                {
+                    if (evt.room_id == room_id && !evt.json.empty())
+                    {
+                        auth_chain.push_back(evt.json);
+                    }
+                }
+                for (auto const& s : store.state)
+                {
+                    if (s.room_id == room_id)
+                    {
+                        for (auto const& evt : store.events)
+                        {
+                            if (evt.event_id == s.event_id && !evt.json.empty())
+                            {
+                                state_events.push_back(evt.json);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            return {true, 200U, {}, std::move(auth_chain), std::move(state_events)};
+        };
+
+        // Sign the invite event with the local server key. The signing path will be
+        // fully wired once the signing service is plumbed through the vertical slice.
+        // For now the invite JSON is echoed back unsigned which satisfies v1 invites.
+        runtime.federation.invite_handler = [](federation::InviteRequest const& invite)
+            -> federation::InviteAcceptResult {
+            return {true, 200U, {}, invite.invite_event_json};
+        };
+
+        runtime.federation.backfill_provider = [rt](federation::BackfillRequest const& req)
+            -> federation::BackfillResult {
+            auto const& store = rt->database.persistent_store;
+            auto pdus = std::vector<std::string>{};
+            for (auto const& requested_id : req.event_ids)
+            {
+                for (auto const& evt : store.events)
+                {
+                    if (evt.event_id == requested_id && !evt.json.empty())
+                    {
+                        pdus.push_back(evt.json);
+                        break;
+                    }
+                }
+                if (pdus.size() >= req.limit)
+                {
+                    break;
+                }
+            }
+            return {true, 200U, {}, std::move(pdus)};
+        };
+
+        if (outbound && discovery)
+        {
+            runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
+                runtime.database.persistent_store, *outbound, *discovery, timeout, [] {
+                    return static_cast<std::uint64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count());
+                });
+        }
     }
 
 } // namespace
@@ -443,19 +648,47 @@ namespace
     {
         return response(503U, "runtime not started");
     }
+    wire_federation_callbacks(runtime);
     if (request.method == "GET" && request.target == "/_matrix/key/v2/server")
     {
         return response_from_operation(publish_server_signing_keys(runtime));
     }
     if (starts_with(request.target, "/_matrix/federation/"))
     {
-        auto signed_request = parse_signed_federation_request(request);
-        if (!signed_request.has_value())
+        // Primary path: real X-Matrix Authorization header from production traffic.
+        // Fallback path: pipe-delimited token used by integration test fixtures.
+        auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
+        auto const x_matrix = federation::parse_x_matrix_authorization_header(request.access_token);
+        if (x_matrix.has_value())
+        {
+            auto req = federation::SignedFederationRequest{};
+            req.method = request.method;
+            req.target = request.target;
+            req.origin = x_matrix->origin;
+            // The signed request object binds the destination to this server's
+            // own name; the verifier must rebuild the payload with our name,
+            // not the (untrusted) header claim, or a request signed for a
+            // different server would verify here.
+            req.destination = runtime.config.server().server_name;
+            req.key_id = x_matrix->key_id;
+            req.signature = x_matrix->signature;
+            req.now_ts = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                        std::chrono::system_clock::now().time_since_epoch())
+                                                        .count());
+            req.canonical_json_verified = true;
+            req.body = request.body;
+            signed_request_opt = std::move(req);
+        }
+        else
+        {
+            signed_request_opt = parse_signed_federation_request(request);
+        }
+        if (!signed_request_opt.has_value())
         {
             return response(401U, "malformed federation authorization");
         }
         auto const federation_response =
-            federation::handle_inbound_federation_request(runtime.federation, *signed_request);
+            federation::handle_inbound_federation_request(runtime.federation, *signed_request_opt);
         return response(federation_response.status, federation_response.body);
     }
     return response(404U, "route not found");

@@ -6,6 +6,8 @@
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
 
+#include "federation_signing_test_support.hpp"
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <atomic>
@@ -36,7 +38,7 @@ namespace
     auto config = merovingian::federation::DispatchWorkerConfig{};
     config.origin = "origin.example.org";
     config.key_id = "ed25519:auto";
-    config.verify_token = "deterministic-test-token";
+    config.secret_key = merovingian::federation::test::keypair_from_seed("deterministic-test-token").secret_key;
     config.max_queue_depth = 16U;
     config.max_retries = 3U;
     config.idle_poll = std::chrono::milliseconds{5};

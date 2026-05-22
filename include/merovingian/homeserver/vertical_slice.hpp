@@ -4,12 +4,15 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/http/outbound_client.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/net/listener.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -69,6 +72,9 @@ struct HomeserverRuntime final
     media::LocalMediaRepository media_repository{};
     platform::HardeningSelfCheck hardening{};
     bool started{false};
+    // Shared ownership so federation callback lambdas survive a runtime move.
+    std::shared_ptr<http::OutboundClient> outbound_client{};
+    std::shared_ptr<federation::ServerDiscoveryNetwork> discovery_network{};
 };
 
 struct RuntimeStartResult final

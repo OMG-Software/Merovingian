@@ -12,6 +12,7 @@
 #include <charconv>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -555,6 +556,11 @@ auto discover_server(std::string_view server_name) -> ServerDiscoveryResult
 {
     auto network = SystemServerDiscoveryNetwork{};
     return discover_server(server_name, network, 30U);
+}
+
+auto make_system_server_discovery_network() -> std::unique_ptr<ServerDiscoveryNetwork>
+{
+    return std::make_unique<SystemServerDiscoveryNetwork>();
 }
 
 } // namespace merovingian::federation
