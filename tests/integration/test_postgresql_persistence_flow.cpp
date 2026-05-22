@@ -169,7 +169,11 @@ SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen 
         auto const event_id = std::string{"$pg-restart-event:example.org"};
         REQUIRE(merovingian::database::store_user(opened.store,
                                                   {user_id, "hash:restart-test", false, false, false}));
-        REQUIRE(merovingian::database::store_access_token(opened.store, {user_id, "device1", "token-hash-restart", false}));
+        // The access token row references a device through a foreign key, so the
+        // device must be persisted first on PostgreSQL where the FK is enforced.
+        REQUIRE(merovingian::database::store_device(opened.store, {user_id, "device1", "restart device"}));
+        REQUIRE(
+            merovingian::database::store_access_token(opened.store, {user_id, "device1", "token-hash-restart", false}));
         REQUIRE(merovingian::database::store_room(opened.store, {room_id, user_id}));
         REQUIRE(merovingian::database::store_membership(opened.store, {room_id, user_id, "join", 1U}));
         REQUIRE(merovingian::database::store_event(

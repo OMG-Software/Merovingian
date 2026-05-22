@@ -213,7 +213,7 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     }
 
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
-    runtime.outbound_client = std::make_shared<http::OutboundClient>();
+    runtime.outbound_client = std::make_unique<http::OutboundClient>();
     runtime.discovery_network = federation::make_system_server_discovery_network();
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);

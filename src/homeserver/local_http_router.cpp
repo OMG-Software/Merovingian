@@ -232,8 +232,8 @@ namespace
         // callbacks are stored inside the same runtime object, which outlives
         // every call made through handle_federation_http_request.
         auto* rt = &runtime;
-        auto outbound = runtime.outbound_client;   // shared_ptr copy
-        auto discovery = runtime.discovery_network; // shared_ptr copy
+        auto* outbound = runtime.outbound_client.get();
+        auto* discovery = runtime.discovery_network.get();
         auto const timeout = runtime.federation.config.remote_timeout_seconds;
 
         runtime.federation.pdu_sink = [rt](federation::InboundPduEnvelope const& envelope)

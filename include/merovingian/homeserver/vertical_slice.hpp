@@ -72,9 +72,10 @@ struct HomeserverRuntime final
     media::LocalMediaRepository media_repository{};
     platform::HardeningSelfCheck hardening{};
     bool started{false};
-    // Shared ownership so federation callback lambdas survive a runtime move.
-    std::shared_ptr<http::OutboundClient> outbound_client{};
-    std::shared_ptr<federation::ServerDiscoveryNetwork> discovery_network{};
+    // Owned here. Federation callback lambdas capture raw pointers into these,
+    // which is safe because the runtime outlives every callback invocation.
+    std::unique_ptr<http::OutboundClient> outbound_client{};
+    std::unique_ptr<federation::ServerDiscoveryNetwork> discovery_network{};
 };
 
 struct RuntimeStartResult final
