@@ -7,6 +7,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -364,6 +365,46 @@ auto outbound_error_name(OutboundError error) noexcept -> std::string_view
     return "unknown"sv;
 }
 
+auto detect_system_ca_trust() -> SystemCaTrust
+{
+    // Concatenated PEM bundles, in rough order of prevalence across the
+    // platforms Merovingian ships on (Debian/Ubuntu/Alpine, Fedora/RHEL,
+    // openSUSE, BSD/macOS, FreeBSD ports).
+    constexpr std::array<std::string_view, 6U> bundle_files{
+        "/etc/ssl/certs/ca-certificates.crt",
+        "/etc/pki/tls/certs/ca-bundle.crt",
+        "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
+        "/etc/ssl/ca-bundle.pem",
+        "/etc/ssl/cert.pem",
+        "/usr/local/share/certs/ca-root-nss.crt",
+    };
+    // OpenSSL hashed certificate directories.
+    constexpr std::array<std::string_view, 2U> bundle_dirs{
+        "/etc/ssl/certs",
+        "/etc/pki/tls/certs",
+    };
+    auto trust = SystemCaTrust{};
+    for (auto const candidate : bundle_files)
+    {
+        auto error = std::error_code{};
+        if (std::filesystem::is_regular_file(candidate, error))
+        {
+            trust.bundle_file = std::string{candidate};
+            break;
+        }
+    }
+    for (auto const candidate : bundle_dirs)
+    {
+        auto error = std::error_code{};
+        if (std::filesystem::is_directory(candidate, error))
+        {
+            trust.bundle_dir = std::string{candidate};
+            break;
+        }
+    }
+    return trust;
+}
+
 auto validate_outbound_request(OutboundRequest const& request) noexcept -> OutboundError
 {
     if (!is_known_method(request.method))
@@ -432,9 +473,12 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
         return fail(OutboundError::network_error, "failed to configure curl request");
     }
 
-    // Optional in-memory CA bundle. Leaving it empty keeps the system trust
-    // store in effect for production federation traffic; tests and pinned-CA
-    // deployments populate it with a PEM blob.
+    // Optional in-memory CA bundle. When populated (tests, pinned-CA
+    // deployments) it replaces the system trust store. When empty, point
+    // libcurl at the host trust store explicitly: the bundled libcurl is
+    // built from source with no fixed --with-ca-bundle, so its compiled-in
+    // default path may not exist on the deployment host, which surfaces as
+    // tls_verification_failed on otherwise-valid public certificates.
     if (!request.trusted_ca_pem.empty())
     {
         auto ca_blob = curl_blob{};
@@ -446,6 +490,23 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
         if (curl_easy_setopt(handle, CURLOPT_CAINFO_BLOB, &ca_blob) != CURLE_OK)
         {
             return fail(OutboundError::network_error, "failed to attach CA bundle");
+        }
+    }
+    else
+    {
+        // Probed once per process. Certificate verification stays on; if no
+        // trust store is found the request still fails closed rather than
+        // skipping verification.
+        static auto const ca_trust = detect_system_ca_trust();
+        if (!ca_trust.bundle_file.empty() &&
+            curl_easy_setopt(handle, CURLOPT_CAINFO, ca_trust.bundle_file.c_str()) != CURLE_OK)
+        {
+            return fail(OutboundError::network_error, "failed to set CA bundle file");
+        }
+        if (!ca_trust.bundle_dir.empty() &&
+            curl_easy_setopt(handle, CURLOPT_CAPATH, ca_trust.bundle_dir.c_str()) != CURLE_OK)
+        {
+            return fail(OutboundError::network_error, "failed to set CA bundle directory");
         }
     }
 
