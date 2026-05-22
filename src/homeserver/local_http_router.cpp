@@ -3,6 +3,7 @@
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/key_query.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -413,6 +414,18 @@ namespace
                 return {};
             }
             return {true, profile->displayname, profile->avatar_url};
+        };
+
+        runtime.federation.device_keys_query_provider = [rt](std::string_view body) -> std::string {
+            return federation::build_device_keys_query_response(rt->database.persistent_store, body);
+        };
+
+        runtime.federation.one_time_keys_claim_provider = [rt](std::string_view body) -> std::string {
+            return federation::build_one_time_keys_claim_response(rt->database.persistent_store, body);
+        };
+
+        runtime.federation.user_devices_provider = [rt](std::string_view user_id) -> std::string {
+            return federation::build_user_devices_response(rt->database.persistent_store, user_id);
         };
 
         if (outbound && discovery)

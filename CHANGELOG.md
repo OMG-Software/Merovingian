@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.3.4
+
+- Added the inbound federation `GET /_matrix/federation/v1/query/profile` route.
+  A signed request is dispatched through the `profile_query_provider` runtime
+  hook, which reads the local user's `displayname`/`avatar_url` from the
+  persistent store; the optional `field` parameter restricts the response and
+  an unknown user returns 404 `M_NOT_FOUND`.
+- Added the inbound federation E2EE key routes:
+  `POST /_matrix/federation/v1/user/keys/query`,
+  `POST /_matrix/federation/v1/user/keys/claim`, and
+  `GET /_matrix/federation/v1/user/devices/{userId}`. The new `key_query`
+  module builds the canonical-JSON responses from the device-key,
+  one-time-key, and cross-signing-key stores; `user/keys/claim` consumes the
+  claimed one-time keys. Each route is dispatched through an optional runtime
+  hook and responds 501 Not Implemented when the hook is unset.
+- Bumped project, executable, and package metadata versions to `0.3.4`.
+
 ## 0.3.3
 
 - Added `parse_x_matrix_authorization_header` to extract `origin`, `destination`,

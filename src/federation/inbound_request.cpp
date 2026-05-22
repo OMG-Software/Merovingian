@@ -616,6 +616,58 @@ namespace
         return {200U, std::move(body)};
     }
 
+    [[nodiscard]] auto handle_query_keys(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.device_keys_query_provider)
+        {
+            return {501U, "query_keys not implemented"};
+        }
+        auto body = runtime.device_keys_query_provider(request.body);
+        if (body.empty())
+        {
+            return {400U, "user/keys/query body is malformed"};
+        }
+        return {200U, std::move(body)};
+    }
+
+    [[nodiscard]] auto handle_claim_keys(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.one_time_keys_claim_provider)
+        {
+            return {501U, "claim_keys not implemented"};
+        }
+        auto body = runtime.one_time_keys_claim_provider(request.body);
+        if (body.empty())
+        {
+            return {400U, "user/keys/claim body is malformed"};
+        }
+        return {200U, std::move(body)};
+    }
+
+    [[nodiscard]] auto handle_user_devices(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.user_devices_provider)
+        {
+            return {501U, "query_user_devices not implemented"};
+        }
+        auto constexpr prefix = std::string_view{"/_matrix/federation/v1/user/devices/"};
+        auto const path = std::string_view{request.target}.substr(0U, request.target.find('?'));
+        if (path.size() <= prefix.size() || path.substr(0U, prefix.size()) != prefix)
+        {
+            return {400U, "user/devices path is malformed"};
+        }
+        auto const user_id = core::percent_decode(path.substr(prefix.size()));
+        auto body = runtime.user_devices_provider(user_id);
+        if (body.empty())
+        {
+            return {404U, R"({"errcode":"M_NOT_FOUND","error":"User has no published devices"})"};
+        }
+        return {200U, std::move(body)};
+    }
+
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
                                                          FederationRoute const& route, FederationRemoteRuntime& remote)
@@ -638,6 +690,12 @@ namespace
             return handle_backfill(runtime, request);
         case FederationEndpoint::query_profile:
             return handle_query_profile(runtime, request);
+        case FederationEndpoint::query_keys:
+            return handle_query_keys(runtime, request);
+        case FederationEndpoint::claim_keys:
+            return handle_claim_keys(runtime, request);
+        case FederationEndpoint::query_user_devices:
+            return handle_user_devices(runtime, request);
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.

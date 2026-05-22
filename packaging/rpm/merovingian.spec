@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.3.3
+Version:        0.3.4
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri May 22 2026 James Chapman <claude@ping.me.uk> - 0.3.4-1
+- Add inbound federation query/profile route
+- Add inbound federation E2EE key routes: user/keys/query, user/keys/claim, and user/devices
+
 * Fri May 22 2026 James Chapman <claude@ping.me.uk> - 0.3.3-1
 - Complete federation joins/leaves/invites/backfill/PDU delivery/event ingestion
 - Add real X-Matrix header parsing and TLS-bound origin validation

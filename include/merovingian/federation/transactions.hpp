@@ -21,6 +21,9 @@ enum class FederationEndpoint
     backfill,
     edu,
     query_profile,
+    query_keys,
+    claim_keys,
+    query_user_devices,
 };
 
 struct FederationTransaction final
