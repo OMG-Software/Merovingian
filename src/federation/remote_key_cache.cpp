@@ -8,6 +8,8 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/security.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <array>
@@ -372,6 +374,15 @@ auto find_any_cached_remote_key(database::PersistentStore const& store, std::str
 namespace
 {
 
+    // Emits a redaction-aware debug line so operators can see why a remote
+    // failed to resolve. Resolution failures are otherwise invisible: the
+    // resolver only ever returns std::nullopt, which the inbound handler
+    // surfaces as a flat "remote is unknown" 403.
+    auto log_resolver(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("remote_key_resolver", event, std::move(fields)));
+    }
+
     [[nodiscard]] auto default_wall_clock_ms() -> std::uint64_t
     {
         return static_cast<std::uint64_t>(
@@ -410,12 +421,26 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         auto const now = clock();
         auto cached_key = find_cached_remote_key(store, server_name, key_id);
         auto const discovery = discover_server(server_name, network, timeout_seconds);
+        if (!discovery.discovery_allowed)
+        {
+            log_resolver("discovery_failed", {
+                                                 {"server_name", std::string{server_name}, false},
+                                                 {"reason",      discovery.reason,          false},
+            });
+        }
         if (cached_key.has_value() && !remote_key_needs_refresh(cached_key->valid_until_ts, now) &&
             discovery.discovery_allowed)
         {
             return build_remote_runtime(server_name, std::move(*cached_key), discovery);
         }
         auto const fetched = fetch_remote_server_keys(client, network, server_name, timeout_seconds);
+        if (!fetched.ok)
+        {
+            log_resolver("key_fetch_failed", {
+                                                 {"server_name", std::string{server_name}, false},
+                                                 {"reason",      fetched.reason,            false},
+            });
+        }
         if (fetched.ok)
         {
             std::ignore = cache_remote_server_keys(store, fetched.response);
@@ -423,6 +448,15 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
             if (refreshed.has_value() && discovery.discovery_allowed)
             {
                 return build_remote_runtime(server_name, std::move(*refreshed), discovery);
+            }
+            if (!refreshed.has_value())
+            {
+                // The fetch and self-verification succeeded, but the key_id the
+                // request was signed with is absent from the published set.
+                log_resolver("request_key_id_not_published", {
+                                                                  {"server_name", std::string{server_name}, false},
+                                                                  {"key_id",      std::string{key_id},      false},
+                });
             }
         }
         // Fall back to the (possibly expired) cached entry — a stale key still
@@ -433,6 +467,10 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         {
             return build_remote_runtime(server_name, std::move(*cached_key), discovery);
         }
+        log_resolver("unresolved", {
+                                       {"server_name", std::string{server_name}, false},
+                                       {"key_id",      std::string{key_id},      false},
+        });
         return std::nullopt;
     };
 }
