@@ -192,7 +192,8 @@ SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen 
         REQUIRE(merovingian::database::store_access_token(
             opened.store, {user_id, "device1", "token-hash:v2:restart-" + suffix, false}));
         REQUIRE(merovingian::database::store_room(opened.store, {room_id, user_id}));
-        REQUIRE(merovingian::database::store_membership(opened.store, {room_id, user_id, "join", 1U}));
+        REQUIRE(merovingian::database::store_membership(opened.store, {room_id, user_id, "join", 1U}) ==
+                merovingian::database::MembershipStoreResult::stored);
         REQUIRE(merovingian::database::store_event(
             opened.store,
             {event_id, room_id, user_id, "{\"type\":\"m.room.message\"}", 1U, 1U, {}, {}, {}}));

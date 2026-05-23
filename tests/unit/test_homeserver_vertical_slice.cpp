@@ -7,6 +7,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -319,6 +320,53 @@ SCENARIO("Homeserver local room route flow creates joins sends and fetches state
                 // fetch_room_state returns the room's state events as a JSON
                 // array; the legacy local-router flow emits no state events.
                 REQUIRE(state.body == "[]");
+            }
+        }
+    }
+}
+
+SCENARIO("Joining a room succeeds when user is already a member in the persistent store but not in-memory",
+         "[homeserver][vertical][rooms][regression]")
+{
+    GIVEN("a logged-in user whose room membership is in the persistent store but absent from the in-memory member list")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+        REQUIRE(user.status == 200U);
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+        REQUIRE(login.status == 200U);
+        auto const room = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", login.body, {}});
+        REQUIRE(room.status == 200U);
+
+        // Simulate stale in-memory state: the persistent store retains the membership
+        // but the in-memory room member list is empty, as can happen after a restart
+        // when hydration is incomplete or when a prior join left the DB record but
+        // failed to update the in-memory list.
+        auto const room_it = std::ranges::find_if(runtime.database.rooms,
+                                                  [&room](merovingian::homeserver::LocalRoom const& r) {
+                                                      return r.room_id == room.body;
+                                                  });
+        REQUIRE(room_it != runtime.database.rooms.end());
+        room_it->members.clear();
+
+        WHEN("the user attempts to join a room they are already a member of in the persistent store")
+        {
+            auto const join = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room.body + "/join", login.body, {}});
+
+            THEN("the join is accepted idempotently with 200 and the room id is returned")
+            {
+                REQUIRE(join.status == 200U);
+                REQUIRE(join.body == room.body);
             }
         }
     }

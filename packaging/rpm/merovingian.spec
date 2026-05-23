@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.0
+Version:        0.4.1
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri May 23 2026 James Chapman <claude@ping.me.uk> - 0.4.1-1
+- Fix room join returning 500 when user is already a member in the persistent store but absent from the in-memory member list
+
 * Fri May 23 2026 James Chapman <claude@ping.me.uk> - 0.4.0-1
 - Add POST /rooms/{roomId}/leave and /read_markers client-server routes
 - Add structured debug logging to federation, media, platform, and HTTP modules

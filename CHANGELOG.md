@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1
+
+- Fixed `POST /join/{roomId}` returning 500 when the user is already a member
+  in the persistent store but absent from the in-memory `LocalRoom::members`
+  list (stale in-memory state after a restart or failed prior join attempt).
+  `store_membership` now returns a `MembershipStoreResult` tri-state
+  (`stored`, `already_exists`, `error`) so callers can distinguish a genuine
+  backend failure from a harmless duplicate; the room service treats
+  `already_exists` as an idempotent success and re-syncs the in-memory member
+  list.
+
 ## 0.4.0
 
 - Added the client-server `POST /_matrix/client/v3/rooms/{roomId}/leave` route
