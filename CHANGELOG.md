@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.3.6
+
+- Added the client-server `PUT /_matrix/client/v3/rooms/{roomId}/typing/{userId}`
+  route. Requests where the path `userId` does not match the authenticated
+  user return 403 `M_FORBIDDEN`; otherwise the request is accepted and the
+  transient typing state is not persisted (typing is an EDU surface).
+- Added the client-server `GET /_matrix/client/v3/rooms/{roomId}/messages`
+  route. The handler enforces room membership (403 for non-members),
+  paginates events by `stream_ordering` with optional `from`, `dir` (`b`
+  default / `f`), and `limit` (default 10, capped at 100), and returns the
+  Matrix-shaped `{chunk, start, end, state}` response.
+- Bumped project, executable, and package metadata versions to `0.3.6`.
+
 ## 0.3.5
 
 - Added the inbound federation event-graph routes:
