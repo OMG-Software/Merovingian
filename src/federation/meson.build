@@ -2,6 +2,7 @@ federation_sources = files(
   'dispatch_worker.cpp',
   'inbound_ingestion.cpp',
   'inbound_request.cpp',
+  'key_query.cpp',
   'membership_endpoints.cpp',
   'outbound_membership.cpp',
   'outbound_transaction.cpp',

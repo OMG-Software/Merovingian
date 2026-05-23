@@ -202,6 +202,25 @@ private:
     return request;
 }
 
+[[nodiscard]] auto signed_post_request(std::string const& origin, std::string const& key_id,
+                                       std::string const& key_seed, std::string const& target,
+                                       std::string const& body) -> merovingian::federation::SignedFederationRequest
+{
+    auto request = merovingian::federation::SignedFederationRequest{};
+    request.method = "POST";
+    request.target = target;
+    request.origin = origin;
+    request.destination = "local.example.org";
+    request.key_id = key_id;
+    request.now_ts = 1000U;
+    request.canonical_json_verified = true;
+    request.body = body;
+    request.signature = merovingian::federation::make_federation_signature(
+        origin, request.destination, request.method, target, body,
+        merovingian::federation::test::keypair_from_seed(key_seed).secret_key);
+    return request;
+}
+
 } // namespace
 
 SCENARIO("PDU sink is invoked when a valid inbound federation transaction is accepted",
@@ -579,6 +598,87 @@ SCENARIO("Profile query provider answers inbound federation query/profile", "[fe
         {
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, token, target));
+
+            THEN("the response is 501 Not Implemented")
+            {
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+SCENARIO("E2EE federation key routes dispatch through their runtime hooks",
+         "[federation][callbacks][e2ee-keys]")
+{
+    GIVEN("a runtime with the E2EE key hooks wired and a known remote")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"e2ee-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        runtime.device_keys_query_provider = [](std::string_view) {
+            return std::string{R"({"device_keys":{}})"};
+        };
+        runtime.one_time_keys_claim_provider = [](std::string_view) {
+            return std::string{R"({"one_time_keys":{}})"};
+        };
+        runtime.user_devices_provider = [](std::string_view) {
+            return std::string{R"({"user_id":"@a:x","devices":[]})"};
+        };
+
+        WHEN("a user/keys/query request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_post_request(origin, key_id, token, "/_matrix/federation/v1/user/keys/query",
+                                             R"({"device_keys":{}})"));
+
+            THEN("the device-keys hook answers with 200")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("device_keys") != std::string::npos);
+            }
+        }
+
+        WHEN("a user/keys/claim request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_post_request(origin, key_id, token, "/_matrix/federation/v1/user/keys/claim",
+                                             R"({"one_time_keys":{}})"));
+
+            THEN("the claim hook answers with 200")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
+
+        WHEN("a user/devices request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, token,
+                                            "/_matrix/federation/v1/user/devices/%40alice%3Alocal.example.org"));
+
+            THEN("the user-devices hook answers with 200")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
+    }
+
+    GIVEN("a runtime with no E2EE key hooks wired")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"e2ee-no-cb-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        WHEN("a user/keys/query request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_post_request(origin, key_id, token, "/_matrix/federation/v1/user/keys/query",
+                                             R"({"device_keys":{}})"));
 
             THEN("the response is 501 Not Implemented")
             {

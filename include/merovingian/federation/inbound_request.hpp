@@ -120,6 +120,14 @@ struct FederationProfile final
 // handler responds 501 Not Implemented.
 using ProfileQueryProvider = std::function<FederationProfile(std::string_view user_id)>;
 
+// Server-blind E2EE federation query hooks. The two POST hooks take the
+// request body and return the canonical-JSON response body; the devices hook
+// takes the path user_id. An empty return signals failure. Optional: an unset
+// hook makes the corresponding route respond 501 Not Implemented.
+using DeviceKeysQueryProvider = std::function<std::string(std::string_view request_body)>;
+using OneTimeKeysClaimProvider = std::function<std::string(std::string_view request_body)>;
+using UserDevicesProvider = std::function<std::string(std::string_view user_id)>;
+
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
@@ -153,6 +161,11 @@ struct FederationRuntimeState final
     // Optional resolver for inbound `query/profile`. When unset the handler
     // responds 501 Not Implemented.
     ProfileQueryProvider profile_query_provider{};
+    // Optional resolvers for inbound E2EE key federation routes. Each unset
+    // hook makes its route respond 501 Not Implemented.
+    DeviceKeysQueryProvider device_keys_query_provider{};
+    OneTimeKeysClaimProvider one_time_keys_claim_provider{};
+    UserDevicesProvider user_devices_provider{};
 };
 
 struct FederationDecision final

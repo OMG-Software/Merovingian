@@ -80,6 +80,12 @@ auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char cons
         return "edu";
     case FederationEndpoint::query_profile:
         return "query_profile";
+    case FederationEndpoint::query_keys:
+        return "query_keys";
+    case FederationEndpoint::claim_keys:
+        return "claim_keys";
+    case FederationEndpoint::query_user_devices:
+        return "query_user_devices";
     }
 
     return "unknown";
@@ -102,6 +108,9 @@ auto federation_routes() -> std::vector<FederationRoute>
         route("GET", "/_matrix/federation/v1/backfill/{roomId}", FederationEndpoint::backfill),
         route("PUT", "/_matrix/federation/v1/send_edu/{eduType}/{txnId}", FederationEndpoint::edu),
         route("GET", "/_matrix/federation/v1/query/profile", FederationEndpoint::query_profile),
+        route("POST", "/_matrix/federation/v1/user/keys/query", FederationEndpoint::query_keys),
+        route("POST", "/_matrix/federation/v1/user/keys/claim", FederationEndpoint::claim_keys),
+        route("GET", "/_matrix/federation/v1/user/devices/{userId}", FederationEndpoint::query_user_devices),
     };
 }
 
@@ -188,6 +197,11 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         }
         if (candidate.endpoint == FederationEndpoint::edu &&
             dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/send_edu/", 2U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::query_user_devices &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/user/devices/", 1U))
         {
             return {true, candidate, {}};
         }
