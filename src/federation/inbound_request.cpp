@@ -668,6 +668,99 @@ namespace
         return {200U, std::move(body)};
     }
 
+    // Extracts a percent-decoded single path segment that immediately follows
+    // `prefix`. Returns an empty string when the target does not start with
+    // `prefix` or has no segment after it.
+    [[nodiscard]] auto extract_path_segment(std::string_view target, std::string_view prefix) -> std::string
+    {
+        auto const path = target.substr(0U, target.find('?'));
+        if (path.size() <= prefix.size() || path.substr(0U, prefix.size()) != prefix)
+        {
+            return {};
+        }
+        return core::percent_decode(path.substr(prefix.size()));
+    }
+
+    [[nodiscard]] auto handle_query_event(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.event_query_provider)
+        {
+            return {501U, "query_event not implemented"};
+        }
+        auto const event_id = extract_path_segment(request.target, "/_matrix/federation/v1/event/");
+        if (event_id.empty())
+        {
+            return {400U, "event path is malformed"};
+        }
+        auto body = runtime.event_query_provider(event_id);
+        if (body.empty())
+        {
+            return {404U, R"({"errcode":"M_NOT_FOUND","error":"Event not found"})"};
+        }
+        return {200U, std::move(body)};
+    }
+
+    [[nodiscard]] auto handle_query_state(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.state_query_provider)
+        {
+            return {501U, "query_state not implemented"};
+        }
+        auto const room_id = extract_path_segment(request.target, "/_matrix/federation/v1/state/");
+        if (room_id.empty())
+        {
+            return {400U, "state path is malformed"};
+        }
+        auto body = runtime.state_query_provider(room_id);
+        if (body.empty())
+        {
+            return {404U, R"({"errcode":"M_NOT_FOUND","error":"Room state not found"})"};
+        }
+        return {200U, std::move(body)};
+    }
+
+    [[nodiscard]] auto handle_query_state_ids(FederationRuntimeState& runtime, SignedFederationRequest const& request)
+        -> FederationResponse
+    {
+        if (!runtime.state_ids_query_provider)
+        {
+            return {501U, "query_state_ids not implemented"};
+        }
+        auto const room_id = extract_path_segment(request.target, "/_matrix/federation/v1/state_ids/");
+        if (room_id.empty())
+        {
+            return {400U, "state_ids path is malformed"};
+        }
+        auto body = runtime.state_ids_query_provider(room_id);
+        if (body.empty())
+        {
+            return {404U, R"({"errcode":"M_NOT_FOUND","error":"Room state not found"})"};
+        }
+        return {200U, std::move(body)};
+    }
+
+    [[nodiscard]] auto handle_get_missing_events(FederationRuntimeState& runtime,
+                                                 SignedFederationRequest const& request) -> FederationResponse
+    {
+        if (!runtime.missing_events_query_provider)
+        {
+            return {501U, "get_missing_events not implemented"};
+        }
+        auto const room_id = extract_path_segment(request.target, "/_matrix/federation/v1/get_missing_events/");
+        if (room_id.empty())
+        {
+            return {400U, "get_missing_events path is malformed"};
+        }
+        auto body = runtime.missing_events_query_provider(room_id, request.body);
+        if (body.empty())
+        {
+            return {400U, "get_missing_events body is malformed"};
+        }
+        return {200U, std::move(body)};
+    }
+
     [[nodiscard]] auto dispatch_non_transaction_endpoint(FederationRuntimeState& runtime,
                                                          SignedFederationRequest const& request,
                                                          FederationRoute const& route, FederationRemoteRuntime& remote)
@@ -696,6 +789,14 @@ namespace
             return handle_claim_keys(runtime, request);
         case FederationEndpoint::query_user_devices:
             return handle_user_devices(runtime, request);
+        case FederationEndpoint::query_event:
+            return handle_query_event(runtime, request);
+        case FederationEndpoint::query_state:
+            return handle_query_state(runtime, request);
+        case FederationEndpoint::query_state_ids:
+            return handle_query_state_ids(runtime, request);
+        case FederationEndpoint::get_missing_events:
+            return handle_get_missing_events(runtime, request);
         case FederationEndpoint::edu:
             // Plain send_edu requests have always been a 200 stub; ingestion
             // happens through the transaction path which carries EDUs.

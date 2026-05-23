@@ -1,5 +1,6 @@
 federation_sources = files(
   'dispatch_worker.cpp',
+  'event_query.cpp',
   'inbound_ingestion.cpp',
   'inbound_request.cpp',
   'key_query.cpp',

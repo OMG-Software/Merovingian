@@ -24,6 +24,10 @@ enum class FederationEndpoint
     query_keys,
     claim_keys,
     query_user_devices,
+    query_event,
+    query_state,
+    query_state_ids,
+    get_missing_events,
 };
 
 struct FederationTransaction final

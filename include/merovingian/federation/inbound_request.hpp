@@ -128,6 +128,16 @@ using DeviceKeysQueryProvider = std::function<std::string(std::string_view reque
 using OneTimeKeysClaimProvider = std::function<std::string(std::string_view request_body)>;
 using UserDevicesProvider = std::function<std::string(std::string_view user_id)>;
 
+// Inbound event-graph query hooks. Each takes the parsed path component (and
+// for `get_missing_events`, the request body) and returns the canonical-JSON
+// response body, or an empty string on failure. Optional: an unset hook makes
+// the corresponding route respond 501 Not Implemented.
+using EventQueryProvider = std::function<std::string(std::string_view event_id)>;
+using StateQueryProvider = std::function<std::string(std::string_view room_id)>;
+using StateIdsQueryProvider = std::function<std::string(std::string_view room_id)>;
+using MissingEventsQueryProvider =
+    std::function<std::string(std::string_view room_id, std::string_view request_body)>;
+
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
@@ -166,6 +176,12 @@ struct FederationRuntimeState final
     DeviceKeysQueryProvider device_keys_query_provider{};
     OneTimeKeysClaimProvider one_time_keys_claim_provider{};
     UserDevicesProvider user_devices_provider{};
+    // Optional resolvers for inbound event-graph queries. Each unset hook
+    // makes its route respond 501 Not Implemented.
+    EventQueryProvider event_query_provider{};
+    StateQueryProvider state_query_provider{};
+    StateIdsQueryProvider state_ids_query_provider{};
+    MissingEventsQueryProvider missing_events_query_provider{};
 };
 
 struct FederationDecision final

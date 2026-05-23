@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.3.5
+
+- Added the inbound federation event-graph routes:
+  `GET /_matrix/federation/v1/event/{eventId}`,
+  `GET /_matrix/federation/v1/state/{roomId}`,
+  `GET /_matrix/federation/v1/state_ids/{roomId}`, and
+  `POST /_matrix/federation/v1/get_missing_events/{roomId}`. The new
+  `event_query` module builds the canonical-JSON responses from the
+  persistent event and state stores; `event/{eventId}` resolves a single PDU
+  by ID, `state`/`state_ids` return the room's current state (historical
+  state-at-event reconstruction remains future work), and
+  `get_missing_events` returns events filtered by `min_depth` and capped by
+  `limit`. Each route is dispatched through an optional runtime hook and
+  responds 501 Not Implemented when the hook is unset.
+- Bumped project, executable, and package metadata versions to `0.3.5`.
+
 ## 0.3.4
 
 - Added the inbound federation `GET /_matrix/federation/v1/query/profile` route.
