@@ -550,6 +550,7 @@ SCENARIO("Client-server leave and read_markers routes",
     }
 }
 
+
 SCENARIO("Client-server runtime signs sent events and persists their DAG metadata",
          "[homeserver][client-server][events]")
 {
