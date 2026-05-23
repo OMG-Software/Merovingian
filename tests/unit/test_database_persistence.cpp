@@ -359,7 +359,8 @@ SCENARIO("Persistent store records MVP homeserver data with hashed tokens only",
                 store, {"@alice:example.org", "DEVICE1", "token-hash:v2:refresh123", false});
             auto const room_ok = merovingian::database::store_room(store, {"!room1:example.org", "@alice:example.org"});
             auto const membership_ok =
-                merovingian::database::store_membership(store, {"!room1:example.org", "@alice:example.org"});
+                merovingian::database::store_membership(store, {"!room1:example.org", "@alice:example.org"}) ==
+                merovingian::database::MembershipStoreResult::stored;
             auto const message_event_ok =
                 merovingian::database::store_event(store, {"$event1:example.org", "!room1:example.org",
                                                            "@alice:example.org", R"({"type":"m.room.message"})"});

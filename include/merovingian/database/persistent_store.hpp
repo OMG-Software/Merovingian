@@ -407,8 +407,15 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto store_federation_transaction(PersistentStore& store, PersistentFederationTransaction transaction)
     -> bool;
 [[nodiscard]] auto delete_federation_transaction(PersistentStore& store, std::string_view transaction_id) -> bool;
+enum class MembershipStoreResult
+{
+    stored,
+    already_exists,
+    error,
+};
+
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
-[[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> bool;
+[[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id,
                                      std::string_view user_id, std::string_view new_membership) -> bool;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,

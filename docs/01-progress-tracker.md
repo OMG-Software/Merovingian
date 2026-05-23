@@ -344,6 +344,12 @@ a non-production environment.
   users, access tokens, rooms, memberships, events, account data, policy rules,
   federation destinations, federation transactions, local media, and remote media
   all survive a close/reopen cycle on a real PostgreSQL-backed persistent store.
+- Bug fix (0.4.1): `POST /join/{roomIdOrAlias}` no longer returns 500 when the
+  user is already a member in the persistent store but absent from the in-memory
+  `LocalRoom::members` list. `store_membership` now returns a tri-state
+  `MembershipStoreResult` (`stored`, `already_exists`, `error`); the room
+  service treats `already_exists` as an idempotent success and re-syncs the
+  in-memory member list. Regression test added to the vertical-slice suite.
 
 ### Production v1.0.0
 

@@ -620,7 +620,9 @@ namespace
     }
     if (!room_has_member(*room, *user_id))
     {
-        if (!database::store_membership(runtime.database.persistent_store, {std::string{room_id}, *user_id}))
+        auto const result =
+            database::store_membership(runtime.database.persistent_store, {std::string{room_id}, *user_id});
+        if (result == database::MembershipStoreResult::error)
         {
             log_diagnostic("room.join.rejected", {
                                                      {"actor",   *user_id,                        false},
@@ -630,13 +632,25 @@ namespace
             });
             return make_operation_result(false, {}, "membership persistence failed", 500U);
         }
+        // Both stored and already_exists: membership is valid — sync the in-memory state.
         room->members.push_back(*user_id);
-        log_diagnostic("room.join.membership_persisted",
-                       {
-                           {"actor",        *user_id,                             false},
-                           {"room_id",      std::string{room_id},                 false},
-                           {"member_count", std::to_string(room->members.size()), false}
-        });
+        if (result == database::MembershipStoreResult::stored)
+        {
+            log_diagnostic("room.join.membership_persisted",
+                           {
+                               {"actor",        *user_id,                             false},
+                               {"room_id",      std::string{room_id},                 false},
+                               {"member_count", std::to_string(room->members.size()), false}
+            });
+        }
+        else
+        {
+            log_diagnostic("room.join.already_member", {
+                                                           {"actor",        *user_id,                             false},
+                                                           {"room_id",      std::string{room_id},                 false},
+                                                           {"member_count", std::to_string(room->members.size()), false}
+            });
+        }
     }
     else
     {

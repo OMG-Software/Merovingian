@@ -776,7 +776,7 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> bool
+[[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult
 {
     if (membership_exists(store, membership))
     {
@@ -786,7 +786,7 @@ namespace
                                                   {"membership", membership.membership,  false},
                                                   {"reason",     "duplicate membership", false}
         });
-        return false;
+        return MembershipStoreResult::already_exists;
     }
     if (!record_and_persist(store,
                             record_statement("insert_membership", "INSERT INTO membership VALUES ($1, $2, $3, $4)",
@@ -803,7 +803,7 @@ namespace
                                                   {"membership", membership.membership,                 false},
                                                   {"reason",     "persistence backend rejected insert", false}
         });
-        return false;
+        return MembershipStoreResult::error;
     }
     log_diagnostic("membership.persisted", {
                                                {"room_id",         membership.room_id,                         false},
@@ -812,7 +812,7 @@ namespace
                                                {"stream_ordering", std::to_string(membership.stream_ordering), false}
     });
     store.memberships.push_back(std::move(membership));
-    return true;
+    return MembershipStoreResult::stored;
 }
 
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id,
