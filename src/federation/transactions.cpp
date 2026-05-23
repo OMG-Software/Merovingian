@@ -3,6 +3,8 @@
 #include "merovingian/federation/transactions.hpp"
 
 #include "merovingian/federation/security.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <string>
 #include <utility>
@@ -12,6 +14,11 @@ namespace merovingian::federation
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("transactions", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
@@ -245,42 +252,56 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
 auto validate_federation_transaction(FederationTransaction const& transaction, std::size_t max_transaction_bytes)
     -> FederationTransactionDecision
 {
-    if (!server_name_is_valid(transaction.origin))
-    {
-        return {false, "invalid transaction origin"};
-    }
-    if (transaction.transaction_id.empty())
-    {
-        return {false, "transaction id is required"};
-    }
-    if (transaction.byte_size > max_transaction_bytes)
-    {
-        return {false, "transaction exceeds configured byte limit"};
-    }
-    if (transaction.pdus.empty() && transaction.edus.empty())
-    {
-        return {false, "transaction must contain PDUs or EDUs"};
-    }
-
-    return {true, {}};
+    auto result = [&]() -> FederationTransactionDecision {
+        if (!server_name_is_valid(transaction.origin))
+        {
+            return {false, "invalid transaction origin"};
+        }
+        if (transaction.transaction_id.empty())
+        {
+            return {false, "transaction id is required"};
+        }
+        if (transaction.byte_size > max_transaction_bytes)
+        {
+            return {false, "transaction exceeds configured byte limit"};
+        }
+        if (transaction.pdus.empty() && transaction.edus.empty())
+        {
+            return {false, "transaction must contain PDUs or EDUs"};
+        }
+        return {true, {}};
+    }();
+    log_diagnostic(result.accepted ? "transaction.accepted" : "transaction.rejected",
+                   {{"origin",         transaction.origin,                          false},
+                    {"transaction_id", transaction.transaction_id,                  false},
+                    {"pdus",           std::to_string(transaction.pdus.size()),      false},
+                    {"edus",           std::to_string(transaction.edus.size()),      false},
+                    {"reason",         result.reason,                                false}});
+    return result;
 }
 
 auto edu_is_allowed(FederationEdu const& edu) -> FederationTransactionDecision
 {
-    if (!server_name_is_valid(edu.origin))
-    {
-        return {false, "invalid EDU origin"};
-    }
-    if (edu.edu_type.empty())
-    {
-        return {false, "EDU type is required"};
-    }
-    if (!edu.ephemeral)
-    {
-        return {false, "EDUs must remain ephemeral"};
-    }
-
-    return {true, {}};
+    auto result = [&]() -> FederationTransactionDecision {
+        if (!server_name_is_valid(edu.origin))
+        {
+            return {false, "invalid EDU origin"};
+        }
+        if (edu.edu_type.empty())
+        {
+            return {false, "EDU type is required"};
+        }
+        if (!edu.ephemeral)
+        {
+            return {false, "EDUs must remain ephemeral"};
+        }
+        return {true, {}};
+    }();
+    log_diagnostic(result.accepted ? "edu.allowed" : "edu.rejected",
+                   {{"origin",   edu.origin,   false},
+                    {"edu_type", edu.edu_type, false},
+                    {"reason",   result.reason, false}});
+    return result;
 }
 
 auto federation_route_audit_event(FederationRoute const& route, std::string_view origin) -> std::string

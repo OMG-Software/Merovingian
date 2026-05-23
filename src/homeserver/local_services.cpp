@@ -3,14 +3,26 @@
 #include "local_services.hpp"
 
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace merovingian::homeserver
 {
+namespace
+{
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("local_services", event, std::move(fields)));
+    }
+
+} // namespace
 
 [[nodiscard]] auto make_operation_result(bool ok, std::string value, std::string reason, std::uint16_t status)
     -> OperationResult
@@ -22,6 +34,12 @@ namespace merovingian::homeserver
 auto append_local_audit(LocalDatabase& database, observability::AuditCategory category, std::string_view event_type,
                         std::string_view actor, std::string_view target, std::string_view reason) -> void
 {
+    log_diagnostic("audit.append",
+                   {{"category",   std::string{observability::audit_category_name(category)}, false},
+                    {"event_type", std::string{event_type},                                   false},
+                    {"actor",      std::string{actor},                                        false},
+                    {"target",     std::string{target},                                       false},
+                    {"reason",     std::string{reason},                                       false}});
     database.audit_events.push_back(
         observability::make_audit_event(category, event_type, actor, target, reason, "local-vertical-slice"));
     std::ignore = database::append_audit_event(database.persistent_store,

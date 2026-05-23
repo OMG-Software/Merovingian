@@ -5,6 +5,8 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -20,6 +22,11 @@ namespace merovingian::federation
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("event_query", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto parsed_value(std::string_view json) -> std::optional<canonicaljson::Value>
     {
@@ -67,11 +74,13 @@ auto build_event_response(database::PersistentStore const& store, std::string_vi
     });
     if (it == store.events.end() || it->json.empty())
     {
+        log_diagnostic("event_query.not_found", {{"event_id", std::string{event_id}, false}});
         return {};
     }
     auto event_value = parsed_value(it->json);
     if (!event_value.has_value())
     {
+        log_diagnostic("event_query.parse_failed", {{"event_id", std::string{event_id}, false}});
         return {};
     }
     auto pdus = canonicaljson::Array{};
@@ -81,6 +90,7 @@ auto build_event_response(database::PersistentStore const& store, std::string_vi
         canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin_server_name}}));
     response.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms()}));
     response.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdus)}));
+    log_diagnostic("event_query.accepted", {{"event_id", std::string{event_id}, false}});
     return serialize(std::move(response));
 }
 
@@ -110,13 +120,17 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
     }
     if (pdus.empty())
     {
+        log_diagnostic("state_query.not_found", {{"room_id", std::string{room_id}, false}});
         return {};
     }
+    auto const pdu_count = pdus.size();
     auto response = canonicaljson::Object{};
     // auth_chain reconstruction is not yet implemented; an empty array keeps
     // the response well-formed for clients that tolerate it.
     response.push_back(canonicaljson::make_member("auth_chain", canonicaljson::Value{canonicaljson::Array{}}));
     response.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdus)}));
+    log_diagnostic("state_query.accepted", {{"room_id", std::string{room_id}, false},
+                                            {"pdus",    std::to_string(pdu_count), false}});
     return serialize(std::move(response));
 }
 
@@ -133,11 +147,15 @@ auto build_state_ids_response(database::PersistentStore const& store, std::strin
     }
     if (pdu_ids.empty())
     {
+        log_diagnostic("state_ids_query.not_found", {{"room_id", std::string{room_id}, false}});
         return {};
     }
+    auto const pdu_id_count = pdu_ids.size();
     auto response = canonicaljson::Object{};
     response.push_back(canonicaljson::make_member("auth_chain_ids", canonicaljson::Value{canonicaljson::Array{}}));
     response.push_back(canonicaljson::make_member("pdu_ids", canonicaljson::Value{std::move(pdu_ids)}));
+    log_diagnostic("state_ids_query.accepted", {{"room_id", std::string{room_id},           false},
+                                                {"pdu_ids", std::to_string(pdu_id_count), false}});
     return serialize(std::move(response));
 }
 

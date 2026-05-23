@@ -4,6 +4,8 @@
 
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
@@ -11,11 +13,17 @@
 #include <string>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace merovingian::events
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("state_resolution", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -230,48 +238,54 @@ auto state_group_event(StateGroup const& group, StateKey const& key) noexcept ->
 
 auto resolve_state(StateResolutionRequest const& request) -> StateResolutionResult
 {
-    if (request.room_version.empty())
-    {
-        return {false, {}, "room version is required"};
-    }
-    if (request.state_groups.empty())
-    {
-        return {true, {}, {}};
-    }
-
-    auto result = StateResolutionResult{true, {}, {}};
-    for (auto const& group : request.state_groups)
-    {
-        for (auto const& event : group.state)
+    auto result = [&]() -> StateResolutionResult {
+        if (request.room_version.empty())
         {
-            if (event.event_id.empty())
-            {
-                return {false, {}, "state event id is required"};
-            }
+            return {false, {}, "room version is required"};
+        }
+        if (request.state_groups.empty())
+        {
+            return {true, {}, {}};
+        }
 
-            auto const* existing = [&]() -> StateEventReference const* {
-                for (auto const& resolved : result.resolved_state)
+        auto inner = StateResolutionResult{true, {}, {}};
+        for (auto const& group : request.state_groups)
+        {
+            for (auto const& event : group.state)
+            {
+                if (event.event_id.empty())
                 {
-                    if (state_key_matches(resolved.key, event.key))
-                    {
-                        return &resolved;
-                    }
+                    return {false, {}, "state event id is required"};
                 }
-                return nullptr;
-            }();
 
-            if (existing == nullptr)
-            {
-                result.resolved_state.push_back(event);
-                continue;
-            }
-            if (existing->event_id != event.event_id)
-            {
-                return {false, result.resolved_state, "conflicting state requires full resolution"};
+                auto const* existing = [&]() -> StateEventReference const* {
+                    for (auto const& resolved : inner.resolved_state)
+                    {
+                        if (state_key_matches(resolved.key, event.key))
+                        {
+                            return &resolved;
+                        }
+                    }
+                    return nullptr;
+                }();
+
+                if (existing == nullptr)
+                {
+                    inner.resolved_state.push_back(event);
+                    continue;
+                }
+                if (existing->event_id != event.event_id)
+                {
+                    return {false, inner.resolved_state, "conflicting state requires full resolution"};
+                }
             }
         }
-    }
-
+        return inner;
+    }();
+    log_diagnostic(result.resolved ? "resolve_state.resolved" : "resolve_state.failed",
+                   {{"room_version", request.room_version,                              false},
+                    {"events",       std::to_string(result.resolved_state.size()),       false},
+                    {"reason",       result.reason,                                      false}});
     return result;
 }
 
@@ -424,6 +438,7 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
 {
     if (request.state_groups.empty())
     {
+        log_diagnostic("resolve_state_v2.empty", {{"room_version", request.room_version, false}});
         return {true, {}, {}};
     }
 
@@ -467,6 +482,9 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
         result_state.push_back(event);
     }
 
+    log_diagnostic("resolve_state_v2.resolved",
+                   {{"room_version", request.room_version,                false},
+                    {"events",       std::to_string(result_state.size()), false}});
     return {true, std::move(result_state), {}};
 }
 

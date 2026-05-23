@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.3.6
+Version:        0.4.0
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,12 +89,14 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-<<<<<<< HEAD
+* Fri May 23 2026 James Chapman <claude@ping.me.uk> - 0.4.0-1
+- Add POST /rooms/{roomId}/leave and /read_markers client-server routes
+- Add structured debug logging to federation, media, platform, and HTTP modules
+- Fix platform library linkage in merovingian-db-migrate
+
 * Fri May 22 2026 James Chapman <claude@ping.me.uk> - 0.3.6-1
 - Add client-server room messages and typing routes
 
-=======
->>>>>>> origin/main
 * Fri May 22 2026 James Chapman <claude@ping.me.uk> - 0.3.5-1
 - Add inbound federation event-graph routes: event/{eventId}, state/{roomId}, state_ids/{roomId}, and get_missing_events/{roomId}
 

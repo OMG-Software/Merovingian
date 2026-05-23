@@ -3,14 +3,22 @@
 #include "merovingian/database/migration.hpp"
 
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <string>
+#include <vector>
 
 namespace merovingian::database
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("migration", event, std::move(fields)));
+    }
 
     constexpr auto initial_schema_version = std::uint32_t{1U};
 
@@ -270,10 +278,18 @@ auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> Migra
     auto validation = migration_plan_is_valid(plan);
     if (!validation.valid)
     {
+        log_diagnostic("plan.rejected",
+                       {{"current_version", std::to_string(plan.current_version), false},
+                        {"target_version",  std::to_string(plan.target_version),  false},
+                        {"reason",          validation.reason,                     false}});
         return {false, validation.reason, std::move(state)};
     }
     if (state.version != plan.current_version)
     {
+        log_diagnostic("plan.rejected",
+                       {{"state_version",   std::to_string(state.version),         false},
+                        {"current_version", std::to_string(plan.current_version),  false},
+                        {"reason",          "schema state version does not match migration plan", false}});
         return {false, "schema state version does not match migration plan", std::move(state)};
     }
     for (auto const& step : plan.steps)
@@ -282,12 +298,28 @@ auto apply_migration_plan(SchemaState state, MigrationPlan const& plan) -> Migra
         {
             if (!apply_statement_to_schema_state(state, statement))
             {
+                log_diagnostic("step.failed",
+                               {{"step_name",   step.name,         false},
+                                {"version",     std::to_string(step.version), false},
+                                {"direction",   std::string{migration_direction_name(step.direction)}, false},
+                                {"statement",   statement.name,    false},
+                                {"reason",      "migration statement cannot update schema state", false}});
                 return {false, "migration statement cannot update schema state: " + statement.name, std::move(state)};
             }
         }
+        log_diagnostic("step.applied",
+                       {{"step_name",  step.name,         false},
+                        {"version",    std::to_string(step.version), false},
+                        {"direction",  std::string{migration_direction_name(step.direction)}, false},
+                        {"statements", std::to_string(step.statements.size()), false}});
         state.applied_migrations.push_back({step.version, step.name, step.direction});
         state.version = step.version;
     }
+    log_diagnostic("plan.complete",
+                   {{"direction",       std::string{migration_direction_name(plan.direction)}, false},
+                    {"current_version", std::to_string(plan.current_version),                 false},
+                    {"target_version",  std::to_string(plan.target_version),                  false},
+                    {"steps_applied",   std::to_string(plan.steps.size()),                    false}});
     return {true, {}, std::move(state)};
 }
 

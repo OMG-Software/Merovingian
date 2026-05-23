@@ -2,12 +2,25 @@
 
 #include "merovingian/auth/token.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <algorithm>
 #include <cstddef>
 #include <string>
+#include <vector>
 
 namespace merovingian::auth
 {
+namespace
+{
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("token", event, std::move(fields)));
+    }
+
+} // namespace
 
 auto token_secret_has_required_entropy(std::string_view token_secret) noexcept -> bool
 {
@@ -22,20 +35,24 @@ auto token_hash_is_persistable(TokenHash const& token_hash) noexcept -> bool
 
 auto token_is_active(AccessTokenRecord const& token, std::chrono::system_clock::time_point now) -> TokenPolicyDecision
 {
-    if (token.revoked)
-    {
-        return {false, "token revoked"};
-    }
-    if (token.expires_at <= now)
-    {
-        return {false, "token expired"};
-    }
-    if (!token_hash_is_persistable(token.token_hash))
-    {
-        return {false, "token hash is not persistable"};
-    }
-
-    return {true, {}};
+    auto result = [&]() -> TokenPolicyDecision {
+        if (token.revoked)
+        {
+            return {false, "token revoked"};
+        }
+        if (token.expires_at <= now)
+        {
+            return {false, "token expired"};
+        }
+        if (!token_hash_is_persistable(token.token_hash))
+        {
+            return {false, "token hash is not persistable"};
+        }
+        return {true, {}};
+    }();
+    log_diagnostic(result.accepted ? "token.active" : "token.rejected",
+                   {{"reason", result.reason, false}});
+    return result;
 }
 
 auto constant_time_equal(std::string_view left, std::string_view right) noexcept -> bool

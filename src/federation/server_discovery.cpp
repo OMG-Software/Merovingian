@@ -6,6 +6,8 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/security.hpp"
 #include "merovingian/http/outbound_client.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <array>
@@ -34,6 +36,11 @@ namespace merovingian::federation
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("server_discovery", event, std::move(fields)));
+    }
 
     auto constexpr default_federation_port = std::uint16_t{8448U};
     auto constexpr default_https_port = std::uint16_t{443U};
@@ -449,6 +456,7 @@ auto discover_server(std::string_view server_name, std::string_view well_known_s
     if (server_name.empty())
     {
         result.reason = "server name is empty";
+        log_diagnostic("discovery.rejected", {{"reason", "server name is empty", false}});
         return result;
     }
     auto direct_host_port = parse_host_port(server_name, default_federation_port);
@@ -456,10 +464,14 @@ auto discover_server(std::string_view server_name, std::string_view well_known_s
         (!server_name_is_valid(direct_host_port->host) && !host_is_numeric_ip(direct_host_port->host)))
     {
         result.reason = "server name is invalid";
+        log_diagnostic("discovery.rejected",
+                       {{"server_name", std::string{server_name}, false}, {"reason", "server name is invalid", false}});
         return result;
     }
     if (well_known_server.empty())
     {
+        log_diagnostic("discovery.direct",
+                       {{"server_name", std::string{server_name}, false}, {"method", "literal", false}});
         auto network = LiteralDiscoveryNetwork{};
         return resolve_destination(server_name, std::move(*direct_host_port), network);
     }
@@ -468,8 +480,14 @@ auto discover_server(std::string_view server_name, std::string_view well_known_s
     if (!host_port.has_value())
     {
         result.reason = "well-known delegation is invalid";
+        log_diagnostic("discovery.rejected",
+                       {{"server_name", std::string{server_name}, false},
+                        {"reason",      "well-known delegation is invalid", false}});
         return result;
     }
+    log_diagnostic("discovery.well_known",
+                   {{"server_name",       std::string{server_name},     false},
+                    {"delegated_to",      std::string{well_known_server}, false}});
     auto network = LiteralDiscoveryNetwork{};
     result = resolve_destination(server_name, std::move(*host_port), network);
     result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
@@ -485,6 +503,7 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
     if (server_name.empty())
     {
         result.reason = "server name is empty";
+        log_diagnostic("discovery.rejected", {{"reason", "server name is empty", false}});
         return result;
     }
     auto direct_host_port = parse_host_port(server_name, default_federation_port);
@@ -492,6 +511,8 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
         (!server_name_is_valid(direct_host_port->host) && !host_is_numeric_ip(direct_host_port->host)))
     {
         result.reason = "server name is invalid";
+        log_diagnostic("discovery.rejected",
+                       {{"server_name", std::string{server_name}, false}, {"reason", "server name is invalid", false}});
         return result;
     }
 
@@ -500,6 +521,9 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
     // skipping both well-known and SRV so the operator's port choice is honored.
     if (host_is_numeric_ip(direct_host_port->host) || direct_host_port->port_explicit)
     {
+        log_diagnostic("discovery.direct",
+                       {{"server_name", std::string{server_name}, false},
+                        {"method",      host_is_numeric_ip(direct_host_port->host) ? "ip_literal" : "explicit_port", false}});
         return resolve_destination(server_name, std::move(*direct_host_port), network);
     }
 
@@ -513,6 +537,10 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
         if (delegated_host_port.has_value() &&
             (server_name_is_valid(delegated_host_port->host) || host_is_numeric_ip(delegated_host_port->host)))
         {
+            log_diagnostic("discovery.well_known",
+                           {{"server_name",   std::string{server_name},                false},
+                            {"delegated_host", delegated_host_port->host,               false},
+                            {"delegated_port", std::to_string(delegated_host_port->port), false}});
             // Step 3a: delegated IP literal resolves directly with the delegated port.
             // Step 3b: delegated host with an explicit port resolves directly.
             if (host_is_numeric_ip(delegated_host_port->host) || delegated_host_port->port_explicit)
@@ -528,6 +556,11 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
             if (!srv_records.empty())
             {
                 auto const& first = srv_records.front();
+                log_diagnostic("discovery.srv",
+                               {{"server_name",  std::string{server_name}, false},
+                                {"srv_target",   first.target,              false},
+                                {"srv_port",     std::to_string(first.port), false},
+                                {"via",          "well_known_delegated_srv", false}});
                 result = resolve_destination(server_name, HostPort{first.target, first.port, true}, network);
                 result.well_known_host = result.discovery_allowed ? result.resolved_host : std::string{};
                 return result;
@@ -538,6 +571,9 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
         }
         // Malformed body or missing m.server: fall through to SRV + direct resolution
         // on the original server name rather than failing closed.
+        log_diagnostic("discovery.well_known_unusable",
+                       {{"server_name", std::string{server_name}, false},
+                        {"reason",      "malformed or missing m.server in well-known body", false}});
     }
 
     // Matrix spec step 4: SRV lookup on the original server name.
@@ -545,10 +581,19 @@ auto discover_server(std::string_view server_name, ServerDiscoveryNetwork& netwo
     if (!srv_records.empty())
     {
         auto const& first = srv_records.front();
+        log_diagnostic("discovery.srv",
+                       {{"server_name", std::string{server_name}, false},
+                        {"srv_target",  first.target,              false},
+                        {"srv_port",    std::to_string(first.port), false},
+                        {"via",         "direct_srv",               false}});
         return resolve_destination(server_name, HostPort{first.target, first.port, true}, network);
     }
 
     // Matrix spec step 5: direct A/AAAA on the server name at the default port.
+    log_diagnostic("discovery.direct",
+                   {{"server_name", std::string{server_name}, false},
+                    {"method",      "aaaa_fallback",           false},
+                    {"port",        std::to_string(direct_host_port->port), false}});
     return resolve_destination(server_name, std::move(*direct_host_port), network);
 }
 

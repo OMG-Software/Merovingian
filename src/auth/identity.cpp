@@ -2,13 +2,23 @@
 
 #include "merovingian/auth/identity.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <algorithm>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace merovingian::auth
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("identity", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto is_ascii_digit(char value) noexcept -> bool
     {
@@ -200,24 +210,29 @@ auto password_is_acceptable(std::string_view password) noexcept -> bool
 
 auto login_policy(UserIdentity const& user) -> LoginPolicyDecision
 {
-    if (!user_id_is_valid(user.user_id))
-    {
-        return {false, "invalid user_id"};
-    }
-    if (!user.password_login_enabled)
-    {
-        return {false, "password login disabled"};
-    }
-    if (user.state == AccountState::locked)
-    {
-        return {false, "account locked"};
-    }
-    if (user.state == AccountState::suspended)
-    {
-        return {false, "account suspended"};
-    }
-
-    return {true, {}};
+    auto result = [&]() -> LoginPolicyDecision {
+        if (!user_id_is_valid(user.user_id))
+        {
+            return {false, "invalid user_id"};
+        }
+        if (!user.password_login_enabled)
+        {
+            return {false, "password login disabled"};
+        }
+        if (user.state == AccountState::locked)
+        {
+            return {false, "account locked"};
+        }
+        if (user.state == AccountState::suspended)
+        {
+            return {false, "account suspended"};
+        }
+        return {true, {}};
+    }();
+    log_diagnostic(result.allowed ? "login_policy.allowed" : "login_policy.denied",
+                   {{"user_id", user.user_id, false},
+                    {"reason",  result.reason, false}});
+    return result;
 }
 
 } // namespace merovingian::auth

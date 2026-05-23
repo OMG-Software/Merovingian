@@ -2,6 +2,9 @@
 
 #include "merovingian/trust_safety/policy_engine.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <string>
 #include <utility>
 #include <vector>
@@ -30,6 +33,11 @@ namespace
         }
 
         return enforcement_reason(code, summary, summary);
+    }
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("policy_engine", event, std::move(fields)));
     }
 
     [[nodiscard]] auto allow(PolicySurface surface) -> PolicyDecision
@@ -200,178 +208,216 @@ auto policy_server_hook_allows(PolicyServerHook const& hook) -> PolicyDecision
 
 auto evaluate_invite_policy(InvitePolicyRequest const& request) -> PolicyDecision
 {
-    if (!matrix_id_is_valid(request.sender_user_id) || !matrix_id_is_valid(request.target_user_id) ||
-        request.room_id.empty())
-    {
-        return deny(PolicySurface::invite,
-                    enforcement_reason("invalid_invite_policy_input", "invite cannot be processed",
-                                       "invite policy input is incomplete"));
-    }
-    if (request.blocked_by_local_policy)
-    {
-        return deny(PolicySurface::invite, enforcement_reason("invite_blocked", "invite blocked by server policy",
-                                                              "local invite policy blocked the request"));
-    }
-
-    auto external = policy_server_hook_allows(request.policy_server);
-    if (!external.allowed)
-    {
-        external.surface = PolicySurface::invite;
-        return external;
-    }
-
-    auto decision = allow(PolicySurface::invite);
-    decision.policy_server_rule_id = external.policy_server_rule_id;
-    return decision;
+    auto result = [&]() -> PolicyDecision {
+        if (!matrix_id_is_valid(request.sender_user_id) || !matrix_id_is_valid(request.target_user_id) ||
+            request.room_id.empty())
+        {
+            return deny(PolicySurface::invite,
+                        enforcement_reason("invalid_invite_policy_input", "invite cannot be processed",
+                                           "invite policy input is incomplete"));
+        }
+        if (request.blocked_by_local_policy)
+        {
+            return deny(PolicySurface::invite, enforcement_reason("invite_blocked", "invite blocked by server policy",
+                                                                  "local invite policy blocked the request"));
+        }
+        auto external = policy_server_hook_allows(request.policy_server);
+        if (!external.allowed)
+        {
+            external.surface = PolicySurface::invite;
+            return external;
+        }
+        auto decision = allow(PolicySurface::invite);
+        decision.policy_server_rule_id = external.policy_server_rule_id;
+        return decision;
+    }();
+    log_diagnostic(result.allowed ? "policy.invite.allowed" : "policy.invite.denied",
+                   {{"sender",  request.sender_user_id,                                false},
+                    {"target",  request.target_user_id,                                false},
+                    {"room_id", request.room_id,                                       false},
+                    {"action",  std::string{policy_action_name(result.action)},         false},
+                    {"reason",  result.reason.code,                                    false}});
+    return result;
 }
 
 auto evaluate_registration_policy(RegistrationPolicyRequest const& request) -> PolicyDecision
 {
-    if (!matrix_id_is_valid(request.requested_user_id) || request.requester_address.empty())
-    {
-        return deny(PolicySurface::registration,
-                    enforcement_reason("invalid_registration_policy_input", "registration cannot be processed",
-                                       "registration policy input is incomplete"));
-    }
-    if (!request.registrations_enabled)
-    {
-        return deny(PolicySurface::registration, enforcement_reason("registration_disabled", "registration is disabled",
-                                                                    "local registration policy is disabled"));
-    }
-    if (request.blocked_by_local_policy)
-    {
-        return deny(PolicySurface::registration,
-                    enforcement_reason("registration_blocked", "registration blocked by server policy",
-                                       "local registration policy blocked the request"));
-    }
-
-    auto external = policy_server_hook_allows(request.policy_server);
-    if (!external.allowed)
-    {
-        external.surface = PolicySurface::registration;
-        return external;
-    }
-
-    auto decision = allow(PolicySurface::registration);
-    decision.policy_server_rule_id = external.policy_server_rule_id;
-    return decision;
+    auto result = [&]() -> PolicyDecision {
+        if (!matrix_id_is_valid(request.requested_user_id) || request.requester_address.empty())
+        {
+            return deny(PolicySurface::registration,
+                        enforcement_reason("invalid_registration_policy_input", "registration cannot be processed",
+                                           "registration policy input is incomplete"));
+        }
+        if (!request.registrations_enabled)
+        {
+            return deny(PolicySurface::registration,
+                        enforcement_reason("registration_disabled", "registration is disabled",
+                                           "local registration policy is disabled"));
+        }
+        if (request.blocked_by_local_policy)
+        {
+            return deny(PolicySurface::registration,
+                        enforcement_reason("registration_blocked", "registration blocked by server policy",
+                                           "local registration policy blocked the request"));
+        }
+        auto external = policy_server_hook_allows(request.policy_server);
+        if (!external.allowed)
+        {
+            external.surface = PolicySurface::registration;
+            return external;
+        }
+        auto decision = allow(PolicySurface::registration);
+        decision.policy_server_rule_id = external.policy_server_rule_id;
+        return decision;
+    }();
+    log_diagnostic(result.allowed ? "policy.registration.allowed" : "policy.registration.denied",
+                   {{"user_id",  request.requested_user_id,                            false},
+                    {"address",  request.requester_address,                             false},
+                    {"action",   std::string{policy_action_name(result.action)},         false},
+                    {"reason",   result.reason.code,                                    false}});
+    return result;
 }
 
 auto evaluate_account_policy(AccountPolicyRequest const& request) -> PolicyDecision
 {
-    if (!matrix_id_is_valid(request.user_id))
-    {
-        return deny(PolicySurface::account,
-                    enforcement_reason("invalid_account_policy_input", "account cannot be processed",
-                                       "account policy input is incomplete"));
-    }
-    if (request.enforcement.suspended)
-    {
-        return deny(PolicySurface::account,
-                    reason_or_default(request.enforcement.reason, "account_suspended", "account is suspended"),
-                    PolicyAction::suspend_account);
-    }
-    if (request.enforcement.locked)
-    {
-        return deny(PolicySurface::account,
-                    reason_or_default(request.enforcement.reason, "account_locked", "account is locked"),
-                    PolicyAction::lock_account);
-    }
-
-    return allow(PolicySurface::account);
+    auto result = [&]() -> PolicyDecision {
+        if (!matrix_id_is_valid(request.user_id))
+        {
+            return deny(PolicySurface::account,
+                        enforcement_reason("invalid_account_policy_input", "account cannot be processed",
+                                           "account policy input is incomplete"));
+        }
+        if (request.enforcement.suspended)
+        {
+            return deny(PolicySurface::account,
+                        reason_or_default(request.enforcement.reason, "account_suspended", "account is suspended"),
+                        PolicyAction::suspend_account);
+        }
+        if (request.enforcement.locked)
+        {
+            return deny(PolicySurface::account,
+                        reason_or_default(request.enforcement.reason, "account_locked", "account is locked"),
+                        PolicyAction::lock_account);
+        }
+        return allow(PolicySurface::account);
+    }();
+    log_diagnostic(result.allowed ? "policy.account.allowed" : "policy.account.denied",
+                   {{"user_id", request.user_id,                                       false},
+                    {"action",  std::string{policy_action_name(result.action)},          false},
+                    {"reason",  result.reason.code,                                     false}});
+    return result;
 }
 
 auto evaluate_federation_policy(FederationPolicyRequest const& request) -> PolicyDecision
 {
-    if (request.origin_server.empty())
-    {
-        return deny(PolicySurface::federation,
-                    enforcement_reason("invalid_federation_policy_input", "federation request cannot be processed",
-                                       "federation policy input is incomplete"));
-    }
-    if (request.held_for_review)
-    {
-        return review(PolicySurface::federation,
-                      enforcement_reason("federation_held_for_review", "federation request held for review",
-                                         "federation origin is held for review"));
-    }
-    if (request.blocked_by_local_policy)
-    {
-        return deny(PolicySurface::federation,
-                    enforcement_reason("federation_blocked", "federation blocked by server policy",
-                                       "local federation policy blocked the origin"));
-    }
-
-    auto external = policy_server_hook_allows(request.policy_server);
-    if (!external.allowed)
-    {
-        external.surface = PolicySurface::federation;
-        return external;
-    }
-
-    auto decision = allow(PolicySurface::federation);
-    decision.policy_server_rule_id = external.policy_server_rule_id;
-    return decision;
+    auto result = [&]() -> PolicyDecision {
+        if (request.origin_server.empty())
+        {
+            return deny(PolicySurface::federation,
+                        enforcement_reason("invalid_federation_policy_input", "federation request cannot be processed",
+                                           "federation policy input is incomplete"));
+        }
+        if (request.held_for_review)
+        {
+            return review(PolicySurface::federation,
+                          enforcement_reason("federation_held_for_review", "federation request held for review",
+                                             "federation origin is held for review"));
+        }
+        if (request.blocked_by_local_policy)
+        {
+            return deny(PolicySurface::federation,
+                        enforcement_reason("federation_blocked", "federation blocked by server policy",
+                                           "local federation policy blocked the origin"));
+        }
+        auto external = policy_server_hook_allows(request.policy_server);
+        if (!external.allowed)
+        {
+            external.surface = PolicySurface::federation;
+            return external;
+        }
+        auto decision = allow(PolicySurface::federation);
+        decision.policy_server_rule_id = external.policy_server_rule_id;
+        return decision;
+    }();
+    log_diagnostic(result.allowed ? "policy.federation.allowed" : "policy.federation.denied",
+                   {{"origin", request.origin_server,                                  false},
+                    {"action", std::string{policy_action_name(result.action)},           false},
+                    {"reason", result.reason.code,                                      false}});
+    return result;
 }
 
 auto evaluate_media_policy(MediaPolicyRequest const& request) -> PolicyDecision
 {
-    if (!non_empty_identifier(request.media_id))
-    {
-        return deny(PolicySurface::media, enforcement_reason("invalid_media_policy_input", "media cannot be processed",
-                                                             "media policy input is incomplete"));
-    }
-    if (request.held_for_review)
-    {
-        return review(PolicySurface::media, enforcement_reason("media_held_for_review", "media held for review",
-                                                               "media item is held for review"));
-    }
-    if (request.blocked_by_local_policy)
-    {
-        return deny(PolicySurface::media, enforcement_reason("media_blocked", "media blocked by server policy",
-                                                             "local media policy blocked the item"));
-    }
-
-    auto external = policy_server_hook_allows(request.policy_server);
-    if (!external.allowed)
-    {
-        external.surface = PolicySurface::media;
-        return external;
-    }
-
-    auto decision = allow(PolicySurface::media);
-    decision.policy_server_rule_id = external.policy_server_rule_id;
-    return decision;
+    auto result = [&]() -> PolicyDecision {
+        if (!non_empty_identifier(request.media_id))
+        {
+            return deny(PolicySurface::media,
+                        enforcement_reason("invalid_media_policy_input", "media cannot be processed",
+                                           "media policy input is incomplete"));
+        }
+        if (request.held_for_review)
+        {
+            return review(PolicySurface::media, enforcement_reason("media_held_for_review", "media held for review",
+                                                                   "media item is held for review"));
+        }
+        if (request.blocked_by_local_policy)
+        {
+            return deny(PolicySurface::media, enforcement_reason("media_blocked", "media blocked by server policy",
+                                                                 "local media policy blocked the item"));
+        }
+        auto external = policy_server_hook_allows(request.policy_server);
+        if (!external.allowed)
+        {
+            external.surface = PolicySurface::media;
+            return external;
+        }
+        auto decision = allow(PolicySurface::media);
+        decision.policy_server_rule_id = external.policy_server_rule_id;
+        return decision;
+    }();
+    log_diagnostic(result.allowed ? "policy.media.allowed" : "policy.media.denied",
+                   {{"media_id", request.media_id,                                     false},
+                    {"action",   std::string{policy_action_name(result.action)},         false},
+                    {"reason",   result.reason.code,                                    false}});
+    return result;
 }
 
 auto evaluate_room_policy(RoomPolicyRequest const& request) -> PolicyDecision
 {
-    if (request.room_id.empty())
-    {
-        return deny(PolicySurface::room, enforcement_reason("invalid_room_policy_input", "room cannot be processed",
-                                                            "room policy input is incomplete"));
-    }
-    if (request.held_for_review)
-    {
-        return review(PolicySurface::room,
-                      enforcement_reason("room_held_for_review", "room held for review", "room is held for review"));
-    }
-    if (request.blocked_by_local_policy)
-    {
-        return deny(PolicySurface::room, enforcement_reason("room_blocked", "room blocked by server policy",
-                                                            "local room policy blocked the room"));
-    }
-
-    auto external = policy_server_hook_allows(request.policy_server);
-    if (!external.allowed)
-    {
-        external.surface = PolicySurface::room;
-        return external;
-    }
-
-    auto decision = allow(PolicySurface::room);
-    decision.policy_server_rule_id = external.policy_server_rule_id;
-    return decision;
+    auto result = [&]() -> PolicyDecision {
+        if (request.room_id.empty())
+        {
+            return deny(PolicySurface::room,
+                        enforcement_reason("invalid_room_policy_input", "room cannot be processed",
+                                           "room policy input is incomplete"));
+        }
+        if (request.held_for_review)
+        {
+            return review(PolicySurface::room,
+                          enforcement_reason("room_held_for_review", "room held for review",
+                                             "room is held for review"));
+        }
+        if (request.blocked_by_local_policy)
+        {
+            return deny(PolicySurface::room, enforcement_reason("room_blocked", "room blocked by server policy",
+                                                                "local room policy blocked the room"));
+        }
+        auto external = policy_server_hook_allows(request.policy_server);
+        if (!external.allowed)
+        {
+            external.surface = PolicySurface::room;
+            return external;
+        }
+        auto decision = allow(PolicySurface::room);
+        decision.policy_server_rule_id = external.policy_server_rule_id;
+        return decision;
+    }();
+    log_diagnostic(result.allowed ? "policy.room.allowed" : "policy.room.denied",
+                   {{"room_id", request.room_id,                                       false},
+                    {"action",  std::string{policy_action_name(result.action)},          false},
+                    {"reason",  result.reason.code,                                     false}});
+    return result;
 }
 
 auto account_enforcement_statements(AccountEnforcementRecord const& record) -> std::vector<database::PreparedStatement>

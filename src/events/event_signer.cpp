@@ -3,11 +3,14 @@
 #include "merovingian/events/event_signer.hpp"
 
 #include "merovingian/events/redaction.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <variant>
+#include <vector>
 
 #include <sodium.h>
 
@@ -15,6 +18,11 @@ namespace merovingian::events
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("event_signer", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::ObjectMember const*
@@ -259,24 +267,39 @@ auto sign_event_for_server(canonicaljson::Value const& event, rooms::RoomVersion
     auto const payload = make_event_signing_payload(event, policy);
     if (payload.error != canonicaljson::CanonicalJsonError::none)
     {
+        log_diagnostic("sign_event.rejected",
+                       {{"server_name", std::string{server_name}, false},
+                        {"reason",      canonicaljson::canonical_json_error_name(payload.error), false}});
         return {{}, {}, {}, {}, canonicaljson::canonical_json_error_name(payload.error)};
     }
 
     auto signature = crypto::sign_for_server(key_store, provider, server_name, payload.output);
     if (!signature.error.empty())
     {
+        log_diagnostic("sign_event.failed",
+                       {{"server_name", signature.server_name, false},
+                        {"key_id",      signature.key_id,       false},
+                        {"reason",      signature.error,         false}});
         return {{}, signature.server_name, signature.key_id, {}, signature.error};
     }
 
     auto const encoded = matrix_base64_from_bytes(signature.signature.bytes);
     if (encoded.empty())
     {
+        log_diagnostic("sign_event.failed",
+                       {{"server_name", signature.server_name,               false},
+                        {"key_id",      signature.key_id,                     false},
+                        {"reason",      "signature base64 encoding failed",   false}});
         return {{}, signature.server_name, signature.key_id, {}, "signature base64 encoding failed"};
     }
 
     auto signed_json = attach_event_signature(event, {signature.server_name, signature.key_id}, encoded);
     if (signed_json.error != canonicaljson::CanonicalJsonError::none)
     {
+        log_diagnostic("sign_event.failed",
+                       {{"server_name", signature.server_name,                                              false},
+                        {"key_id",      signature.key_id,                                                   false},
+                        {"reason",      canonicaljson::canonical_json_error_name(signed_json.error), false}});
         return {{},
                 signature.server_name,
                 signature.key_id,
@@ -284,6 +307,9 @@ auto sign_event_for_server(canonicaljson::Value const& event, rooms::RoomVersion
                 canonicaljson::canonical_json_error_name(signed_json.error)};
     }
 
+    log_diagnostic("sign_event.accepted",
+                   {{"server_name", signature.server_name, false},
+                    {"key_id",      signature.key_id,       false}});
     return {signed_json.output, signature.server_name, signature.key_id, encoded, {}};
 }
 
@@ -344,6 +370,10 @@ auto verify_event_signature(canonicaljson::Value const& event, rooms::RoomVersio
     auto presence = verify_event_signature_presence(event, key_id);
     if (!presence.valid)
     {
+        log_diagnostic("verify_event.rejected",
+                       {{"server_name", key_id.server_name, false},
+                        {"key_id",      key_id.key_id,       false},
+                        {"reason",      presence.error,       false}});
         return presence;
     }
 
@@ -376,7 +406,17 @@ auto verify_event_signature(canonicaljson::Value const& event, rooms::RoomVersio
     }
 
     auto verified = provider.verify(public_key, payload.output, crypto::Ed25519Signature{signature_bytes});
-    return verified.valid ? SignatureVerificationResult{true, {}} : SignatureVerificationResult{false, verified.error};
+    if (!verified.valid)
+    {
+        log_diagnostic("verify_event.rejected",
+                       {{"server_name", key_id.server_name, false},
+                        {"key_id",      key_id.key_id,       false},
+                        {"reason",      verified.error,       false}});
+        return {false, verified.error};
+    }
+    log_diagnostic("verify_event.accepted",
+                   {{"server_name", key_id.server_name, false}, {"key_id", key_id.key_id, false}});
+    return {true, {}};
 }
 
 } // namespace merovingian::events

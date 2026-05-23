@@ -2,6 +2,9 @@
 
 #include "merovingian/platform/runtime_hardening.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <algorithm>
 #include <string>
 #include <utility>
@@ -11,6 +14,11 @@ namespace merovingian::platform
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("runtime_hardening", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto reject(std::string reason) -> HardeningPlanDecision
     {
@@ -225,40 +233,46 @@ auto bsd_hardening_plan_is_documented(BsdHardeningPlan const& plan) noexcept -> 
 
 auto evaluate_runtime_hardening_profile(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision
 {
-    if (!filesystem_plan_is_safe(profile.filesystem))
-    {
-        return reject("filesystem restriction plan is unsafe");
-    }
-    if (!privilege_drop_plan_is_safe(profile.privilege_drop))
-    {
-        return reject_if_required(profile.mode, "privilege drop plan is incomplete");
-    }
-    if (!resource_limit_plan_is_safe(profile.resources))
-    {
-        return reject_if_required(profile.mode, "resource limit plan is unsafe");
-    }
-    if (!memory_locking_plan_is_safe(profile.memory))
-    {
-        return reject_if_required(profile.mode, "memory locking plan is unsafe");
-    }
-    if (!random_source_plan_is_safe(profile.random))
-    {
-        return reject_if_required(profile.mode, "random source plan is unsafe");
-    }
-    if (!signal_handling_plan_is_safe(profile.signals))
-    {
-        return reject_if_required(profile.mode, "signal handling plan is unsafe");
-    }
-    if (profile.platform == HardeningPlatform::linux && !linux_hardening_plan_is_documented(profile.linux))
-    {
-        return reject_if_required(profile.mode, "linux hardening plan is incomplete");
-    }
-    if (profile.platform == HardeningPlatform::bsd && !bsd_hardening_plan_is_documented(profile.bsd))
-    {
-        return reject_if_required(profile.mode, "bsd hardening plan is incomplete");
-    }
-
-    return accept();
+    auto result = [&]() -> HardeningPlanDecision {
+        if (!filesystem_plan_is_safe(profile.filesystem))
+        {
+            return reject("filesystem restriction plan is unsafe");
+        }
+        if (!privilege_drop_plan_is_safe(profile.privilege_drop))
+        {
+            return reject_if_required(profile.mode, "privilege drop plan is incomplete");
+        }
+        if (!resource_limit_plan_is_safe(profile.resources))
+        {
+            return reject_if_required(profile.mode, "resource limit plan is unsafe");
+        }
+        if (!memory_locking_plan_is_safe(profile.memory))
+        {
+            return reject_if_required(profile.mode, "memory locking plan is unsafe");
+        }
+        if (!random_source_plan_is_safe(profile.random))
+        {
+            return reject_if_required(profile.mode, "random source plan is unsafe");
+        }
+        if (!signal_handling_plan_is_safe(profile.signals))
+        {
+            return reject_if_required(profile.mode, "signal handling plan is unsafe");
+        }
+        if (profile.platform == HardeningPlatform::linux && !linux_hardening_plan_is_documented(profile.linux))
+        {
+            return reject_if_required(profile.mode, "linux hardening plan is incomplete");
+        }
+        if (profile.platform == HardeningPlatform::bsd && !bsd_hardening_plan_is_documented(profile.bsd))
+        {
+            return reject_if_required(profile.mode, "bsd hardening plan is incomplete");
+        }
+        return accept();
+    }();
+    log_diagnostic(result.accepted ? "profile.accepted" : "profile.rejected",
+                   {{"platform", std::string{hardening_platform_name(profile.platform)}, false},
+                    {"mode",     std::string{hardening_mode_name(profile.mode)},          false},
+                    {"reason",   result.reason,                                            false}});
+    return result;
 }
 
 auto evaluate_hardening_gates(std::vector<HardeningGate> const& gates) -> HardeningPlanDecision
@@ -267,14 +281,21 @@ auto evaluate_hardening_gates(std::vector<HardeningGate> const& gates) -> Harden
     {
         if (gate.name.empty())
         {
+            log_diagnostic("gates.rejected", {{"reason", "hardening gate name is required", false}});
             return reject("hardening gate name is required");
         }
         if (gate.mode == HardeningMode::required && !gate.available)
         {
-            return reject("required hardening gate unavailable: " + gate.name);
+            auto const reason = "required hardening gate unavailable: " + gate.name;
+            log_diagnostic("gates.rejected",
+                           {{"gate",   gate.name, false},
+                            {"reason", reason,    false}});
+            return reject(reason);
         }
     }
 
+    log_diagnostic("gates.accepted",
+                   {{"gate_count", std::to_string(gates.size()), false}});
     return accept();
 }
 

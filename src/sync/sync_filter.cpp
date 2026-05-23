@@ -4,6 +4,8 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -18,6 +20,11 @@ namespace merovingian::sync
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("sync_filter", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto find_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -194,6 +201,8 @@ auto parse_filter_argument(std::string_view filter_argument) -> SyncFilter
         }
     }
     out.present = true;
+    log_diagnostic("filter.parsed", {{"has_room_filter",    out.room.rooms.empty() ? "false" : "true",      false},
+                                     {"has_presence_filter", out.presence.types.empty() ? "false" : "true", false}});
     return out;
 }
 

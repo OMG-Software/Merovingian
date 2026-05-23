@@ -21,7 +21,7 @@ struct RateLimitState final
 };
 
 [[nodiscard]] auto rate_limit_policy_is_valid(RateLimitPolicy const& policy) noexcept -> bool;
-[[nodiscard]] auto request_is_rate_limited(RateLimitState state, RateLimitPolicy policy) noexcept -> bool;
+[[nodiscard]] auto request_is_rate_limited(RateLimitState state, RateLimitPolicy policy) -> bool;
 [[nodiscard]] auto endpoint_default_rate_limit(std::string_view method, std::string_view target) noexcept
     -> RateLimitPolicy;
 [[nodiscard]] auto rate_limit_summary(RateLimitPolicy const& policy) -> std::string;
