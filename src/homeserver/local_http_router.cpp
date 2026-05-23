@@ -2,6 +2,7 @@
 
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/key_query.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
@@ -426,6 +427,24 @@ namespace
 
         runtime.federation.user_devices_provider = [rt](std::string_view user_id) -> std::string {
             return federation::build_user_devices_response(rt->database.persistent_store, user_id);
+        };
+
+        runtime.federation.event_query_provider = [rt](std::string_view event_id) -> std::string {
+            return federation::build_event_response(rt->database.persistent_store, event_id,
+                                                    rt->config.server().server_name);
+        };
+
+        runtime.federation.state_query_provider = [rt](std::string_view room_id) -> std::string {
+            return federation::build_state_response(rt->database.persistent_store, room_id);
+        };
+
+        runtime.federation.state_ids_query_provider = [rt](std::string_view room_id) -> std::string {
+            return federation::build_state_ids_response(rt->database.persistent_store, room_id);
+        };
+
+        runtime.federation.missing_events_query_provider =
+            [rt](std::string_view room_id, std::string_view body) -> std::string {
+            return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body);
         };
 
         if (outbound && discovery)

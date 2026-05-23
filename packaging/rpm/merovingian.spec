@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.3.4
+Version:        0.3.5
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri May 22 2026 James Chapman <claude@ping.me.uk> - 0.3.5-1
+- Add inbound federation event-graph routes: event/{eventId}, state/{roomId}, state_ids/{roomId}, and get_missing_events/{roomId}
+
 * Fri May 22 2026 James Chapman <claude@ping.me.uk> - 0.3.4-1
 - Add inbound federation query/profile route
 - Add inbound federation E2EE key routes: user/keys/query, user/keys/claim, and user/devices

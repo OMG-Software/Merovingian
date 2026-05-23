@@ -86,6 +86,14 @@ auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char cons
         return "claim_keys";
     case FederationEndpoint::query_user_devices:
         return "query_user_devices";
+    case FederationEndpoint::query_event:
+        return "query_event";
+    case FederationEndpoint::query_state:
+        return "query_state";
+    case FederationEndpoint::query_state_ids:
+        return "query_state_ids";
+    case FederationEndpoint::get_missing_events:
+        return "get_missing_events";
     }
 
     return "unknown";
@@ -111,6 +119,10 @@ auto federation_routes() -> std::vector<FederationRoute>
         route("POST", "/_matrix/federation/v1/user/keys/query", FederationEndpoint::query_keys),
         route("POST", "/_matrix/federation/v1/user/keys/claim", FederationEndpoint::claim_keys),
         route("GET", "/_matrix/federation/v1/user/devices/{userId}", FederationEndpoint::query_user_devices),
+        route("GET", "/_matrix/federation/v1/event/{eventId}", FederationEndpoint::query_event),
+        route("GET", "/_matrix/federation/v1/state/{roomId}", FederationEndpoint::query_state),
+        route("GET", "/_matrix/federation/v1/state_ids/{roomId}", FederationEndpoint::query_state_ids),
+        route("POST", "/_matrix/federation/v1/get_missing_events/{roomId}", FederationEndpoint::get_missing_events),
     };
 }
 
@@ -202,6 +214,26 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         }
         if (candidate.endpoint == FederationEndpoint::query_user_devices &&
             dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/user/devices/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::query_event &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/event/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::query_state &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/state/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::query_state_ids &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/state_ids/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::get_missing_events &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/get_missing_events/", 1U))
         {
             return {true, candidate, {}};
         }
