@@ -2,7 +2,12 @@
 
 #include "merovingian/platform/hardening_self_check.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
+#include <string>
 #include <utility>
+#include <vector>
 
 namespace merovingian::platform
 {
@@ -56,6 +61,11 @@ namespace
         }
         return HardeningCheck{
             {}, HardeningStatus::alpha_exception, std::move(reason) + " " + alpha_exception_doc_reference};
+    }
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("hardening_self_check", event, std::move(fields)));
     }
 
 } // namespace
@@ -165,7 +175,26 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
         enabled_or_alpha_exception(false, "RLIMIT_CORE clamp is not yet applied inside the process."));
     add("secret redaction policy", HardeningCheck{{}, HardeningStatus::enabled, {}});
 
-    return HardeningSelfCheck{std::move(checks)};
+    auto result = HardeningSelfCheck{std::move(checks)};
+
+    // Log each check that is not fully enabled so operators can see the exact
+    // hardening gaps at startup without inspecting the health endpoint.
+    for (auto const& check : result.checks())
+    {
+        if (check.status != HardeningStatus::enabled)
+        {
+            log_diagnostic("check.not_enabled",
+                           {{"name", check.name, false},
+                            {"status", std::string{hardening_status_name(check.status)}, false},
+                            {"note", check.note, false}});
+        }
+    }
+    log_diagnostic("self_check.complete",
+                   {{"total_checks",        std::to_string(result.count()),                  false},
+                    {"production_blockers",  std::to_string(result.production_blocker_count()), false},
+                    {"alpha_ready",          result.is_alpha_ready() ? std::string{"true"} : std::string{"false"}, false}});
+
+    return result;
 }
 
 auto hardening_status_name(HardeningStatus status) noexcept -> char const*

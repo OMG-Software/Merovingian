@@ -2,6 +2,24 @@
 
 ## 0.3.6
 
+- Added structured `log_diagnostic` debug logging to six previously-silent
+  modules: `federation/security` (discovery, signature, and trust-policy
+  rejections), `federation/dispatch_worker` (enqueue rejections, delivery,
+  retry backoff, circuit-open re-queue, and max-retries drop),
+  `http/outbound_client` (all failure paths, redirect-rejected, and success),
+  `media/security` (upload, decoder, remote-fetch, and admin-quarantine policy
+  decisions with MIME type and size context),
+  `platform/hardening_self_check` (non-enabled checks and overall startup
+  summary), and `homeserver/runtime` (startup stage milestones and all
+  rejection paths).
+- Added the client-server `POST /_matrix/client/v3/rooms/{roomId}/leave` route.
+  Returns 404 `M_NOT_FOUND` for unknown rooms, 403 `M_FORBIDDEN` when the
+  authenticated user is not a current member, and 200 on success. Membership is
+  updated to `leave` in the persistent store via the new `update_membership`
+  helper; the user is removed from the in-memory room member list.
+- Added the client-server `POST /_matrix/client/v3/rooms/{roomId}/read_markers`
+  route. Currently a no-op that returns 200 `{}` (read-marker persistence is
+  future work).
 - Added the client-server `PUT /_matrix/client/v3/rooms/{roomId}/typing/{userId}`
   route. Requests where the path `userId` does not match the authenticated
   user return 403 `M_FORBIDDEN`; otherwise the request is accepted and the

@@ -2384,9 +2384,11 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
     if (starts_with(req.target, room_prefix))
     {
-        auto constexpr join_s = std::string_view{"/join"};
-        auto constexpr send_s = std::string_view{"/send"};
-        auto constexpr state_s = std::string_view{"/state"};
+        auto constexpr join_s         = std::string_view{"/join"};
+        auto constexpr send_s         = std::string_view{"/send"};
+        auto constexpr state_s        = std::string_view{"/state"};
+        auto constexpr leave_s        = std::string_view{"/leave"};
+        auto constexpr read_markers_s = std::string_view{"/read_markers"};
         auto const suffix = std::string_view{req.target}.substr(room_prefix.size());
         if (req.method == "PUT")
         {
@@ -2484,6 +2486,41 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 }
                 return resp(200U, messages_json(rt, *messages_room, req.target));
             }
+        }
+        // POST /_matrix/client/v3/rooms/{roomId}/leave
+        // Removes the caller from the room. Non-members receive 403; unknown rooms 404.
+        if (req.method == "POST" && suffix.size() > leave_s.size() &&
+            suffix.substr(suffix.size() - leave_s.size()) == leave_s)
+        {
+            auto const room_id =
+                core::percent_decode_path_component(suffix.substr(0U, suffix.size() - leave_s.size()));
+            auto const room = std::ranges::find_if(rt.homeserver.database.rooms,
+                                                    [&room_id](auto const& r) {
+                                                        return r.room_id == room_id;
+                                                    });
+            if (room == rt.homeserver.database.rooms.end())
+            {
+                return err(404U, "M_NOT_FOUND", "room not found");
+            }
+            if (!joined(*room, *user))
+            {
+                return err(403U, "M_FORBIDDEN", "user is not a member of this room");
+            }
+            if (!database::update_membership(rt.homeserver.database.persistent_store,
+                                             room_id, *user, "leave"))
+            {
+                return err(500U, "M_UNKNOWN", "failed to update membership");
+            }
+            // Remove from in-memory member list so joined_rooms reflects the change immediately.
+            std::erase(room->members, *user);
+            return resp(200U, json_serialize(json_obj({})));
+        }
+        // POST /_matrix/client/v3/rooms/{roomId}/read_markers
+        // Read receipts are transient client-side state; accept without persisting.
+        if (req.method == "POST" && suffix.size() > read_markers_s.size() &&
+            suffix.substr(suffix.size() - read_markers_s.size()) == read_markers_s)
+        {
+            return resp(200U, json_serialize(json_obj({})));
         }
     }
 

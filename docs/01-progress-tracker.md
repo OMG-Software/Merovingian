@@ -110,11 +110,15 @@ separate operator decision once this branch is approved._
   restart-survival integration coverage exist.
 - Observability and audit: structured logging, redaction-aware debug
   diagnostics across HTTP dispatch, client-server auth/routing, room joins,
-  room events, event authorization, persistence, and federation decision paths,
-  operator-facing `--debug` and `--log-file <path>` startup controls,
-  health snapshots, safe metrics summaries, redaction helpers, durable audit
-  events, admin health/metrics/audit runtime endpoints, and client-server audit
-  persistence exist.
+  room events, event authorization, persistence, federation decision paths,
+  outbound HTTP request outcomes, media upload/fetch/decoder policy decisions,
+  federation dispatch-worker retry/circuit-breaker/delivery events,
+  federation security verification rejections, platform hardening self-check
+  results, and runtime startup milestones.  Operator-facing `--debug` and
+  `--log-file <path>` startup controls, health snapshots, safe metrics
+  summaries, redaction helpers, durable audit events, admin
+  health/metrics/audit runtime endpoints, and client-server audit persistence
+  exist.
 - Trust and safety: registration/account/invite/federation/media/report policy
   engine, runtime client event reporting, admin safety report listing/review,
   durable policy audit rows, and durable admin action rows exist.

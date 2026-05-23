@@ -2,6 +2,9 @@
 
 #include "merovingian/http/outbound_client.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -26,6 +29,11 @@ namespace
 {
 
     using namespace std::string_view_literals;
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("outbound_client", event, std::move(fields)));
+    }
 
     constexpr auto https_scheme = "https://"sv;
     constexpr auto default_https_port = std::uint16_t{443U};
@@ -276,6 +284,8 @@ namespace
 
     [[nodiscard]] auto fail(OutboundError error, std::string detail) -> OutboundResult
     {
+        log_diagnostic("request.failed",
+                       {{"error", std::string{outbound_error_name(error)}, false}, {"detail", detail, false}});
         return OutboundResult{false, OutboundResponse{}, error, std::move(detail)};
     }
 
@@ -593,6 +603,10 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
     // redirect_rejected failure.
     if (mapped == OutboundError::none && response.status >= 300U && response.status < 400U)
     {
+        log_diagnostic("request.redirect_rejected",
+                       {{"url", request.url, false},
+                        {"method", request.method, false},
+                        {"http_status", std::to_string(response.status), false}});
         return OutboundResult{
             false,
             std::move(response),
@@ -603,6 +617,10 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
 
     if (mapped != OutboundError::none)
     {
+        log_diagnostic("request.error",
+                       {{"url", request.url, false},
+                        {"method", request.method, false},
+                        {"error", std::string{outbound_error_name(mapped)}, false}});
         return OutboundResult{
             false,
             std::move(response),
@@ -611,6 +629,10 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
         };
     }
 
+    log_diagnostic("request.success",
+                   {{"url", request.url, false},
+                    {"method", request.method, false},
+                    {"http_status", std::to_string(response.status), false}});
     return OutboundResult{true, std::move(response), OutboundError::none, std::string{}};
 }
 

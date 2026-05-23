@@ -815,6 +815,51 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id,
+                                     std::string_view user_id, std::string_view new_membership) -> bool
+{
+    auto const it = std::ranges::find_if(store.memberships, [&](PersistentMembership const& m) {
+        return m.room_id == room_id && m.user_id == user_id;
+    });
+    if (it == store.memberships.end())
+    {
+        log_diagnostic("membership.update.rejected",
+                       {
+                           {"room_id", std::string{room_id}, false},
+                           {"user_id", std::string{user_id}, false},
+                           {"reason",  "membership not found", false}
+        });
+        return false;
+    }
+    if (!record_and_persist(
+            store,
+            record_statement(
+                "update_membership",
+                "UPDATE membership SET membership = $3 WHERE room_id = $1 AND user_id = $2",
+                {
+                    {std::string{room_id},       false},
+                    {std::string{user_id},       false},
+                    {std::string{new_membership}, false}
+                })))
+    {
+        log_diagnostic("membership.update.rejected",
+                       {
+                           {"room_id", std::string{room_id},       false},
+                           {"user_id", std::string{user_id},       false},
+                           {"reason",  "persistence backend rejected update", false}
+        });
+        return false;
+    }
+    it->membership = std::string{new_membership};
+    log_diagnostic("membership.updated",
+                   {
+                       {"room_id",    std::string{room_id},       false},
+                       {"user_id",    std::string{user_id},       false},
+                       {"membership", std::string{new_membership}, false}
+    });
+    return true;
+}
+
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
                                               PersistentMembership membership) -> bool
 {
