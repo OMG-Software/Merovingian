@@ -2,12 +2,16 @@
 
 #include "merovingian/homeserver/tls.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <cerrno>
 #include <chrono>
 #include <cstring>
 #include <string>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 #include <fcntl.h>
 #include <openssl/err.h>
@@ -18,6 +22,12 @@ namespace merovingian::homeserver
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("tls", event, std::move(fields)));
+    }
+
 
     [[nodiscard]] auto openssl_error_string(std::string_view fallback) -> std::string
     {
@@ -198,9 +208,15 @@ auto make_tls_server_context(std::string const& certificate_file, std::string co
 
     if (SSL_CTX_check_private_key(context.m_context) != 1)
     {
-        return {{}, openssl_error_string("TLS private key does not match certificate")};
+        auto const error = openssl_error_string("TLS private key does not match certificate");
+        log_diagnostic("context.rejected",
+                       {{"cert_file", certificate_file, false},
+                        {"reason",    error,            false}});
+        return {{}, error};
     }
 
+    log_diagnostic("context.ready",
+                   {{"cert_file", certificate_file, false}});
     return {std::optional<TlsServerContext>{std::move(context)}, {}};
 }
 
@@ -231,6 +247,7 @@ auto accept_tls_connection(TlsServerContext& context, int client_fd, int timeout
         if (accept_result == 1)
         {
             restore_flags(client_fd, original_flags);
+            log_diagnostic("handshake.accepted", {{"fd", std::to_string(client_fd), false}});
             return {std::optional<TlsConnection>{std::move(connection)}, {}};
         }
 
@@ -238,7 +255,11 @@ auto accept_tls_connection(TlsServerContext& context, int client_fd, int timeout
         if (ssl_error != SSL_ERROR_WANT_READ && ssl_error != SSL_ERROR_WANT_WRITE)
         {
             restore_flags(client_fd, original_flags);
-            return {{}, openssl_error_string("TLS handshake failed")};
+            auto const error = openssl_error_string("TLS handshake failed");
+            log_diagnostic("handshake.rejected",
+                           {{"fd",     std::to_string(client_fd), false},
+                            {"reason", error,                     false}});
+            return {{}, error};
         }
 
         auto const elapsed =
@@ -247,6 +268,9 @@ auto accept_tls_connection(TlsServerContext& context, int client_fd, int timeout
         if (remaining <= 0 || !poll_for_tls(client_fd, ssl_error, remaining))
         {
             restore_flags(client_fd, original_flags);
+            log_diagnostic("handshake.rejected",
+                           {{"fd",     std::to_string(client_fd), false},
+                            {"reason", "TLS handshake timed out", false}});
             return {{}, "TLS handshake timed out"};
         }
     }

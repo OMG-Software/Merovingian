@@ -7,6 +7,8 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/state_resolution.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
@@ -15,11 +17,17 @@
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace merovingian::federation
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("inbound_ingestion", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto find_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -70,21 +78,26 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
 {
     if (pdu_json.empty() || pdu_json.front() != '{')
     {
+        log_diagnostic("pdu.parse.rejected", {{"reason", "empty or non-object PDU", false}});
         return std::nullopt;
     }
     auto const parsed = canonicaljson::parse_lossless(pdu_json);
     if (parsed.error != canonicaljson::ParseError::none)
     {
+        log_diagnostic("pdu.parse.rejected", {{"reason", "PDU JSON parse failed", false}});
         return std::nullopt;
     }
     auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
     if (root == nullptr)
     {
+        log_diagnostic("pdu.parse.rejected", {{"reason", "PDU root is not an object", false}});
         return std::nullopt;
     }
     auto envelope = events::parse_event_envelope(parsed.value);
     if (!envelope.error.empty())
     {
+        log_diagnostic("pdu.parse.rejected",
+                       {{"reason", "event envelope parse failed: " + envelope.error, false}});
         return std::nullopt;
     }
 
@@ -94,11 +107,13 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
     auto const* room_version_policy = rooms::find_room_version_policy("12");
     if (room_version_policy == nullptr)
     {
+        log_diagnostic("pdu.parse.rejected", {{"reason", "room version policy not found", false}});
         return std::nullopt;
     }
     auto const event_id_result = events::make_reference_hash_event_id(parsed.value, *room_version_policy);
     if (event_id_result.event_id.empty())
     {
+        log_diagnostic("pdu.parse.rejected", {{"reason", "event ID computation failed", false}});
         return std::nullopt;
     }
 
@@ -131,6 +146,11 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
             out.depth = static_cast<std::uint64_t>(*depth);
         }
     }
+    log_diagnostic("pdu.parse.accepted",
+                   {{"event_id",   out.event_id,                        false},
+                    {"room_id",    out.room_id,                         false},
+                    {"sender",     out.sender,                          false},
+                    {"event_type", out.event_type,                      false}});
     return out;
 }
 

@@ -2,10 +2,23 @@
 
 #include "merovingian/auth/session.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <string>
+#include <vector>
 
 namespace merovingian::auth
 {
+namespace
+{
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("session", event, std::move(fields)));
+    }
+
+} // namespace
 
 auto client_auth_endpoint_name(ClientAuthEndpoint endpoint) noexcept -> char const*
 {
@@ -49,49 +62,59 @@ auto client_auth_endpoint_mutates_session(ClientAuthEndpoint endpoint) noexcept 
 
 auto registration_policy(RegistrationPolicy policy) -> RegistrationPolicyDecision
 {
-    if (!policy.enabled)
-    {
-        return {false, "registration disabled"};
-    }
-    if (policy.require_token && !policy.token_present)
-    {
-        return {false, "registration token required"};
-    }
-
-    return {true, {}};
+    auto result = [&]() -> RegistrationPolicyDecision {
+        if (!policy.enabled)
+        {
+            return {false, "registration disabled"};
+        }
+        if (policy.require_token && !policy.token_present)
+        {
+            return {false, "registration token required"};
+        }
+        return {true, {}};
+    }();
+    log_diagnostic(result.allowed ? "registration_policy.allowed" : "registration_policy.denied",
+                   {{"reason", result.reason, false}});
+    return result;
 }
 
 auto session_is_active(SessionRecord const& session, std::chrono::system_clock::time_point now)
     -> SessionInvalidationDecision
 {
-    if (!user_id_is_valid(session.user_id))
-    {
-        return {false, "invalid user_id"};
-    }
-    if (!device_id_is_valid(session.device_id))
-    {
-        return {false, "invalid device_id"};
-    }
-    if (session.access_token.user_id != session.user_id || session.access_token.device_id != session.device_id)
-    {
-        return {false, "token subject mismatch"};
-    }
-    if (session.device_deleted)
-    {
-        return {false, "device deleted"};
-    }
-    if (session.global_logout_generation_revoked)
-    {
-        return {false, "global logout"};
-    }
-
-    auto const token_decision = token_is_active(session.access_token, now);
-    if (!token_decision.accepted)
-    {
-        return {false, token_decision.reason};
-    }
-
-    return {true, {}};
+    auto result = [&]() -> SessionInvalidationDecision {
+        if (!user_id_is_valid(session.user_id))
+        {
+            return {false, "invalid user_id"};
+        }
+        if (!device_id_is_valid(session.device_id))
+        {
+            return {false, "invalid device_id"};
+        }
+        if (session.access_token.user_id != session.user_id ||
+            session.access_token.device_id != session.device_id)
+        {
+            return {false, "token subject mismatch"};
+        }
+        if (session.device_deleted)
+        {
+            return {false, "device deleted"};
+        }
+        if (session.global_logout_generation_revoked)
+        {
+            return {false, "global logout"};
+        }
+        auto const token_decision = token_is_active(session.access_token, now);
+        if (!token_decision.accepted)
+        {
+            return {false, token_decision.reason};
+        }
+        return {true, {}};
+    }();
+    log_diagnostic(result.active ? "session.active" : "session.invalidated",
+                   {{"user_id",   session.user_id,   false},
+                    {"device_id", session.device_id, false},
+                    {"reason",    result.reason,      false}});
+    return result;
 }
 
 auto make_client_auth_audit_event(ClientAuthEndpoint endpoint, std::string_view user_id, std::string_view device_id,

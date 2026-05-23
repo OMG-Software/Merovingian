@@ -2,6 +2,8 @@
 
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <cstdint>
 #include <filesystem>
@@ -20,6 +22,11 @@ namespace merovingian::database
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("sqlite_store", event, std::move(fields)));
+    }
 
     struct SqliteConnectionDeleter final
     {
@@ -565,18 +572,28 @@ namespace
 
 auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult
 {
+    log_diagnostic("store.opening", {{"path", path, false}});
     auto connection = open_sqlite_connection(path);
     if (!connection.has_value())
     {
+        log_diagnostic("store.rejected",
+                       {{"path",   path,                                        false},
+                        {"reason", "unable to open SQLite persistent store",    false}});
         return {false, "unable to open SQLite persistent store", {}};
     }
     auto& sqlite = **connection;
     if (!execute_sql(sqlite, "PRAGMA foreign_keys = ON"))
     {
+        log_diagnostic("store.rejected",
+                       {{"path",   path,                                        false},
+                        {"reason", "unable to configure SQLite persistent store", false}});
         return {false, "unable to configure SQLite persistent store", {}};
     }
     if (load_table_names(sqlite).empty() && !initialize_current_schema(sqlite))
     {
+        log_diagnostic("store.rejected",
+                       {{"path",   path,                               false},
+                        {"reason", "unable to initialize SQLite schema", false}});
         return {false, "unable to initialize SQLite schema", {}};
     }
 
@@ -585,17 +602,33 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     store.backend = PersistentStoreBackend::sqlite;
     store.sqlite_path = path;
     store.schema = load_schema_state(sqlite);
+    log_diagnostic("store.schema_loaded",
+                   {{"path",    path,                                    false},
+                    {"version", std::to_string(store.schema.version),    false}});
     if (store.schema.version < current_schema_version())
     {
+        log_diagnostic("store.migrating",
+                       {{"path",             path,                                              false},
+                        {"current_version",  std::to_string(store.schema.version),              false},
+                        {"target_version",   std::to_string(current_schema_version()),          false}});
         auto migrated = apply_pending_migrations(sqlite, store.schema);
         if (!migrated.has_value())
         {
+            log_diagnostic("store.rejected",
+                           {{"path",   path,                             false},
+                            {"reason", "unable to migrate SQLite schema", false}});
             return {false, "unable to migrate SQLite schema", {}};
         }
         store.schema = std::move(*migrated);
+        log_diagnostic("store.migrated",
+                       {{"path",    path,                                  false},
+                        {"version", std::to_string(store.schema.version),  false}});
     }
     if (!load_persistent_rows(sqlite, store))
     {
+        log_diagnostic("store.rejected",
+                       {{"path",   path,                              false},
+                        {"reason", "unable to hydrate SQLite rows",   false}});
         return {false, "unable to hydrate SQLite rows", {}};
     }
     restore_sync_stream_id(store);
@@ -603,8 +636,14 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     auto compatibility = validate_persistent_store(store);
     if (!compatibility.valid)
     {
+        log_diagnostic("store.rejected",
+                       {{"path",   path,                    false},
+                        {"reason", compatibility.reason,    false}});
         return {false, compatibility.reason, {}};
     }
+    log_diagnostic("store.ready",
+                   {{"path",    path,                                  false},
+                    {"version", std::to_string(store.schema.version),  false}});
     return {true, {}, std::move(store)};
 }
 

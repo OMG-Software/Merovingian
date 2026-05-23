@@ -3,6 +3,8 @@
 #include "merovingian/media/repository.hpp"
 
 #include "merovingian/media/security.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,6 +22,11 @@ namespace merovingian::media
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("media_repository", event, std::move(fields)));
+    }
 
     auto constexpr media_digest_bytes = std::size_t{crypto_generichash_BYTES};
 
@@ -314,9 +321,15 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     auto const digest = calculate_media_digest(request.bytes);
     auto const size_bytes = static_cast<std::uint64_t>(request.bytes.size());
     auto const content_type = canonical_content_type(request);
+    log_diagnostic("upload.dispatch",
+                   {{"owner",        request.owner_user_id,       false},
+                    {"size_bytes",   std::to_string(size_bytes),  false},
+                    {"content_type", content_type,                false}});
     if (digest.empty())
     {
         ++repository.metrics.uploads_rejected;
+        log_diagnostic("upload.rejected", {{"owner",  request.owner_user_id, false},
+                                           {"reason", "digest calculation failed", false}});
         return {false,
                 500U,
                 {},
@@ -337,6 +350,8 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     if (decision.disposition == MediaDisposition::reject)
     {
         ++repository.metrics.uploads_rejected;
+        log_diagnostic("upload.rejected", {{"owner",  request.owner_user_id, false},
+                                           {"reason", decision.reason,       false}});
         return {false,
                 upload_rejection_status(decision.reason),
                 {},
@@ -421,15 +436,21 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
     record_thumbnail(repository, repository.records.back());
 
     ++repository.metrics.uploads_accepted;
-    if (decision.disposition == MediaDisposition::quarantine)
+    auto const quarantined = decision.disposition == MediaDisposition::quarantine;
+    if (quarantined)
     {
         ++repository.metrics.uploads_quarantined;
     }
     refresh_storage_metrics(repository);
-
+    log_diagnostic("upload.accepted",
+                   {{"owner",        request.owner_user_id,                  false},
+                    {"media_id",     media_id,                               false},
+                    {"size_bytes",   std::to_string(size_bytes),             false},
+                    {"deduplicated", deduplicated ? "true" : "false",        false},
+                    {"quarantined",  quarantined  ? "true" : "false",        false}});
     return {
         true,
-        static_cast<std::uint16_t>(decision.disposition == MediaDisposition::quarantine ? 202U : 200U),
+        static_cast<std::uint16_t>(quarantined ? 202U : 200U),
         media_id,
         "mxc://" + std::string{server_name} + "/" + media_id,
         content_type,
@@ -437,7 +458,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
         "blake2b",
         digest,
         deduplicated,
-        decision.disposition == MediaDisposition::quarantine,
+        quarantined,
         decision.reason,
     };
 }
@@ -446,9 +467,12 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
     -> LocalMediaDownloadResult
 {
     (void)server_name;
+    log_diagnostic("download.dispatch", {{"media_id", std::string{media_id}, false}});
     if (!media_id_is_safe(media_id))
     {
         ++repository.metrics.downloads_blocked;
+        log_diagnostic("download.rejected", {{"media_id", std::string{media_id}, false},
+                                             {"reason",   "invalid media id",    false}});
         return {false, 400U, {}, {}, "invalid media id"};
     }
 
@@ -456,11 +480,15 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
     if (record == nullptr || record->state == LocalMediaState::removed)
     {
         ++repository.metrics.downloads_blocked;
+        log_diagnostic("download.rejected", {{"media_id", std::string{media_id}, false},
+                                             {"reason",   "media not found",     false}});
         return {false, 404U, {}, {}, "media not found"};
     }
     if (record->state == LocalMediaState::quarantined)
     {
         ++repository.metrics.downloads_blocked;
+        log_diagnostic("download.rejected", {{"media_id", std::string{media_id}, false},
+                                             {"reason",   "media is quarantined", false}});
         return {false, 451U, {}, {}, "media is quarantined"};
     }
 
@@ -468,10 +496,15 @@ auto download_local_media(LocalMediaRepository& repository, std::string_view ser
     if (blob == nullptr)
     {
         ++repository.metrics.downloads_blocked;
+        log_diagnostic("download.rejected", {{"media_id", std::string{media_id}, false},
+                                             {"reason",   "blob missing",         false}});
         return {false, 500U, {}, {}, "media blob missing"};
     }
 
     ++repository.metrics.downloads_served;
+    log_diagnostic("download.accepted", {{"media_id",     std::string{media_id},               false},
+                                         {"content_type", record->content_type,                 false},
+                                         {"size_bytes",   std::to_string(record->size_bytes),   false}});
     return {true, 200U, record->content_type, blob->bytes, {}};
 }
 
@@ -495,6 +528,8 @@ auto quarantine_local_media(LocalMediaRepository& repository, std::string_view m
     record->state = LocalMediaState::quarantined;
     record->quarantine_reason = std::string{reason};
     ++repository.metrics.admin_quarantines;
+    log_diagnostic("admin.quarantined", {{"media_id", record->media_id, false},
+                                         {"reason",   std::string{reason}, false}});
     return {true, 200U, record->media_id, record->state, "quarantined"};
 }
 
@@ -513,6 +548,7 @@ auto release_local_media(LocalMediaRepository& repository, std::string_view medi
     record->state = LocalMediaState::available;
     record->quarantine_reason.clear();
     ++repository.metrics.admin_releases;
+    log_diagnostic("admin.released", {{"media_id", record->media_id, false}});
     return {true, 200U, record->media_id, record->state, "released"};
 }
 
@@ -550,6 +586,8 @@ auto remove_local_media(LocalMediaRepository& repository, std::string_view media
 
     ++repository.metrics.admin_removals;
     refresh_storage_metrics(repository);
+    log_diagnostic("admin.removed", {{"media_id", record->media_id, false},
+                                     {"reason",   std::string{reason}, false}});
     return {true, 200U, record->media_id, record->state, "removed"};
 }
 

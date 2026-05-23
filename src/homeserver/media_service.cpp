@@ -4,15 +4,23 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/media/repository.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <vector>
 
 namespace merovingian::homeserver
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("media_service", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto admin_result_to_operation(media::LocalMediaAdminResult const& result) -> OperationResult
     {
@@ -46,6 +54,7 @@ namespace
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
+        log_diagnostic("upload.rejected", {{"reason", "unauthenticated", false}});
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
@@ -54,6 +63,11 @@ namespace
         {*user_id, std::string{declared_mime_type}, std::string{sniffed_mime_type}, std::string{bytes}, scanner_clean});
     if (!result.ok)
     {
+        log_diagnostic("upload.rejected",
+                       {{"actor",     *user_id,                              false},
+                        {"mime_type", std::string{declared_mime_type},       false},
+                        {"reason",    result.reason,                         false},
+                        {"status",    std::to_string(result.status),         false}});
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.upload_rejected",
                            *user_id, "local-media", result.reason);
         return make_operation_result(false, {}, result.reason, result.status);
@@ -70,6 +84,13 @@ namespace
                                                                                      false,
                                                                                  });
     persist_blob_for_media(runtime, result.media_id);
+    log_diagnostic(result.quarantined ? "upload.quarantined" : "upload.accepted",
+                   {{"actor",        *user_id,                                                        false},
+                    {"media_id",     result.media_id,                                                 false},
+                    {"content_type", result.content_type,                                             false},
+                    {"size_bytes",   std::to_string(result.size_bytes),                               false},
+                    {"deduplicated", std::string{result.deduplicated ? "true" : "false"},             false},
+                    {"quarantined",  std::string{result.quarantined  ? "true" : "false"},             false}});
     append_local_audit(runtime.database, observability::AuditCategory::moderation,
                        result.quarantined ? "media.upload_quarantined" : "media.upload_accepted", *user_id,
                        result.media_id,
@@ -87,14 +108,25 @@ namespace
 {
     if (server_name != runtime.config.server().server_name)
     {
+        log_diagnostic("download.remote_rejected",
+                       {{"origin_server", std::string{server_name}, false},
+                        {"media_id",      std::string{media_id},    false},
+                        {"reason",        "remote media fetch disabled", false}});
         return remote_media_fetch_disabled(runtime, server_name, media_id);
     }
 
     auto const result = media::download_local_media(runtime.media_repository, server_name, media_id);
     if (!result.ok)
     {
+        log_diagnostic("download.rejected",
+                       {{"media_id", std::string{media_id}, false},
+                        {"reason",   result.reason,          false},
+                        {"status",   std::to_string(result.status), false}});
         return make_operation_result(false, {}, result.reason, result.status);
     }
+    log_diagnostic("download.accepted",
+                   {{"media_id",     std::string{media_id},    false},
+                    {"content_type", result.content_type,      false}});
     return make_operation_result(true, result.content_type + "|" + result.bytes, {}, result.status);
 }
 

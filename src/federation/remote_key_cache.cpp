@@ -431,6 +431,10 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         if (cached_key.has_value() && !remote_key_needs_refresh(cached_key->valid_until_ts, now) &&
             discovery.discovery_allowed)
         {
+            log_resolver("cache.hit",
+                         {{"server_name", std::string{server_name}, false},
+                          {"key_id",      std::string{key_id},       false},
+                          {"valid_until", std::to_string(cached_key->valid_until_ts), false}});
             return build_remote_runtime(server_name, std::move(*cached_key), discovery);
         }
         auto const fetched = fetch_remote_server_keys(client, network, server_name, timeout_seconds);
@@ -443,6 +447,10 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         }
         if (fetched.ok)
         {
+            log_resolver("key_fetch_accepted",
+                         {{"server_name", std::string{server_name}, false},
+                          {"key_count",   std::to_string(fetched.response.verify_keys.size()), false},
+                          {"valid_until", std::to_string(fetched.response.valid_until_ts), false}});
             std::ignore = cache_remote_server_keys(store, fetched.response);
             auto refreshed = find_cached_remote_key(store, server_name, key_id);
             if (refreshed.has_value() && discovery.discovery_allowed)
@@ -465,6 +473,10 @@ auto make_persistent_remote_key_resolver(database::PersistentStore& store, http:
         // we cannot reach SSRF-safely should not be admitted.
         if (cached_key.has_value() && discovery.discovery_allowed)
         {
+            log_resolver("cache.stale_fallback",
+                         {{"server_name", std::string{server_name}, false},
+                          {"key_id",      std::string{key_id},       false},
+                          {"valid_until", std::to_string(cached_key->valid_until_ts), false}});
             return build_remote_runtime(server_name, std::move(*cached_key), discovery);
         }
         log_resolver("unresolved", {

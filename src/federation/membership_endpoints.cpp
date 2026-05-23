@@ -5,17 +5,25 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <cstdlib>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
+#include <vector>
 
 namespace merovingian::federation
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("membership_endpoints", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto split_two(std::string_view suffix) -> std::optional<std::pair<std::string, std::string>>
     {
@@ -132,13 +140,19 @@ auto parse_membership_path(FederationEndpoint endpoint, std::string_view target)
     }
     if (suffix.empty())
     {
+        log_diagnostic("membership_path.rejected", {{"target", std::string{target}, false},
+                                                    {"reason", "empty path suffix",  false}});
         return std::nullopt;
     }
     auto split = split_two(suffix);
     if (!split.has_value())
     {
+        log_diagnostic("membership_path.rejected", {{"target", std::string{target}, false},
+                                                    {"reason", "malformed room/user suffix", false}});
         return std::nullopt;
     }
+    log_diagnostic("membership_path.accepted", {{"room_id", split->first,  false},
+                                                {"user_id", split->second, false}});
     return MembershipPathParams{std::move(split->first), std::move(split->second)};
 }
 

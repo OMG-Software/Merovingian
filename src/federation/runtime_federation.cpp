@@ -2,13 +2,22 @@
 
 #include "merovingian/federation/runtime_federation.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace merovingian::federation
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("federation_policy", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto contains_server(std::vector<std::string> const& servers, std::string_view server_name) noexcept
         -> bool
@@ -58,24 +67,29 @@ auto federation_summary(RuntimeFederationConfig const& config) -> std::string
 auto federation_server_policy(RuntimeFederationConfig const& config, std::string_view server_name)
     -> FederationServerPolicyDecision
 {
-    if (!config.enabled)
-    {
-        return {false, "federation disabled"};
-    }
-    if (server_name.empty())
-    {
-        return {false, "remote server name is empty"};
-    }
-    if (contains_server(config.denied_servers, server_name))
-    {
-        return {false, "remote server is denied"};
-    }
-    if (config.default_policy == "deny" && !contains_server(config.allowed_servers, server_name))
-    {
-        return {false, "remote server is not in federation allow list"};
-    }
-
-    return {true, {}};
+    auto result = [&]() -> FederationServerPolicyDecision {
+        if (!config.enabled)
+        {
+            return {false, "federation disabled"};
+        }
+        if (server_name.empty())
+        {
+            return {false, "remote server name is empty"};
+        }
+        if (contains_server(config.denied_servers, server_name))
+        {
+            return {false, "remote server is denied"};
+        }
+        if (config.default_policy == "deny" && !contains_server(config.allowed_servers, server_name))
+        {
+            return {false, "remote server is not in federation allow list"};
+        }
+        return {true, {}};
+    }();
+    log_diagnostic(result.allowed ? "server_policy.allowed" : "server_policy.denied",
+                   {{"server_name", std::string{server_name}, false},
+                    {"reason",      result.reason,            false}});
+    return result;
 }
 
 } // namespace merovingian::federation

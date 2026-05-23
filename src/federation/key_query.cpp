@@ -5,6 +5,8 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -19,6 +21,11 @@ namespace merovingian::federation
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("key_query", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto member_value(canonicaljson::Object const& object, std::string_view key)
         -> canonicaljson::Value const*
@@ -91,11 +98,13 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
     auto request = parsed_value(request_body);
     if (!request.has_value())
     {
+        log_diagnostic("key_query.rejected", {{"reason", "request body parse failed", false}});
         return {};
     }
     auto const* root = std::get_if<canonicaljson::Object>(&request->storage());
     if (root == nullptr)
     {
+        log_diagnostic("key_query.rejected", {{"reason", "request root is not an object", false}});
         return {};
     }
     auto device_keys = canonicaljson::Object{};
@@ -144,11 +153,14 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
             append_cross_signing(store, user_member.key, master_keys, self_signing_keys);
         }
     }
+    auto const device_key_user_count = device_keys.size();
     auto response = canonicaljson::Object{};
     response.push_back(canonicaljson::make_member("device_keys", canonicaljson::Value{std::move(device_keys)}));
     response.push_back(canonicaljson::make_member("master_keys", canonicaljson::Value{std::move(master_keys)}));
     response.push_back(
         canonicaljson::make_member("self_signing_keys", canonicaljson::Value{std::move(self_signing_keys)}));
+    log_diagnostic("key_query.accepted",
+                   {{"device_key_users", std::to_string(device_key_user_count), false}});
     return serialize(std::move(response));
 }
 
@@ -158,11 +170,13 @@ auto build_one_time_keys_claim_response(database::PersistentStore& store, std::s
     auto request = parsed_value(request_body);
     if (!request.has_value())
     {
+        log_diagnostic("otk_claim.rejected", {{"reason", "request body parse failed", false}});
         return {};
     }
     auto const* root = std::get_if<canonicaljson::Object>(&request->storage());
     if (root == nullptr)
     {
+        log_diagnostic("otk_claim.rejected", {{"reason", "request root is not an object", false}});
         return {};
     }
     auto one_time_keys = canonicaljson::Object{};
@@ -206,13 +220,16 @@ auto build_one_time_keys_claim_response(database::PersistentStore& store, std::s
             }
         }
     }
+    auto const otk_user_count = one_time_keys.size();
     auto response = canonicaljson::Object{};
     response.push_back(canonicaljson::make_member("one_time_keys", canonicaljson::Value{std::move(one_time_keys)}));
+    log_diagnostic("otk_claim.accepted", {{"users", std::to_string(otk_user_count), false}});
     return serialize(std::move(response));
 }
 
 auto build_user_devices_response(database::PersistentStore const& store, std::string_view user_id) -> std::string
 {
+    log_diagnostic("user_devices.dispatch", {{"user_id", std::string{user_id}, false}});
     auto devices = canonicaljson::Array{};
     for (auto const& device_key : store.device_keys)
     {
@@ -232,6 +249,7 @@ auto build_user_devices_response(database::PersistentStore const& store, std::st
     }
     if (devices.empty())
     {
+        log_diagnostic("user_devices.empty", {{"user_id", std::string{user_id}, false}});
         return {};
     }
     auto response = canonicaljson::Object{};

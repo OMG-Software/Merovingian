@@ -2,13 +2,23 @@
 
 #include "merovingian/events/event.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
+#include <string>
 #include <string_view>
 #include <variant>
+#include <vector>
 
 namespace merovingian::events
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("event", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
@@ -114,51 +124,65 @@ auto event_type_is_valid(std::string_view type) noexcept -> bool
 
 auto parse_event_envelope(canonicaljson::Value const& json) -> EventParseResult
 {
-    auto const* object = std::get_if<canonicaljson::Object>(&json.storage());
-    if (object == nullptr)
-    {
-        return {{}, "event must be an object"};
-    }
+    auto result = [&]() -> EventParseResult {
+        auto const* object = std::get_if<canonicaljson::Object>(&json.storage());
+        if (object == nullptr)
+        {
+            return {{}, "event must be an object"};
+        }
 
-    auto const* room_id = string_member(*object, "room_id");
-    auto const* type = string_member(*object, "type");
-    auto const* sender = string_member(*object, "sender");
-    auto const* origin_server_ts = integer_member(*object, "origin_server_ts");
-    if (room_id == nullptr || type == nullptr || sender == nullptr || origin_server_ts == nullptr)
-    {
-        return {{}, "event missing required fields"};
-    }
-    if (!matrix_id_is_valid(*room_id, '!'))
-    {
-        return {{}, "invalid room_id"};
-    }
-    if (!matrix_id_is_valid(*sender, '@'))
-    {
-        return {{}, "invalid sender"};
-    }
-    if (!event_type_is_valid(*type))
-    {
-        return {{}, "invalid event type"};
-    }
-    if (*origin_server_ts < 0)
-    {
-        return {{}, "invalid origin_server_ts"};
-    }
+        auto const* room_id = string_member(*object, "room_id");
+        auto const* type = string_member(*object, "type");
+        auto const* sender = string_member(*object, "sender");
+        auto const* origin_server_ts = integer_member(*object, "origin_server_ts");
+        if (room_id == nullptr || type == nullptr || sender == nullptr || origin_server_ts == nullptr)
+        {
+            return {{}, "event missing required fields"};
+        }
+        if (!matrix_id_is_valid(*room_id, '!'))
+        {
+            return {{}, "invalid room_id"};
+        }
+        if (!matrix_id_is_valid(*sender, '@'))
+        {
+            return {{}, "invalid sender"};
+        }
+        if (!event_type_is_valid(*type))
+        {
+            return {{}, "invalid event type"};
+        }
+        if (*origin_server_ts < 0)
+        {
+            return {{}, "invalid origin_server_ts"};
+        }
 
-    auto event = EventEnvelope{};
-    event.json = json;
-    event.room_id = *room_id;
-    event.event_type = *type;
-    event.sender = *sender;
-    event.origin_server_ts = *origin_server_ts;
-    event.signatures = parse_event_signatures(*object);
+        auto event = EventEnvelope{};
+        event.json = json;
+        event.room_id = *room_id;
+        event.event_type = *type;
+        event.sender = *sender;
+        event.origin_server_ts = *origin_server_ts;
+        event.signatures = parse_event_signatures(*object);
 
-    if (auto const* state_key = string_member(*object, "state_key"); state_key != nullptr)
+        if (auto const* state_key = string_member(*object, "state_key"); state_key != nullptr)
+        {
+            event.state_key = *state_key;
+        }
+
+        return {std::move(event), {}};
+    }();
+    if (result.error.empty())
     {
-        event.state_key = *state_key;
+        log_diagnostic("envelope.parsed",
+                       {{"room_id",    result.event.room_id,    false},
+                        {"event_type", result.event.event_type, false},
+                        {"sender",     result.event.sender,     false}});
     }
-
-    return {std::move(event), {}};
+    else
+    {
+        log_diagnostic("envelope.rejected", {{"reason", result.error, false}});
+    }
+    return result;
 }
 
 } // namespace merovingian::events

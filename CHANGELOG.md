@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.0
+
+- Added the client-server `POST /_matrix/client/v3/rooms/{roomId}/leave` route
+  with membership enforcement and persistent store update.
+- Added the client-server `POST /_matrix/client/v3/rooms/{roomId}/read_markers`
+  route (accepted, no-op; persistence is future work).
+- Added structured `log_diagnostic` debug logging to six previously-silent
+  modules: federation discovery/signature/trust-policy, federation dispatch
+  worker, HTTP outbound client, media security, platform hardening self-check,
+  and homeserver runtime startup.
+- Fixed missing `platform_lib` linkage in `merovingian-db-migrate`, resolving
+  undefined-reference linker errors from `hardening_self_check` symbols pulled
+  in transitively through `observability_lib`.
+- Bumped project, executable, and package metadata versions to `0.4.0`.
+
 ## 0.3.6
 
 - Added structured `log_diagnostic` debug logging to six previously-silent

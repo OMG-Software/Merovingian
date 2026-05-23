@@ -3,9 +3,12 @@
 #include "merovingian/federation/outbound_transaction.hpp"
 
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <cmath>
 #include <string>
+#include <vector>
 
 namespace merovingian::federation
 {
@@ -16,6 +19,11 @@ namespace
     constexpr auto base_retry_interval_ms = std::uint64_t{2000U};
     constexpr auto max_retry_interval_ms = std::uint64_t{300000U};
     constexpr auto max_consecutive_failures_before_circuit_open = std::uint32_t{3U};
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("outbound_transaction", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto build_url(OutboundCall const& call) -> std::string
     {
@@ -143,6 +151,11 @@ auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall con
 {
     if (!destination_should_retry(destination, now_ts))
     {
+        log_diagnostic("transaction.circuit_open",
+                       {{"destination",          call.transaction.destination,                         false},
+                        {"target",               call.transaction.target,                              false},
+                        {"consecutive_failures", std::to_string(destination.consecutive_failures),    false},
+                        {"retry_after_ts",       std::to_string(destination.retry_after_ts),          false}});
         return OutboundTransactionResult{false, std::uint16_t{0U}, std::string{}, std::string{"circuit_open"}};
     }
 
@@ -156,6 +169,26 @@ auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall con
     result.error = outcome.ok ? std::string{} : std::string{http::outbound_error_name(outcome.error)};
 
     apply_outbound_result(destination, result, now_ts);
+
+    if (result.sent && status_is_success(result.http_status))
+    {
+        log_diagnostic("transaction.delivered",
+                       {{"destination", call.transaction.destination,              false},
+                        {"method",      call.transaction.method,                   false},
+                        {"target",      call.transaction.target,                   false},
+                        {"http_status", std::to_string(result.http_status),        false}});
+    }
+    else
+    {
+        log_diagnostic("transaction.failed",
+                       {{"destination", call.transaction.destination,              false},
+                        {"method",      call.transaction.method,                   false},
+                        {"target",      call.transaction.target,                   false},
+                        {"http_status", std::to_string(result.http_status),        false},
+                        {"error",       result.error,                              false},
+                        {"failures",    std::to_string(destination.consecutive_failures), false}});
+    }
+
     return result;
 }
 

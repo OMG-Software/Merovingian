@@ -30,6 +30,6 @@ executable(
   sources: files('db_migrate.cpp'),
   include_directories: inc,
   dependencies: [thread_dep, libpq_dep, sqlite_dep],
-  link_with: [config_lib, database_lib, observability_lib],
+  link_with: [config_lib, canonicaljson_lib, database_lib, observability_lib, platform_lib],
   install: true,
 )
