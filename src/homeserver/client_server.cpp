@@ -21,6 +21,7 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -1389,6 +1390,163 @@ namespace
                                   core::percent_decode_path_component(state_key)};
     }
 
+    struct RoomTypingPathParts final
+    {
+        std::string room_id{};
+        std::string user_id{};
+    };
+
+    [[nodiscard]] auto room_typing_path_parts(std::string_view target) -> std::optional<RoomTypingPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/typing/"};
+        auto const suffix = route_suffix(target, prefix);
+        auto const marker_pos = suffix.find(marker);
+        if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
+            marker_pos + marker.size() >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        auto const user_segment = suffix.substr(marker_pos + marker.size());
+        if (user_segment.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return RoomTypingPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
+                                   core::percent_decode_path_component(user_segment)};
+    }
+
+    [[nodiscard]] auto room_messages_room_id(std::string_view target) -> std::optional<std::string>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/messages"};
+        auto const path = target.substr(0U, target.find('?'));
+        auto const suffix = route_suffix(path, prefix);
+        if (suffix.empty() || suffix.size() <= marker.size() ||
+            suffix.substr(suffix.size() - marker.size()) != marker)
+        {
+            return std::nullopt;
+        }
+        return core::percent_decode_path_component(suffix.substr(0U, suffix.size() - marker.size()));
+    }
+
+    [[nodiscard]] auto messages_query_value(std::string_view target, std::string_view name) -> std::string
+    {
+        auto const query_start = target.find('?');
+        if (query_start == std::string_view::npos)
+        {
+            return {};
+        }
+        auto remaining = target.substr(query_start + 1U);
+        while (!remaining.empty())
+        {
+            auto const amp = remaining.find('&');
+            auto const pair = remaining.substr(0U, amp);
+            auto const eq = pair.find('=');
+            if (eq != std::string_view::npos && pair.substr(0U, eq) == name)
+            {
+                return core::percent_decode(pair.substr(eq + 1U));
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            remaining = remaining.substr(amp + 1U);
+        }
+        return {};
+    }
+
+    [[nodiscard]] auto parse_u64(std::string_view value) noexcept -> std::optional<std::uint64_t>
+    {
+        if (value.empty())
+        {
+            return std::nullopt;
+        }
+        auto parsed = std::uint64_t{0U};
+        auto const* begin = value.data();
+        auto const* end = value.data() + value.size();
+        auto const conv = std::from_chars(begin, end, parsed);
+        if (conv.ec != std::errc{} || conv.ptr != end)
+        {
+            return std::nullopt;
+        }
+        return parsed;
+    }
+
+    [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id, std::string_view target)
+        -> std::string
+    {
+        auto const dir = messages_query_value(target, "dir");
+        auto const backwards = dir != "f"; // both default and "b" walk backward
+        auto const from_token = parse_u64(messages_query_value(target, "from"));
+        auto limit = std::size_t{10U};
+        if (auto const parsed = parse_u64(messages_query_value(target, "limit")); parsed.has_value())
+        {
+            limit = static_cast<std::size_t>(std::min<std::uint64_t>(*parsed, std::uint64_t{100U}));
+        }
+        auto entries = std::vector<database::PersistentEvent const*>{};
+        for (auto const& event : rt.homeserver.database.persistent_store.events)
+        {
+            if (event.room_id == room_id)
+            {
+                entries.push_back(&event);
+            }
+        }
+        std::ranges::sort(entries, [](auto const* lhs, auto const* rhs) noexcept {
+            return lhs->stream_ordering < rhs->stream_ordering;
+        });
+        auto chunk = canonicaljson::Array{};
+        auto start_token = std::string{};
+        auto end_token = std::string{};
+        auto const append = [&chunk, &start_token, &end_token, limit](database::PersistentEvent const& event) {
+            if (chunk.size() >= limit)
+            {
+                return false;
+            }
+            if (chunk.empty())
+            {
+                start_token = std::to_string(event.stream_ordering);
+            }
+            end_token = std::to_string(event.stream_ordering);
+            chunk.push_back(parse_event_json_object(event.json));
+            return true;
+        };
+        if (backwards)
+        {
+            for (auto it = entries.rbegin(); it != entries.rend(); ++it)
+            {
+                if (from_token.has_value() && (*it)->stream_ordering >= *from_token)
+                {
+                    continue;
+                }
+                if (!append(**it))
+                {
+                    break;
+                }
+            }
+        }
+        else
+        {
+            for (auto const* event : entries)
+            {
+                if (from_token.has_value() && event->stream_ordering <= *from_token)
+                {
+                    continue;
+                }
+                if (!append(*event))
+                {
+                    break;
+                }
+            }
+        }
+        return json_serialize(json_obj({
+            json_member("chunk", json_arr(std::move(chunk))),
+            json_member("start", json_str(start_token)),
+            json_member("end",   json_str(end_token)),
+            json_member("state", json_arr(canonicaljson::Array{})),
+        }));
+    }
+
     [[nodiscard]] auto event_body_from_content(std::string_view event_type, std::string_view content,
                                                std::optional<std::string> state_key = std::nullopt)
         -> std::optional<std::string>
@@ -2294,6 +2452,38 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 return err(result.status, error_code_for_status(result.status), result.body);
             }
             return result;
+        }
+        if (req.method == "PUT")
+        {
+            if (auto const typing = room_typing_path_parts(req.target); typing.has_value())
+            {
+                if (typing->user_id != *user)
+                {
+                    return err(403U, "M_FORBIDDEN", "cannot set typing state for another user");
+                }
+                // Typing notifications are EDUs in Matrix federation; accept the
+                // request and return success without persisting transient state.
+                return resp(200U, json_serialize(json_obj({})));
+            }
+        }
+        if (req.method == "GET")
+        {
+            if (auto const messages_room = room_messages_room_id(req.target); messages_room.has_value())
+            {
+                auto const room = std::ranges::find_if(rt.homeserver.database.rooms,
+                                                       [&messages_room](auto const& candidate) {
+                                                           return candidate.room_id == *messages_room;
+                                                       });
+                if (room == rt.homeserver.database.rooms.end())
+                {
+                    return err(404U, "M_NOT_FOUND", "room not found");
+                }
+                if (!joined(*room, *user))
+                {
+                    return err(403U, "M_FORBIDDEN", "user is not a member of this room");
+                }
+                return resp(200U, messages_json(rt, *messages_room, req.target));
+            }
         }
     }
 

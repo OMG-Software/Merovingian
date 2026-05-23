@@ -385,6 +385,83 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
     }
 }
 
+SCENARIO("Client-server typing and messages routes dispatch through the room block",
+         "[homeserver][client-server][typing][messages]")
+{
+    GIVEN("a logged-in user with a created room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.status == 200U);
+        auto const id = room_id(room.body);
+
+        WHEN("the user sets typing state for themselves")
+        {
+            auto const typing = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org", token,
+                          R"({"typing":true,"timeout":3000})"});
+
+            THEN("the request is accepted")
+            {
+                REQUIRE(typing.status == 200U);
+            }
+        }
+
+        WHEN("the user tries to set typing state for another user")
+        {
+            auto const typing = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@mallory:example.org", token,
+                          R"({"typing":true})"});
+
+            THEN("the request is rejected with 403 M_FORBIDDEN")
+            {
+                REQUIRE(typing.status == 403U);
+                REQUIRE(typing.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("the user requests messages from their room")
+        {
+            auto const messages = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + id + "/messages?dir=b&limit=10", token, {}});
+
+            THEN("the response carries chunk, start, end, and state fields")
+            {
+                REQUIRE(messages.status == 200U);
+                REQUIRE(messages.body.find("chunk") != std::string::npos);
+                REQUIRE(messages.body.find("start") != std::string::npos);
+                REQUIRE(messages.body.find("end") != std::string::npos);
+                REQUIRE(messages.body.find("state") != std::string::npos);
+            }
+        }
+
+        WHEN("the user requests messages from a non-existent room")
+        {
+            auto const messages = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/!nonexistent:example.org/messages", token, {}});
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                REQUIRE(messages.status == 404U);
+                REQUIRE(messages.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server runtime signs sent events and persists their DAG metadata",
          "[homeserver][client-server][events]")
 {
