@@ -2,13 +2,22 @@
 
 #include "merovingian/media/security.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <algorithm>
 #include <string>
+#include <vector>
 
 namespace merovingian::media
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("media_security", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
@@ -68,38 +77,56 @@ auto evaluate_media_upload(MediaUploadPolicy const& policy, MediaUploadRequest c
 {
     if (policy.max_upload_bytes == 0U)
     {
+        log_diagnostic("upload.rejected", {{"reason", "upload size limit is not configured", false}});
         return {MediaDisposition::reject, "upload size limit is not configured"};
     }
     if (request.byte_size == 0U)
     {
+        log_diagnostic("upload.rejected", {{"reason", "empty media upload", false}});
         return {MediaDisposition::reject, "empty media upload"};
     }
     if (request.byte_size > policy.max_upload_bytes)
     {
+        log_diagnostic("upload.rejected",
+                       {{"byte_size", std::to_string(request.byte_size), false},
+                        {"max_upload_bytes", std::to_string(policy.max_upload_bytes), false},
+                        {"reason", "media upload exceeds size limit", false}});
         return {MediaDisposition::reject, "media upload exceeds size limit"};
     }
     if (policy.require_content_sniffing && request.sniffed_mime_type.empty())
     {
+        log_diagnostic("upload.quarantined", {{"reason", "content sniffing result required", false}});
         return {MediaDisposition::quarantine, "content sniffing result required"};
     }
     if (!request.sniffed_mime_type.empty() && request.declared_mime_type != request.sniffed_mime_type)
     {
+        log_diagnostic("upload.quarantined",
+                       {{"declared_mime_type", request.declared_mime_type, false},
+                        {"sniffed_mime_type", request.sniffed_mime_type, false},
+                        {"reason", "declared MIME type does not match content", false}});
         return {MediaDisposition::quarantine, "declared MIME type does not match content"};
     }
     auto const mime_type = request.sniffed_mime_type.empty() ? std::string_view{request.declared_mime_type}
                                                              : std::string_view{request.sniffed_mime_type};
     if (!media_mime_type_is_allowed(policy, mime_type))
     {
-        return {policy.quarantine_unknown_mime ? MediaDisposition::quarantine : MediaDisposition::reject,
-                "media MIME type is not allowed"};
+        auto const disposition = policy.quarantine_unknown_mime ? MediaDisposition::quarantine : MediaDisposition::reject;
+        log_diagnostic(disposition == MediaDisposition::quarantine ? "upload.quarantined" : "upload.rejected",
+                       {{"mime_type", std::string{mime_type}, false},
+                        {"reason", "media MIME type is not allowed", false}});
+        return {disposition, "media MIME type is not allowed"};
     }
     if (!request.scanner_clean)
     {
-        return {policy.quarantine_scanner_failures ? MediaDisposition::quarantine : MediaDisposition::reject,
-                "media scanner did not clear upload"};
+        auto const disposition =
+            policy.quarantine_scanner_failures ? MediaDisposition::quarantine : MediaDisposition::reject;
+        log_diagnostic(disposition == MediaDisposition::quarantine ? "upload.quarantined" : "upload.rejected",
+                       {{"reason", "media scanner did not clear upload", false}});
+        return {disposition, "media scanner did not clear upload"};
     }
     if (request.content_hash.empty())
     {
+        log_diagnostic("upload.quarantined", {{"reason", "content hash required for deduplication", false}});
         return {MediaDisposition::quarantine, "content hash required for deduplication"};
     }
 
@@ -110,18 +137,28 @@ auto remote_media_fetch_policy(RemoteMediaFetchRequest const& request) -> MediaP
 {
     if (!request.isolate_remote_media)
     {
+        log_diagnostic("remote_fetch.rejected", {{"reason", "remote media isolation is required", false}});
         return {MediaDisposition::reject, "remote media isolation is required"};
     }
     if (!server_name_is_valid(request.origin_server))
     {
+        log_diagnostic("remote_fetch.rejected",
+                       {{"origin_server", request.origin_server, false},
+                        {"reason", "invalid remote media origin", false}});
         return {MediaDisposition::reject, "invalid remote media origin"};
     }
     if (!media_id_is_valid(request.media_id))
     {
+        log_diagnostic("remote_fetch.rejected",
+                       {{"origin_server", request.origin_server, false},
+                        {"reason", "invalid remote media id", false}});
         return {MediaDisposition::reject, "invalid remote media id"};
     }
     if (request.resolved_host.empty() || request.resolved_addresses.empty())
     {
+        log_diagnostic("remote_fetch.rejected",
+                       {{"origin_server", request.origin_server, false},
+                        {"reason", "remote media host is unresolved", false}});
         return {MediaDisposition::reject, "remote media host is unresolved"};
     }
     if (request.private_address_fetches_blocked)
@@ -130,6 +167,10 @@ auto remote_media_fetch_policy(RemoteMediaFetchRequest const& request) -> MediaP
         {
             if (address_is_private_or_loopback(address))
             {
+                log_diagnostic("remote_fetch.rejected",
+                               {{"origin_server", request.origin_server, false},
+                                {"address", address, false},
+                                {"reason", "remote media address is private or loopback", false}});
                 return {MediaDisposition::reject, "remote media address is private or loopback"};
             }
         }
@@ -149,26 +190,48 @@ auto evaluate_decoder_safety(DecoderSafetyPolicy const& policy, DecoderSafetyReq
 {
     if (policy.unsafe_decoders_disabled && !request.decoder_marked_safe)
     {
+        log_diagnostic("decoder.rejected", {{"reason", "decoder is not allowed", false}});
         return {MediaDisposition::reject, "decoder is not allowed"};
     }
     if (request.input_bytes > policy.max_input_bytes)
     {
+        log_diagnostic("decoder.rejected",
+                       {{"input_bytes", std::to_string(request.input_bytes), false},
+                        {"max_input_bytes", std::to_string(policy.max_input_bytes), false},
+                        {"reason", "decoder input exceeds limit", false}});
         return {MediaDisposition::reject, "decoder input exceeds limit"};
     }
     if (request.estimated_output_bytes > policy.max_output_bytes)
     {
+        log_diagnostic("decoder.rejected",
+                       {{"estimated_output_bytes", std::to_string(request.estimated_output_bytes), false},
+                        {"max_output_bytes", std::to_string(policy.max_output_bytes), false},
+                        {"reason", "decoded output exceeds limit", false}});
         return {MediaDisposition::reject, "decoded output exceeds limit"};
     }
     if (request.pixels > policy.max_pixels)
     {
+        log_diagnostic("decoder.rejected",
+                       {{"pixels", std::to_string(request.pixels), false},
+                        {"max_pixels", std::to_string(policy.max_pixels), false},
+                        {"reason", "decoded image dimensions exceed limit", false}});
         return {MediaDisposition::reject, "decoded image dimensions exceed limit"};
     }
     if (request.animation_frames > policy.max_animation_frames)
     {
+        log_diagnostic("decoder.rejected",
+                       {{"animation_frames", std::to_string(request.animation_frames), false},
+                        {"max_animation_frames", std::to_string(policy.max_animation_frames), false},
+                        {"reason", "animation frame count exceeds limit", false}});
         return {MediaDisposition::reject, "animation frame count exceeds limit"};
     }
     if (request.input_bytes > 0U && request.estimated_output_bytes / request.input_bytes > policy.max_expansion_ratio)
     {
+        log_diagnostic("decoder.rejected",
+                       {{"expansion_ratio",
+                         std::to_string(request.estimated_output_bytes / request.input_bytes), false},
+                        {"max_expansion_ratio", std::to_string(policy.max_expansion_ratio), false},
+                        {"reason", "decoded output expansion ratio exceeds limit", false}});
         return {MediaDisposition::reject, "decoded output expansion ratio exceeds limit"};
     }
 
@@ -190,14 +253,22 @@ auto admin_quarantine_policy(AdminQuarantineRequest const& request) -> MediaPoli
 {
     if (!matrix_id_is_valid(request.admin_user_id))
     {
+        log_diagnostic("admin_quarantine.rejected", {{"reason", "invalid admin user id", false}});
         return {MediaDisposition::reject, "invalid admin user id"};
     }
     if (!media_id_is_valid(request.media_id))
     {
+        log_diagnostic("admin_quarantine.rejected",
+                       {{"admin_user_id", request.admin_user_id, false},
+                        {"reason", "invalid media id", false}});
         return {MediaDisposition::reject, "invalid media id"};
     }
     if (request.reason.empty() && request.action != AdminQuarantineAction::release)
     {
+        log_diagnostic("admin_quarantine.rejected",
+                       {{"admin_user_id", request.admin_user_id, false},
+                        {"media_id", request.media_id, false},
+                        {"reason", "quarantine reason is required", false}});
         return {MediaDisposition::reject, "quarantine reason is required"};
     }
 

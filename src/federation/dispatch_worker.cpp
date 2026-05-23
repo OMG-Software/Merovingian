@@ -2,16 +2,26 @@
 
 #include "merovingian/federation/dispatch_worker.hpp"
 
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
 #include <algorithm>
 #include <chrono>
+#include <string>
 #include <thread>
 #include <tuple>
 #include <utility>
+#include <vector>
 
 namespace merovingian::federation
 {
 namespace
 {
+
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    {
+        LOG_DEBUG(observability::diagnostic_log_summary("dispatch_worker", event, std::move(fields)));
+    }
 
     [[nodiscard]] auto transaction_is_well_formed(OutboundTransaction const& transaction) noexcept -> bool
     {
@@ -85,21 +95,38 @@ auto DispatchWorker::enqueue(OutboundTransaction transaction) -> bool
 {
     if (!transaction_is_well_formed(transaction))
     {
+        log_diagnostic("enqueue.rejected",
+                       {{"transaction_id", transaction.transaction_id, false},
+                        {"destination", transaction.destination, false},
+                        {"reason", "transaction is malformed", false}});
         return false;
     }
     {
         auto lock = std::lock_guard{mutex_};
         if (shutdown_requested_.load(std::memory_order_acquire))
         {
+            log_diagnostic("enqueue.rejected",
+                           {{"transaction_id", transaction.transaction_id, false},
+                            {"destination", transaction.destination, false},
+                            {"reason", "worker is shutting down", false}});
             return false;
         }
         if (config_.max_queue_depth != 0U && queue_.size() >= config_.max_queue_depth)
         {
+            log_diagnostic("enqueue.rejected",
+                           {{"transaction_id", transaction.transaction_id, false},
+                            {"destination", transaction.destination, false},
+                            {"queue_depth", std::to_string(queue_.size()), false},
+                            {"reason", "queue depth limit reached", false}});
             return false;
         }
         if (persistent_store_ != nullptr &&
             !database::store_federation_transaction(*persistent_store_, to_persistent_transaction(transaction)))
         {
+            log_diagnostic("enqueue.rejected",
+                           {{"transaction_id", transaction.transaction_id, false},
+                            {"destination", transaction.destination, false},
+                            {"reason", "failed to persist transaction", false}});
             return false;
         }
         queue_.push_back(std::move(transaction));
@@ -183,6 +210,11 @@ auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, st
     transaction.retry_count += 1U;
     if (transaction.retry_count >= config_.max_retries)
     {
+        log_diagnostic("transaction.dropped",
+                       {{"transaction_id", transaction.transaction_id, false},
+                        {"destination", transaction.destination, false},
+                        {"retry_count", std::to_string(transaction.retry_count), false},
+                        {"reason", "max retries exhausted", false}});
         // Hold the worker mutex while mutating durable state. The persistent
         // store helpers mutate shared vectors in-place; enqueue/run_once also
         // touch them under this same mutex, so without serialization the
@@ -200,6 +232,11 @@ auto DispatchWorker::re_enqueue_with_backoff(OutboundTransaction transaction, st
         return;
     }
     transaction.next_retry_ts = now_ts + compute_backoff(transaction.retry_count);
+    log_diagnostic("transaction.retried",
+                   {{"transaction_id", transaction.transaction_id, false},
+                    {"destination", transaction.destination, false},
+                    {"retry_count", std::to_string(transaction.retry_count), false},
+                    {"next_retry_ts", std::to_string(transaction.next_retry_ts), false}});
     {
         auto lock = std::lock_guard{mutex_};
         // Persist the bumped retry state before re-queuing. A persist failure
@@ -237,6 +274,10 @@ auto DispatchWorker::run_once() -> bool
     auto resolution = resolver_ ? resolver_(transaction.destination) : std::nullopt;
     if (!resolution.has_value() || !resolution->discovery_allowed)
     {
+        log_diagnostic("transaction.discovery_failed",
+                       {{"transaction_id", transaction.transaction_id, false},
+                        {"destination", transaction.destination, false},
+                        {"retry_count", std::to_string(transaction.retry_count), false}});
         // Resolver failure: surface as a transport failure so the destination
         // accounting captures it, and let the backoff curve gate the next
         // attempt. The transaction goes back on the queue with retry+1.
@@ -271,6 +312,10 @@ auto DispatchWorker::run_once() -> bool
 
     if (result.sent && result.http_status >= 200U && result.http_status < 300U)
     {
+        log_diagnostic("transaction.delivered",
+                       {{"transaction_id", transaction.transaction_id, false},
+                        {"destination", transaction.destination, false},
+                        {"http_status", std::to_string(result.http_status), false}});
         // Persist destination success state and drop the durable queue row.
         // If the durable delete fails, do NOT count the transaction as
         // delivered: leaving the row would cause replay-on-restart to re-send
@@ -310,6 +355,10 @@ auto DispatchWorker::run_once() -> bool
     }
     if (result.error == "circuit_open")
     {
+        log_diagnostic("transaction.circuit_open",
+                       {{"transaction_id", transaction.transaction_id, false},
+                        {"destination", transaction.destination, false},
+                        {"retry_count", std::to_string(transaction.retry_count), false}});
         transaction.next_retry_ts = destination.retry_after_ts > now ? destination.retry_after_ts
                                                                      : now + compute_backoff(transaction.retry_count);
         {
