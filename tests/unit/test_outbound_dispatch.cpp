@@ -114,7 +114,7 @@ SCENARIO("send_event enqueues outbound transactions for remote room members",
         auto client = merovingian::http::OutboundClient{};
         auto worker = make_dispatch_worker(client);
         homeserver.dispatch_worker.reset(worker.get());
-        (void)worker.release();
+        std::ignore = worker.release();
 
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
@@ -262,7 +262,7 @@ SCENARIO("send_event does not enqueue transactions for local-only rooms",
         auto client = merovingian::http::OutboundClient{};
         auto worker = make_dispatch_worker(client);
         homeserver.dispatch_worker.reset(worker.get());
-        (void)worker.release();
+        std::ignore = worker.release();
 
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
