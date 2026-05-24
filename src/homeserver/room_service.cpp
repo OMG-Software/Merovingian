@@ -7,6 +7,7 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
@@ -768,6 +769,50 @@ namespace
                                               {"prev_events", std::to_string(composed->prev_event_ids.size()), false},
                                               {"auth_events", std::to_string(composed->auth_event_ids.size()), false}
     });
+    wire_federation_callbacks(runtime);
+    if (runtime.dispatch_worker != nullptr)
+    {
+        auto const& server_name = runtime.config.server().server_name;
+        auto remote_servers = std::vector<std::string>{};
+        for (auto const& member : room->members)
+        {
+            auto const colon = member.rfind(':');
+            if (colon == std::string::npos)
+            {
+                continue;
+            }
+            auto const member_server = member.substr(colon + 1);
+            if (member_server != server_name &&
+                std::ranges::find(remote_servers, member_server) == remote_servers.end())
+            {
+                remote_servers.emplace_back(member_server);
+            }
+        }
+        if (!remote_servers.empty())
+        {
+            auto pdu_array = canonicaljson::Array{};
+            auto pdu_parsed = canonicaljson::parse_lossless(composed->json);
+            if (pdu_parsed.error == canonicaljson::ParseError::none)
+            {
+                pdu_array.push_back(std::move(pdu_parsed.value));
+            }
+            auto tx_body = canonicaljson::serialize(
+                canonicaljson::Value{canonicaljson::make_obj(canonicaljson::make_member("pdus", pdu_array),
+                                                              canonicaljson::make_member("edus", canonicaljson::Array{}))});
+            auto tx_id = std::to_string(runtime.database.next_session_id++);
+            for (auto const& destination : remote_servers)
+            {
+                auto target = "/_matrix/federation/v1/send/" + tx_id;
+                auto transaction = federation::make_outbound_transaction(destination, "PUT", target, server_name,
+                                                                         tx_body);
+                runtime.dispatch_worker->enqueue(std::move(transaction));
+            }
+            log_diagnostic("room.event.dispatched",
+                           {{"room_id", std::string{room_id}, false},
+                            {"event_id", composed->event_id, false},
+                            {"destinations", std::to_string(remote_servers.size()), false}});
+        }
+    }
     return make_operation_result(true, composed->event_id);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)

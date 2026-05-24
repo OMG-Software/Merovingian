@@ -357,6 +357,11 @@ a non-production environment.
 - Feature (0.4.2): Added `im.nheko.summary` room summary endpoints for Nheko
   compatibility. Both `GET /summary/{roomId}` and `GET /rooms/{roomId}/summary`
   paths return room membership summaries instead of 404.
+- Bug fix (0.4.3): Inbound federation PDU events now receive `stream_ordering`
+  and trigger sync notification, so remote messages appear in `/sync` responses.
+- Feature (0.4.3): Outbound PDU dispatch wired from `send_event` to the
+  `DispatchWorker`. Local events sent to rooms with remote members are now
+  forwarded to remote servers via federation `PUT /_matrix/federation/v1/send`.
 
 ### Production v1.0.0
 

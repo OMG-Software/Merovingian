@@ -1792,6 +1792,7 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
     }
     auto rt = ClientServerRuntime{};
     rt.homeserver = std::move(started.runtime);
+    rt.homeserver.sync_notifier = nullptr;
     rt.devices.reserve(rt.homeserver.database.persistent_store.devices.size());
     for (auto const& device : rt.homeserver.database.persistent_store.devices)
     {
@@ -2894,6 +2895,7 @@ auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&
     if (!runtime.sync_notifier)
     {
         runtime.sync_notifier = std::make_unique<sync::SyncNotifier>();
+        runtime.homeserver.sync_notifier = runtime.sync_notifier.get();
     }
     runtime.sync_notifier->publish(runtime.homeserver.database.persistent_store.next_sync_stream_id);
     return *runtime.sync_notifier;

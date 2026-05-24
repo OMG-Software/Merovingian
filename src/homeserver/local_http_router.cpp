@@ -18,6 +18,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -224,7 +225,7 @@ namespace
     // Called lazily on the first federation request so the runtime is already
     // at a stable address when the lambdas capture references to its fields.
     // Idempotent: the pdu_sink check guards against double-wiring.
-    auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
+    auto wire_federation_callbacks_impl(HomeserverRuntime& runtime) -> void
     {
         if (!runtime.federation.config.enabled || runtime.federation.pdu_sink)
         {
@@ -246,6 +247,7 @@ namespace
             event.sender_user_id = envelope.sender;
             event.json = envelope.json;
             event.depth = envelope.depth;
+            event.stream_ordering = rt->database.next_stream_ordering++;
             event.prev_event_ids = envelope.prev_event_ids;
             event.auth_event_ids = envelope.auth_event_ids;
             event.signatures = envelope.signatures;
@@ -258,6 +260,10 @@ namespace
             if (!database::store_event_with_state(rt->database.persistent_store, std::move(event), state))
             {
                 return {federation::PduIngestionStatus::internal_error, "event persistence failed"};
+            }
+            if (rt->sync_notifier != nullptr)
+            {
+                rt->sync_notifier->publish(rt->database.persistent_store.next_sync_stream_id);
             }
             return {federation::PduIngestionStatus::accepted, {}};
         };
@@ -456,10 +462,44 @@ namespace
                             std::chrono::system_clock::now().time_since_epoch())
                             .count());
                 });
+            std::ignore = ensure_runtime_server_signing_key(runtime);
+            auto dispatch_config = federation::DispatchWorkerConfig{};
+            dispatch_config.origin = runtime.config.server().server_name;
+            dispatch_config.key_id = "ed25519:auto";
+            dispatch_config.secret_key =
+                std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
+                             runtime.database.signing_secret_key.size()};
+            auto* discovery_ptr = discovery;
+            auto const discovery_timeout = timeout > 0U ? timeout : 30U;
+            auto resolver = [discovery_ptr, discovery_timeout](std::string_view server_name)
+                -> std::optional<federation::ServerDiscoveryResult> {
+                auto result = federation::discover_server(server_name, *discovery_ptr, discovery_timeout);
+                if (!result.discovery_allowed)
+                {
+                    return std::nullopt;
+                }
+                return result;
+            };
+            auto clock = []() -> std::uint64_t {
+                return static_cast<std::uint64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count());
+            };
+            auto sleep_fn = [](std::chrono::milliseconds ms) { std::this_thread::sleep_for(ms); };
+            runtime.dispatch_worker = std::make_unique<federation::DispatchWorker>(
+                std::move(dispatch_config), *outbound, std::move(resolver), std::move(clock), std::move(sleep_fn),
+                &runtime.database.persistent_store);
+            runtime.dispatch_worker->start();
         }
     }
 
 } // namespace
+
+auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
+{
+    wire_federation_callbacks_impl(runtime);
+}
 
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse
@@ -690,7 +730,7 @@ namespace
     {
         return response(503U, "runtime not started");
     }
-    wire_federation_callbacks(runtime);
+    wire_federation_callbacks_impl(runtime);
     if (request.method == "GET" && request.target == "/_matrix/key/v2/server")
     {
         return response_from_operation(publish_server_signing_keys(runtime));

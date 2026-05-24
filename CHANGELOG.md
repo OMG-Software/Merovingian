@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.3
+
+- Fixed inbound PDU sync visibility: federation events received via
+  `PUT /_matrix/federation/v1/send/{txnId}` now have `stream_ordering` assigned
+  from `next_stream_ordering` and trigger a `SyncNotifier::publish` after
+  persistence, so remote messages appear in client `/sync` responses.
+- Wired outbound PDU dispatch from local events: `send_event` now enumerates
+  remote server names from room members, builds federation transaction bodies
+  (`{"pdus":[...],"edus":[]}`), and enqueues `OutboundTransaction` items in the
+  `DispatchWorker` for each remote destination. The `DispatchWorker` (previously
+  implemented but never connected) is now created and started during federation
+  callback wiring.
+- Made `wire_federation_callbacks` a public API so that outbound dispatch can
+  be lazily triggered from the client-server event-sending path, not just from
+  inbound federation requests.
+
 ## 0.4.2
 
 - Fixed federation invite path parsing: `/_matrix/federation/v2/invite/{roomId}/{eventId}`

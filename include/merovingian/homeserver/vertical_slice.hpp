@@ -3,6 +3,7 @@
 
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/http/outbound_client.hpp"
@@ -10,6 +11,7 @@
 #include "merovingian/net/listener.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/sync/sync_notifier.hpp"
 
 #include <cstdint>
 #include <memory>
@@ -76,6 +78,12 @@ struct HomeserverRuntime final
     // which is safe because the runtime outlives every callback invocation.
     std::unique_ptr<http::OutboundClient> outbound_client{};
     std::unique_ptr<federation::ServerDiscoveryNetwork> discovery_network{};
+    std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
+    // Non-owning pointer to the sync notifier owned by the enclosing
+    // ClientServerRuntime. Set by start_client_server(). Federation
+    // callbacks use this to wake long-polling /sync requests after
+    // inbound PDU events are persisted.
+    sync::SyncNotifier* sync_notifier{nullptr};
 };
 
 struct RuntimeStartResult final
@@ -133,6 +141,12 @@ struct LocalHttpResponse final
     -> LocalHttpResponse;
 [[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse;
+// Idempotently wires federation callback lambdas (pdu_sink, edu_sink, key
+// resolver, dispatch worker, etc.) into the runtime. Called lazily by the
+// federation request handler on the first inbound request; callers that need
+// federation infrastructure before any inbound request (e.g. outbound PDU
+// dispatch on local event send) should call this explicitly.
+auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void;
 [[nodiscard]] auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
                                        std::string_view password, std::string_view registration_token = {})
     -> OperationResult;
