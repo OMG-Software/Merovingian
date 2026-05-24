@@ -1148,6 +1148,7 @@ namespace
                 auto target = "/_matrix/federation/v1/send/" + tx_id;
                 auto transaction = federation::make_outbound_transaction(destination, "PUT", target, server_name,
                                                                          tx_body);
+                transaction.transaction_id = tx_id;
                 std::ignore = runtime.dispatch_worker->enqueue(std::move(transaction));
             }
             log_diagnostic("room.event.dispatched",

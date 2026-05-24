@@ -865,10 +865,13 @@ namespace
                         .count());
             };
             auto sleep_fn = [](std::chrono::milliseconds ms) { std::this_thread::sleep_for(ms); };
-            runtime.dispatch_worker = std::make_unique<federation::DispatchWorker>(
-                std::move(dispatch_config), *outbound, std::move(resolver), std::move(clock), std::move(sleep_fn),
-                &runtime.database.persistent_store);
-            runtime.dispatch_worker->start();
+            if (!runtime.dispatch_worker)
+            {
+                runtime.dispatch_worker = std::make_unique<federation::DispatchWorker>(
+                    std::move(dispatch_config), *outbound, std::move(resolver), std::move(clock), std::move(sleep_fn),
+                    &runtime.database.persistent_store);
+                runtime.dispatch_worker->start();
+            }
         }
     }
 
