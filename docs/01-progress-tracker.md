@@ -350,6 +350,13 @@ a non-production environment.
   `MembershipStoreResult` (`stored`, `already_exists`, `error`); the room
   service treats `already_exists` as an idempotent success and re-syncs the
   in-memory member list. Regression test added to the vertical-slice suite.
+- Bug fix (0.4.2): Federation invite path parsing (`v1`/`v2` invite routes)
+  no longer emits a spurious `membership_path.rejected` diagnostic. The invite
+  endpoint is now handled natively by `parse_membership_path` instead of
+  falling through to a `send_join` hack with manual fallback parsing.
+- Feature (0.4.2): Added `im.nheko.summary` room summary endpoints for Nheko
+  compatibility. Both `GET /summary/{roomId}` and `GET /rooms/{roomId}/summary`
+  paths return room membership summaries instead of 404.
 
 ### Production v1.0.0
 

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.1
+Version:        0.4.2
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.2-1
+- Fix federation invite path parsing (v1/v2 invite routes no longer emit spurious membership_path.rejected)
+- Add im.nheko.summary room summary endpoints for Nheko compatibility
+
 * Fri May 23 2026 James Chapman <claude@ping.me.uk> - 0.4.1-1
 - Fix room join returning 500 when user is already a member in the persistent store but absent from the in-memory member list
 

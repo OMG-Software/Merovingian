@@ -453,43 +453,12 @@ namespace
         {
             return {501U, "invite not implemented"};
         }
-        auto const params = parse_membership_path(FederationEndpoint::send_join, request.target);
-        // parse_membership_path covers /v2/invite as well because the suffix
-        // layout (roomId/eventId) is identical; reuse the helper but fall back
-        // to a manual split if it returns nullopt.
-        auto room_id = std::string{};
-        auto event_id = std::string{};
-        if (params.has_value())
+        auto const params = parse_membership_path(FederationEndpoint::invite, request.target);
+        if (!params.has_value())
         {
-            room_id = params->room_id;
-            event_id = params->subject;
+            return {400U, "invite path is malformed"};
         }
-        else
-        {
-            auto const path = request.target.substr(0U, request.target.find('?'));
-            auto invite_prefix = std::string_view{};
-            if (route.path_template == "/_matrix/federation/v2/invite/{roomId}/{eventId}")
-            {
-                invite_prefix = "/_matrix/federation/v2/invite/";
-            }
-            else
-            {
-                invite_prefix = "/_matrix/federation/v1/invite/";
-            }
-            if (path.size() <= invite_prefix.size() || path.substr(0U, invite_prefix.size()) != invite_prefix)
-            {
-                return {400U, "invite path is malformed"};
-            }
-            auto const remainder = path.substr(invite_prefix.size());
-            auto const slash = remainder.find('/');
-            if (slash == std::string_view::npos || slash == 0U || slash + 1U >= remainder.size())
-            {
-                return {400U, "invite path is malformed"};
-            }
-            room_id = std::string{remainder.substr(0U, slash)};
-            event_id = std::string{remainder.substr(slash + 1U)};
-        }
-        auto invite_request = parse_invite_body(request.body, room_id, event_id, FederationEndpoint::invite);
+        auto invite_request = parse_invite_body(request.body, params->room_id, params->subject, FederationEndpoint::invite);
         if (!invite_request.has_value())
         {
             return {400U, "invite body is malformed"};

@@ -385,6 +385,53 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
     }
 }
 
+SCENARIO("Client-server im.nheko.summary endpoints return room membership summaries",
+         "[homeserver][client-server][nheko-summary]")
+{
+    GIVEN("a logged-in user with a created room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.status == 200U);
+        auto const token = login_token(login.body);
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.status == 200U);
+        auto const id = room_id(room.body);
+
+        WHEN("the user requests the nheko summary for the room")
+        {
+            auto const encoded = percent_encode_colons(id);
+            auto const summary_short = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/unstable/im.nheko.summary/summary/" + encoded, token, {}});
+            auto const summary_long = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/unstable/im.nheko.summary/rooms/" + encoded + "/summary", token, {}});
+            auto const summary_missing = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/unstable/im.nheko.summary/summary/!missing:example.org", token, {}});
+
+            THEN("both path shapes return 200 with room_id and summary; missing rooms return 404")
+            {
+                REQUIRE(summary_short.status == 200U);
+                REQUIRE(summary_short.body.find(id) != std::string::npos);
+                REQUIRE(summary_short.body.find("m.joined_member_count") != std::string::npos);
+                REQUIRE(summary_long.status == 200U);
+                REQUIRE(summary_long.body.find(id) != std::string::npos);
+                REQUIRE(summary_long.body.find("m.joined_member_count") != std::string::npos);
+                REQUIRE(summary_missing.status == 404U);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server typing and messages routes dispatch through the room block",
          "[homeserver][client-server][typing][messages]")
 {

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.2
+
+- Fixed federation invite path parsing: `/_matrix/federation/v2/invite/{roomId}/{eventId}`
+  and `/_matrix/federation/v1/invite/{roomId}/{eventId}` routes no longer emit a
+  spurious `membership_path.rejected` diagnostic. The invite endpoint is now handled
+  natively by `parse_membership_path` instead of falling through to a `send_join`
+  hack with manual fallback parsing.
+- Added `im.nheko.summary` room summary endpoints for Nheko compatibility:
+  `GET /_matrix/client/unstable/im.nheko.summary/summary/{roomId}` and
+  `GET /_matrix/client/unstable/im.nheko.summary/rooms/{roomId}/summary` now return
+  room membership summaries (heroes, joined count, invited count) instead of 404.
+
 ## 0.4.1
 
 - Fixed `POST /join/{roomId}` returning 500 when the user is already a member

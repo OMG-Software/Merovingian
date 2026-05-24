@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build a Debian binary package (.deb) for merovingian 0.4.1.
+# Build a Debian binary package (.deb) for merovingian 0.4.2.
 set -e
 
-VERSION="0.4.1"
+VERSION="0.4.2"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 
