@@ -280,7 +280,7 @@ namespace
                 auto const user_id_pos = content.find("\"user_id\"");
                 if (room_id_pos == std::string::npos || user_id_pos == std::string::npos)
                 {
-                    return {federation::EduDispositionStatus::rejected, "missing room_id or user_id"};
+                    return {federation::EduDispositionStatus::rejected_invalid, "missing room_id or user_id"};
                 }
                 auto typing = content.find("\"typing\":true") != std::string::npos;
                 auto room_id = std::string{};
@@ -306,7 +306,7 @@ namespace
                 }
                 if (room_id.empty() || user_id.empty())
                 {
-                    return {federation::EduDispositionStatus::rejected, "empty room_id or user_id"};
+                    return {federation::EduDispositionStatus::rejected_invalid, "empty room_id or user_id"};
                 }
                 auto existing = std::ranges::find_if(rt->typing_users, [&](auto const& t) {
                     return t.room_id == room_id && t.user_id == user_id;
@@ -476,7 +476,7 @@ namespace
                         auto state = database::PersistentPresence{};
                         state.user_id = user_id;
                         state.presence = presence;
-                        database::upsert_presence(rt->database.persistent_store, std::move(state));
+                        std::ignore = database::upsert_presence(rt->database.persistent_store, std::move(state));
                     }
                     pos = obj_end + 1U;
                 }
@@ -592,7 +592,7 @@ namespace
                                 msg.target_device_id = target_device_id;
                                 msg.message_type = msg_type;
                                 msg.content_json = content.substr(content_start, content_end - content_start);
-                                database::enqueue_to_device_message(rt->database.persistent_store, std::move(msg));
+                                std::ignore = database::enqueue_to_device_message(rt->database.persistent_store, std::move(msg));
                                 dev_scan = content_end;
                             }
                             scan = device_obj_end + 1U;
@@ -632,7 +632,7 @@ namespace
                         change.observer_user_id = user.user_id;
                         change.subject_user_id = user_id;
                         change.change_type = "changed";
-                        database::record_device_list_change(rt->database.persistent_store, std::move(change));
+                        std::ignore = database::record_device_list_change(rt->database.persistent_store, std::move(change));
                     }
                 }
                 if (rt->sync_notifier != nullptr)

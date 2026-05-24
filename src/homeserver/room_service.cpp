@@ -765,7 +765,7 @@ namespace
         }
         // Ensure origin_server_ts is present even if the remote omitted it.
         auto const has_ost = std::ranges::any_of(*event_inner,
-                                                  [](canonicaljson::Member const& m) { return m.key == "origin_server_ts"; });
+                                                  [](canonicaljson::ObjectMember const& m) { return m.key == "origin_server_ts"; });
         if (!has_ost)
         {
             event_object.push_back(
@@ -860,7 +860,7 @@ namespace
         auto const* send_arr = std::get_if<canonicaljson::Array>(&send_response.value.storage());
         if (send_arr != nullptr && send_arr->size() >= 2U)
         {
-            auto const* inner = std::get_if<canonicaljson::Object>(&(*send_arr)[1].value()->storage());
+            auto const* inner = std::get_if<canonicaljson::Object>(&(*send_arr)[1].storage());
             if (inner != nullptr)
             {
                 send_obj = inner;
@@ -880,10 +880,10 @@ namespace
         // State events from the remote response are persisted to the
         // database so the room has enough state for auth checks.
         auto const* state_arr_member =
-            std::ranges::find_if(*send_obj, [](canonicaljson::Member const& m) { return m.key == "state"; });
+            std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) { return m.key == "state"; });
         if (state_arr_member != send_obj->end())
         {
-            auto const* state_arr = std::get_if<canonicaljson::Array>(&state_arr_member->value.value()->storage());
+            auto const* state_arr = std::get_if<canonicaljson::Array>(&state_arr_member->value->storage());
             if (state_arr != nullptr)
             {
                 for (auto const& state_entry : *state_arr)
@@ -908,10 +908,10 @@ namespace
         }
         // Persist auth chain events for auth-rule resolution.
         auto const* auth_arr_member =
-            std::ranges::find_if(*send_obj, [](canonicaljson::Member const& m) { return m.key == "auth_chain"; });
+            std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) { return m.key == "auth_chain"; });
         if (auth_arr_member != send_obj->end())
         {
-            auto const* auth_arr = std::get_if<canonicaljson::Array>(&auth_arr_member->value.value()->storage());
+            auto const* auth_arr = std::get_if<canonicaljson::Array>(&auth_arr_member->value->storage());
             if (auth_arr != nullptr)
             {
                 for (auto const& auth_entry : *auth_arr)
@@ -1136,9 +1136,12 @@ namespace
             {
                 pdu_array.push_back(std::move(pdu_parsed.value));
             }
-            auto tx_body = canonicaljson::serialize(
-                canonicaljson::Value{canonicaljson::make_obj(canonicaljson::make_member("pdus", pdu_array),
-                                                              canonicaljson::make_member("edus", canonicaljson::Array{}))});
+            auto tx_root = canonicaljson::Object{};
+            tx_root.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_array)}));
+            tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{canonicaljson::Array{}}));
+            auto const tx_body_result =
+                canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
+            auto const& tx_body = tx_body_result.output;
             auto tx_id = std::to_string(runtime.database.next_session_id++);
             for (auto const& destination : remote_servers)
             {

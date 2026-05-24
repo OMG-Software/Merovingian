@@ -109,7 +109,7 @@ namespace
         }
         auto edu_obj = canonicaljson::Object{};
         edu_obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{edu_type}}));
-        edu_obj.push_back(canonicaljson::make_member("content", std::move(edu_value)));
+        edu_obj.push_back(canonicaljson::make_member("content", std::move(edu_value.value)));
         auto edus_array = canonicaljson::Array{};
         edus_array.push_back(canonicaljson::Value{std::move(edu_obj)});
         auto tx_root = canonicaljson::Object{};
@@ -2781,11 +2781,11 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                         read_type.push_back(canonicaljson::make_member(*user, canonicaljson::Value{std::move(user_receipts)}));
                         receipt_content.push_back(
                             canonicaljson::make_member(room_id, canonicaljson::Value{std::move(read_type)}));
-                        auto const edu_content = canonicaljson::serialize(canonicaljson::Value{std::move(receipt_content)});
-                        if (edu_content.error == canonicaljson::CanonicalJsonError::none)
+                        auto const edu_content_result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(receipt_content)});
+                        if (edu_content_result.error == canonicaljson::CanonicalJsonError::none)
                         {
                             auto const enqueued =
-                                dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt", edu_content.output);
+                                dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt", edu_content_result.output);
                             if (enqueued > 0U)
                             {
                                 log_diagnostic("room.read_markers.dispatched",
