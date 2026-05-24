@@ -575,7 +575,7 @@ SCENARIO("State-resolution v2 helper merges forked state when groups disagree",
                 // semantics that the new wiring exists: state_conflict_resolver
                 // is callable and apply_state_resolution_v2 succeeds for the
                 // conflict context built above.
-                (void)response;
+                std::ignore = response;
                 auto const direct = merovingian::federation::apply_state_resolution_v2(
                     context, merovingian::federation::ResolvedStateApplier{
                                  [resolver_invoked](std::vector<merovingian::events::StateEventReference> const&) {
