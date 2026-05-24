@@ -2801,6 +2801,64 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         }
     }
 
+    // im.nheko.summary: Nheko probes these unstable endpoints for per-room
+    // summary metadata (heroes, joined/invited counts).  Return a summary
+    // object derived from the local room membership so Nheko stops hitting
+    // 404 on every sync.  Two path shapes are probed:
+    //   GET /_matrix/client/unstable/im.nheko.summary/summary/{roomId}
+    //   GET /_matrix/client/unstable/im.nheko.summary/rooms/{roomId}/summary
+    auto constexpr nheko_summary_prefix = std::string_view{"/_matrix/client/unstable/im.nheko.summary/"};
+    if (req.method == "GET" && starts_with(req.target, nheko_summary_prefix))
+    {
+        auto const remainder = std::string_view{req.target}.substr(nheko_summary_prefix.size());
+        auto const query_pos = remainder.find('?');
+        auto const path = query_pos == std::string_view::npos ? remainder : remainder.substr(0U, query_pos);
+        // Extract room_id from either /summary/{roomId} or /rooms/{roomId}/summary.
+        auto room_id = std::string{};
+        if (starts_with(path, "summary/"))
+        {
+            room_id = core::percent_decode_path_component(path.substr(8U));
+        }
+        else if (starts_with(path, "rooms/"))
+        {
+            auto const after_rooms = path.substr(6U);
+            auto const slash = after_rooms.find("/summary");
+            room_id = core::percent_decode_path_component(
+                slash == std::string_view::npos ? after_rooms : after_rooms.substr(0U, slash));
+        }
+        if (!room_id.empty())
+        {
+            auto const room_iter = std::ranges::find_if(rt.homeserver.database.rooms,
+                [&room_id](LocalRoom const& r) { return r.room_id == room_id; });
+            auto const* room = room_iter == rt.homeserver.database.rooms.end() ? nullptr : &(*room_iter);
+            if (room != nullptr && joined(*room, *user))
+            {
+                auto summary = canonicaljson::Object{};
+                summary.push_back(canonicaljson::make_member("room_id", json_str(room_id)));
+                auto info = canonicaljson::Object{};
+                auto heroes = canonicaljson::Array{};
+                for (auto const& member : room->members)
+                {
+                    if (member != *user)
+                    {
+                        heroes.push_back(json_str(member));
+                    }
+                }
+                info.push_back(canonicaljson::make_member("m.heroes", canonicaljson::Value{std::move(heroes)}));
+                info.push_back(
+                    canonicaljson::make_member("m.joined_member_count", json_int(static_cast<std::int64_t>(room->members.size()))));
+                info.push_back(canonicaljson::make_member("m.invited_member_count", json_int(0)));
+                summary.push_back(canonicaljson::make_member("summary", canonicaljson::Value{std::move(info)}));
+                auto const body = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(summary)});
+                log_diagnostic("room_summary.response",
+                               {{"room_id", room_id, false},
+                                {"actor", *user, false}});
+                return resp(200U, body.error == canonicaljson::CanonicalJsonError::none ? body.output : "{}");
+            }
+        }
+        return err(404U, "M_NOT_FOUND", "room summary not found");
+    }
+
     log_diagnostic("request.route_not_found", {
                                                   {"method", req.method,                                       false},
                                                   {"target", observability::sanitized_http_target(req.target), false},

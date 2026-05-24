@@ -85,15 +85,17 @@ namespace
             return "/_matrix/federation/v1/make_knock/";
         case FederationEndpoint::send_knock:
             return "/_matrix/federation/v1/send_knock/";
+        case FederationEndpoint::invite:
+            return ""; // handled below — two versions
         default:
             return "";
         }
     }
 
-    [[nodiscard]] auto strip_send_prefix(FederationEndpoint endpoint, std::string_view target) -> std::string_view
+    [[nodiscard]] auto strip_versioned_prefix(FederationEndpoint endpoint, std::string_view target) -> std::string_view
     {
-        // send_join / send_leave appear at both v1 and v2 prefixes; strip
-        // whichever matches.
+        // send_join / send_leave / invite appear at both v1 and v2 prefixes;
+        // strip whichever matches.
         if (endpoint == FederationEndpoint::send_join)
         {
             if (auto suffix = strip_prefix(target, "/_matrix/federation/v2/send_join/"); !suffix.empty())
@@ -109,6 +111,14 @@ namespace
                 return suffix;
             }
             return strip_prefix(target, "/_matrix/federation/v1/send_leave/");
+        }
+        if (endpoint == FederationEndpoint::invite)
+        {
+            if (auto suffix = strip_prefix(target, "/_matrix/federation/v2/invite/"); !suffix.empty())
+            {
+                return suffix;
+            }
+            return strip_prefix(target, "/_matrix/federation/v1/invite/");
         }
         return strip_prefix(target, path_prefix(endpoint));
     }
@@ -133,7 +143,8 @@ auto parse_membership_path(FederationEndpoint endpoint, std::string_view target)
         break;
     case FederationEndpoint::send_join:
     case FederationEndpoint::send_leave:
-        suffix = strip_send_prefix(endpoint, target_path);
+    case FederationEndpoint::invite:
+        suffix = strip_versioned_prefix(endpoint, target_path);
         break;
     default:
         return std::nullopt;

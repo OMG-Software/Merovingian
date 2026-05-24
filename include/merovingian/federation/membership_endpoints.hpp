@@ -22,7 +22,7 @@ struct MembershipPathParams final
 {
     std::string room_id{};
     // For make_*: this is the user_id segment.
-    // For send_*: this is the event_id segment.
+    // For send_* and invite: this is the event_id segment.
     std::string subject{};
 };
 

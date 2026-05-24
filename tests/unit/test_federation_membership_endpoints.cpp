@@ -143,6 +143,47 @@ SCENARIO("Membership path parser splits room/subject suffixes for make/send rout
     }
 }
 
+SCENARIO("Invite path parser splits room/event suffixes for v1 and v2 invite routes",
+         "[federation][membership][routing][invite]")
+{
+    GIVEN("federation invite targets")
+    {
+        WHEN("each target is parsed against the invite endpoint")
+        {
+            auto const invite_v2 = merovingian::federation::parse_membership_path(
+                merovingian::federation::FederationEndpoint::invite,
+                "/_matrix/federation/v2/invite/!room:example.org/$event:example.org");
+            auto const invite_v1 = merovingian::federation::parse_membership_path(
+                merovingian::federation::FederationEndpoint::invite,
+                "/_matrix/federation/v1/invite/!room:example.org/$event:example.org");
+            auto const invite_url_encoded = merovingian::federation::parse_membership_path(
+                merovingian::federation::FederationEndpoint::invite,
+                "/_matrix/federation/v2/invite/%21room%3Aexample.org/%24event%3Aexample.org");
+            auto const malformed = merovingian::federation::parse_membership_path(
+                merovingian::federation::FederationEndpoint::invite,
+                "/_matrix/federation/v2/invite/oops");
+            auto const empty_event = merovingian::federation::parse_membership_path(
+                merovingian::federation::FederationEndpoint::invite,
+                "/_matrix/federation/v2/invite/!room:example.org/");
+
+            THEN("v2 and v1 parses return the expected room and event id pair, malformed paths return nullopt")
+            {
+                REQUIRE(invite_v2.has_value());
+                REQUIRE(invite_v2->room_id == "!room:example.org");
+                REQUIRE(invite_v2->subject == "$event:example.org");
+                REQUIRE(invite_v1.has_value());
+                REQUIRE(invite_v1->room_id == "!room:example.org");
+                REQUIRE(invite_v1->subject == "$event:example.org");
+                REQUIRE(invite_url_encoded.has_value());
+                REQUIRE(invite_url_encoded->room_id == "%21room%3Aexample.org");
+                REQUIRE(invite_url_encoded->subject == "%24event%3Aexample.org");
+                REQUIRE_FALSE(malformed.has_value());
+                REQUIRE_FALSE(empty_event.has_value());
+            }
+        }
+    }
+}
+
 SCENARIO("Backfill query parser collects event ids and limit, rejects malformed queries",
          "[federation][backfill][routing]")
 {
@@ -346,6 +387,11 @@ SCENARIO("Inbound endpoints without registered hooks fail closed with 501",
                                             "org\",\"content\":{\"membership\":\"join\"},\"depth\":1,\"hashes\":{"
                                             "\"sha256\":\"x\"},\"origin_server_ts\":1,\"prev_events\":[],\"auth_"
                                             "events\":[]}"));
+            auto const invite = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put_request(origin, key_id, token,
+                                            "/_matrix/federation/v2/invite/!room:example.org/$event:example.org",
+                                            R"({"room_version":"10","event":{"type":"m.room.member"},)"
+                                            R"("invite_room_state":[]})"));
             auto const backfill = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_make_request(origin, key_id, token,
                                              "/_matrix/federation/v1/backfill/!room:example.org?v=$e"));
@@ -354,7 +400,62 @@ SCENARIO("Inbound endpoints without registered hooks fail closed with 501",
             {
                 REQUIRE(make_join.status == 501U);
                 REQUIRE(send_join.status == 501U);
+                REQUIRE(invite.status == 501U);
                 REQUIRE(backfill.status == 501U);
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound invite handler accepts a v2 invite through the path parser",
+         "[federation][membership][inbound][invite]")
+{
+    GIVEN("a runtime with an invite handler wired")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"remote.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto handler_seen = std::make_shared<bool>(false);
+        runtime.invite_handler =
+            [handler_seen](merovingian::federation::InviteRequest const& req) {
+                *handler_seen = true;
+                REQUIRE(req.room_id == "!room:example.org");
+                REQUIRE(req.event_id == "$event:remote.example.org");
+                REQUIRE(req.room_version == "10");
+                auto result = merovingian::federation::InviteAcceptResult{};
+                result.accepted = true;
+                result.status = 200U;
+                result.signed_event_json = R"({"type":"m.room.member","signatures":{}})";
+                return result;
+            };
+
+        auto const body = std::string{
+            R"({"room_version":"10","event":{"type":"m.room.member","room_id":"!room:example.org",)"
+            R"("sender":"@alice:remote.example.org","state_key":"@bob:local.example.org",)"
+            R"("content":{"membership":"invite"},"depth":1,"hashes":{"sha256":"x"},)"
+            R"("origin_server_ts":1,"prev_events":[],"auth_events":[]},)"
+            R"("invite_room_state":[]})"};
+
+        WHEN("a v2 invite request is handled")
+        {
+            auto const request = signed_put_request(
+                origin, key_id, token,
+                "/_matrix/federation/v2/invite/!room:example.org/$event:remote.example.org",
+                body);
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the handler is invoked with the parsed room_id and event_id")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(*handler_seen);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                REQUIRE(json_member(*root, "event") != nullptr);
             }
         }
     }
