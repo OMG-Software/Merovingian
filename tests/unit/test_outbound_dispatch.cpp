@@ -113,7 +113,8 @@ SCENARIO("send_event enqueues outbound transactions for remote room members",
 
         auto client = merovingian::http::OutboundClient{};
         auto worker = make_dispatch_worker(client);
-        homeserver.dispatch_worker = worker.get();
+        homeserver.dispatch_worker.reset(worker.get());
+        (void)worker.release();
 
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
@@ -121,12 +122,12 @@ SCENARIO("send_event enqueues outbound transactions for remote room members",
         auto const id = room_id(room.body);
 
         // Add a remote member to the room
-        auto* local_room = std::ranges::find_if(
+        auto local_room = std::ranges::find_if(
             homeserver.database.rooms, [&id](auto const& r) { return r.room_id == id; });
         REQUIRE(local_room != homeserver.database.rooms.end());
         local_room->members.push_back("@bob:remote.example.org");
 
-        auto const summary_before = worker->summary();
+        auto const summary_before = homeserver.dispatch_worker->summary();
 
         WHEN("a local user sends a message event to the room")
         {
@@ -137,14 +138,14 @@ SCENARIO("send_event enqueues outbound transactions for remote room members",
             THEN("the event is persisted and a transaction is enqueued for the remote server")
             {
                 REQUIRE(message.status == 200U);
-                auto const summary_after = worker->summary();
+                auto const summary_after = homeserver.dispatch_worker->summary();
                 REQUIRE(summary_after.enqueued > summary_before.enqueued);
                 REQUIRE(summary_after.pending > 0U);
             }
         }
 
-        worker->request_shutdown();
-        worker->join();
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
     }
 }
 
@@ -260,14 +261,15 @@ SCENARIO("send_event does not enqueue transactions for local-only rooms",
 
         auto client = merovingian::http::OutboundClient{};
         auto worker = make_dispatch_worker(client);
-        homeserver.dispatch_worker = worker.get();
+        homeserver.dispatch_worker.reset(worker.get());
+        (void)worker.release();
 
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
         REQUIRE(room.status == 200U);
         auto const id = room_id(room.body);
 
-        auto const summary_before = worker->summary();
+        auto const summary_before = homeserver.dispatch_worker->summary();
 
         WHEN("a local user sends a message event to the local-only room")
         {
@@ -278,12 +280,12 @@ SCENARIO("send_event does not enqueue transactions for local-only rooms",
             THEN("the event is persisted but no outbound transactions are enqueued")
             {
                 REQUIRE(message.status == 200U);
-                auto const summary_after = worker->summary();
+                auto const summary_after = homeserver.dispatch_worker->summary();
                 REQUIRE(summary_after.enqueued == summary_before.enqueued);
             }
         }
 
-        worker->request_shutdown();
-        worker->join();
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
     }
 }
