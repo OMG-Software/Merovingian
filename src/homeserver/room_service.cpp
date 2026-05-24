@@ -879,7 +879,7 @@ namespace
         // Persist the room locally with the joined user as a member.
         // State events from the remote response are persisted to the
         // database so the room has enough state for auth checks.
-        auto const* state_arr_member =
+        auto const state_arr_member =
             std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) { return m.key == "state"; });
         if (state_arr_member != send_obj->end())
         {
@@ -907,7 +907,7 @@ namespace
             }
         }
         // Persist auth chain events for auth-rule resolution.
-        auto const* auth_arr_member =
+        auto const auth_arr_member =
             std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) { return m.key == "auth_chain"; });
         if (auth_arr_member != send_obj->end())
         {
@@ -1148,7 +1148,7 @@ namespace
                 auto target = "/_matrix/federation/v1/send/" + tx_id;
                 auto transaction = federation::make_outbound_transaction(destination, "PUT", target, server_name,
                                                                          tx_body);
-                runtime.dispatch_worker->enqueue(std::move(transaction));
+                std::ignore = runtime.dispatch_worker->enqueue(std::move(transaction));
             }
             log_diagnostic("room.event.dispatched",
                            {{"room_id", std::string{room_id}, false},
