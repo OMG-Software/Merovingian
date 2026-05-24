@@ -268,6 +268,384 @@ namespace
             return {federation::PduIngestionStatus::accepted, {}};
         };
 
+        runtime.federation.edu_sink = [rt](federation::InboundEduEnvelope const& envelope)
+            -> federation::EduDispositionResult {
+            switch (envelope.type)
+            {
+            case federation::EduType::typing:
+            {
+                // content: {room_id, user_id, typing}
+                auto const& content = envelope.content_json;
+                auto const room_id_pos = content.find("\"room_id\"");
+                auto const user_id_pos = content.find("\"user_id\"");
+                if (room_id_pos == std::string::npos || user_id_pos == std::string::npos)
+                {
+                    return {federation::EduDispositionStatus::rejected, "missing room_id or user_id"};
+                }
+                auto typing = content.find("\"typing\":true") != std::string::npos;
+                auto room_id = std::string{};
+                auto user_id = std::string{};
+                // Extract quoted value after "room_id"
+                auto const room_val_start = content.find('"', content.find(':', room_id_pos));
+                if (room_val_start != std::string::npos)
+                {
+                    auto const room_val_end = content.find('"', room_val_start + 1U);
+                    if (room_val_end != std::string::npos)
+                    {
+                        room_id = content.substr(room_val_start + 1U, room_val_end - room_val_start - 1U);
+                    }
+                }
+                auto const user_val_start = content.find('"', content.find(':', user_id_pos));
+                if (user_val_start != std::string::npos)
+                {
+                    auto const user_val_end = content.find('"', user_val_start + 1U);
+                    if (user_val_end != std::string::npos)
+                    {
+                        user_id = content.substr(user_val_start + 1U, user_val_end - user_val_start - 1U);
+                    }
+                }
+                if (room_id.empty() || user_id.empty())
+                {
+                    return {federation::EduDispositionStatus::rejected, "empty room_id or user_id"};
+                }
+                auto existing = std::ranges::find_if(rt->typing_users, [&](auto const& t) {
+                    return t.room_id == room_id && t.user_id == user_id;
+                });
+                if (typing)
+                {
+                    if (existing != rt->typing_users.end())
+                    {
+                        existing->typing = true;
+                    }
+                    else
+                    {
+                        rt->typing_users.push_back({room_id, user_id, true});
+                    }
+                }
+                else
+                {
+                    if (existing != rt->typing_users.end())
+                    {
+                        rt->typing_users.erase(existing);
+                    }
+                }
+                return {federation::EduDispositionStatus::accepted, {}};
+            }
+            case federation::EduType::receipt:
+            {
+                // content: { <room_id>: { "m.read": { <user_id>: { ts } } } }
+                auto const& content = envelope.content_json;
+                auto const m_read_pos = content.find("\"m.read\"");
+                if (m_read_pos == std::string::npos)
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                // Find the room_id key (first quoted string before m.read)
+                auto const obj_start = content.find('{');
+                if (obj_start == std::string::npos)
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                auto room_id_start = content.find('"', obj_start);
+                if (room_id_start == std::string::npos || room_id_start >= m_read_pos)
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                auto room_id_end = content.find('"', room_id_start + 1U);
+                if (room_id_end == std::string::npos)
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                auto room_id = content.substr(room_id_start + 1U, room_id_end - room_id_start - 1U);
+                // Find user_id after "m.read": {
+                auto const user_obj_start = content.find('{', m_read_pos);
+                if (user_obj_start == std::string::npos)
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                auto user_id_start = content.find('"', user_obj_start);
+                if (user_id_start == std::string::npos)
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                auto user_id_end = content.find('"', user_id_start + 1U);
+                if (user_id_end == std::string::npos)
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                auto user_id = content.substr(user_id_start + 1U, user_id_end - user_id_start - 1U);
+                // Find event_id inside the user's object
+                auto const event_key_pos = content.find("\"event_id\"", user_id_end);
+                std::string event_id;
+                if (event_key_pos != std::string::npos)
+                {
+                    auto event_val_start = content.find('"', content.find(':', event_key_pos));
+                    if (event_val_start != std::string::npos)
+                    {
+                        auto event_val_end = content.find('"', event_val_start + 1U);
+                        if (event_val_end != std::string::npos)
+                        {
+                            event_id = content.substr(event_val_start + 1U, event_val_end - event_val_start - 1U);
+                        }
+                    }
+                }
+                // Find ts
+                auto const ts_key_pos = content.find("\"ts\"", user_id_end);
+                auto ts = std::uint64_t{0U};
+                if (ts_key_pos != std::string::npos)
+                {
+                    auto const ts_val_start = content.find_first_of("0123456789", ts_key_pos);
+                    if (ts_val_start != std::string::npos)
+                    {
+                        ts = std::strtoull(content.data() + ts_val_start, nullptr, 10U);
+                    }
+                }
+                auto existing = std::ranges::find_if(rt->receipts, [&](auto const& r) {
+                    return r.room_id == room_id && r.user_id == user_id;
+                });
+                if (existing != rt->receipts.end())
+                {
+                    existing->event_id = event_id;
+                    existing->ts = ts;
+                }
+                else
+                {
+                    rt->receipts.push_back({std::string{room_id}, "m.read", std::string{user_id}, event_id, ts});
+                }
+                return {federation::EduDispositionStatus::accepted, {}};
+            }
+            case federation::EduType::presence:
+            {
+                // content: { push: [ { user_id, presence } ] }
+                auto const& content = envelope.content_json;
+                auto const push_pos = content.find("\"push\"");
+                if (push_pos == std::string::npos)
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                // Parse each presence entry in the push array
+                auto const arr_start = content.find('[', push_pos);
+                if (arr_start == std::string::npos)
+                {
+                    return {federation::EduDispositionStatus::accepted, {}};
+                }
+                auto pos = arr_start + 1U;
+                while (pos < content.size())
+                {
+                    auto const obj_pos = content.find('{', pos);
+                    if (obj_pos == std::string::npos)
+                    {
+                        break;
+                    }
+                    auto const obj_end = content.find('}', obj_pos);
+                    if (obj_end == std::string::npos)
+                    {
+                        break;
+                    }
+                    auto const obj = content.substr(obj_pos, obj_end - obj_pos + 1U);
+                    auto user_id = std::string{};
+                    auto presence = std::string{"offline"};
+                    auto uid_pos = obj.find("\"user_id\"");
+                    if (uid_pos != std::string::npos)
+                    {
+                        auto uid_val_start = obj.find('"', obj.find(':', uid_pos));
+                        if (uid_val_start != std::string::npos)
+                        {
+                            auto uid_val_end = obj.find('"', uid_val_start + 1U);
+                            if (uid_val_end != std::string::npos)
+                            {
+                                user_id = obj.substr(uid_val_start + 1U, uid_val_end - uid_val_start - 1U);
+                            }
+                        }
+                    }
+                    auto pres_pos = obj.find("\"presence\"");
+                    if (pres_pos != std::string::npos)
+                    {
+                        auto pres_val_start = obj.find('"', obj.find(':', pres_pos));
+                        if (pres_val_start != std::string::npos)
+                        {
+                            auto pres_val_end = obj.find('"', pres_val_start + 1U);
+                            if (pres_val_end != std::string::npos)
+                            {
+                                presence = obj.substr(pres_val_start + 1U, pres_val_end - pres_val_start - 1U);
+                            }
+                        }
+                    }
+                    if (!user_id.empty())
+                    {
+                        auto state = database::PersistentPresence{};
+                        state.user_id = user_id;
+                        state.presence = presence;
+                        database::upsert_presence(rt->database.persistent_store, std::move(state));
+                    }
+                    pos = obj_end + 1U;
+                }
+                if (rt->sync_notifier != nullptr)
+                {
+                    rt->sync_notifier->publish(rt->database.persistent_store.next_sync_stream_id);
+                }
+                return {federation::EduDispositionStatus::accepted, {}};
+            }
+            case federation::EduType::direct_to_device:
+            {
+                // content: { sender, type, message_id?, messages: { <user_id>: { <device_id>: content } } }
+                auto const& content = envelope.content_json;
+                auto sender = std::string{};
+                auto msg_type = std::string{};
+                auto sender_pos = content.find("\"sender\"");
+                if (sender_pos != std::string::npos)
+                {
+                    auto val_start = content.find('"', content.find(':', sender_pos));
+                    if (val_start != std::string::npos)
+                    {
+                        auto val_end = content.find('"', val_start + 1U);
+                        if (val_end != std::string::npos)
+                        {
+                            sender = content.substr(val_start + 1U, val_end - val_start - 1U);
+                        }
+                    }
+                }
+                auto type_pos = content.find("\"type\"");
+                if (type_pos != std::string::npos)
+                {
+                    auto val_start = content.find('"', content.find(':', type_pos));
+                    if (val_start != std::string::npos)
+                    {
+                        auto val_end = content.find('"', val_start + 1U);
+                        if (val_end != std::string::npos)
+                        {
+                            msg_type = content.substr(val_start + 1U, val_end - val_start - 1U);
+                        }
+                    }
+                }
+                // Enumerate messages: { user_id: { device_id: content } }
+                auto messages_pos = content.find("\"messages\"");
+                if (messages_pos != std::string::npos && !sender.empty() && !msg_type.empty())
+                {
+                    auto messages_obj_start = content.find('{', messages_pos);
+                    if (messages_obj_start != std::string::npos)
+                    {
+                        auto scan = messages_obj_start + 1U;
+                        while (scan < content.size())
+                        {
+                            auto target_user_start = content.find('"', scan);
+                            if (target_user_start == std::string::npos)
+                            {
+                                break;
+                            }
+                            auto target_user_end = content.find('"', target_user_start + 1U);
+                            if (target_user_end == std::string::npos)
+                            {
+                                break;
+                            }
+                            auto target_user_id = content.substr(target_user_start + 1U, target_user_end - target_user_start - 1U);
+                            // Find the device map for this user
+                            auto device_obj_start = content.find('{', target_user_end);
+                            if (device_obj_start == std::string::npos)
+                            {
+                                break;
+                            }
+                            auto device_obj_end = content.find('}', device_obj_start);
+                            if (device_obj_end == std::string::npos)
+                            {
+                                break;
+                            }
+                            // Enumerate devices within this user's object
+                            auto dev_scan = device_obj_start + 1U;
+                            while (dev_scan < device_obj_end)
+                            {
+                                auto dev_key_start = content.find('"', dev_scan);
+                                if (dev_key_start == std::string::npos || dev_key_start >= device_obj_end)
+                                {
+                                    break;
+                                }
+                                auto dev_key_end = content.find('"', dev_key_start + 1U);
+                                if (dev_key_end == std::string::npos || dev_key_end >= device_obj_end)
+                                {
+                                    break;
+                                }
+                                auto target_device_id = content.substr(dev_key_start + 1U, dev_key_end - dev_key_start - 1U);
+                                // The value is the content JSON object
+                                auto content_start = content.find('{', dev_key_end);
+                                if (content_start == std::string::npos || content_start >= device_obj_end)
+                                {
+                                    break;
+                                }
+                                // Find matching closing brace
+                                auto depth = 1U;
+                                auto content_end = content_start + 1U;
+                                while (content_end < content.size() && depth > 0U)
+                                {
+                                    if (content[content_end] == '{')
+                                    {
+                                        ++depth;
+                                    }
+                                    else if (content[content_end] == '}')
+                                    {
+                                        --depth;
+                                    }
+                                    ++content_end;
+                                }
+                                auto msg = database::PersistentToDeviceMessage{};
+                                msg.sender_user_id = sender;
+                                msg.target_user_id = target_user_id;
+                                msg.target_device_id = target_device_id;
+                                msg.message_type = msg_type;
+                                msg.content_json = content.substr(content_start, content_end - content_start);
+                                database::enqueue_to_device_message(rt->database.persistent_store, std::move(msg));
+                                dev_scan = content_end;
+                            }
+                            scan = device_obj_end + 1U;
+                        }
+                    }
+                }
+                if (rt->sync_notifier != nullptr)
+                {
+                    rt->sync_notifier->publish(rt->database.persistent_store.next_sync_stream_id);
+                }
+                return {federation::EduDispositionStatus::accepted, {}};
+            }
+            case federation::EduType::device_list_update:
+            {
+                // content: { user_id, device_id?, stream_id? }
+                auto const& content = envelope.content_json;
+                auto user_id = std::string{};
+                auto uid_pos = content.find("\"user_id\"");
+                if (uid_pos != std::string::npos)
+                {
+                    auto val_start = content.find('"', content.find(':', uid_pos));
+                    if (val_start != std::string::npos)
+                    {
+                        auto val_end = content.find('"', val_start + 1U);
+                        if (val_end != std::string::npos)
+                        {
+                            user_id = content.substr(val_start + 1U, val_end - val_start - 1U);
+                        }
+                    }
+                }
+                if (!user_id.empty())
+                {
+                    // Record for all local users who may need to re-fetch keys
+                    for (auto const& user : rt->database.persistent_store.users)
+                    {
+                        auto change = database::PersistentDeviceListChange{};
+                        change.observer_user_id = user.user_id;
+                        change.subject_user_id = user_id;
+                        change.change_type = "changed";
+                        database::record_device_list_change(rt->database.persistent_store, std::move(change));
+                    }
+                }
+                if (rt->sync_notifier != nullptr)
+                {
+                    rt->sync_notifier->publish(rt->database.persistent_store.next_sync_stream_id);
+                }
+                return {federation::EduDispositionStatus::accepted, {}};
+            }
+            default:
+                return {federation::EduDispositionStatus::dropped_unknown_type, "unhandled EDU type"};
+            }
+        };
+
         runtime.federation.state_conflict_resolver = [rt](federation::PduStateConflictContext const& context)
             -> federation::PduIngestionResult {
             return federation::apply_state_resolution_v2(

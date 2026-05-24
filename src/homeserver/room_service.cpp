@@ -7,7 +7,10 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/events/event.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
@@ -80,6 +83,71 @@ namespace
         return std::ranges::any_of(room.members, [user_id](std::string const& member) {
             return member == user_id;
         });
+    }
+
+    // Extract the server name from a Matrix room ID. Room IDs have the form
+    // !opaque:server_name — the server name is everything after the last ':'.
+    [[nodiscard]] auto server_name_from_room_id(std::string_view room_id) -> std::string_view
+    {
+        auto const pos = room_id.rfind(':');
+        return pos == std::string_view::npos ? std::string_view{} : room_id.substr(pos + 1);
+    }
+
+    // Perform a single synchronous outbound federation call. Returns the raw
+    // response body on success (HTTP 2xx), or an error description on failure.
+    [[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime,
+                                                  federation::OutboundTransaction const& transaction,
+                                                  std::string_view diagnostic_event)
+        -> std::pair<bool, std::string>
+    {
+        if (runtime.outbound_client == nullptr || runtime.discovery_network == nullptr)
+        {
+            log_diagnostic(diagnostic_event, {
+                                                  {"reason", "federation infrastructure not available", false}
+            });
+            return {false, "federation not available"};
+        }
+        auto const discovery_timeout = std::uint32_t{30U};
+        auto const resolution =
+            federation::discover_server(transaction.destination, *runtime.discovery_network, discovery_timeout);
+        if (!resolution.discovery_allowed)
+        {
+            log_diagnostic(diagnostic_event,
+                           {
+                               {"destination", transaction.destination,                   false},
+                               {"reason",      "server discovery failed",                  false}
+            });
+            return {false, "server discovery failed"};
+        }
+        auto call = federation::OutboundCall{};
+        call.transaction = transaction;
+        call.resolved_host = resolution.resolved_host;
+        call.resolved_port = resolution.resolved_port;
+        call.pinned_addresses = resolution.pinned_addresses;
+        call.key_id = "ed25519:auto";
+        call.secret_key =
+            std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
+                         runtime.database.signing_secret_key.size()};
+        auto destination = federation::FederationDestination{};
+        destination.server_name = transaction.destination;
+        auto const now_ts = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        auto const result =
+            federation::perform_outbound_transaction(*runtime.outbound_client, call, destination, now_ts);
+        if (!result.sent || result.http_status < 200U || result.http_status >= 300U)
+        {
+            log_diagnostic(diagnostic_event,
+                           {
+                               {"destination", transaction.destination,               false},
+                               {"http_status", std::to_string(result.http_status),    false},
+                               {"reason",      result.error.empty() ? "non-2xx" : result.error, false}
+            });
+            return {false, result.error.empty() ? "remote server returned " + std::to_string(result.http_status)
+                                                 : result.error};
+        }
+        return {true, result.response_body};
     }
 
     auto generate_random_signing_keypair(std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
@@ -611,13 +679,285 @@ namespace
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
-        log_diagnostic("room.join.rejected", {
-                                                 {"actor",   *user_id,             false},
-                                                 {"room_id", std::string{room_id}, false},
-                                                 {"status",  "403",                false},
-                                                 {"reason",  "unknown room",       false}
+        auto const remote_server = server_name_from_room_id(room_id);
+        if (remote_server.empty() || remote_server == runtime.config.server().server_name)
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,             false},
+                                                     {"room_id", std::string{room_id}, false},
+                                                     {"status",  "403",                false},
+                                                     {"reason",  "unknown room",       false}
+            });
+            return make_operation_result(false, {}, "unknown room", 403U);
+        }
+        // Remote room: attempt make_join → sign → send_join via the
+        // remote homeserver that originated the room.
+        wire_federation_callbacks(runtime);
+        auto const our_server = runtime.config.server().server_name;
+        auto const supported_versions = std::vector<std::string>{"12"};
+        auto make_join_tx = federation::make_outbound_make_membership(
+            federation::FederationEndpoint::make_join, remote_server, our_server, room_id, *user_id,
+            supported_versions);
+        log_diagnostic("room.join.remote.make_join",
+                       {
+                           {"actor",        *user_id,                     false},
+                           {"room_id",      std::string{room_id},         false},
+                           {"remote_server", std::string{remote_server}, false}
         });
-        return make_operation_result(false, {}, "unknown room", 403U);
+        auto const [make_ok, make_body] =
+            perform_sync_outbound_call(runtime, make_join_tx, "room.join.remote.make_join_failed");
+        if (!make_ok)
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,             false},
+                                                     {"room_id", std::string{room_id}, false},
+                                                     {"status",  "502",                false},
+                                                     {"reason",  "make_join failed",   false}
+            });
+            return make_operation_result(false, {}, "make_join failed: " + make_body, 502U);
+        }
+        // Parse the make_join response: { "room_version": "12", "event": {...} }
+        auto const make_response = canonicaljson::parse_lossless(make_body);
+        auto const* make_obj = std::get_if<canonicaljson::Object>(&make_response.value.storage());
+        if (make_obj == nullptr)
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                  false},
+                                                     {"room_id", std::string{room_id},      false},
+                                                     {"status",  "502",                     false},
+                                                     {"reason",  "malformed make_join body", false}
+            });
+            return make_operation_result(false, {}, "malformed make_join response", 502U);
+        }
+        // Extract the "event" member (an object, not a string) from the
+        // make_join response.
+        auto const* event_member_value = object_member(*make_obj, "event");
+        auto const* event_inner = event_member_value == nullptr
+                                      ? nullptr
+                                      : std::get_if<canonicaljson::Object>(&event_member_value->storage());
+        if (event_inner == nullptr)
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                       false},
+                                                     {"room_id", std::string{room_id},           false},
+                                                     {"status",  "502",                          false},
+                                                     {"reason",  "make_join missing event field", false}
+            });
+            return make_operation_result(false, {}, "make_join missing event field", 502U);
+        }
+        // The template event arrives without origin_server_ts; inject it.
+        auto const now_ms = static_cast<std::int64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::system_clock::now().time_since_epoch())
+                .count());
+        auto event_object = canonicaljson::Object{};
+        for (auto const& member : *event_inner)
+        {
+            if (member.key == "origin_server_ts")
+            {
+                event_object.push_back(
+                    canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
+            }
+            else
+            {
+                event_object.push_back(member);
+            }
+        }
+        // Ensure origin_server_ts is present even if the remote omitted it.
+        auto const has_ost = std::ranges::any_of(*event_inner,
+                                                  [](canonicaljson::Member const& m) { return m.key == "origin_server_ts"; });
+        if (!has_ost)
+        {
+            event_object.push_back(
+                canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
+        }
+        auto event_to_sign = canonicaljson::Value{event_object};
+        // Sign the event with our server's signing key.
+        auto key = ensure_runtime_server_signing_key(runtime);
+        if (!key.has_value())
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                        false},
+                                                     {"room_id", std::string{room_id},            false},
+                                                     {"status",  "500",                           false},
+                                                     {"reason",  "server signing key unavailable", false}
+            });
+            return make_operation_result(false, {}, "server signing key unavailable", 500U);
+        }
+        auto key_store = RuntimeSigningKeyStore{our_server, *key};
+        auto secret_key_array = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        if (runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES)
+        {
+            std::copy(runtime.database.signing_secret_key.begin(), runtime.database.signing_secret_key.end(),
+                      secret_key_array.begin());
+        }
+        auto provider = RuntimeEd25519Provider{std::move(secret_key_array)};
+        auto const* policy = rooms::find_room_version_policy("12");
+        if (policy == nullptr)
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                    false},
+                                                     {"room_id", std::string{room_id},        false},
+                                                     {"status",  "500",                       false},
+                                                     {"reason",  "room version policy missing", false}
+            });
+            return make_operation_result(false, {}, "room version policy missing", 500U);
+        }
+        auto const signed_event = events::sign_event_for_server(event_to_sign, *policy, key_store, provider,
+                                                                 our_server);
+        if (!signed_event.error.empty())
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,              false},
+                                                     {"room_id", std::string{room_id}, false},
+                                                     {"status",  "500",                false},
+                                                     {"reason",  signed_event.error,   false}
+            });
+            return make_operation_result(false, {}, "event signing failed", 500U);
+        }
+        // Compute the event_id from the signed event (room v10+ uses
+        // reference hash-based event IDs).
+        auto const signed_value = canonicaljson::parse_lossless(signed_event.event_json);
+        auto const event_id_result = events::make_reference_hash_event_id(signed_value.value, *policy);
+        if (event_id_result.error.empty() && event_id_result.event_id.empty())
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                    false},
+                                                     {"room_id", std::string{room_id},        false},
+                                                     {"status",  "500",                       false},
+                                                     {"reason",  "event_id computation failed", false}
+            });
+            return make_operation_result(false, {}, "event_id computation failed", 500U);
+        }
+        // Send the signed join event via send_join.
+        auto send_join_tx = federation::make_outbound_send_membership(
+            federation::FederationEndpoint::send_join, remote_server, our_server, room_id,
+            event_id_result.event_id, signed_event.event_json);
+        log_diagnostic("room.join.remote.send_join",
+                       {
+                           {"actor",        *user_id,                      false},
+                           {"room_id",      std::string{room_id},          false},
+                           {"remote_server", std::string{remote_server},  false},
+                           {"event_id",     event_id_result.event_id,      false}
+        });
+        auto const [send_ok, send_body] =
+            perform_sync_outbound_call(runtime, send_join_tx, "room.join.remote.send_join_failed");
+        if (!send_ok)
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,             false},
+                                                     {"room_id", std::string{room_id}, false},
+                                                     {"status",  "502",                false},
+                                                     {"reason",  "send_join failed",   false}
+            });
+            return make_operation_result(false, {}, "send_join failed: " + send_body, 502U);
+        }
+        // Parse the send_join response. The v2 send_join response is
+        // ["200", { ... }] per MSC328; extract the inner object.
+        auto send_response = canonicaljson::parse_lossless(send_body);
+        auto const* send_obj = std::get_if<canonicaljson::Object>(&send_response.value.storage());
+        // If wrapped in ["200", {...}], unwrap the array element.
+        auto const* send_arr = std::get_if<canonicaljson::Array>(&send_response.value.storage());
+        if (send_arr != nullptr && send_arr->size() >= 2U)
+        {
+            auto const* inner = std::get_if<canonicaljson::Object>(&(*send_arr)[1].value()->storage());
+            if (inner != nullptr)
+            {
+                send_obj = inner;
+            }
+        }
+        if (send_obj == nullptr)
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                      false},
+                                                     {"room_id", std::string{room_id},          false},
+                                                     {"status",  "502",                         false},
+                                                     {"reason",  "malformed send_join response", false}
+            });
+            return make_operation_result(false, {}, "malformed send_join response", 502U);
+        }
+        // Persist the room locally with the joined user as a member.
+        // State events from the remote response are persisted to the
+        // database so the room has enough state for auth checks.
+        auto const* state_arr_member =
+            std::ranges::find_if(*send_obj, [](canonicaljson::Member const& m) { return m.key == "state"; });
+        if (state_arr_member != send_obj->end())
+        {
+            auto const* state_arr = std::get_if<canonicaljson::Array>(&state_arr_member->value.value()->storage());
+            if (state_arr != nullptr)
+            {
+                for (auto const& state_entry : *state_arr)
+                {
+                    auto const serialized = canonicaljson::serialize_canonical(state_entry);
+                    if (serialized.error == canonicaljson::CanonicalJsonError::none)
+                    {
+                        auto const parsed = events::parse_event_envelope(state_entry);
+                        if (parsed.error.empty())
+                        {
+                            auto pe = database::PersistentEvent{};
+                            pe.event_id = ""; // hash-based IDs computed elsewhere
+                            pe.room_id = parsed.event.room_id;
+                            pe.sender_user_id = parsed.event.sender;
+                            pe.json = serialized.output;
+                            pe.signatures = parsed.event.signatures;
+                            std::ignore = database::store_event(runtime.database.persistent_store, std::move(pe));
+                        }
+                    }
+                }
+            }
+        }
+        // Persist auth chain events for auth-rule resolution.
+        auto const* auth_arr_member =
+            std::ranges::find_if(*send_obj, [](canonicaljson::Member const& m) { return m.key == "auth_chain"; });
+        if (auth_arr_member != send_obj->end())
+        {
+            auto const* auth_arr = std::get_if<canonicaljson::Array>(&auth_arr_member->value.value()->storage());
+            if (auth_arr != nullptr)
+            {
+                for (auto const& auth_entry : *auth_arr)
+                {
+                    auto const serialized = canonicaljson::serialize_canonical(auth_entry);
+                    if (serialized.error == canonicaljson::CanonicalJsonError::none)
+                    {
+                        auto const parsed = events::parse_event_envelope(auth_entry);
+                        if (parsed.error.empty())
+                        {
+                            auto pe = database::PersistentEvent{};
+                            pe.event_id = "";
+                            pe.room_id = parsed.event.room_id;
+                            pe.sender_user_id = parsed.event.sender;
+                            pe.json = serialized.output;
+                            pe.signatures = parsed.event.signatures;
+                            std::ignore = database::store_event(runtime.database.persistent_store, std::move(pe));
+                        }
+                    }
+                }
+            }
+        }
+        // Create the local room record and persist the membership.
+        auto const membership_result =
+            database::store_membership(runtime.database.persistent_store, {std::string{room_id}, *user_id});
+        if (membership_result == database::MembershipStoreResult::error)
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                        false},
+                                                     {"room_id", std::string{room_id},            false},
+                                                     {"status",  "500",                           false},
+                                                     {"reason",  "membership persistence failed", false}
+            });
+            return make_operation_result(false, {}, "membership persistence failed", 500U);
+        }
+        runtime.database.rooms.push_back({std::string{room_id}, *user_id, {*user_id}, {}});
+        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.joined_remote", *user_id,
+                           room_id, "joined via federation");
+        log_diagnostic("room.join.accepted_remote", {
+                                                        {"actor",         *user_id,                              false},
+                                                        {"room_id",       std::string{room_id},                  false},
+                                                        {"remote_server", std::string{remote_server},             false},
+                                                        {"event_id",      event_id_result.event_id,              false},
+                                                        {"member_count",  std::to_string(runtime.database.rooms.back().members.size()), false}
+        });
+        return make_operation_result(true, std::string{room_id});
     }
     if (!room_has_member(*room, *user_id))
     {

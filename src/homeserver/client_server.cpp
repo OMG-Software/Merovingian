@@ -9,7 +9,9 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/http/rate_limit.hpp"
 #include "merovingian/http/request.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -57,6 +59,80 @@ namespace
     [[nodiscard]] auto ends_with(std::string_view v, std::string_view suffix) noexcept -> bool
     {
         return v.size() >= suffix.size() && v.substr(v.size() - suffix.size()) == suffix;
+    }
+
+    // Collect the unique remote server names that have members in a room,
+    // excluding the local server. Used to federate outbound EDUs and PDUs.
+    [[nodiscard]] auto remote_servers_in_room(HomeserverRuntime const& runtime, LocalRoom const& room)
+        -> std::vector<std::string>
+    {
+        auto const& server_name = runtime.config.server().server_name;
+        auto servers = std::vector<std::string>{};
+        for (auto const& member : room.members)
+        {
+            auto const colon = member.rfind(':');
+            if (colon == std::string::npos)
+            {
+                continue;
+            }
+            auto const member_server = member.substr(colon + 1);
+            if (member_server != server_name &&
+                std::ranges::find(servers, member_server) == servers.end())
+            {
+                servers.emplace_back(member_server);
+            }
+        }
+        return servers;
+    }
+
+    // Dispatch an EDU to all remote servers that have members in the given room.
+    // The EDU is wrapped in a federation transaction with empty PDUs. Returns the
+    // number of destinations the EDU was enqueued to.
+    auto dispatch_outbound_edu(HomeserverRuntime& runtime, LocalRoom const& room, std::string_view edu_type,
+                               std::string_view edu_content_json) -> std::size_t
+    {
+        wire_federation_callbacks(runtime);
+        if (runtime.dispatch_worker == nullptr)
+        {
+            return 0U;
+        }
+        auto const destinations = remote_servers_in_room(runtime, room);
+        if (destinations.empty())
+        {
+            return 0U;
+        }
+        auto const& server_name = runtime.config.server().server_name;
+        auto edu_value = canonicaljson::parse_lossless(edu_content_json);
+        if (edu_value.error != canonicaljson::ParseError::none)
+        {
+            return 0U;
+        }
+        auto edu_obj = canonicaljson::Object{};
+        edu_obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{edu_type}}));
+        edu_obj.push_back(canonicaljson::make_member("content", std::move(edu_value)));
+        auto edus_array = canonicaljson::Array{};
+        edus_array.push_back(canonicaljson::Value{std::move(edu_obj)});
+        auto tx_root = canonicaljson::Object{};
+        tx_root.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Array{}}));
+        tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{std::move(edus_array)}));
+        auto const tx_body_result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
+        if (tx_body_result.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return 0U;
+        }
+        auto const& tx_body = tx_body_result.output;
+        auto tx_id = std::to_string(runtime.database.next_session_id++);
+        auto enqueued = std::size_t{0U};
+        for (auto const& destination : destinations)
+        {
+            auto target = "/_matrix/federation/v1/send/" + tx_id;
+            auto transaction = federation::make_outbound_transaction(destination, "PUT", target, server_name, tx_body);
+            if (runtime.dispatch_worker->enqueue(std::move(transaction)))
+            {
+                ++enqueued;
+            }
+        }
+        return enqueued;
     }
 
     // Generate a 32-character lowercase hex filter ID from 16 random bytes.
@@ -1705,7 +1781,54 @@ namespace
             }
             return resp(200U, key_api_success_body(route.endpoint));
         case auth::KeyApiEndpoint::device_list_update:
-            return err(404U, "M_UNRECOGNIZED", "route not found");
+        {
+            // PUT /_matrix/client/v3/devices/{deviceId} — update a device's
+            // display name and notify all local users who share a room with
+            // this user that their device list has changed.
+            auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
+            auto const device_id_from_path = req.target.substr(dev_prefix.size());
+            auto* device = find_device(rt, user, device_id_from_path);
+            if (device == nullptr)
+            {
+                return err(404U, "M_NOT_FOUND", "device not found");
+            }
+            auto const body = parse_device_update_body(req.body);
+            if (!body.has_value())
+            {
+                return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
+            }
+            if (!database::update_device_display_name(rt.homeserver.database.persistent_store, user,
+                                                      device_id_from_path, body->display_name))
+            {
+                return err(500U, "M_UNKNOWN", "device update persistence failed");
+            }
+            device->display_name = body->display_name;
+            // Record a device list change for every local user who shares a
+            // room with the updated user so their /sync streams surface it.
+            for (auto const& room : rt.homeserver.database.rooms)
+            {
+                auto const is_member = std::ranges::any_of(room.members, [user](auto const& m) {
+                    return m == user;
+                });
+                if (!is_member)
+                {
+                    continue;
+                }
+                for (auto const& member : room.members)
+                {
+                    if (member == user)
+                    {
+                        continue;
+                    }
+                    auto const change = database::PersistentDeviceListChange{
+                        0U, member, std::string{user}, "changed"};
+                    std::ignore = record_device_list_change(rt, change);
+                }
+            }
+            append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", user,
+                               device->device_id, "display_name_updated");
+            return resp(200U, "{}");
+        }
         }
         return err(404U, "M_UNRECOGNIZED", "route not found");
     }
@@ -2244,7 +2367,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
 
     auto const key_route = auth::match_key_api_route(req.method, req.target);
-    if (key_route.matched && key_route.route.endpoint != auth::KeyApiEndpoint::device_list_update)
+    if (key_route.matched)
     {
         auto const device_id = first_device_id(rt, *user);
         return handle_key_api_route(rt, key_route.route, *user, device_id, req);
@@ -2263,29 +2386,6 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             return err(404U, "M_NOT_FOUND", "device not found");
         }
         return resp(200U, device_json(*device));
-    }
-    if (req.method == "PUT" && starts_with(req.target, dev_prefix))
-    {
-        auto const device_id = std::string_view{req.target}.substr(dev_prefix.size());
-        auto* device = find_device(rt, *user, device_id);
-        if (device == nullptr)
-        {
-            return err(404U, "M_NOT_FOUND", "device not found");
-        }
-        auto const body = parse_device_update_body(req.body);
-        if (!body.has_value())
-        {
-            return err(400U, "M_BAD_JSON", "device update body must be Matrix JSON");
-        }
-        if (!database::update_device_display_name(rt.homeserver.database.persistent_store, *user, device_id,
-                                                  body->display_name))
-        {
-            return err(500U, "M_UNKNOWN", "device update persistence failed");
-        }
-        device->display_name = body->display_name;
-        append_local_audit(rt.homeserver.database, observability::AuditCategory::auth, "device.updated", *user,
-                           device->device_id, "display_name_updated");
-        return resp(200U, "{}");
     }
     if (req.method == "DELETE" && starts_with(req.target, dev_prefix))
     {
@@ -2543,8 +2643,26 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 log_diagnostic("room.typing.accepted",
                                {{"actor",   *user,           false},
                                 {"room_id", typing->room_id, false}});
-                // Typing notifications are EDUs in Matrix federation; accept the
-                // request and return success without persisting transient state.
+                // Federate the typing EDU to remote servers in the room.
+                auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms,
+                    [&typing](auto const& r) { return r.room_id == typing->room_id; });
+                if (room_it != rt.homeserver.database.rooms.end())
+                {
+                    auto const edu_content = json_serialize(json_obj({
+                        json_member("room_id", json_str(typing->room_id)),
+                        json_member("user_id", json_str(*user)),
+                        json_member("typing", json_str("true")),
+                    }));
+                    auto const enqueued =
+                        dispatch_outbound_edu(rt.homeserver, *room_it, "m.typing", edu_content);
+                    if (enqueued > 0U)
+                    {
+                        log_diagnostic("room.typing.dispatched",
+                                       {{"actor",        *user,            false},
+                                        {"room_id",      typing->room_id,  false},
+                                        {"destinations", std::to_string(enqueued), false}});
+                    }
+                }
                 return resp(200U, json_serialize(json_obj({})));
             }
         }
@@ -2623,6 +2741,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         }
         // POST /_matrix/client/v3/rooms/{roomId}/read_markers
         // Read receipts are transient client-side state; accept without persisting.
+        // Federate m.receipt EDU to remote servers in the room.
         if (req.method == "POST" && suffix.size() > read_markers_s.size() &&
             suffix.substr(suffix.size() - read_markers_s.size()) == read_markers_s)
         {
@@ -2631,6 +2750,96 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             log_diagnostic("room.read_markers.accepted",
                            {{"actor",   *user,   false},
                             {"room_id", room_id, false}});
+            // Extract the m.read event_id from the body to federate as a
+            // receipt EDU. The receipt content follows the Matrix spec shape:
+            // { "$roomId": { "m.read": { "$userId": { "event_ids": ["$eventId"],
+            //   "data": { ... } } } } }
+            auto const receipt_body = canonicaljson::parse_lossless(req.body);
+            auto const* body_obj = std::get_if<canonicaljson::Object>(&receipt_body.value.storage());
+            if (body_obj != nullptr)
+            {
+                auto const* fully_read = string_member(*body_obj, "m.fully_read");
+                auto const event_id = fully_read != nullptr ? std::string{*fully_read} : std::string{};
+                if (!event_id.empty())
+                {
+                    auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms,
+                        [&room_id](auto const& r) { return r.room_id == room_id; });
+                    if (room_it != rt.homeserver.database.rooms.end())
+                    {
+                        auto const now_ts = static_cast<std::int64_t>(
+                            std::chrono::duration_cast<std::chrono::milliseconds>(
+                                std::chrono::system_clock::now().time_since_epoch())
+                                .count());
+                        // Build the receipt EDU content per Matrix spec.
+                        auto receipt_content = canonicaljson::Object{};
+                        auto user_receipts = canonicaljson::Object{};
+                        user_receipts.push_back(canonicaljson::make_member(
+                            "event_ids", canonicaljson::Value{canonicaljson::Array{canonicaljson::Value{event_id}}}));
+                        user_receipts.push_back(
+                            canonicaljson::make_member("ts", canonicaljson::Value{now_ts}));
+                        auto read_type = canonicaljson::Object{};
+                        read_type.push_back(canonicaljson::make_member(*user, canonicaljson::Value{std::move(user_receipts)}));
+                        receipt_content.push_back(
+                            canonicaljson::make_member(room_id, canonicaljson::Value{std::move(read_type)}));
+                        auto const edu_content = canonicaljson::serialize(canonicaljson::Value{std::move(receipt_content)});
+                        if (edu_content.error == canonicaljson::CanonicalJsonError::none)
+                        {
+                            auto const enqueued =
+                                dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt", edu_content.output);
+                            if (enqueued > 0U)
+                            {
+                                log_diagnostic("room.read_markers.dispatched",
+                                               {{"actor",        *user,            false},
+                                                {"room_id",      room_id,           false},
+                                                {"destinations", std::to_string(enqueued), false}});
+                            }
+                        }
+                    }
+                }
+            }
+            return resp(200U, json_serialize(json_obj({})));
+        }
+    }
+
+    // PUT /_matrix/client/v3/presence/{userId}/status
+    // Sets the presence state for the authenticated user.
+    auto constexpr presence_prefix = std::string_view{"/_matrix/client/v3/presence/"};
+    auto constexpr presence_suffix = std::string_view{"/status"};
+    if (req.method == "PUT" && starts_with(req.target, presence_prefix))
+    {
+        auto const path_after_prefix = std::string_view{req.target}.substr(presence_prefix.size());
+        auto const suffix_pos = path_after_prefix.rfind(presence_suffix);
+        if (suffix_pos != std::string_view::npos)
+        {
+            auto const user_id_target =
+                core::percent_decode_path_component(path_after_prefix.substr(0U, suffix_pos));
+            if (user_id_target != *user)
+            {
+                return err(403U, "M_FORBIDDEN", "cannot set presence for another user");
+            }
+            auto const body = canonicaljson::parse_lossless(req.body);
+            auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
+            if (body_obj == nullptr)
+            {
+                return err(400U, "M_BAD_JSON", "presence body must be Matrix JSON");
+            }
+            auto const* presence_str = string_member(*body_obj, "presence");
+            auto const presence_state = presence_str != nullptr ? *presence_str : std::string{"offline"};
+            auto const* status_msg = string_member(*body_obj, "status_msg");
+            auto state = database::PersistentPresence{};
+            state.stream_id = 0U;
+            state.user_id = std::string{*user};
+            state.presence = presence_state;
+            state.status_msg = status_msg != nullptr ? *status_msg : std::string{};
+            state.last_active_ago = 0;
+            state.currently_active = (presence_state == "online");
+            if (!set_presence(rt, state))
+            {
+                return err(500U, "M_UNKNOWN", "presence persistence failed");
+            }
+            log_diagnostic("presence.set",
+                           {{"actor", *user, false},
+                            {"presence", presence_state, false}});
             return resp(200U, json_serialize(json_obj({})));
         }
     }

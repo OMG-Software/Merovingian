@@ -65,6 +65,22 @@ struct LocalDatabase final
     std::uint64_t next_stream_ordering{1U};
 };
 
+struct InboundTypingUser final
+{
+    std::string room_id{};
+    std::string user_id{};
+    bool typing{false};
+};
+
+struct InboundReceipt final
+{
+    std::string room_id{};
+    std::string receipt_type{"m.read"};
+    std::string user_id{};
+    std::string event_id{};
+    std::uint64_t ts{0U};
+};
+
 struct HomeserverRuntime final
 {
     config::Config config{};
@@ -84,6 +100,11 @@ struct HomeserverRuntime final
     // callbacks use this to wake long-polling /sync requests after
     // inbound PDU events are persisted.
     sync::SyncNotifier* sync_notifier{nullptr};
+    // Transient inbound EDU state. Typing and receipts are ephemeral in
+    // Matrix and not persisted to the database; these vectors are the
+    // in-memory source of truth for /sync ephemeral serialisation.
+    std::vector<InboundTypingUser> typing_users{};
+    std::vector<InboundReceipt> receipts{};
 };
 
 struct RuntimeStartResult final

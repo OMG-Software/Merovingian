@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.4
+
+- Wired inbound EDU sink for all five EDU types (typing, receipt, presence,
+  direct_to_device, device_list_update): federation EDUs received via
+  `PUT /_matrix/federation/v1/send/{txnId}` are now classified, validated,
+  and dispatched to the appropriate runtime handler. Typing and receipts
+  update in-memory state for `/sync`; presence, to-device, and device list
+  changes are persisted to the database and publish sync notifications.
+- Wired outbound membership into `join_room` for remote rooms: when a local
+  user joins a room that is not in the local database, the server now
+  performs a synchronous `make_join` → sign → `send_join` flow with the
+  remote homeserver, persists the returned state events and auth chain, and
+  creates the local room membership record.
+- Removed the `device_list_update` routing exclusion from the key API router
+  and wired `record_device_list_change` in the device update handler so that
+  all local users who share a room with the updated user receive a device
+  list change notification in their `/sync` stream.
+- Added outbound EDU dispatch for typing notifications and read receipts:
+  when a local user sets their typing state or posts a read marker, the
+  server now federates the corresponding `m.typing` or `m.receipt` EDU to
+  all remote servers that have members in the room.
+- Added `PUT /_matrix/client/v3/presence/{userId}/status` route that persists
+  the presence state via `set_presence` and publishes a sync notification.
+- Added `InboundTypingUser` and `InboundReceipt` structs to
+  `HomeserverRuntime` for transient EDU state used by `/sync`.
+
 ## 0.4.3
 
 - Fixed inbound PDU sync visibility: federation events received via
