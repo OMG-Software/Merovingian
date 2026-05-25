@@ -145,7 +145,7 @@ SCENARIO("send_join persists membership and returns auth chain and state",
             -> merovingian::federation::MembershipAcceptResult {
             *accept_invoked = true;
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::send_join);
-            return {true, 200U, {}, "[]", "[]"};
+            return {true, 200U, {}, {}, {}};
         };
 
         WHEN("a signed send_join request is dispatched")
@@ -214,13 +214,13 @@ SCENARIO("send_leave processes departure and returns 200",
         auto accept_invoked = std::make_shared<bool>(false);
         runtime.membership_acceptor =
             [accept_invoked](merovingian::federation::FederationEndpoint endpoint,
-                             std::string_view target_room_id,
-                             std::string_view event_id,
-                             merovingian::federation::InboundPduEnvelope const& envelope)
+                             [[maybe_unused]] std::string_view target_room_id,
+                             [[maybe_unused]] std::string_view event_id,
+                             [[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
             -> merovingian::federation::MembershipAcceptResult {
             *accept_invoked = true;
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::send_leave);
-            return {true, 200U, {}, "[]", "[]"};
+            return {true, 200U, {}, {}, {}};
         };
 
         WHEN("a signed send_leave request is dispatched")
@@ -250,10 +250,10 @@ SCENARIO("invite v2 processes inbound invite and returns signed event",
 
         auto invite_invoked = std::make_shared<bool>(false);
         runtime.invite_handler =
-            [invite_invoked](merovingian::federation::InviteRequest const& request)
+            [invite_invoked]([[maybe_unused]] merovingian::federation::InviteRequest const& request)
             -> merovingian::federation::InviteAcceptResult {
             *invite_invoked = true;
-            return {true, 200U, {}, request.invite_event_json};
+            return {true, 200U, {}, "{}"};
         };
 
         WHEN("a signed invite v2 request is dispatched")
@@ -283,10 +283,10 @@ SCENARIO("invite v1 processes inbound invite and returns signed event",
 
         auto invite_invoked = std::make_shared<bool>(false);
         runtime.invite_handler =
-            [invite_invoked](merovingian::federation::InviteRequest const& request)
+            [invite_invoked]([[maybe_unused]] merovingian::federation::InviteRequest const& request)
             -> merovingian::federation::InviteAcceptResult {
             *invite_invoked = true;
-            return {true, 200U, {}, request.invite_event_json};
+            return {true, 200U, {}, "{}"};
         };
 
         WHEN("a signed invite v1 request is dispatched")
@@ -316,10 +316,10 @@ SCENARIO("backfill returns room event history as PDU array",
 
         auto backfill_invoked = std::make_shared<bool>(false);
         runtime.backfill_provider =
-            [backfill_invoked](merovingian::federation::BackfillRequest const& request)
-            -> std::string {
+            [backfill_invoked]([[maybe_unused]] merovingian::federation::BackfillRequest const& request)
+            -> merovingian::federation::BackfillResult {
             *backfill_invoked = true;
-            return "{\"origin\":\"local.example.org\",\"pdus\":[]}";
+            return {true, 200U, {}, {}};
         };
 
         WHEN("a signed backfill request is dispatched")
