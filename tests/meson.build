@@ -154,6 +154,7 @@ if get_option ('build_tests')
       'integration/test_federation_inbound_flow.cpp',
       'integration/test_federation_outbound_flow.cpp',
       'integration/test_homeserver_vertical_slice_flow.cpp',
+      'integration/test_live_synapse_federation.cpp',
       'integration/test_http_server_listener_flow.cpp',
       'integration/test_media_repository_security.cpp',
       'integration/test_observability_flow.cpp',

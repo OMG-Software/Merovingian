@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.9
+
+- Added live Synapse federation integration tests against matrix.ping.me.uk
+  and pong.ping.me.uk. Seven test scenarios exercise real TLS, DNS, and
+  HTTPS against a production Synapse server: key fetch, version endpoint,
+  profile query, well-known discovery, full discovery + key verification
+  pipeline, and inbound probes of Merovingian's key and well-known
+  endpoints. Tagged `[live]` for selective filtering; SKIPped when the
+  remote server is unreachable so CI without network access does not fail.
+
 ## 0.4.8
 
 - Replaced the single-threaded listener model with a bounded `ThreadPool`

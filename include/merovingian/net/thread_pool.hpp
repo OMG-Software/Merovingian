@@ -11,11 +11,11 @@
 namespace merovingian::net
 {
 
-// Bounded work queue with a fixed pool of std::thread workers. Listener threads
+// Unbounded work queue with a fixed pool of std::thread workers. Listener threads
 // submit work items (typically request-handling lambdas); workers dequeue and
 // execute them concurrently. Graceful shutdown is initiated by request_stop()
-// or by destroying the pool — workers finish their current work item before
-// exiting. All threads are joined on destruction.
+// or by destroying the pool — workers drain the queue before exiting. All
+// threads are joined on destruction.
 class ThreadPool final
 {
 public:
@@ -26,14 +26,13 @@ public:
     auto operator=(ThreadPool&&) -> ThreadPool& = delete;
     ~ThreadPool();
 
-    // Enqueue a work item. The callable is invoked by the next available
-    // worker. Safe to call from any thread (including listener threads).
-    // No-op if the pool has been stopped.
-    auto submit(std::function<void()> work) -> void;
+    // Enqueue a work item. Returns true if the work was enqueued, false if
+    // the pool has been stopped (the callable is discarded). Safe to call
+    // from any thread (including listener threads).
+    [[nodiscard]] auto submit(std::function<void()> work) -> bool;
 
-    // Signal all workers to stop after finishing their current work item.
-    // No new submissions are accepted after this call. Blocks until all
-    // workers have exited.
+    // Signal all workers to stop after draining the queue. No new submissions
+    // are accepted after this call. Blocks until all workers have exited.
     auto request_stop() -> void;
 
     // Query whether the pool is still accepting work.

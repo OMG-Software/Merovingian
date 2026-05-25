@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/event_query.hpp"
@@ -716,7 +718,10 @@ namespace
                     tmpl.prev_events.push_back(evt.event_id);
                 }
             }
-            tmpl.content_json = "{\"membership\":\"" + tmpl.membership + "\"}";
+            auto content_obj = canonicaljson::Object{};
+            content_obj.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{tmpl.membership}}));
+            auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content_obj)});
+            tmpl.content_json = serialized.output;
             return tmpl;
         };
 
@@ -961,10 +966,13 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                            {
                                {"method", request.method,                                       false},
                                {"target", observability::sanitized_http_target(request.target), false},
-                               {"status", "401",                                                false},
+                               {"status", "502",                                                false},
                                {"reason", "malformed federation authorization",                 false}
             });
-            return response(401U, "malformed federation authorization");
+            // 502 rather than 401: Synapse propagates 401 from federation
+            // responses to the client, triggering an automatic logout. Returning
+            // 502 signals a server-side failure instead.
+            return response(502U, "malformed federation authorization");
         }
         auto const federation_response =
             federation::handle_inbound_federation_request(runtime.federation, *signed_request);
@@ -1170,7 +1178,10 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         }
         if (!signed_request_opt.has_value())
         {
-            return response(401U, "malformed federation authorization");
+            // 502 rather than 401: Synapse propagates 401 from federation
+            // responses to the client, triggering an automatic logout. Returning
+            // 502 signals a server-side failure instead.
+            return response(502U, "malformed federation authorization");
         }
         auto const federation_response =
             federation::handle_inbound_federation_request(runtime.federation, *signed_request_opt);

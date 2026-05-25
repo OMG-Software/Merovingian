@@ -24,9 +24,19 @@ auto log_diagnostic(std::string_view event, std::vector<observability::Structure
 ThreadPool::ThreadPool(std::size_t worker_count)
 {
     workers_.reserve(worker_count);
-    for (auto i = std::size_t{0U}; i < worker_count; ++i)
+    try
     {
-        workers_.emplace_back([this] { worker_loop(); });
+        for (auto i = std::size_t{0U}; i < worker_count; ++i)
+        {
+            workers_.emplace_back([this] { worker_loop(); });
+        }
+    }
+    catch (...)
+    {
+        // Join all threads that were successfully created before rethrowing.
+        // Without this, joinable threads would call std::terminate on destruction.
+        request_stop();
+        throw;
     }
     log_diagnostic("pool.started", {{"workers", std::to_string(worker_count), false}});
 }
@@ -36,17 +46,19 @@ ThreadPool::~ThreadPool()
     request_stop();
 }
 
-auto ThreadPool::submit(std::function<void()> work) -> void
+auto ThreadPool::submit(std::function<void()> work) -> bool
 {
     {
         auto lock = std::lock_guard{queue_mutex_};
         if (stopping_)
         {
-            return;
+            log_diagnostic("submit.dropped", {{"reason", "pool_stopped", false}});
+            return false;
         }
         queue_.push(std::move(work));
     }
     queue_cv_.notify_one();
+    return true;
 }
 
 auto ThreadPool::request_stop() -> void
@@ -87,16 +99,17 @@ auto ThreadPool::worker_loop() -> void
             {
                 return;
             }
-            if (queue_.empty())
-            {
-                continue;
-            }
+            // stopping_ is true and queue is non-empty: drain remaining items.
             work = std::move(queue_.front());
             queue_.pop();
         }
-        if (work)
+        try
         {
             work();
+        }
+        catch (...)
+        {
+            log_diagnostic("worker.exception", {{"action", "swallowed", false}});
         }
     }
 }

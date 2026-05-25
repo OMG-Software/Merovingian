@@ -257,11 +257,13 @@ SCENARIO("Signed federation request verification rejects stale bad mismatched an
             {
                 REQUIRE(accepted.accepted);
                 REQUIRE_FALSE(rejected_expired.accepted);
-                REQUIRE(rejected_expired.status == 401U);
+                REQUIRE(rejected_expired.status == 502U);
                 REQUIRE(rejected_expired.reason == "request signing key has expired");
                 REQUIRE_FALSE(rejected_mismatch.accepted);
+                REQUIRE(rejected_mismatch.status == 502U);
                 REQUIRE(rejected_mismatch.reason == "request signing key does not match origin");
                 REQUIRE_FALSE(rejected_bad_signature.accepted);
+                REQUIRE(rejected_bad_signature.status == 502U);
                 REQUIRE(rejected_bad_signature.reason == "request signature verification failed");
                 REQUIRE_FALSE(rejected_uncanonical.accepted);
                 REQUIRE(rejected_uncanonical.reason == "canonical JSON signature verification required");
@@ -491,9 +493,9 @@ SCENARIO("Inbound federation applies backoff and increments failure count", "[fe
 
             THEN("failures are counted and backoff returns 429")
             {
-                REQUIRE(first.status == 401U);
-                REQUIRE(second.status == 401U);
-                REQUIRE(third.status == 401U);
+                REQUIRE(first.status == 502U);
+                REQUIRE(second.status == 502U);
+                REQUIRE(third.status == 502U);
                 REQUIRE(runtime.remotes.front().trust.consecutive_failures == 3U);
                 REQUIRE(backoff.status == 429U);
                 REQUIRE(backoff.body == "remote backoff required");

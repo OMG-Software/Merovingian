@@ -28,12 +28,21 @@ struct HttpServeStats final
         , completed_requests{other.completed_requests.load(std::memory_order_relaxed)}
         , rejected_requests{other.rejected_requests.load(std::memory_order_relaxed)}
     {
+        other.accepted_connections.store(0U, std::memory_order_relaxed);
+        other.completed_requests.store(0U, std::memory_order_relaxed);
+        other.rejected_requests.store(0U, std::memory_order_relaxed);
     }
     auto operator=(HttpServeStats&& other) noexcept -> HttpServeStats&
     {
-        accepted_connections.store(other.accepted_connections.load(std::memory_order_relaxed), std::memory_order_relaxed);
-        completed_requests.store(other.completed_requests.load(std::memory_order_relaxed), std::memory_order_relaxed);
-        rejected_requests.store(other.rejected_requests.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        if (this != &other)
+        {
+            accepted_connections.store(other.accepted_connections.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            completed_requests.store(other.completed_requests.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            rejected_requests.store(other.rejected_requests.load(std::memory_order_relaxed), std::memory_order_relaxed);
+            other.accepted_connections.store(0U, std::memory_order_relaxed);
+            other.completed_requests.store(0U, std::memory_order_relaxed);
+            other.rejected_requests.store(0U, std::memory_order_relaxed);
+        }
         return *this;
     }
     HttpServeStats(HttpServeStats const&) = delete;

@@ -327,8 +327,10 @@ SCENARIO("Two-phase sync dispatch returns needs_wait when no data is available",
             THEN("the result is needs_wait because no new data is available")
             {
                 REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
-                REQUIRE(result.wait.since_stream_ordering >= 0U);
-                REQUIRE(result.wait.since_sync_stream_id >= 0U);
+                // Verify the wait parameters were populated from the sync state.
+                // since_stream_ordering starts at 1, but since_sync_stream_id can be 0
+                // if no sync events have been published yet.
+                REQUIRE(result.wait.since_stream_ordering > 0U);
                 REQUIRE(result.wait.timeout.count() > 0);
             }
         }

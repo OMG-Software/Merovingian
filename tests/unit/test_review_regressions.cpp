@@ -165,9 +165,13 @@ SCENARIO("Public registration enforces configured token policy and never bootstr
             THEN("only the valid token creates a non-admin user")
             {
                 // No auth field yields the UI-auth challenge (401); a present
-                // but invalid token is rejected outright (403).
+                // but invalid token is rejected outright (403). All three
+                // dispatches should complete (not request a long-poll wait).
+                REQUIRE(missing_token.status == merovingian::homeserver::DispatchResult::Status::complete);
                 REQUIRE(missing_token.response.status == 401U);
+                REQUIRE(invalid_token.status == merovingian::homeserver::DispatchResult::Status::complete);
                 REQUIRE(invalid_token.response.status == 403U);
+                REQUIRE(accepted.status == merovingian::homeserver::DispatchResult::Status::complete);
                 REQUIRE(accepted.response.status == 200U);
                 REQUIRE_FALSE(runtime.homeserver.database.users.empty());
                 REQUIRE_FALSE(runtime.homeserver.database.users.front().admin);

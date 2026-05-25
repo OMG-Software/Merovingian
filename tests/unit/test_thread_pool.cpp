@@ -16,7 +16,7 @@ SCENARIO("ThreadPool executes submitted work items", "[net][thread_pool]")
 
         WHEN("a work item is submitted")
         {
-            pool.submit([&] { executed.store(true); });
+            REQUIRE(pool.submit([&] { executed.store(true); }));
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
             THEN("the work item executes")
@@ -38,7 +38,7 @@ SCENARIO("ThreadPool processes multiple work items concurrently", "[net][thread_
         {
             for (auto i = std::size_t{0U}; i < 8U; ++i)
             {
-                pool.submit([&] { counter.fetch_add(1U); });
+                REQUIRE(pool.submit([&] { counter.fetch_add(1U); }));
             }
             std::this_thread::sleep_for(std::chrono::milliseconds{200});
 
@@ -59,11 +59,11 @@ SCENARIO("ThreadPool request_stop prevents new submissions", "[net][thread_pool]
 
         WHEN("request_stop is called and more work is submitted")
         {
-            pool.submit([&] { counter.fetch_add(1U); });
+            REQUIRE(pool.submit([&] { counter.fetch_add(1U); }));
             std::this_thread::sleep_for(std::chrono::milliseconds{50});
             pool.request_stop();
             auto const before = counter.load();
-            pool.submit([&] { counter.fetch_add(1U); });
+            REQUIRE_FALSE(pool.submit([&] { counter.fetch_add(1U); }));
             std::this_thread::sleep_for(std::chrono::milliseconds{100});
 
             THEN("the post-stop submission is ignored")

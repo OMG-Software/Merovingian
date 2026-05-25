@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.8
+Version:        0.4.9
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.9-1
+- Add live Synapse federation integration tests against matrix.ping.me.uk
+
 * Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.8-1
 - Fix runtime_lock held during /sync long-poll blocking federation dispatch
 

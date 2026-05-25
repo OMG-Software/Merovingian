@@ -451,12 +451,31 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
 
     if (result.status == DispatchResult::Status::needs_wait)
     {
-        guard.unlock();
+        // Obtain the notifier under the lock to avoid a data race with
+        // other threads that also lazily create it.
         auto& notifier = ensure_sync_notifier(runtime);
-        std::ignore = notifier.wait_for_change(result.wait.since_stream_ordering,
-                                               result.wait.since_sync_stream_id,
-                                               result.wait.timeout);
-        guard.lock();
+        guard.unlock();
+        try
+        {
+            std::ignore = notifier.wait_for_change(result.wait.since_stream_ordering,
+                                                   result.wait.since_sync_stream_id,
+                                                   result.wait.timeout);
+        }
+        catch (...)
+        {
+            // wait_for_change threw (e.g. std::system_error); fall through
+            // to re-dispatch with can_wait=false, which returns immediately.
+            log_diagnostic("sync.wait_failed", {{"reason", "exception", false}});
+        }
+        try
+        {
+            guard.lock();
+        }
+        catch (...)
+        {
+            // If we cannot re-acquire the lock, return 503.
+            return {503U, matrix_error("M_UNKNOWN", "service temporarily unavailable")};
+        }
         result = handle_client_server_request(runtime, request, false);
     }
 
@@ -507,21 +526,40 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::m
             {
                 continue;
             }
+            // Transient resource exhaustion — retry after a brief pause
+            // rather than permanently killing the listener thread.
+            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
+            {
+                log_diagnostic("connection.accept_retry", {
+                                                              {"errno", std::to_string(errno), false}
+                });
+                ::usleep(100000);
+                continue;
+            }
             log_diagnostic("connection.accept_failed", {
                                                            {"errno", std::to_string(errno), false}
             });
             return;
         }
+        // Release from SocketHandle so the fd ownership transfers into the
+        // pool lambda. If the pool is stopping, submit returns false and we
+        // close the fd immediately. Inside the lambda the fd is wrapped in a
+        // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
-        ++stats.accepted_connections;
-        // Move the socket handle into the pool worker. The worker owns
-        // the full request lifecycle: read → dispatch → write → close.
         auto fd = client.release();
-        pool.submit([&runtime, &runtime_lock, &stats, dispatch_mode, fd] {
+        auto submitted = pool.submit([&runtime, &runtime_lock, &stats, dispatch_mode, fd] {
+            auto guard = core::SocketHandle{fd};
+            ++stats.accepted_connections;
             serve_one_http_connection(fd, runtime, runtime_lock, stats, dispatch_mode);
             std::ignore = ::shutdown(fd, SHUT_RDWR);
-            ::close(fd);
+            // ~SocketHandle closes fd on both normal and exceptional exit.
         });
+        if (!submitted)
+        {
+            // Pool is stopped — close the fd that nobody will handle.
+            std::ignore = ::shutdown(fd, SHUT_RDWR);
+            ::close(fd);
+        }
     }
 }
 
@@ -562,18 +600,28 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
             {
                 continue;
             }
+            if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
+            {
+                log_diagnostic("tls.connection.accept_retry", {
+                                                                   {"errno", std::to_string(errno), false}
+                });
+                ::usleep(100000);
+                continue;
+            }
             log_diagnostic("tls.connection.accept_failed", {
                                                                {"errno", std::to_string(errno), false}
             });
             return;
         }
+        // Release from SocketHandle so the fd ownership transfers into the
+        // pool lambda. If the pool is stopping, submit returns false and we
+        // close the fd immediately. Inside the lambda the fd is wrapped in a
+        // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
-        ++stats.accepted_connections;
-
-        // Move the socket handle into the pool worker. The worker
-        // performs the TLS handshake and the full request lifecycle.
         auto fd = client.release();
-        pool.submit([&tls_context, &runtime, &runtime_lock, &stats, dispatch_mode, fd] {
+        auto submitted = pool.submit([&tls_context, &runtime, &runtime_lock, &stats, dispatch_mode, fd] {
+            auto guard = core::SocketHandle{fd};
+            ++stats.accepted_connections;
             auto accepted_tls =
                 accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
             if (!accepted_tls.ok())
@@ -583,14 +631,19 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                                                              {"reason", accepted_tls.error, false}
                 });
                 std::ignore = ::shutdown(fd, SHUT_RDWR);
-                ::close(fd);
                 return;
+                // ~SocketHandle closes fd on both normal and exceptional exit.
             }
             auto stream = TlsConnectionStream{*accepted_tls.connection};
             serve_stream(stream, runtime, runtime_lock, stats, dispatch_mode);
             std::ignore = ::shutdown(fd, SHUT_RDWR);
-            ::close(fd);
+            // ~SocketHandle closes fd.
         });
+        if (!submitted)
+        {
+            std::ignore = ::shutdown(fd, SHUT_RDWR);
+            ::close(fd);
+        }
     }
 }
 
