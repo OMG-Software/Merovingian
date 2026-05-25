@@ -735,7 +735,7 @@ namespace
                                                          FederationRoute const& route, FederationRemoteRuntime& remote)
         -> FederationResponse
     {
-        (void)remote; // remote trust accounting is handled by the caller.
+        std::ignore = remote; // remote trust accounting is handled by the caller.
         switch (route.endpoint)
         {
         case FederationEndpoint::make_join:

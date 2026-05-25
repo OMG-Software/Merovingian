@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.2
+Version:        0.4.4
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,17 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.4-1
+- Wire inbound EDU sink for all five EDU types (typing, receipt, presence, to-device, device_list_update)
+- Wire outbound membership into join_room for remote rooms (make_join → sign → send_join)
+- Wire device list update route and record_device_list_change
+- Add outbound EDU dispatch for typing notifications and read receipts
+- Add PUT /presence/{userId}/status route
+
+* Sat May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.3-1
+- Fix inbound PDU sync visibility (stream_ordering and sync notification for federation events)
+- Wire outbound PDU dispatch from local events to remote servers via DispatchWorker
+
 * Sat May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.2-1
 - Fix federation invite path parsing (v1/v2 invite routes no longer emit spurious membership_path.rejected)
 - Add im.nheko.summary room summary endpoints for Nheko compatibility

@@ -466,7 +466,7 @@ auto upload_local_media(LocalMediaRepository& repository, std::string_view serve
 auto download_local_media(LocalMediaRepository& repository, std::string_view server_name, std::string_view media_id)
     -> LocalMediaDownloadResult
 {
-    (void)server_name;
+    std::ignore = server_name;
     log_diagnostic("download.dispatch", {{"media_id", std::string{media_id}, false}});
     if (!media_id_is_safe(media_id))
     {

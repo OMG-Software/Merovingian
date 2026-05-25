@@ -357,6 +357,25 @@ a non-production environment.
 - Feature (0.4.2): Added `im.nheko.summary` room summary endpoints for Nheko
   compatibility. Both `GET /summary/{roomId}` and `GET /rooms/{roomId}/summary`
   paths return room membership summaries instead of 404.
+- Bug fix (0.4.3): Inbound federation PDU events now receive `stream_ordering`
+  and trigger sync notification, so remote messages appear in `/sync` responses.
+- Feature (0.4.3): Outbound PDU dispatch wired from `send_event` to the
+  `DispatchWorker`. Local events sent to rooms with remote members are now
+  forwarded to remote servers via federation `PUT /_matrix/federation/v1/send`.
+- Feature (0.4.4): Inbound EDU sink wired for all five EDU types (typing,
+  receipt, presence, direct_to_device, device_list_update). Remote EDUs are
+  classified, validated, and dispatched to the appropriate runtime handler.
+- Feature (0.4.4): Outbound membership wired into `join_room` for remote rooms.
+  Local users joining a room not in the database now perform a synchronous
+  `make_join` → sign → `send_join` flow with the remote homeserver.
+- Feature (0.4.4): Device list update route wired. `PUT /devices/{deviceId}`
+  now records device list changes for all local room-sharers via
+  `record_device_list_change` and publishes sync notifications.
+- Feature (0.4.4): Outbound EDU dispatch for typing and receipts. Local typing
+  and read-marker requests now federate `m.typing` and `m.receipt` EDUs to
+  remote servers with members in the room.
+- Feature (0.4.4): Presence route wired. `PUT /presence/{userId}/status` now
+  persists presence state via `set_presence` and publishes sync notifications.
 
 ### Production v1.0.0
 

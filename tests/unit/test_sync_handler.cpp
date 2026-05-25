@@ -274,7 +274,7 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
         REQUIRE(started.started);
         auto& rt = started.runtime;
         auto const [alice_id, token] = register_and_login(rt);
-        (void)merovingian::homeserver::ensure_sync_notifier(rt);
+        std::ignore = merovingian::homeserver::ensure_sync_notifier(rt);
 
         WHEN("a producer pushes a to-device message mid-wait")
         {
@@ -282,7 +282,7 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
             auto const device_id = first_device_id_for(rt, alice_id);
             auto producer = std::thread{[&] {
                 std::this_thread::sleep_for(std::chrono::milliseconds{40});
-                (void)merovingian::homeserver::push_to_device_message(
+                std::ignore = merovingian::homeserver::push_to_device_message(
                     rt, {0U, "@bob:example.org", alice_id, device_id, "m.room_key", R"({"k":"v"})"});
             }};
             auto const before = std::chrono::steady_clock::now();

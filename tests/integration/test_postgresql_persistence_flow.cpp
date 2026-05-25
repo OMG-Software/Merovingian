@@ -389,7 +389,7 @@ SCENARIO("PostgreSQL role separation: runtime role cannot execute DDL",
             // If the runtime role had managed to create the table (which the
             // grant policy should prevent), drop it now to keep the database
             // tidy. The DROP runs as the migration role.
-            (void)connection.connection.execute(
+            std::ignore = connection.connection.execute(
                 {"drop_runtime_role_smoke",
                  "DROP TABLE IF EXISTS merovingian_runtime_role_smoke", {}});
 

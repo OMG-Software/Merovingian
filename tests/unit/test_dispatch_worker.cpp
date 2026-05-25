@@ -104,7 +104,7 @@ SCENARIO("Dispatch worker re-enqueues when discovery fails and stops after max r
                 for (auto attempt = 0U; attempt < 5U; ++attempt)
                 {
                     fake_now->store(fake_now->load() + 600000ULL);
-                    (void)worker.run_once();
+                    std::ignore = worker.run_once();
                 }
                 auto const summary = worker.summary();
                 REQUIRE(summary.failed >= 1U);
