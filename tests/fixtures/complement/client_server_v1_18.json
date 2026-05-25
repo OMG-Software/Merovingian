@@ -585,6 +585,129 @@
       "path": "/_matrix/client/v3/account/whoami",
       "auth_from": "refreshed_token",
       "expect_status": 401
+    },
+    {
+      "description": "Login edge case: missing type field returns 403",
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "body": {
+        "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+        "password": "CorrectHorse7!"
+      },
+      "expect_status": 403,
+      "expect_keys_present": ["errcode"]
+    },
+    {
+      "description": "Login edge case: empty body returns 400",
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "raw_body": "{}",
+      "expect_status": 400,
+      "expect_keys_present": ["errcode"]
+    },
+    {
+      "description": "Re-login alice after logout with new password",
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "body": {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+        "password": "NewCorrectHorse99!!",
+        "device_id": "DEVICE3"
+      },
+      "expect_status": 200,
+      "expect_keys_present": ["access_token"],
+      "save_string": {"alice_token_v2": "access_token"}
+    },
+    {
+      "description": "Register bob for room join tests",
+      "method": "POST",
+      "path": "/_matrix/client/v3/register",
+      "body": {
+        "username": "bob",
+        "password": "CorrectHorse7!",
+        "auth": {
+          "type": "m.login.registration_token",
+          "token": "test-registration-token"
+        }
+      },
+      "expect_status": 200,
+      "expect_keys_present": ["user_id"]
+    },
+    {
+      "description": "Login bob and save token for room operations",
+      "method": "POST",
+      "path": "/_matrix/client/v3/login",
+      "body": {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": "@bob:example.org"},
+        "password": "CorrectHorse7!",
+        "device_id": "BOB_DEVICE"
+      },
+      "expect_status": 200,
+      "expect_keys_present": ["access_token"],
+      "save_string": {"bob_token": "access_token"}
+    },
+    {
+      "description": "Create a named private room for join/leave tests",
+      "method": "POST",
+      "path": "/_matrix/client/v3/createRoom",
+      "auth_from": "alice_token_v2",
+      "body": {"name": "Conformance Room", "visibility": "private"},
+      "expect_status": 200,
+      "expect_keys_present": ["room_id"],
+      "save_string": {"named_room_id": "room_id"}
+    },
+    {
+      "description": "createRoom without auth returns 401",
+      "method": "POST",
+      "path": "/_matrix/client/v3/createRoom",
+      "body": {},
+      "expect_status": 401
+    },
+    {
+      "description": "Bob joins alice's named room",
+      "method": "POST",
+      "path": "/_matrix/client/v3/rooms/{{named_room_id}}/join",
+      "auth_from": "bob_token",
+      "body": {},
+      "expect_status": 200
+    },
+    {
+      "description": "Bob leaves the named room",
+      "method": "POST",
+      "path": "/_matrix/client/v3/rooms/{{named_room_id}}/leave",
+      "auth_from": "bob_token",
+      "body": {},
+      "expect_status": 200
+    },
+    {
+      "description": "Idempotent send: PUT same txnId twice returns same event_id",
+      "method": "PUT",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/send/m.room.message/txn-idempotent-1",
+      "auth_from": "alice_token_v2",
+      "body": {"msgtype": "m.text", "body": "idempotent test"},
+      "expect_status": 200,
+      "expect_keys_present": ["event_id"],
+      "save_string": {"idempotent_event_id": "event_id"}
+    },
+    {
+      "description": "Idempotent send: repeat PUT with same txnId returns 200",
+      "method": "PUT",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/send/m.room.message/txn-idempotent-1",
+      "auth_from": "alice_token_v2",
+      "body": {"msgtype": "m.text", "body": "idempotent test"},
+      "expect_status": 200,
+      "expect_keys_present": ["event_id"]
+    },
+    {
+      "description": "Set room name via PUT state",
+      "method": "PUT",
+      "path": "/_matrix/client/v3/rooms/{{room_id}}/state/m.room.name/",
+      "auth_from": "alice_token_v2",
+      "body": {"name": "Renamed Conformance Room"},
+      "expect_status": 200,
+      "expect_keys_present": ["event_id"]
     }
   ]
 }

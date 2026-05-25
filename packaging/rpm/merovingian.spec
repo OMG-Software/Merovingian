@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.4
+Version:        0.4.5
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 

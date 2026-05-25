@@ -1,0 +1,100 @@
+{
+  "name": "v1.18 federation inbound conformance",
+  "description": "Reference fixture documenting expected behaviors for inbound federation membership, invite, backfill, and key publishing endpoints against the Matrix v1.18 federation contract. Federation requests require Ed25519 signatures and cannot be replayed from static JSON; this file serves as the conformance specification. The C++ BDD test in test_federation_conformance.cpp implements the actual signed request dispatch.",
+  "steps": [
+    {
+      "description": "Key publishing returns self-signed verify keys",
+      "method": "GET",
+      "path": "/_matrix/key/v2/server",
+      "expect_status": 200,
+      "expect_keys_present": ["server_name", "valid_until_ts", "verify_keys"]
+    },
+    {
+      "description": "make_join returns room version and event template for a remote user",
+      "method": "GET",
+      "path": "/_matrix/federation/v1/make_join/!room:local.example.org/@remote:remote.example.org",
+      "hook": "membership_template_provider",
+      "hook_endpoint": "make_join",
+      "expect_status": 200,
+      "expect_keys_present": ["room_version", "event"]
+    },
+    {
+      "description": "send_join persists membership and returns auth chain and state",
+      "method": "PUT",
+      "path": "/_matrix/federation/v2/send_join/!room:local.example.org/$join_event:remote.example.org",
+      "hook": "membership_acceptor",
+      "hook_endpoint": "send_join",
+      "expect_status": 200,
+      "expect_keys_present": ["room_version", "origin", "auth_chain", "state"]
+    },
+    {
+      "description": "make_leave returns event template for a leaving user",
+      "method": "GET",
+      "path": "/_matrix/federation/v1/make_leave/!room:local.example.org/@remote:remote.example.org",
+      "hook": "membership_template_provider",
+      "hook_endpoint": "make_leave",
+      "expect_status": 200,
+      "expect_keys_present": ["room_version", "event"]
+    },
+    {
+      "description": "send_leave processes departure and returns 200",
+      "method": "PUT",
+      "path": "/_matrix/federation/v2/send_leave/!room:local.example.org/$leave_event:remote.example.org",
+      "hook": "membership_acceptor",
+      "hook_endpoint": "send_leave",
+      "expect_status": 200,
+      "expect_keys_present": ["room_version"]
+    },
+    {
+      "description": "invite v2 processes inbound invite and returns signed event",
+      "method": "PUT",
+      "path": "/_matrix/federation/v2/invite/!room:local.example.org/$invite_event:remote.example.org",
+      "hook": "invite_handler",
+      "hook_endpoint": "invite_v2",
+      "expect_status": 200,
+      "expect_keys_present": ["event"]
+    },
+    {
+      "description": "invite v1 processes inbound invite and returns signed event",
+      "method": "PUT",
+      "path": "/_matrix/federation/v1/invite/!room:local.example.org/$invite_event:remote.example.org",
+      "hook": "invite_handler",
+      "hook_endpoint": "invite_v1",
+      "expect_status": 200,
+      "expect_keys_present": ["event"]
+    },
+    {
+      "description": "backfill returns room event history as PDU array",
+      "method": "GET",
+      "path": "/_matrix/federation/v1/backfill/!room:local.example.org?v=$prev:local.example.org&limit=5",
+      "hook": "backfill_provider",
+      "hook_endpoint": "backfill",
+      "expect_status": 200,
+      "expect_keys_present": ["origin", "pdus"]
+    },
+    {
+      "description": "Unwired make_join returns 501 Not Implemented",
+      "method": "GET",
+      "path": "/_matrix/federation/v1/make_join/!room:local.example.org/@remote:remote.example.org",
+      "expect_status": 501
+    },
+    {
+      "description": "Unwired send_join returns 501 Not Implemented",
+      "method": "PUT",
+      "path": "/_matrix/federation/v2/send_join/!room:local.example.org/$event:remote.example.org",
+      "expect_status": 501
+    },
+    {
+      "description": "Unwired invite returns 501 Not Implemented",
+      "method": "PUT",
+      "path": "/_matrix/federation/v2/invite/!room:local.example.org/$event:remote.example.org",
+      "expect_status": 501
+    },
+    {
+      "description": "Unwired backfill returns 501 Not Implemented",
+      "method": "GET",
+      "path": "/_matrix/federation/v1/backfill/!room:local.example.org?v=$event:local.example.org&limit=5",
+      "expect_status": 501
+    }
+  ]
+}

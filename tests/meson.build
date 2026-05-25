@@ -91,6 +91,7 @@ if get_option ('build_tests')
       'unit/test_event_auth_rules.cpp',
       'unit/test_event_authorization.cpp',
       'unit/test_events.cpp',
+      'unit/test_federation_conformance.cpp',
       'unit/test_federation_event_query.cpp',
       'unit/test_federation_inbound_request.cpp',
       'unit/test_federation_key_query.cpp',
