@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.5
+
+- Extended `client_server_v1_18.json` conformance fixture with login edge
+  cases, createRoom with name and visibility, room join and leave, message
+  send idempotency, state event retrieval, and populated sync surfaces.
+  Promotes seven client-server endpoints from `partial` to `spec-covered`.
+- Added `federation_v1_18.json` reference fixture documenting expected
+  behaviors for inbound make_join, send_join, make_leave, send_leave, invite
+  (v1/v2), backfill, and key publishing against the Matrix v1.18 federation
+  contract.
+- Added `test_federation_conformance.cpp` with BDD scenarios covering all
+  nine federation conformance cases including unwired-endpoint 501 hardening.
+
 ## 0.4.4
 
 - Wired inbound EDU sink for all five EDU types (typing, receipt, presence,
