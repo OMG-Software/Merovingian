@@ -29,6 +29,12 @@ public:
         return m_fd.get();
     }
 
+    // Release ownership of the file descriptor without closing it.
+    [[nodiscard]] auto release() noexcept -> int
+    {
+        return m_fd.release();
+    }
+
     [[nodiscard]] auto valid() const noexcept -> bool
     {
         return m_fd.valid();

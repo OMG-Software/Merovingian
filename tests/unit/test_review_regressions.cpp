@@ -8,6 +8,8 @@
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 
+#include <mutex>
+
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
@@ -164,9 +166,9 @@ SCENARIO("Public registration enforces configured token policy and never bootstr
             {
                 // No auth field yields the UI-auth challenge (401); a present
                 // but invalid token is rejected outright (403).
-                REQUIRE(missing_token.status == 401U);
-                REQUIRE(invalid_token.status == 403U);
-                REQUIRE(accepted.status == 200U);
+                REQUIRE(missing_token.response.status == 401U);
+                REQUIRE(invalid_token.response.status == 403U);
+                REQUIRE(accepted.response.status == 200U);
                 REQUIRE_FALSE(runtime.homeserver.database.users.empty());
                 REQUIRE_FALSE(runtime.homeserver.database.users.front().admin);
             }
@@ -183,22 +185,23 @@ SCENARIO("Federation dispatch exposes only federation routes", "[homeserver][sec
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        auto runtime_lock = std::mutex{};
 
         WHEN("admin, client, and federation key routes are requested")
         {
             auto const admin = merovingian::homeserver::dispatch_local_http_request(
                 runtime, {"GET", "/_merovingian/admin/health", {}, {}},
-                merovingian::homeserver::HttpDispatchMode::federation);
+                merovingian::homeserver::HttpDispatchMode::federation, runtime_lock);
             auto const client_register = merovingian::homeserver::dispatch_local_http_request(
                 runtime,
                 {"POST",
                  "/_matrix/client/v3/register",
                  {},
                  merovingian::tests::registration_pipe("alice", "CorrectHorse7!")},
-                merovingian::homeserver::HttpDispatchMode::federation);
+                merovingian::homeserver::HttpDispatchMode::federation, runtime_lock);
             auto const keys = merovingian::homeserver::dispatch_local_http_request(
                 runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
-                merovingian::homeserver::HttpDispatchMode::federation);
+                merovingian::homeserver::HttpDispatchMode::federation, runtime_lock);
 
             THEN("non-federation surfaces are hidden and federation keys remain reachable")
             {

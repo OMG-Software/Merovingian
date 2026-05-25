@@ -36,7 +36,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.4.7"};
+constexpr auto version = std::string_view{"0.4.8"};
 
 struct BootstrapConfigResult final
 {
@@ -670,6 +670,7 @@ struct ListenerBinding final
 {
     auto runtime_lock = std::mutex{};
     auto stats = merovingian::homeserver::HttpServeStats{};
+    auto pool = merovingian::net::ThreadPool{4U};
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
 
@@ -678,25 +679,25 @@ struct ListenerBinding final
         // Explicit init-capture binds `target` to bindings[i] directly rather
         // than to the per-iteration alias `binding`, which would dangle once
         // the loop advances.
-        threads.emplace_back([&runtime, &runtime_lock, &shutdown, &stats, &target = binding]() {
+        threads.emplace_back([&runtime, &runtime_lock, &shutdown, &stats, &pool, &target = binding]() {
             auto const mode = target.role == merovingian::net::ListenerRole::client
                                   ? merovingian::homeserver::HttpDispatchMode::client_server
                                   : merovingian::homeserver::HttpDispatchMode::federation;
             if (target.tls_context.has_value())
             {
                 merovingian::homeserver::serve_tls_http(*target.tls_context, target.acceptor, runtime, runtime_lock,
-                                                        shutdown, stats, mode);
+                                                        shutdown, stats, mode, pool);
             }
             else
             {
-                merovingian::homeserver::serve_http(target.acceptor, runtime, runtime_lock, shutdown, stats, mode);
+                merovingian::homeserver::serve_http(target.acceptor, runtime, runtime_lock, shutdown, stats, mode, pool);
             }
         });
     }
 
     // Block the main thread until shutdown fires. We do not poll a queue -
     // the signal handler writes to the self-pipe and any blocked poll(2) call
-    // in the worker threads returns immediately.
+    // in the listener threads returns immediately.
     auto entry = pollfd{};
     entry.fd = shutdown.read_fd();
     entry.events = POLLIN;
@@ -708,6 +709,8 @@ struct ListenerBinding final
             break;
         }
     }
+
+    pool.request_stop();
 
     for (auto& worker : threads)
     {

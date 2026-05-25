@@ -94,10 +94,10 @@ SCENARIO("POST /register without auth returns 401 UI-auth challenge", "[homeserv
 
             THEN("the server returns 401 with the registration_token flow and a session")
             {
-                REQUIRE(response.status == 401U);
-                REQUIRE(response.body.find("m.login.registration_token") != std::string::npos);
-                REQUIRE(response.body.find("flows") != std::string::npos);
-                REQUIRE(response.body.find("session") != std::string::npos);
+                REQUIRE(response.response.status == 401U);
+                REQUIRE(response.response.body.find("m.login.registration_token") != std::string::npos);
+                REQUIRE(response.response.body.find("flows") != std::string::npos);
+                REQUIRE(response.response.body.find("session") != std::string::npos);
             }
         }
     }
@@ -123,9 +123,9 @@ SCENARIO("POST /register with auth completes registration", "[homeserver][client
 
             THEN("the server returns 200 with the new user_id")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("user_id") != std::string::npos);
-                REQUIRE(response.body.find("@alice:") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("user_id") != std::string::npos);
+                REQUIRE(response.response.body.find("@alice:") != std::string::npos);
             }
         }
     }
@@ -149,13 +149,13 @@ SCENARIO("POST /account/password changes the authenticated user's password",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
-        REQUIRE(login.status == 200U);
+        REQUIRE(login.response.status == 200U);
         auto const key = std::string{"\"access_token\":\""};
-        auto const begin = login.body.find(key);
+        auto const begin = login.response.body.find(key);
         REQUIRE(begin != std::string::npos);
         auto const value_begin = begin + key.size();
-        auto const value_end = login.body.find('"', value_begin);
-        auto const token = login.body.substr(value_begin, value_end - value_begin);
+        auto const value_end = login.response.body.find('"', value_begin);
+        auto const token = login.response.body.substr(value_begin, value_end - value_begin);
 
         WHEN("the user changes their password")
         {
@@ -168,14 +168,14 @@ SCENARIO("POST /account/password changes the authenticated user's password",
 
             THEN("the server returns 200 and the new password is accepted at login")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.response.status == 200U);
                 auto const relogin = merovingian::homeserver::handle_client_server_request(
                     rt,
                     {"POST",
                      "/_matrix/client/v3/login",
                      {},
                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"NewHorse99!!","device_id":"DEV2"})"});
-                REQUIRE(relogin.status == 200U);
+                REQUIRE(relogin.response.status == 200U);
             }
         }
     }
@@ -198,8 +198,8 @@ SCENARIO("POST /account/password without an access token returns 401",
 
             THEN("the server returns 401 M_UNKNOWN_TOKEN")
             {
-                REQUIRE(response.status == 401U);
-                REQUIRE(response.body.find("M_UNKNOWN_TOKEN") != std::string::npos);
+                REQUIRE(response.response.status == 401U);
+                REQUIRE(response.response.body.find("M_UNKNOWN_TOKEN") != std::string::npos);
             }
         }
     }
@@ -222,8 +222,8 @@ SCENARIO("GET /profile/{userId} for an unknown user returns 404",
 
             THEN("the server returns 404 M_NOT_FOUND")
             {
-                REQUIRE(response.status == 404U);
-                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
     }
@@ -247,11 +247,11 @@ SCENARIO("PUT /profile/{userId}/displayname updates the authenticated user's dis
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
-        REQUIRE(login.status == 200U);
+        REQUIRE(login.response.status == 200U);
         auto const key = std::string{"\"access_token\":\""};
-        auto const begin = login.body.find(key);
+        auto const begin = login.response.body.find(key);
         REQUIRE(begin != std::string::npos);
-        auto const token = login.body.substr(begin + key.size(), login.body.find('"', begin + key.size()) - begin - key.size());
+        auto const token = login.response.body.substr(begin + key.size(), login.response.body.find('"', begin + key.size()) - begin - key.size());
 
         WHEN("the user updates their displayname")
         {
@@ -264,11 +264,11 @@ SCENARIO("PUT /profile/{userId}/displayname updates the authenticated user's dis
 
             THEN("the server returns 200 and the profile reflects the new displayname")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.response.status == 200U);
                 auto const profile = merovingian::homeserver::handle_client_server_request(
                     rt, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
-                REQUIRE(profile.status == 200U);
-                REQUIRE(profile.body.find("Alice Beta") != std::string::npos);
+                REQUIRE(profile.response.status == 200U);
+                REQUIRE(profile.response.body.find("Alice Beta") != std::string::npos);
             }
         }
     }
@@ -292,11 +292,11 @@ SCENARIO("PUT /profile/{userId}/displayname for another user returns 403",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
-        REQUIRE(login.status == 200U);
+        REQUIRE(login.response.status == 200U);
         auto const key = std::string{"\"access_token\":\""};
-        auto const begin = login.body.find(key);
+        auto const begin = login.response.body.find(key);
         REQUIRE(begin != std::string::npos);
-        auto const token = login.body.substr(begin + key.size(), login.body.find('"', begin + key.size()) - begin - key.size());
+        auto const token = login.response.body.substr(begin + key.size(), login.response.body.find('"', begin + key.size()) - begin - key.size());
 
         WHEN("the user attempts to update another user's displayname")
         {
@@ -309,8 +309,8 @@ SCENARIO("PUT /profile/{userId}/displayname for another user returns 403",
 
             THEN("the server returns 403 M_FORBIDDEN")
             {
-                REQUIRE(response.status == 403U);
-                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
             }
         }
     }
@@ -334,11 +334,11 @@ SCENARIO("GET /profile/{userId}/{keyName} returns only the requested field",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
-        REQUIRE(login.status == 200U);
+        REQUIRE(login.response.status == 200U);
         auto const key = std::string{"\"access_token\":\""};
-        auto const begin = login.body.find(key);
+        auto const begin = login.response.body.find(key);
         REQUIRE(begin != std::string::npos);
-        auto const token = login.body.substr(begin + key.size(), login.body.find('"', begin + key.size()) - begin - key.size());
+        auto const token = login.response.body.substr(begin + key.size(), login.response.body.find('"', begin + key.size()) - begin - key.size());
         std::ignore = merovingian::homeserver::handle_client_server_request(
             rt,
             {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", token, R"({"displayname":"Alice Beta"})"});
@@ -350,9 +350,9 @@ SCENARIO("GET /profile/{userId}/{keyName} returns only the requested field",
 
             THEN("the server returns 200 with only that field")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("Alice Beta") != std::string::npos);
-                REQUIRE(response.body.find("avatar_url") == std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("Alice Beta") != std::string::npos);
+                REQUIRE(response.response.body.find("avatar_url") == std::string::npos);
             }
         }
 
@@ -363,8 +363,8 @@ SCENARIO("GET /profile/{userId}/{keyName} returns only the requested field",
 
             THEN("the server returns 404 M_NOT_FOUND")
             {
-                REQUIRE(response.status == 404U);
-                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
     }
@@ -388,11 +388,11 @@ SCENARIO("GET /rooms/{roomId}/state for an unknown room returns 403",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
-        REQUIRE(login.status == 200U);
+        REQUIRE(login.response.status == 200U);
         auto const key = std::string{"\"access_token\":\""};
-        auto const begin = login.body.find(key);
+        auto const begin = login.response.body.find(key);
         REQUIRE(begin != std::string::npos);
-        auto const token = login.body.substr(begin + key.size(), login.body.find('"', begin + key.size()) - begin - key.size());
+        auto const token = login.response.body.substr(begin + key.size(), login.response.body.find('"', begin + key.size()) - begin - key.size());
 
         WHEN("the user requests state for a room that does not exist")
         {
@@ -405,8 +405,8 @@ SCENARIO("GET /rooms/{roomId}/state for an unknown room returns 403",
 
             THEN("the server returns 403 M_FORBIDDEN")
             {
-                REQUIRE(response.status == 403U);
-                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
             }
         }
     }

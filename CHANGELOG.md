@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.8
+
+- Replaced the single-threaded listener model with a bounded `ThreadPool`
+  (`merovingian/net/thread_pool.hpp`). Listener threads now run thin accept
+  loops that submit accepted connections to a pool of `std::jthread` workers,
+  enabling concurrent request processing instead of one-at-a-time dispatch.
+- Implemented two-phase sync dispatch: `sync_json()` returns a `DispatchResult`
+  tagged union. When the `/sync` handler needs to long-poll, it returns
+  `needs_wait` with `SyncWaitParams` instead of holding the `runtime_lock`.
+  `dispatch_local_http_request()` then releases the lock, waits on the
+  `SyncNotifier`, reacquires the lock, and calls the handler again with
+  `can_wait=false`. This eliminates the root cause of Synapse CancelledError
+  on federation profile queries caused by nginx/reverse-proxy timeouts.
+- Removed the `dispatch_lock` parameter from all handler signatures. Handler
+  functions no longer need to be aware of lock management — the two-phase
+  dispatch in `dispatch_local_http_request()` handles it transparently.
+- Made `HttpServeStats` counters `std::atomic<std::uint64_t>` so they no
+  longer need `runtime_lock` protection. Added move operations to support
+  return-by-value from `serve_until_shutdown()`.
+- Added `SocketHandle::release()` to transfer fd ownership into pool workers
+  without premature close.
+
 ## 0.4.7
 
 - Fixed `runtime_lock` being held during `/sync` long-poll wait, which blocked

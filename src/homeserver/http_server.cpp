@@ -344,10 +344,7 @@ namespace
 
         if (head_end == std::string::npos)
         {
-            {
-                auto guard = std::lock_guard<std::mutex>{runtime_lock};
-                ++stats.rejected_requests;
-            }
+            ++stats.rejected_requests;
             if (buffer.size() >= head_cap)
             {
                 log_diagnostic("request.rejected", {
@@ -373,10 +370,7 @@ namespace
         auto const parse = http::parse_request_head(std::string_view{buffer.data(), head_end});
         if (parse.error != http::RequestErrorCode::none)
         {
-            {
-                auto guard = std::lock_guard<std::mutex>{runtime_lock};
-                ++stats.rejected_requests;
-            }
+            ++stats.rejected_requests;
             auto reason = std::string{"request rejected: "};
             reason.append(http::request_error_name(parse.error));
             log_diagnostic("request.rejected",
@@ -396,10 +390,7 @@ namespace
             body = read_remaining_body(stream, std::move(body_tail), expected, body_size_cap(limits));
             if (body.size() != expected)
             {
-                {
-                    auto guard = std::lock_guard<std::mutex>{runtime_lock};
-                    ++stats.rejected_requests;
-                }
+                ++stats.rejected_requests;
                 log_diagnostic("request.rejected",
                                {
                                    {"method",              parse.request.method,                                       false},
@@ -423,12 +414,8 @@ namespace
                            {"has_access_token", local_request.access_token.empty() ? "false" : "true",      false}
         });
 
-        auto response = LocalHttpResponse{};
-        {
-            auto guard = std::unique_lock<std::mutex>{runtime_lock};
-            response = dispatch_local_http_request(runtime, local_request, dispatch_mode, &guard);
-            ++stats.completed_requests;
-        }
+        auto const response = dispatch_local_http_request(runtime, local_request, dispatch_mode, runtime_lock);
+        ++stats.completed_requests;
 
         log_diagnostic("request.completed",
                        {
@@ -443,20 +430,37 @@ namespace
 
 } // namespace
 
-auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode,
-                                  std::unique_lock<std::mutex>* dispatch_lock) -> LocalHttpResponse
+auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
+                                  HttpDispatchMode mode, std::mutex& runtime_lock) -> LocalHttpResponse
 {
+    auto guard = std::unique_lock<std::mutex>{runtime_lock};
+    auto result = DispatchResult{};
+
     switch (mode)
     {
     case HttpDispatchMode::client_server:
-        return handle_client_server_request(runtime, request, dispatch_lock);
+        result = handle_client_server_request(runtime, request);
+        break;
     case HttpDispatchMode::federation:
-        return handle_federation_http_request(runtime.homeserver, request);
+        result.response = handle_federation_http_request(runtime.homeserver, request);
+        break;
     case HttpDispatchMode::local_router:
-        return handle_local_http_request(runtime.homeserver, request);
+        result.response = handle_local_http_request(runtime.homeserver, request);
+        break;
     }
 
-    return {500U, "unknown dispatch mode"};
+    if (result.status == DispatchResult::Status::needs_wait)
+    {
+        guard.unlock();
+        auto& notifier = ensure_sync_notifier(runtime);
+        std::ignore = notifier.wait_for_change(result.wait.since_stream_ordering,
+                                               result.wait.since_sync_stream_id,
+                                               result.wait.timeout);
+        guard.lock();
+        result = handle_client_server_request(runtime, request, false);
+    }
+
+    return result.response;
 }
 
 auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, std::mutex& runtime_lock,
@@ -467,9 +471,10 @@ auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, std:
 }
 
 auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::mutex& runtime_lock,
-                net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode) -> void
+                net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode,
+                net::ThreadPool& pool) -> void
 {
-    while (!shutdown.fired() && acceptor.valid())
+    while (!shutdown.fired() && acceptor.valid() && pool.running())
     {
         auto entries = std::array<pollfd, 2U>{};
         entries[0].fd = acceptor.fd();
@@ -508,20 +513,23 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::m
             return;
         }
         auto client = core::SocketHandle{raw_client};
-        {
-            auto guard = std::lock_guard<std::mutex>{runtime_lock};
-            ++stats.accepted_connections;
-        }
-        serve_one_http_connection(client.native_handle(), runtime, runtime_lock, stats, dispatch_mode);
-        std::ignore = ::shutdown(client.native_handle(), SHUT_RDWR);
+        ++stats.accepted_connections;
+        // Move the socket handle into the pool worker. The worker owns
+        // the full request lifecycle: read → dispatch → write → close.
+        auto fd = client.release();
+        pool.submit([&runtime, &runtime_lock, &stats, dispatch_mode, fd] {
+            serve_one_http_connection(fd, runtime, runtime_lock, stats, dispatch_mode);
+            std::ignore = ::shutdown(fd, SHUT_RDWR);
+            ::close(fd);
+        });
     }
 }
 
 auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
                     std::mutex& runtime_lock, net::ShutdownSignal& shutdown, HttpServeStats& stats,
-                    HttpDispatchMode dispatch_mode) -> void
+                    HttpDispatchMode dispatch_mode, net::ThreadPool& pool) -> void
 {
-    while (!shutdown.fired() && acceptor.valid())
+    while (!shutdown.fired() && acceptor.valid() && pool.running())
     {
         auto entries = std::array<pollfd, 2U>{};
         entries[0].fd = acceptor.fd();
@@ -560,25 +568,29 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
             return;
         }
         auto client = core::SocketHandle{raw_client};
-        {
-            auto guard = std::lock_guard<std::mutex>{runtime_lock};
-            ++stats.accepted_connections;
-        }
+        ++stats.accepted_connections;
 
-        auto accepted_tls = accept_tls_connection(tls_context, client.native_handle(), receive_timeout_milliseconds);
-        if (!accepted_tls.ok())
-        {
-            auto guard = std::lock_guard<std::mutex>{runtime_lock};
-            ++stats.rejected_requests;
-            log_diagnostic("tls.handshake.rejected", {
-                                                         {"reason", accepted_tls.error, false}
-            });
-            continue;
-        }
-
-        auto stream = TlsConnectionStream{*accepted_tls.connection};
-        serve_stream(stream, runtime, runtime_lock, stats, dispatch_mode);
-        std::ignore = ::shutdown(client.native_handle(), SHUT_RDWR);
+        // Move the socket handle into the pool worker. The worker
+        // performs the TLS handshake and the full request lifecycle.
+        auto fd = client.release();
+        pool.submit([&tls_context, &runtime, &runtime_lock, &stats, dispatch_mode, fd] {
+            auto accepted_tls =
+                accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
+            if (!accepted_tls.ok())
+            {
+                ++stats.rejected_requests;
+                log_diagnostic("tls.handshake.rejected", {
+                                                             {"reason", accepted_tls.error, false}
+                });
+                std::ignore = ::shutdown(fd, SHUT_RDWR);
+                ::close(fd);
+                return;
+            }
+            auto stream = TlsConnectionStream{*accepted_tls.connection};
+            serve_stream(stream, runtime, runtime_lock, stats, dispatch_mode);
+            std::ignore = ::shutdown(fd, SHUT_RDWR);
+            ::close(fd);
+        });
     }
 }
 

@@ -103,13 +103,13 @@ SCENARIO("send_event enqueues outbound transactions for remote room members",
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/register", {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/login", {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         auto client = merovingian::http::OutboundClient{};
         auto worker = make_dispatch_worker(client);
@@ -118,8 +118,8 @@ SCENARIO("send_event enqueues outbound transactions for remote room members",
 
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        REQUIRE(room.status == 200U);
-        auto const id = room_id(room.body);
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
 
         // Add a remote member to the room
         auto local_room = std::ranges::find_if(
@@ -137,7 +137,7 @@ SCENARIO("send_event enqueues outbound transactions for remote room members",
 
             THEN("the event is persisted and a transaction is enqueued for the remote server")
             {
-                REQUIRE(message.status == 200U);
+                REQUIRE(message.response.status == 200U);
                 auto const summary_after = homeserver.dispatch_worker->summary();
                 REQUIRE(summary_after.enqueued > summary_before.enqueued);
                 REQUIRE(summary_after.pending > 0U);
@@ -209,18 +209,18 @@ SCENARIO("send_event without dispatch worker persists events locally",
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/register", {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/login", {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        REQUIRE(room.status == 200U);
-        auto const id = room_id(room.body);
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
 
         WHEN("a local user sends a message event")
         {
@@ -231,7 +231,7 @@ SCENARIO("send_event without dispatch worker persists events locally",
 
             THEN("the event is persisted even without outbound dispatch")
             {
-                REQUIRE(message.status == 200U);
+                REQUIRE(message.response.status == 200U);
                 REQUIRE(homeserver.database.persistent_store.events.size() > events_before);
             }
         }
@@ -251,13 +251,13 @@ SCENARIO("send_event does not enqueue transactions for local-only rooms",
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/register", {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/login", {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         auto client = merovingian::http::OutboundClient{};
         auto worker = make_dispatch_worker(client);
@@ -266,8 +266,8 @@ SCENARIO("send_event does not enqueue transactions for local-only rooms",
 
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        REQUIRE(room.status == 200U);
-        auto const id = room_id(room.body);
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
 
         auto const summary_before = homeserver.dispatch_worker->summary();
 
@@ -279,7 +279,7 @@ SCENARIO("send_event does not enqueue transactions for local-only rooms",
 
             THEN("the event is persisted but no outbound transactions are enqueued")
             {
-                REQUIRE(message.status == 200U);
+                REQUIRE(message.response.status == 200U);
                 auto const summary_after = homeserver.dispatch_worker->summary();
                 REQUIRE(summary_after.enqueued == summary_before.enqueued);
             }

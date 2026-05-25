@@ -6,6 +6,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/dispatch_result.hpp"
 #include "merovingian/sync/stream_token.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -73,16 +74,16 @@ namespace
     auto const reg = merovingian::homeserver::handle_client_server_request(
         rt,
         {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-    REQUIRE(reg.status == 200U);
+    REQUIRE(reg.response.status == 200U);
     auto const login = merovingian::homeserver::handle_client_server_request(
         rt, {"POST",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},)"
              R"("password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-    REQUIRE(login.status == 200U);
+    REQUIRE(login.response.status == 200U);
     auto const user_id = std::string{"@alice:example.org"};
-    auto const token = extract(login.body, "access_token");
+    auto const token = extract(login.response.body, "access_token");
     return {user_id, token};
 }
 
@@ -136,8 +137,8 @@ SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key
 
             THEN("the response carries every populated sync surface")
             {
-                REQUIRE(sync.status == 200U);
-                auto const root_value = parse_body(sync.body);
+                REQUIRE(sync.response.status == 200U);
+                auto const root_value = parse_body(sync.response.body);
                 auto const* root = as_object(root_value);
                 REQUIRE(root != nullptr);
 
@@ -193,8 +194,8 @@ SCENARIO("Sync filter limits the timeline events and applies room include/exclud
         auto const [alice_id, token] = register_and_login(rt);
         auto const create = merovingian::homeserver::handle_client_server_request(
             rt, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        REQUIRE(create.status == 200U);
-        auto const room_id = extract(create.body, "room_id");
+        REQUIRE(create.response.status == 200U);
+        auto const room_id = extract(create.response.body, "room_id");
 
         WHEN("a sync filter excludes the room via not_rooms")
         {
@@ -204,8 +205,8 @@ SCENARIO("Sync filter limits the timeline events and applies room include/exclud
 
             THEN("the join map is empty")
             {
-                REQUIRE(sync.status == 200U);
-                auto const root_value = parse_body(sync.body);
+                REQUIRE(sync.response.status == 200U);
+                auto const root_value = parse_body(sync.response.body);
                 auto const* root = as_object(root_value);
                 auto const* rooms = as_object(*json_member(*root, "rooms"));
                 auto const* join = as_object(*json_member(*rooms, "join"));
@@ -234,8 +235,8 @@ SCENARIO("Incremental sync drops account_data that predates the since token and 
         {
             auto const first_response = merovingian::homeserver::handle_client_server_request(
                 rt, {"GET", "/_matrix/client/v3/sync", token, {}});
-            REQUIRE(first_response.status == 200U);
-            auto const first_body = parse_body(first_response.body);
+            REQUIRE(first_response.response.status == 200U);
+            auto const first_body = parse_body(first_response.response.body);
             auto const* first_root = as_object(first_body);
             auto const next_batch = std::get<std::string>(json_member(*first_root, "next_batch")->storage());
 
@@ -244,8 +245,8 @@ SCENARIO("Incremental sync drops account_data that predates the since token and 
 
             THEN("the second sync's account_data and to_device arrays are empty")
             {
-                REQUIRE(second_response.status == 200U);
-                auto const second_body = parse_body(second_response.body);
+                REQUIRE(second_response.response.status == 200U);
+                auto const second_body = parse_body(second_response.response.body);
                 auto const* second_root = as_object(second_body);
                 auto const* account_data = as_object(*json_member(*second_root, "account_data"));
                 auto const* ad_events = as_array(*json_member(*account_data, "events"));
@@ -295,6 +296,66 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
                 REQUIRE(woke);
                 REQUIRE(rt.sync_notifier->current_sync_stream_id() > before_id);
                 REQUIRE(elapsed < std::chrono::seconds{1});
+            }
+        }
+    }
+}
+
+SCENARIO("Two-phase sync dispatch returns needs_wait when no data is available", "[sync][dispatch]")
+{
+    GIVEN("a registered Alice with no new events after initial sync")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+
+        // Initial sync to get a since token
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const initial_body = parse_body(initial.response.body);
+        auto const* initial_root = as_object(initial_body);
+        auto const next_batch = std::get<std::string>(json_member(*initial_root, "next_batch")->storage());
+
+        WHEN("an incremental sync with timeout is dispatched and can_wait is true")
+        {
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", std::string{"/_matrix/client/v3/sync?since="} + next_batch + "&timeout=30000", token, {}},
+                /*can_wait=*/true);
+
+            THEN("the result is needs_wait because no new data is available")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                REQUIRE(result.wait.since_stream_ordering >= 0U);
+                REQUIRE(result.wait.since_sync_stream_id >= 0U);
+                REQUIRE(result.wait.timeout.count() > 0);
+            }
+        }
+
+        WHEN("an incremental sync with timeout is dispatched and can_wait is false")
+        {
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", std::string{"/_matrix/client/v3/sync?since="} + next_batch + "&timeout=30000", token, {}},
+                /*can_wait=*/false);
+
+            THEN("the result is complete with an empty sync response")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+            }
+        }
+
+        WHEN("an incremental sync with no timeout is dispatched and can_wait is true")
+        {
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", std::string{"/_matrix/client/v3/sync?since="} + next_batch, token, {}},
+                /*can_wait=*/true);
+
+            THEN("the result is complete because no long-poll was requested")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
             }
         }
     }

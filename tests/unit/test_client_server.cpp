@@ -141,7 +141,7 @@ SCENARIO("Client-server runtime account and device endpoints use real sessions",
                  "/_matrix/client/v3/login",
                  {},
                  R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-            auto const token = login_token(login.body);
+            auto const token = login_token(login.response.body);
             auto const whoami = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/account/whoami", token, {}});
             auto const devices = merovingian::homeserver::handle_client_server_request(
@@ -153,14 +153,14 @@ SCENARIO("Client-server runtime account and device endpoints use real sessions",
 
             THEN("identity, device listing, and device updates work through token validation")
             {
-                REQUIRE(registered.status == 200U);
-                REQUIRE(login.status == 200U);
-                REQUIRE(whoami.status == 200U);
-                REQUIRE(whoami.body.find("@alice:example.org") != std::string::npos);
-                REQUIRE(devices.status == 200U);
-                REQUIRE(devices.body.find("DEVICE1") != std::string::npos);
-                REQUIRE(update.status == 200U);
-                REQUIRE(updated_devices.body.find("Alice laptop") != std::string::npos);
+                REQUIRE(registered.response.status == 200U);
+                REQUIRE(login.response.status == 200U);
+                REQUIRE(whoami.response.status == 200U);
+                REQUIRE(whoami.response.body.find("@alice:example.org") != std::string::npos);
+                REQUIRE(devices.response.status == 200U);
+                REQUIRE(devices.response.body.find("DEVICE1") != std::string::npos);
+                REQUIRE(update.response.status == 200U);
+                REQUIRE(updated_devices.response.body.find("Alice laptop") != std::string::npos);
                 REQUIRE(merovingian::homeserver::device_count(runtime, "@alice:example.org") == 1U);
             }
         }
@@ -188,10 +188,10 @@ SCENARIO("Client-server runtime rejects malformed Matrix JSON request bodies", "
 
             THEN("the API fails closed with stable Matrix bad-json errors")
             {
-                REQUIRE(malformed_registration.status == 400U);
-                REQUIRE(incomplete_login.status == 400U);
-                REQUIRE(malformed_registration.body.find("M_BAD_JSON") != std::string::npos);
-                REQUIRE(incomplete_login.body.find("M_BAD_JSON") != std::string::npos);
+                REQUIRE(malformed_registration.response.status == 400U);
+                REQUIRE(incomplete_login.response.status == 400U);
+                REQUIRE(malformed_registration.response.body.find("M_BAD_JSON") != std::string::npos);
+                REQUIRE(incomplete_login.response.body.find("M_BAD_JSON") != std::string::npos);
             }
         }
     }
@@ -279,9 +279,9 @@ SCENARIO("Client-server GET login returns password flow discovery response", "[h
 
             THEN("the server returns 200 with a flows array containing m.login.password")
             {
-                REQUIRE(resp.status == 200U);
-                REQUIRE(resp.body.find("\"flows\"") != std::string::npos);
-                REQUIRE(resp.body.find("\"m.login.password\"") != std::string::npos);
+                REQUIRE(resp.response.status == 200U);
+                REQUIRE(resp.response.body.find("\"flows\"") != std::string::npos);
+                REQUIRE(resp.response.body.find("\"m.login.password\"") != std::string::npos);
             }
         }
     }
@@ -299,7 +299,7 @@ SCENARIO("Client-server runtime escapes login and device JSON strings", "[homese
                               "/_matrix/client/v3/register",
                               {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
 
         WHEN("the device id and display name include quotes and backslashes")
         {
@@ -309,7 +309,7 @@ SCENARIO("Client-server runtime escapes login and device JSON strings", "[homese
                  "/_matrix/client/v3/login",
                  {},
                  R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEV\"\\ICE"})"});
-            auto const token = login_token(login.body);
+            auto const token = login_token(login.response.body);
             auto const update = merovingian::homeserver::handle_client_server_request(
                 runtime, {"PUT", R"(/_matrix/client/v3/devices/DEV"\ICE)", token,
                           R"({"display_name":"Alice \"Laptop\" \\ 1"})"});
@@ -318,12 +318,12 @@ SCENARIO("Client-server runtime escapes login and device JSON strings", "[homese
 
             THEN("login and device responses remain valid escaped JSON strings")
             {
-                REQUIRE(login.status == 200U);
-                REQUIRE(login.body.find(R"("device_id":"DEV\"\\ICE")") != std::string::npos);
-                REQUIRE(update.status == 200U);
-                REQUIRE(devices.status == 200U);
-                REQUIRE(devices.body.find(R"("device_id":"DEV\"\\ICE")") != std::string::npos);
-                REQUIRE(devices.body.find(R"("display_name":"Alice \"Laptop\" \\ 1")") != std::string::npos);
+                REQUIRE(login.response.status == 200U);
+                REQUIRE(login.response.body.find(R"("device_id":"DEV\"\\ICE")") != std::string::npos);
+                REQUIRE(update.response.status == 200U);
+                REQUIRE(devices.response.status == 200U);
+                REQUIRE(devices.response.body.find(R"("device_id":"DEV\"\\ICE")") != std::string::npos);
+                REQUIRE(devices.response.body.find(R"("display_name":"Alice \"Laptop\" \\ 1")") != std::string::npos);
             }
         }
     }
@@ -342,21 +342,21 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
                               "/_matrix/client/v3/register",
                               {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("the user creates a room, sends encrypted-looking content, and syncs")
         {
             auto const room = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-            auto const id = room_id(room.body);
+            auto const id = room_id(room.response.body);
             auto const send = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
                           R"({"type":"m.room.encrypted","content":"secret"})"});
@@ -369,16 +369,16 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
 
             THEN("room and sync responses are bounded summaries without plaintext event content")
             {
-                REQUIRE(room.status == 200U);
-                REQUIRE(send.status == 200U);
-                REQUIRE(state.status == 200U);
-                REQUIRE(joined.status == 200U);
-                REQUIRE(joined.body.find(id) != std::string::npos);
-                REQUIRE(sync.status == 200U);
-                REQUIRE(sync.body.find(id) != std::string::npos);
-                REQUIRE(sync.body.find("event_count") != std::string::npos);
-                REQUIRE(sync.body.find("secret") == std::string::npos);
-                REQUIRE(sync.body.find("m.room.encrypted") == std::string::npos);
+                REQUIRE(room.response.status == 200U);
+                REQUIRE(send.response.status == 200U);
+                REQUIRE(state.response.status == 200U);
+                REQUIRE(joined.response.status == 200U);
+                REQUIRE(joined.response.body.find(id) != std::string::npos);
+                REQUIRE(sync.response.status == 200U);
+                REQUIRE(sync.response.body.find(id) != std::string::npos);
+                REQUIRE(sync.response.body.find("event_count") != std::string::npos);
+                REQUIRE(sync.response.body.find("secret") == std::string::npos);
+                REQUIRE(sync.response.body.find("m.room.encrypted") == std::string::npos);
                 REQUIRE(merovingian::homeserver::joined_room_count(runtime, "@alice:example.org") == 1U);
             }
         }
@@ -396,17 +396,17 @@ SCENARIO("Client-server im.nheko.summary endpoints return room membership summar
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/register", {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/login", {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        REQUIRE(room.status == 200U);
-        auto const id = room_id(room.body);
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
 
         WHEN("the user requests the nheko summary for the room")
         {
@@ -420,13 +420,13 @@ SCENARIO("Client-server im.nheko.summary endpoints return room membership summar
 
             THEN("both path shapes return 200 with room_id and summary; missing rooms return 404")
             {
-                REQUIRE(summary_short.status == 200U);
-                REQUIRE(summary_short.body.find(id) != std::string::npos);
-                REQUIRE(summary_short.body.find("m.joined_member_count") != std::string::npos);
-                REQUIRE(summary_long.status == 200U);
-                REQUIRE(summary_long.body.find(id) != std::string::npos);
-                REQUIRE(summary_long.body.find("m.joined_member_count") != std::string::npos);
-                REQUIRE(summary_missing.status == 404U);
+                REQUIRE(summary_short.response.status == 200U);
+                REQUIRE(summary_short.response.body.find(id) != std::string::npos);
+                REQUIRE(summary_short.response.body.find("m.joined_member_count") != std::string::npos);
+                REQUIRE(summary_long.response.status == 200U);
+                REQUIRE(summary_long.response.body.find(id) != std::string::npos);
+                REQUIRE(summary_long.response.body.find("m.joined_member_count") != std::string::npos);
+                REQUIRE(summary_missing.response.status == 404U);
             }
         }
     }
@@ -443,17 +443,17 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/register", {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/login", {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        REQUIRE(room.status == 200U);
-        auto const id = room_id(room.body);
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
 
         WHEN("the user sets typing state for themselves")
         {
@@ -463,7 +463,7 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
 
             THEN("the request is accepted")
             {
-                REQUIRE(typing.status == 200U);
+                REQUIRE(typing.response.status == 200U);
             }
         }
 
@@ -475,8 +475,8 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
 
             THEN("the request is rejected with 403 M_FORBIDDEN")
             {
-                REQUIRE(typing.status == 403U);
-                REQUIRE(typing.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(typing.response.status == 403U);
+                REQUIRE(typing.response.body.find("M_FORBIDDEN") != std::string::npos);
             }
         }
 
@@ -487,11 +487,11 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
 
             THEN("the response carries chunk, start, end, and state fields")
             {
-                REQUIRE(messages.status == 200U);
-                REQUIRE(messages.body.find("chunk") != std::string::npos);
-                REQUIRE(messages.body.find("start") != std::string::npos);
-                REQUIRE(messages.body.find("end") != std::string::npos);
-                REQUIRE(messages.body.find("state") != std::string::npos);
+                REQUIRE(messages.response.status == 200U);
+                REQUIRE(messages.response.body.find("chunk") != std::string::npos);
+                REQUIRE(messages.response.body.find("start") != std::string::npos);
+                REQUIRE(messages.response.body.find("end") != std::string::npos);
+                REQUIRE(messages.response.body.find("state") != std::string::npos);
             }
         }
 
@@ -502,8 +502,8 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
 
             THEN("the response is 404 M_NOT_FOUND")
             {
-                REQUIRE(messages.status == 404U);
-                REQUIRE(messages.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(messages.response.status == 404U);
+                REQUIRE(messages.response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
     }
@@ -520,17 +520,17 @@ SCENARIO("Client-server leave and read_markers routes",
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/register", {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/login", {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        REQUIRE(room.status == 200U);
-        auto const id = room_id(room.body);
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
 
         WHEN("the user posts read_markers for their room")
         {
@@ -540,7 +540,7 @@ SCENARIO("Client-server leave and read_markers routes",
 
             THEN("the response is 200 with an empty object body")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.response.status == 200U);
             }
         }
 
@@ -551,10 +551,10 @@ SCENARIO("Client-server leave and read_markers routes",
 
             THEN("the response is 200 and the room no longer appears in joined_rooms")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.response.status == 200U);
                 auto const rooms_resp = merovingian::homeserver::handle_client_server_request(
                     runtime, {"GET", "/_matrix/client/v3/joined_rooms", token, {}});
-                REQUIRE(rooms_resp.body.find(id) == std::string::npos);
+                REQUIRE(rooms_resp.response.body.find(id) == std::string::npos);
             }
         }
 
@@ -566,8 +566,8 @@ SCENARIO("Client-server leave and read_markers routes",
 
             THEN("the response is 404 M_NOT_FOUND")
             {
-                REQUIRE(response.status == 404U);
-                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
 
@@ -577,21 +577,21 @@ SCENARIO("Client-server leave and read_markers routes",
             REQUIRE(merovingian::homeserver::handle_client_server_request(
                         runtime, {"POST", "/_matrix/client/v3/register", {},
                                   merovingian::tests::registration_json("bob", "CorrectHorse7!")})
-                        .status == 200U);
+                        .response.status == 200U);
             auto const bob_login = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/login", {},
                  R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"BOBDEV"})"});
-            REQUIRE(bob_login.status == 200U);
-            auto const bob_token = login_token(bob_login.body);
+            REQUIRE(bob_login.response.status == 200U);
+            auto const bob_token = login_token(bob_login.response.body);
 
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/leave", bob_token, "{}"});
 
             THEN("the response is 403 M_FORBIDDEN")
             {
-                REQUIRE(response.status == 403U);
-                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
             }
         }
     }
@@ -611,18 +611,18 @@ SCENARIO("Client-server runtime signs sent events and persists their DAG metadat
                               "/_matrix/client/v3/register",
                               {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        auto const id = room_id(room.body);
+        auto const id = room_id(room.response.body);
 
         WHEN("state and message events are sent through the runtime")
         {
@@ -634,13 +634,13 @@ SCENARIO("Client-server runtime signs sent events and persists their DAG metadat
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/send", token,
                           R"({"type":"m.room.message","content":{"body":"hi","msgtype":"m.text"}})"});
             auto const& store = runtime.homeserver.database.persistent_store;
-            auto const state_event_id = event_id(state.body);
-            auto const message_event_id = event_id(message.body);
+            auto const state_event_id = event_id(state.response.body);
+            auto const message_event_id = event_id(message.response.body);
 
             THEN("the returned event IDs are reference hashes and persisted rows include signatures and DAG edges")
             {
-                REQUIRE(state.status == 200U);
-                REQUIRE(message.status == 200U);
+                REQUIRE(state.response.status == 200U);
+                REQUIRE(message.response.status == 200U);
                 REQUIRE(state_event_id.starts_with("$"));
                 REQUIRE(message_event_id.starts_with("$"));
                 REQUIRE(state_event_id.find(":") == std::string::npos);
@@ -690,15 +690,15 @@ SCENARIO("Client-server runtime wires server-blind E2EE key API routes", "[homes
                               "/_matrix/client/v3/register",
                               {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("the device uploads server-blind key material and queries keys")
         {
@@ -713,12 +713,12 @@ SCENARIO("Client-server runtime wires server-blind E2EE key API routes", "[homes
 
             THEN("the runtime path accepts the route without exposing key payloads")
             {
-                REQUIRE(upload.status == 200U);
-                REQUIRE(query.status == 200U);
-                REQUIRE(unauthenticated.status == 401U);
-                REQUIRE(upload.body.find("one_time_key_counts") != std::string::npos);
-                REQUIRE(query.body.find("device_keys") != std::string::npos);
-                REQUIRE(upload.body.find("curve25519-secret") == std::string::npos);
+                REQUIRE(upload.response.status == 200U);
+                REQUIRE(query.response.status == 200U);
+                REQUIRE(unauthenticated.response.status == 401U);
+                REQUIRE(upload.response.body.find("one_time_key_counts") != std::string::npos);
+                REQUIRE(query.response.body.find("device_keys") != std::string::npos);
+                REQUIRE(upload.response.body.find("curve25519-secret") == std::string::npos);
                 REQUIRE(merovingian::homeserver::key_api_record_count(runtime, "@alice:example.org") == 2U);
             }
         }
@@ -741,8 +741,8 @@ SCENARIO("Client-server runtime wires trust and safety report and admin review r
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("the client reports an event and the admin reviews a media target")
         {
@@ -757,10 +757,10 @@ SCENARIO("Client-server runtime wires trust and safety report and admin review r
 
             THEN("policy decisions are served through runtime auth and persisted as audit/admin rows")
             {
-                REQUIRE(report.status == 200U);
-                REQUIRE(reports.status == 200U);
-                REQUIRE(review.status == 200U);
-                REQUIRE(reports.body.find("trust_safety.room.accept_report") != std::string::npos);
+                REQUIRE(report.response.status == 200U);
+                REQUIRE(reports.response.status == 200U);
+                REQUIRE(review.response.status == 200U);
+                REQUIRE(reports.response.body.find("trust_safety.room.accept_report") != std::string::npos);
                 REQUIRE(runtime.homeserver.database.persistent_store.audit_log.size() >= 4U);
                 REQUIRE(runtime.homeserver.database.persistent_store.admin_actions.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.admin_actions.front().action ==
@@ -782,15 +782,15 @@ SCENARIO("Client-server runtime persists client action audit events", "[homeserv
                               "/_matrix/client/v3/register",
                               {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("the device updates metadata and uploads E2EE keys")
         {
@@ -801,8 +801,8 @@ SCENARIO("Client-server runtime persists client action audit events", "[homeserv
 
             THEN("client-server audit events are durable and redact key payloads")
             {
-                REQUIRE(update.status == 200U);
-                REQUIRE(upload.status == 200U);
+                REQUIRE(update.response.status == 200U);
+                REQUIRE(upload.response.status == 200U);
                 auto const& audit = runtime.homeserver.database.persistent_store.audit_log;
                 REQUIRE(audit.size() >= 4U);
                 REQUIRE(std::ranges::any_of(audit, [](auto const& event) {
@@ -843,12 +843,12 @@ SCENARIO("Client-server runtime enforces request limits and Matrix-style errors"
 
             THEN("the client-server API reports stable bounded errors")
             {
-                REQUIRE(oversized.status == 413U);
-                REQUIRE(merovingian::homeserver::is_matrix_error_response(oversized));
-                REQUIRE(first.status == 401U);
-                REQUIRE(merovingian::homeserver::is_matrix_error_response(first));
-                REQUIRE(second.status == 429U);
-                REQUIRE(merovingian::homeserver::is_matrix_error_response(second));
+                REQUIRE(oversized.response.status == 413U);
+                REQUIRE(merovingian::homeserver::is_matrix_error_response(oversized.response));
+                REQUIRE(first.response.status == 401U);
+                REQUIRE(merovingian::homeserver::is_matrix_error_response(first.response));
+                REQUIRE(second.response.status == 429U);
+                REQUIRE(merovingian::homeserver::is_matrix_error_response(second.response));
             }
         }
     }
@@ -873,8 +873,8 @@ SCENARIO("Client-server runtime normalizes route-template rate-limit buckets", "
 
             THEN("the second request is limited by the normalized route bucket")
             {
-                REQUIRE(first.status == 401U);
-                REQUIRE(second.status == 429U);
+                REQUIRE(first.response.status == 401U);
+                REQUIRE(second.response.status == 429U);
                 REQUIRE(runtime.rate_limits.size() == 1U);
             }
         }
@@ -902,9 +902,9 @@ SCENARIO("Client-server runtime rate-limit buckets reset after the logical windo
 
             THEN("the bucket becomes available again after the reset window")
             {
-                REQUIRE(first.status == 401U);
-                REQUIRE(limited.status == 429U);
-                REQUIRE(reset.status == 401U);
+                REQUIRE(first.response.status == 401U);
+                REQUIRE(limited.response.status == 429U);
+                REQUIRE(reset.response.status == 401U);
             }
         }
     }
@@ -929,10 +929,10 @@ SCENARIO("Sync endpoint returns stream token and event bodies for initial and in
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        auto const token = login_token(login.body);
+        auto const token = login_token(login.response.body);
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        auto const room_id = json_value(room.body, "\"room_id\":\"");
+        auto const room_id = json_value(room.response.body, "\"room_id\":\"");
         auto const send = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/send", token,
                       R"({"type":"m.room.message","content":{"body":"hello","msgtype":"m.text"}})"});
@@ -944,11 +944,11 @@ SCENARIO("Sync endpoint returns stream token and event bodies for initial and in
 
             THEN("the response contains a stream token next_batch and event bodies in the timeline")
             {
-                REQUIRE(sync.status == 200U);
-                REQUIRE(sync.body.find("\"next_batch\"") != std::string::npos);
-                REQUIRE(sync.body.find("\"events\":") != std::string::npos);
-                REQUIRE(sync.body.find("\"timeline\"") != std::string::npos);
-                REQUIRE(sync.body.find("\"rooms\"") != std::string::npos);
+                REQUIRE(sync.response.status == 200U);
+                REQUIRE(sync.response.body.find("\"next_batch\"") != std::string::npos);
+                REQUIRE(sync.response.body.find("\"events\":") != std::string::npos);
+                REQUIRE(sync.response.body.find("\"timeline\"") != std::string::npos);
+                REQUIRE(sync.response.body.find("\"rooms\"") != std::string::npos);
             }
         }
 
@@ -956,16 +956,16 @@ SCENARIO("Sync endpoint returns stream token and event bodies for initial and in
         {
             auto const initial = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
-            auto const since_token = json_value(initial.body, "\"next_batch\":\"");
+            auto const since_token = json_value(initial.response.body, "\"next_batch\":\"");
 
             auto const incremental = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/sync?since=" + since_token, token, {}});
 
             THEN("the incremental response contains a new stream token and no duplicate events")
             {
-                REQUIRE(incremental.status == 200U);
-                REQUIRE(incremental.body.find("\"next_batch\"") != std::string::npos);
-                REQUIRE(incremental.body.find("\"rooms\"") != std::string::npos);
+                REQUIRE(incremental.response.status == 200U);
+                REQUIRE(incremental.response.body.find("\"next_batch\"") != std::string::npos);
+                REQUIRE(incremental.response.body.find("\"rooms\"") != std::string::npos);
             }
         }
     }
@@ -987,12 +987,12 @@ SCENARIO("Client-server /versions advertises Matrix spec compatibility to unauth
 
             THEN("the server answers 200 with a versions array and unstable_features object")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("\"versions\"") != std::string::npos);
-                REQUIRE(response.body.find("\"v1.18\"") != std::string::npos);
-                REQUIRE(response.body.find("\"v1.1\"") != std::string::npos);
-                REQUIRE(response.body.find("\"unstable_features\"") != std::string::npos);
-                REQUIRE_FALSE(merovingian::homeserver::is_matrix_error_response(response));
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"versions\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"v1.18\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"v1.1\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"unstable_features\"") != std::string::npos);
+                REQUIRE_FALSE(merovingian::homeserver::is_matrix_error_response(response.response));
             }
         }
     }
@@ -1012,8 +1012,8 @@ SCENARIO("Sync surfaces invite and leave room categories alongside Matrix-spec t
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-        REQUIRE(register_response.status == 200U);
-        auto const user_id = json_value(register_response.body, "\"user_id\":\"");
+        REQUIRE(register_response.response.status == 200U);
+        auto const user_id = json_value(register_response.response.body, "\"user_id\":\"");
 
         auto const login_response = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST",
@@ -1021,8 +1021,8 @@ SCENARIO("Sync surfaces invite and leave room categories alongside Matrix-spec t
                       {},
                       R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")" + user_id +
                           R"("},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login_response.status == 200U);
-        auto const token = login_token(login_response.body);
+        REQUIRE(login_response.response.status == 200U);
+        auto const token = login_token(login_response.response.body);
 
         runtime.homeserver.database.persistent_store.memberships.push_back(
             {"!invited_room:example.org", user_id, "invite", 0U});
@@ -1036,21 +1036,21 @@ SCENARIO("Sync surfaces invite and leave room categories alongside Matrix-spec t
 
             THEN("the response carries the invite room category and Matrix-spec top-level keys")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("\"invite\"") != std::string::npos);
-                REQUIRE(response.body.find("!invited_room:example.org") != std::string::npos);
-                REQUIRE(response.body.find("\"invite_state\"") != std::string::npos);
-                REQUIRE(response.body.find("\"account_data\"") != std::string::npos);
-                REQUIRE(response.body.find("\"presence\"") != std::string::npos);
-                REQUIRE(response.body.find("\"to_device\"") != std::string::npos);
-                REQUIRE(response.body.find("\"device_lists\"") != std::string::npos);
-                REQUIRE(response.body.find("\"device_one_time_keys_count\"") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"invite\"") != std::string::npos);
+                REQUIRE(response.response.body.find("!invited_room:example.org") != std::string::npos);
+                REQUIRE(response.response.body.find("\"invite_state\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"account_data\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"presence\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"to_device\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"device_lists\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"device_one_time_keys_count\"") != std::string::npos);
             }
 
             THEN("the response keeps rooms.leave as an empty object until include_leave filter support lands")
             {
-                REQUIRE(response.body.find("\"leave\":{}") != std::string::npos);
-                REQUIRE(response.body.find("!left_room:example.org") == std::string::npos);
+                REQUIRE(response.response.body.find("\"leave\":{}") != std::string::npos);
+                REQUIRE(response.response.body.find("!left_room:example.org") == std::string::npos);
             }
         }
 
@@ -1069,14 +1069,14 @@ SCENARIO("Sync surfaces invite and leave room categories alongside Matrix-spec t
 
             THEN("the invite section honors the room cap and does not bloat the response")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.response.status == 200U);
                 // First two invites in iteration order should be present
                 // (the originally pushed `!invited_room` plus `!invite2`);
                 // later invites must be dropped by the cap.
-                REQUIRE(response.body.find("!invited_room:example.org") != std::string::npos);
-                REQUIRE(response.body.find("!invite2:example.org") != std::string::npos);
-                REQUIRE(response.body.find("!invite3:example.org") == std::string::npos);
-                REQUIRE(response.body.find("!invite4:example.org") == std::string::npos);
+                REQUIRE(response.response.body.find("!invited_room:example.org") != std::string::npos);
+                REQUIRE(response.response.body.find("!invite2:example.org") != std::string::npos);
+                REQUIRE(response.response.body.find("!invite3:example.org") == std::string::npos);
+                REQUIRE(response.response.body.find("!invite4:example.org") == std::string::npos);
             }
         }
     }
@@ -1105,8 +1105,8 @@ SCENARIO("Client-server enforces per-endpoint rate limits with 429 M_LIMIT_EXCEE
                 body += "\",\"password\":\"CorrectHorse7!\"}";
                 auto const response = merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/register", {}, body});
-                last_status = response.status;
-                last_body = response.body;
+                last_status = response.response.status;
+                last_body = response.response.body;
             }
 
             THEN("the sixth attempt fails closed with 429 and M_LIMIT_EXCEEDED")
@@ -1132,8 +1132,8 @@ SCENARIO("Client-server enforces per-endpoint rate limits with 429 M_LIMIT_EXCEE
 
             THEN("the other endpoint runs on its own bucket and is not rate-limited")
             {
-                REQUIRE(versions_response.status == 200U);
-                REQUIRE_FALSE(merovingian::homeserver::is_matrix_error_response(versions_response));
+                REQUIRE(versions_response.response.status == 200U);
+                REQUIRE_FALSE(merovingian::homeserver::is_matrix_error_response(versions_response.response));
             }
         }
     }
@@ -1156,13 +1156,13 @@ SCENARIO("Rate-limit buckets are scoped per access token to prevent cross-user d
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-        REQUIRE(register_alice.status == 200U);
+        REQUIRE(register_alice.response.status == 200U);
         auto const register_bob = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST",
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("bob", "CorrectHorse7!")});
-        REQUIRE(register_bob.status == 200U);
+        REQUIRE(register_bob.response.status == 200U);
 
         auto const login_alice = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -1170,8 +1170,8 @@ SCENARIO("Rate-limit buckets are scoped per access token to prevent cross-user d
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login_alice.status == 200U);
-        auto const alice_token = login_token(login_alice.body);
+        REQUIRE(login_alice.response.status == 200U);
+        auto const alice_token = login_token(login_alice.response.body);
 
         auto const login_bob = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -1179,8 +1179,8 @@ SCENARIO("Rate-limit buckets are scoped per access token to prevent cross-user d
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login_bob.status == 200U);
-        auto const bob_token = login_token(login_bob.body);
+        REQUIRE(login_bob.response.status == 200U);
+        auto const bob_token = login_token(login_bob.response.body);
 
         runtime.limits.max_requests_per_bucket = 1U;
         runtime.limits.rate_limit_window_requests = 64U;
@@ -1196,10 +1196,10 @@ SCENARIO("Rate-limit buckets are scoped per access token to prevent cross-user d
 
             THEN("alice's second request is 429 but bob's first request runs on his own bucket and succeeds")
             {
-                REQUIRE(alice_first.status == 200U);
-                REQUIRE(alice_second.status == 429U);
-                REQUIRE(merovingian::homeserver::is_matrix_error_response(alice_second));
-                REQUIRE(bob_first.status == 200U);
+                REQUIRE(alice_first.response.status == 200U);
+                REQUIRE(alice_second.response.status == 429U);
+                REQUIRE(merovingian::homeserver::is_matrix_error_response(alice_second.response));
+                REQUIRE(bob_first.response.status == 200U);
             }
         }
     }
@@ -1224,8 +1224,8 @@ SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[hom
 
             THEN("the response is 403 M_FORBIDDEN, not 400")
             {
-                REQUIRE(response.status == 403U);
-                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
             }
         }
 
@@ -1236,7 +1236,7 @@ SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[hom
                           "/_matrix/client/v3/register",
                           {},
                           merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-            REQUIRE(registered.status == 200U);
+            REQUIRE(registered.response.status == 200U);
 
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime,
@@ -1247,8 +1247,8 @@ SCENARIO("Login failures return HTTP 403 M_FORBIDDEN per the Matrix spec", "[hom
 
             THEN("the response is 403 M_FORBIDDEN, not 400")
             {
-                REQUIRE(response.status == 403U);
-                REQUIRE(response.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
             }
         }
     }
@@ -1270,7 +1270,7 @@ SCENARIO("OPTIONS preflight requests return 200 without requiring an access toke
 
             THEN("the response is 200, not 401, so the browser allows the following POST")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.response.status == 200U);
             }
         }
 
@@ -1281,7 +1281,7 @@ SCENARIO("OPTIONS preflight requests return 200 without requiring an access toke
 
             THEN("the response is 200")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.response.status == 200U);
             }
         }
     }
@@ -1308,10 +1308,10 @@ SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
 
             THEN("the response is 200 with the homeserver base URL in the Matrix discovery format")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("m.homeserver") != std::string::npos);
-                REQUIRE(response.body.find("https://matrix.example.org") != std::string::npos);
-                REQUIRE(response.body.find("base_url") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("m.homeserver") != std::string::npos);
+                REQUIRE(response.response.body.find("https://matrix.example.org") != std::string::npos);
+                REQUIRE(response.response.body.find("base_url") != std::string::npos);
             }
         }
     }
@@ -1331,7 +1331,7 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-        REQUIRE(reg.status == 200U);
+        REQUIRE(reg.response.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -1339,8 +1339,8 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("GET /_matrix/client/v3/capabilities is requested with a valid token")
         {
@@ -1349,8 +1349,8 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
 
             THEN("the response is 200 with a capabilities object")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("capabilities") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("capabilities") != std::string::npos);
             }
         }
 
@@ -1361,7 +1361,7 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
 
             THEN("the response is 401")
             {
-                REQUIRE(response.status == 401U);
+                REQUIRE(response.response.status == 401U);
             }
         }
     }
@@ -1381,7 +1381,7 @@ SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated 
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-        REQUIRE(reg.status == 200U);
+        REQUIRE(reg.response.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -1389,8 +1389,8 @@ SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated 
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("GET /_matrix/client/v3/pushrules/ is requested with a valid token")
         {
@@ -1399,8 +1399,8 @@ SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated 
 
             THEN("the response is 200 with a global ruleset")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("global") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("global") != std::string::npos);
             }
         }
 
@@ -1411,7 +1411,7 @@ SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated 
 
             THEN("the response is 401")
             {
-                REQUIRE(response.status == 401U);
+                REQUIRE(response.response.status == 401U);
             }
         }
     }
@@ -1430,7 +1430,7 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-        REQUIRE(reg.status == 200U);
+        REQUIRE(reg.response.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -1438,8 +1438,8 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("POST /keys/upload is called with a body larger than 4 KiB but within 64 KiB")
         {
@@ -1463,7 +1463,7 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
 
             THEN("the response is 200, not 413")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.response.status == 200U);
             }
         }
     }
@@ -1486,7 +1486,7 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication", "[homeser
             {
                 // We do not implement OIDC; the endpoint must be absent (404) rather
                 // than access-denied (401) so clients can probe and fall back gracefully.
-                REQUIRE(response.status == 404U);
+                REQUIRE(response.response.status == 404U);
             }
         }
 
@@ -1497,7 +1497,7 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication", "[homeser
 
             THEN("the response is 404, not 401")
             {
-                REQUIRE(response.status == 404U);
+                REQUIRE(response.response.status == 404U);
             }
         }
     }
@@ -1516,7 +1516,7 @@ SCENARIO("VoIP turn server endpoint returns an empty object for authenticated cl
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-        REQUIRE(reg.status == 200U);
+        REQUIRE(reg.response.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -1524,8 +1524,8 @@ SCENARIO("VoIP turn server endpoint returns an empty object for authenticated cl
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("GET /_matrix/client/v3/voip/turnServer is called with a valid token")
         {
@@ -1534,8 +1534,8 @@ SCENARIO("VoIP turn server endpoint returns an empty object for authenticated cl
 
             THEN("the response is 200 with an empty object, not 404")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "{}");
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
             }
         }
     }
@@ -1554,7 +1554,7 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-        REQUIRE(reg.status == 200U);
+        REQUIRE(reg.response.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -1562,8 +1562,8 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("GET /profile/{userId} is called with a percent-encoded user id")
         {
@@ -1572,9 +1572,9 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
 
             THEN("the response is 200 and contains displayname and avatar_url fields")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("displayname") != std::string::npos);
-                REQUIRE(response.body.find("avatar_url") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("displayname") != std::string::npos);
+                REQUIRE(response.response.body.find("avatar_url") != std::string::npos);
             }
         }
 
@@ -1585,8 +1585,8 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
 
             THEN("the response is 200 — profile lookup is unauthenticated per the Matrix spec")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("displayname") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("displayname") != std::string::npos);
             }
         }
     }
@@ -1605,7 +1605,7 @@ SCENARIO("Media config endpoint returns upload size limit for authenticated clie
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-        REQUIRE(reg.status == 200U);
+        REQUIRE(reg.response.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -1613,8 +1613,8 @@ SCENARIO("Media config endpoint returns upload size limit for authenticated clie
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         WHEN("GET /_matrix/media/v3/config is called with a valid token")
         {
@@ -1623,8 +1623,8 @@ SCENARIO("Media config endpoint returns upload size limit for authenticated clie
 
             THEN("the response is 200 and contains m.upload.size")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("m.upload.size") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("m.upload.size") != std::string::npos);
             }
         }
 
@@ -1635,7 +1635,7 @@ SCENARIO("Media config endpoint returns upload size limit for authenticated clie
 
             THEN("the response is 401")
             {
-                REQUIRE(response.status == 401U);
+                REQUIRE(response.response.status == 401U);
             }
         }
     }
@@ -1654,7 +1654,7 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_json("alice", "CorrectHorse7!")});
-        REQUIRE(reg.status == 200U);
+        REQUIRE(reg.response.status == 200U);
 
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -1662,8 +1662,8 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         // @alice:example.org percent-encoded as it appears in a real browser URL
         auto constexpr user_filter_url = "/_matrix/client/v3/user/%40alice%3Aexample.org/filter";
@@ -1676,8 +1676,8 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
 
             THEN("the response is 200 and contains a filter_id")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("filter_id") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("filter_id") != std::string::npos);
             }
         }
 
@@ -1686,8 +1686,8 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
             // Store a filter first so we have a filter_id to look up
             auto const store_resp = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", user_filter_url, token, filter_body});
-            REQUIRE(store_resp.status == 200U);
-            auto const fid = json_value(store_resp.body, "\"filter_id\":\"");
+            REQUIRE(store_resp.response.status == 200U);
+            auto const fid = json_value(store_resp.response.body, "\"filter_id\":\"");
 
             auto const get_url = std::string{user_filter_url} + "/" + fid;
             auto const response =
@@ -1695,8 +1695,8 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
 
             THEN("the response is 200 and returns the stored filter body")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("timeline") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("timeline") != std::string::npos);
             }
         }
 
@@ -1707,7 +1707,7 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
 
             THEN("the response is 404")
             {
-                REQUIRE(response.status == 404U);
+                REQUIRE(response.response.status == 404U);
             }
         }
 
@@ -1718,7 +1718,7 @@ SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][clie
 
             THEN("the response is 401")
             {
-                REQUIRE(response.status == 401U);
+                REQUIRE(response.response.status == 401U);
             }
         }
     }
@@ -1737,20 +1737,20 @@ SCENARIO("Join-by-id endpoint joins a room through the local join handler", "[ho
                               "/_matrix/client/v3/register",
                               {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-        REQUIRE(room.status == 200U);
-        auto const id = room_id(room.body);
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
 
         WHEN("POST /_matrix/client/v3/join/{roomId} is called")
         {
@@ -1759,8 +1759,8 @@ SCENARIO("Join-by-id endpoint joins a room through the local join handler", "[ho
 
             THEN("the response is 200 and reports the joined room id")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find(id) != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find(id) != std::string::npos);
             }
         }
 
@@ -1772,9 +1772,9 @@ SCENARIO("Join-by-id endpoint joins a room through the local join handler", "[ho
 
             THEN("the path segment is decoded before the local room lookup")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find(id) != std::string::npos);
-                REQUIRE(response.body.find(encoded_id) == std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find(id) != std::string::npos);
+                REQUIRE(response.response.body.find(encoded_id) == std::string::npos);
             }
         }
 
@@ -1785,7 +1785,7 @@ SCENARIO("Join-by-id endpoint joins a room through the local join handler", "[ho
 
             THEN("the response is 401")
             {
-                REQUIRE(response.status == 401U);
+                REQUIRE(response.response.status == 401U);
             }
         }
     }
@@ -1804,15 +1804,15 @@ SCENARIO("Account data endpoint stores and retrieves global account data", "[hom
                               "/_matrix/client/v3/register",
                               {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
-                    .status == 200U);
+                    .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST",
              "/_matrix/client/v3/login",
              {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-        REQUIRE(login.status == 200U);
-        auto const token = login_token(login.body);
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
 
         // @alice:example.org percent-encoded as a browser sends it
         auto constexpr account_data_url = "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.direct";
@@ -1825,7 +1825,7 @@ SCENARIO("Account data endpoint stores and retrieves global account data", "[hom
 
             THEN("the response is 200")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.response.status == 200U);
             }
         }
 
@@ -1833,15 +1833,15 @@ SCENARIO("Account data endpoint stores and retrieves global account data", "[hom
         {
             auto const put = merovingian::homeserver::handle_client_server_request(
                 runtime, {"PUT", account_data_url, token, direct_body});
-            REQUIRE(put.status == 200U);
+            REQUIRE(put.response.status == 200U);
 
             auto const response =
                 merovingian::homeserver::handle_client_server_request(runtime, {"GET", account_data_url, token, {}});
 
             THEN("the response is 200 and returns the stored content")
             {
-                REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find("@bob:example.org") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("@bob:example.org") != std::string::npos);
             }
         }
 
@@ -1852,7 +1852,7 @@ SCENARIO("Account data endpoint stores and retrieves global account data", "[hom
 
             THEN("the response is 404")
             {
-                REQUIRE(response.status == 404U);
+                REQUIRE(response.response.status == 404U);
             }
         }
 
@@ -1864,7 +1864,7 @@ SCENARIO("Account data endpoint stores and retrieves global account data", "[hom
 
             THEN("the response is 403")
             {
-                REQUIRE(response.status == 403U);
+                REQUIRE(response.response.status == 403U);
             }
         }
 
@@ -1875,7 +1875,7 @@ SCENARIO("Account data endpoint stores and retrieves global account data", "[hom
 
             THEN("the response is 401")
             {
-                REQUIRE(response.status == 401U);
+                REQUIRE(response.response.status == 401U);
             }
         }
     }

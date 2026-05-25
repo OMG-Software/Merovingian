@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.7
+Version:        0.4.8
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,7 +89,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.7-1
+* Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.8-1
 - Fix runtime_lock held during /sync long-poll blocking federation dispatch
 
 * Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.6-1

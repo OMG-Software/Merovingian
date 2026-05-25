@@ -412,6 +412,18 @@ a non-production environment.
 - Fix (0.4.7): `next_sync_stream_id` not advanced on membership changes
   (room creation, local join, remote join, leave) made the publish call a
   no-op, so `/sync` timed out instead of waking on membership changes.
+- Fix (0.4.8): Single-threaded listener model caused all client-server and
+  federation requests to be processed one at a time. Replaced with a bounded
+  `ThreadPool` of `std::jthread` workers for concurrent request dispatch.
+- Fix (0.4.8): `dispatch_lock` parameter threaded through handler signatures,
+  leaking lock management into the handler chain. Replaced with two-phase
+  `DispatchResult` dispatch: handlers return `needs_wait` instead of managing
+  the lock, and `dispatch_local_http_request()` handles the wait/retry cycle
+  transparently.
+- Fix (0.4.8): `SocketHandle` fd ownership transferred incorrectly to pool
+  workers — `native_handle()` followed by reset closed the fd before the
+  worker could read. Added `SocketHandle::release()` to transfer ownership
+  without premature close.
 
 ### Production v1.0.0
 

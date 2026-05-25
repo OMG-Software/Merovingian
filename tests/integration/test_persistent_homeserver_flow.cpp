@@ -106,18 +106,18 @@ SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions 
                      "/_matrix/client/v3/login",
                      {},
                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@restart:example.org"},"password":"CorrectHorse7!","device_id":"RESTART1"})"});
-                token = token_from_login_body(login.body);
+                token = token_from_login_body(login.response.body);
                 auto const room = merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-                room_id = room_from_body(room.body);
+                room_id = room_from_body(room.response.body);
                 auto const send = merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/send", token,
                               R"({"type":"m.room.message","body":"persisted"})"});
 
-                REQUIRE(registered.status == 200U);
-                REQUIRE(login.status == 200U);
-                REQUIRE(room.status == 200U);
-                REQUIRE(send.status == 200U);
+                REQUIRE(registered.response.status == 200U);
+                REQUIRE(login.response.status == 200U);
+                REQUIRE(room.response.status == 200U);
+                REQUIRE(send.response.status == 200U);
                 REQUIRE(std::filesystem::exists(sqlite_path));
             }
 
@@ -131,10 +131,10 @@ SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions 
 
             THEN("the restarted runtime authenticates the old token and exposes the persisted room state")
             {
-                REQUIRE(whoami.status == 200U);
-                REQUIRE(whoami.body.find(R"("@restart:example.org")") != std::string::npos);
-                REQUIRE(state.status == 200U);
-                REQUIRE(state.body.find("m.room.create") != std::string::npos);
+                REQUIRE(whoami.response.status == 200U);
+                REQUIRE(whoami.response.body.find(R"("@restart:example.org")") != std::string::npos);
+                REQUIRE(state.response.status == 200U);
+                REQUIRE(state.response.body.find("m.room.create") != std::string::npos);
                 REQUIRE(restarted_runtime.homeserver.database.persistent_store.users.size() == 1U);
                 REQUIRE(restarted_runtime.homeserver.database.persistent_store.access_tokens.size() == 1U);
                 REQUIRE(restarted_runtime.homeserver.database.persistent_store.rooms.size() == 1U);
@@ -175,15 +175,15 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
                      "/_matrix/client/v3/login",
                      {},
                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@keys:example.org"},"password":"CorrectHorse7!","device_id":"KEYS1"})"});
-                token = token_from_login_body(login.body);
+                token = token_from_login_body(login.response.body);
                 auto const upload = merovingian::homeserver::handle_client_server_request(
                     runtime,
                     {"POST", "/_matrix/client/v3/keys/upload", token,
                      R"({"device_keys":{"algorithms":["m.megolm.v1.aes-sha2"]},"one_time_keys":{"signed_curve25519:AAA":{"key":"otk"}},"fallback_keys":{"signed_curve25519:FB":{"key":"fallback"}}})"});
 
-                REQUIRE(registered.status == 200U);
-                REQUIRE(login.status == 200U);
-                REQUIRE(upload.status == 200U);
+                REQUIRE(registered.response.status == 200U);
+                REQUIRE(login.response.status == 200U);
+                REQUIRE(upload.response.status == 200U);
                 REQUIRE(std::filesystem::exists(sqlite_path));
             }
 
@@ -202,12 +202,12 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
 
             THEN("device keys survive restart and fallback keys are reused after one-time keys are consumed")
             {
-                REQUIRE(query.status == 200U);
-                REQUIRE(first_claim.status == 200U);
-                REQUIRE(second_claim.status == 200U);
-                REQUIRE(query.body.find("m.megolm.v1.aes-sha2") != std::string::npos);
-                REQUIRE(first_claim.body.find("otk") != std::string::npos);
-                REQUIRE(second_claim.body.find("fallback") != std::string::npos);
+                REQUIRE(query.response.status == 200U);
+                REQUIRE(first_claim.response.status == 200U);
+                REQUIRE(second_claim.response.status == 200U);
+                REQUIRE(query.response.body.find("m.megolm.v1.aes-sha2") != std::string::npos);
+                REQUIRE(first_claim.response.body.find("otk") != std::string::npos);
+                REQUIRE(second_claim.response.body.find("fallback") != std::string::npos);
                 REQUIRE(runtime.homeserver.database.persistent_store.device_keys.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.one_time_keys.empty());
                 REQUIRE(runtime.homeserver.database.persistent_store.fallback_keys.size() == 1U);
@@ -319,10 +319,10 @@ SCENARIO("Persistent homeserver store records the client-server flow",
                  "/_matrix/client/v3/login",
                  {},
                  R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-            auto const token = token_from_login_body(login.body);
+            auto const token = token_from_login_body(login.response.body);
             auto const room = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-            auto const room_id = room_from_body(room.body);
+            auto const room_id = room_from_body(room.response.body);
             auto const send = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/rooms/" + room_id + "/send", token, R"({"type":"m.room.message"})"});
@@ -335,12 +335,12 @@ SCENARIO("Persistent homeserver store records the client-server flow",
 
             THEN("message events are durable without synthetic current-state rows")
             {
-                REQUIRE(registered.status == 200U);
-                REQUIRE(login.status == 200U);
-                REQUIRE(room.status == 200U);
-                REQUIRE(send.status == 200U);
-                REQUIRE(state.status == 200U);
-                REQUIRE(logout.status == 200U);
+                REQUIRE(registered.response.status == 200U);
+                REQUIRE(login.response.status == 200U);
+                REQUIRE(room.response.status == 200U);
+                REQUIRE(send.response.status == 200U);
+                REQUIRE(state.response.status == 200U);
+                REQUIRE(logout.response.status == 200U);
                 REQUIRE(valid_store.valid);
                 REQUIRE(runtime.homeserver.database.persistent_store.users.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.devices.size() == 1U);
