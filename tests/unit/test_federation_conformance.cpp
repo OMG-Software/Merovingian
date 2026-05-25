@@ -13,6 +13,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace
 {
@@ -102,7 +103,9 @@ SCENARIO("make_join returns room version and event template for a remote user",
         runtime.membership_template_provider =
             [template_invoked](merovingian::federation::FederationEndpoint endpoint,
                                std::string_view target_room_id,
-                               std::string_view user_id) -> merovingian::federation::MembershipEventTemplate {
+                               std::string_view user_id,
+                               std::vector<std::string> const& /*supported_room_versions*/)
+            -> std::optional<merovingian::federation::MembershipEventTemplate> {
             *template_invoked = true;
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::make_join);
             auto tmpl = merovingian::federation::MembershipEventTemplate{};
@@ -139,9 +142,9 @@ SCENARIO("send_join persists membership and returns auth chain and state",
         auto accept_invoked = std::make_shared<bool>(false);
         runtime.membership_acceptor =
             [accept_invoked](merovingian::federation::FederationEndpoint endpoint,
-                             std::string_view target_room_id,
-                             std::string_view event_id,
-                             merovingian::federation::InboundPduEnvelope const& envelope)
+                             [[maybe_unused]] std::string_view target_room_id,
+                             [[maybe_unused]] std::string_view event_id,
+                             [[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
             -> merovingian::federation::MembershipAcceptResult {
             *accept_invoked = true;
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::send_join);
@@ -152,7 +155,14 @@ SCENARIO("send_join persists membership and returns auth chain and state",
         {
             auto const event_id = std::string{"$join_event:"} + origin;
             auto const target = "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{"{\"event\":{\"type\":\"m.room.member\"}}"};
+            auto const body = std::string{
+                "{\"type\":\"m.room.member\","
+                "\"room_id\":\"!conformance:local.example.org\","
+                "\"sender\":\"@remote:remote.example.org\","
+                "\"state_key\":\"@remote:remote.example.org\","
+                "\"content\":{\"membership\":\"join\"},"
+                "\"depth\":1,\"hashes\":{\"sha256\":\"x\"},"
+                "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
             auto const request = signed_put_request(origin, key_id, key_seed, target, body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -177,7 +187,9 @@ SCENARIO("make_leave returns event template for a leaving user",
         runtime.membership_template_provider =
             [template_invoked](merovingian::federation::FederationEndpoint endpoint,
                                std::string_view target_room_id,
-                               std::string_view user_id) -> merovingian::federation::MembershipEventTemplate {
+                               std::string_view user_id,
+                               std::vector<std::string> const& /*supported_room_versions*/)
+            -> std::optional<merovingian::federation::MembershipEventTemplate> {
             *template_invoked = true;
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::make_leave);
             auto tmpl = merovingian::federation::MembershipEventTemplate{};
@@ -227,7 +239,14 @@ SCENARIO("send_leave processes departure and returns 200",
         {
             auto const event_id = std::string{"$leave_event:"} + origin;
             auto const target = "/_matrix/federation/v2/send_leave/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{"{\"event\":{\"type\":\"m.room.member\",\"content\":{\"membership\":\"leave\"}}}"};
+            auto const body = std::string{
+                "{\"type\":\"m.room.member\","
+                "\"room_id\":\"!conformance:local.example.org\","
+                "\"sender\":\"@remote:remote.example.org\","
+                "\"state_key\":\"@remote:remote.example.org\","
+                "\"content\":{\"membership\":\"leave\"},"
+                "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
+                "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
             auto const request = signed_put_request(origin, key_id, key_seed, target, body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -338,30 +357,22 @@ SCENARIO("backfill returns room event history as PDU array",
     }
 }
 
-SCENARIO("key publishing returns self-signed verify keys",
+SCENARIO("key publishing is served via the local HTTP router, not federation handler",
          "[federation][conformance][key_publishing]")
 {
     GIVEN("a federation runtime with key publication enabled")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
 
-        WHEN("an unsigned GET key/v2/server request is dispatched")
+        WHEN("a GET key/v2/server request is dispatched through the federation handler")
         {
             auto const target = std::string{"/_matrix/key/v2/server"};
-            auto request = merovingian::federation::SignedFederationRequest{};
-            request.method = "GET";
-            request.target = target;
-            request.origin = runtime.config.server_name;
-            request.destination = runtime.config.server_name;
-            request.key_id = "";
-            request.now_ts = 1000U;
-            request.canonical_json_verified = true;
-            request.body = "";
+            auto const request = signed_get_request(origin, key_id, key_seed, target);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
-            THEN("the runtime returns 200 with server_name and verify_keys")
+            THEN("the federation handler returns 404 as key publishing is served via the local HTTP router")
             {
-                REQUIRE(response.status == 200U);
+                REQUIRE(response.status == 404U);
             }
         }
     }

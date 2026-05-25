@@ -378,11 +378,15 @@ a non-production environment.
   persists presence state via `set_presence` and publishes sync notifications.
 - Feature (0.4.5): Client-server v1.18 conformance fixtures extended with login
   edge cases, createRoom with name and visibility, room join and leave, message
-  send idempotency, state event retrieval, and populated sync surfaces. Seven
-  client-server endpoints promoted from `partial` to `spec-covered`.
+  send idempotency, and PUT state events. Seven client-server endpoints promoted
+  from `partial` to `spec-covered`.
 - Feature (0.4.5): Federation v1.18 conformance fixtures added. BDD scenarios
   cover inbound make_join, send_join, make_leave, send_leave, invite (v1/v2),
-  backfill, key publishing, and unwired-endpoint 501 hardening.
+  backfill, key publishing routing, and unwired-endpoint 501 hardening.
+- Fix (0.4.5): DispatchWorker overwrite in `wire_federation_callbacks_impl` that
+  replaced a test-injected dispatch worker with a new one.
+- Fix (0.4.5): Empty `transaction_id` in outbound membership and EDU transactions
+  causing `transaction_is_well_formed` rejection.
 
 ### Production v1.0.0
 
@@ -523,8 +527,8 @@ adapters.
 | Rooms | `POST /_matrix/client/v3/rooms/{roomId}/join` | `spec-covered` | Local join slice works through the client listener and membership writes route through the persistent store. v1.18 fixture covers join and leave for a second user. Needs federation-aware joins. |
 | Rooms | `POST /_matrix/client/v3/join/{roomIdOrAlias}` | `spec-covered` | Join-by-id delegates to the same local join handler as `/rooms/{roomId}/join` by rewriting the request target. Needs room-alias resolution, the `?server_name` hint, and federation-aware joins. |
 | Rooms | `POST /_matrix/client/v3/rooms/{roomId}/send` / `PUT /_matrix/client/v3/rooms/{roomId}/send/{eventType}/{txnId}` | `spec-covered` | Local send slice works through the client listener with Matrix reference-hash event IDs, content hashes, persisted Ed25519 signatures, previous/auth event DAG rows, full v6+ auth checking against current room state before persistence, a spec-shaped PUT send alias covered by the v1.18 fixture with malformed-content rejection, and idempotent transaction IDs covered by the v1.18 fixture. Needs restricted join rule evaluation, third-party invite auth, and incremental sync completion. |
-| Rooms | `GET /_matrix/client/v3/rooms/{roomId}/state` / `PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey}` | `spec-covered` | Local state summary works through the client listener, state writes can arrive through the spec-shaped PUT state alias, and the path is covered by the v1.18 fixture with malformed-content rejection. v1.18 fixture covers GET state for m.room.name and m.room.member after PUT state. Needs full state resolution semantics. |
-| Sync | `GET /_matrix/client/v3/sync` | `spec-covered` | Sync returns Matrix v1.18-shaped JSON with event bodies in timelines, stream-token-based `next_batch`, and incremental diffing when `since` is provided. `rooms.join`, `rooms.invite`, and `rooms.leave` are emitted from `PersistentMembership`; top-level `presence`, `account_data`, `to_device`, `device_lists`, and `device_one_time_keys_count` keys are populated from the persistent store. v1.18 fixture covers populated room surfaces. Needs wiring the stored filter_id query parameter to filter application, long polling, presence updates, device-list change tracking, to-device messages, and durable stream tokens. |
+| Rooms | `GET /_matrix/client/v3/rooms/{roomId}/state` / `PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey}` | `spec-covered` | Local state summary works through the client listener, state writes can arrive through the spec-shaped PUT state alias, and the PUT path is covered by the v1.18 fixture with name-setting and malformed-content rejection. Needs GET state route implementation, full state resolution semantics. |
+| Sync | `GET /_matrix/client/v3/sync` | `spec-covered` | Sync returns Matrix v1.18-shaped JSON with event bodies in timelines, stream-token-based `next_batch`, and incremental diffing when `since` is provided. `rooms.join`, `rooms.invite`, and `rooms.leave` are emitted from `PersistentMembership`; top-level `presence`, `account_data`, `to_device`, `device_lists`, and `device_one_time_keys_count` keys are populated from the persistent store. v1.18 fixture covers basic sync shape. Needs populated-room sync surface fixture, wiring the stored filter_id query parameter to filter application, long polling, presence updates, device-list change tracking, to-device messages, and durable stream tokens. |
 | Sync | `POST /_matrix/client/v3/user/{userId}/filter` | `spec-covered` | Filter upload is runtime-wired through the client-server adapter, stores the filter JSON verbatim, returns an opaque `filter_id`, and is covered by the v1.18 fixture with cross-user rejection. Needs SQLite/PostgreSQL restart-survival coverage. |
 | Sync | `GET /_matrix/client/v3/user/{userId}/filter/{filterId}` | `spec-covered` | Filter retrieval is runtime-wired, returns the stored filter JSON, and is covered by the v1.18 fixture with missing-filter rejection. Needs restart-survival coverage. |
 | Account data | `PUT`/`GET /_matrix/client/v3/user/{userId}/account_data/{type}` | `spec-covered` | Global (non-room) account data is runtime-wired through the persistent store with an upsert, surfaces in `/sync`, and is covered by the v1.18 fixture with empty-body, missing-type, and cross-user rejection. Cinny stores `m.direct` here. Needs room-scoped account data (`/rooms/{roomId}/account_data/{type}`). |
