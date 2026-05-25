@@ -1,4 +1,5 @@
 option('hardening', type: 'boolean', value: true, description: 'Enable compiler and linker hardening flags where supported')
 option('build_tests', type: 'boolean', value: true, description: 'Build unit tests')
+option('build_live_tests', type: 'boolean', value: false, description: 'Build opt-in live federation integration tests against external homeservers')
 option('build_fuzz', type: 'boolean', value: false, description: 'Build fuzz harness targets')
 option('strict_ci_gates', type: 'boolean', value: true, description: 'Enable CI-oriented static source gates')

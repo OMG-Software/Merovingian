@@ -20,6 +20,7 @@
 #include <cstring>
 #include <arpa/inet.h>
 #include <netdb.h>
+#include <sys/socket.h>
 #include <string>
 #include <string_view>
 #include <unistd.h>
@@ -36,6 +37,35 @@ constexpr auto merovingian_server = std::string_view{"pong.ping.me.uk"};
 
 // Default HTTPS port.
 constexpr auto https_port = std::uint16_t{443U};
+
+[[nodiscard]] auto sockaddr_address_string(sockaddr const& address) -> std::string
+{
+    auto buffer = std::array<char, INET6_ADDRSTRLEN>{};
+    switch (address.sa_family)
+    {
+    case AF_INET:
+    {
+        auto const* ipv4 = reinterpret_cast<sockaddr_in const*>(&address);
+        if (inet_ntop(AF_INET, &ipv4->sin_addr, buffer.data(), buffer.size()) != nullptr)
+        {
+            return std::string{buffer.data()};
+        }
+        break;
+    }
+    case AF_INET6:
+    {
+        auto const* ipv6 = reinterpret_cast<sockaddr_in6 const*>(&address);
+        if (inet_ntop(AF_INET6, &ipv6->sin6_addr, buffer.data(), buffer.size()) != nullptr)
+        {
+            return std::string{buffer.data()};
+        }
+        break;
+    }
+    default:
+        break;
+    }
+    return {};
+}
 
 // Resolve a hostname to a list of IPv4/IPv6 address strings suitable for
 // OutboundRequest::pinned_addresses. Returns an empty vector on failure.
@@ -55,10 +85,14 @@ constexpr auto https_port = std::uint16_t{443U};
     auto addresses = std::vector<std::string>{};
     for (auto const* entry = raw_results; entry != nullptr; entry = entry->ai_next)
     {
-        auto buffer = std::array<char, INET6_ADDRSTRLEN>{};
-        if (inet_ntop(entry->ai_family, entry->ai_addr, buffer.data(), buffer.size()) != nullptr)
+        if (entry->ai_addr == nullptr)
         {
-            addresses.emplace_back(buffer.data());
+            continue;
+        }
+        auto const address = sockaddr_address_string(*entry->ai_addr);
+        if (!address.empty())
+        {
+            addresses.push_back(address);
         }
     }
     freeaddrinfo(raw_results);
@@ -144,7 +178,6 @@ constexpr auto https_port = std::uint16_t{443U};
     request.method = "GET";
     request.url = url;
     request.pinned_addresses = addresses;
-    request.connect_timeout_seconds = 10U;
     request.connect_timeout_seconds = 15U;
     request.total_timeout_seconds = 60U;
     return request;

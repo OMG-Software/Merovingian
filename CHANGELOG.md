@@ -7,8 +7,17 @@
   HTTPS against a production Synapse server: key fetch, version endpoint,
   profile query, well-known discovery, full discovery + key verification
   pipeline, and inbound probes of Merovingian's key and well-known
-  endpoints. Tagged `[live]` for selective filtering; SKIPped when the
-  remote server is unreachable so CI without network access does not fail.
+  endpoints.
+- Moved the live Synapse federation suite behind the new Meson option
+  `-Dbuild_live_tests=true` so default integration builds remain deterministic
+  and do not depend on external homeserver availability. The live scenarios
+  still SKIP when the remote server is unreachable.
+- Fixed live federation DNS pinning to extract the actual IPv4/IPv6 address
+  payload from each resolved `sockaddr` before passing it to `inet_ntop`.
+- Locked in the federation auth compatibility behavior that returns `502`
+  rather than `401` for malformed or unverifiable federation signatures, so
+  Synapse does not propagate those failures to clients as logout-triggering
+  `401 Unauthorized` responses.
 
 ## 0.4.8
 

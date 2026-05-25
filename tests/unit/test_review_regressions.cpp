@@ -218,6 +218,35 @@ SCENARIO("Federation dispatch exposes only federation routes", "[homeserver][sec
     }
 }
 
+SCENARIO("Federation auth failures do not surface as client-style 401s", "[homeserver][security][federation][review]")
+{
+    GIVEN("a started runtime handling a federation request without valid auth")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the inbound federation profile route is requested without an X-Matrix signature")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime,
+                {"GET",
+                 "/_matrix/federation/v1/query/profile?user_id=%40jcadmin%3Apong.ping.me.uk&field=displayname",
+                 {},
+                 {}});
+
+            THEN("the failure is reported as a server-side federation error instead of 401")
+            {
+                // Synapse can propagate 401 from a federation exchange back to a
+                // client-server request, which Element interprets as an invalid
+                // access token and turns into an automatic logout.
+                REQUIRE(response.status == 502U);
+                REQUIRE(response.body == "malformed federation authorization");
+            }
+        }
+    }
+}
+
 SCENARIO("Migration planning rejects unsupported future versions without iterating", "[database][migration][review]")
 {
     GIVEN("a far future schema version")

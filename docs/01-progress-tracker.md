@@ -478,8 +478,15 @@ be published as production releases while any blocking gate remains open.
   has passed or the `key_id` no longer matches, and the refreshed key is
   persisted before re-verification. Covered by unit and integration tests; a
   live interoperability test against an external homeserver is covered by
-  `test_live_synapse_federation.cpp` (tagged `[live]`), which exercises real TLS,
-  DNS, and HTTPS against matrix.ping.me.uk and pong.ping.me.uk.
+  `test_live_synapse_federation.cpp`, which exercises real TLS, DNS, and HTTPS
+  against matrix.ping.me.uk and pong.ping.me.uk. The live suite is opt-in via
+  `-Dbuild_live_tests=true` so the default integration target remains
+  deterministic and repo-local.
+- Federation auth parsing and signature verification failures intentionally
+  return `502` instead of `401` on the federation HTTP surface. This prevents
+  Synapse from propagating those failures back through a client-server request
+  as `401 Unauthorized`, which Element can interpret as an invalid access token
+  and convert into an automatic logout.
 - Runtime users, tokens, rooms, events, account data, policy rules, federation
   destinations, federation transactions, local media, and remote media survive
   restart for both SQLite and PostgreSQL backends, verified by integration tests
