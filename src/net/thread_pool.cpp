@@ -26,7 +26,7 @@ ThreadPool::ThreadPool(std::size_t worker_count)
     workers_.reserve(worker_count);
     for (auto i = std::size_t{0U}; i < worker_count; ++i)
     {
-        workers_.emplace_back([this](std::stop_token stop) { worker_loop(stop); });
+        workers_.emplace_back([this] { worker_loop(); });
     }
     log_diagnostic("pool.started", {{"workers", std::to_string(worker_count), false}});
 }
@@ -53,12 +53,19 @@ auto ThreadPool::request_stop() -> void
 {
     {
         auto lock = std::lock_guard{queue_mutex_};
+        if (stopping_)
+        {
+            return;
+        }
         stopping_ = true;
     }
     queue_cv_.notify_all();
     for (auto& worker : workers_)
     {
-        worker.request_stop();
+        if (worker.joinable())
+        {
+            worker.join();
+        }
     }
 }
 
@@ -68,19 +75,17 @@ auto ThreadPool::running() const -> bool
     return !stopping_;
 }
 
-auto ThreadPool::worker_loop(std::stop_token stop) -> void
+auto ThreadPool::worker_loop() -> void
 {
-    while (!stop.stop_requested())
+    while (true)
     {
         auto work = std::function<void()>{};
         {
             auto lock = std::unique_lock{queue_mutex_};
-            queue_cv_.wait(lock, [this, &stop] {
-                return stopping_ || !queue_.empty() || stop.stop_requested();
-            });
-            if ((stopping_ && queue_.empty()) || stop.stop_requested())
+            queue_cv_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
+            if (stopping_ && queue_.empty())
             {
-                break;
+                return;
             }
             if (queue_.empty())
             {
