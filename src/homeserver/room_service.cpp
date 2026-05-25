@@ -655,6 +655,14 @@ namespace
                                                {"actor",   *user_id, false},
                                                {"room_id", room_id,  false}
     });
+    // Room creation changes membership which is visible in /sync;
+    // advance the sync stream counter so the publish wakes clients.
+    runtime.database.persistent_store.next_sync_stream_id += 1U;
+    if (runtime.sync_notifier != nullptr)
+    {
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
+                                       runtime.database.persistent_store.next_sync_stream_id);
+    }
     return make_operation_result(true, room_id);
 }
 
@@ -957,6 +965,14 @@ namespace
                                                         {"event_id",      event_id_result.event_id,              false},
                                                         {"member_count",  std::to_string(runtime.database.rooms.back().members.size()), false}
         });
+        // Membership change from remote join is visible in /sync; advance
+        // the sync stream counter so the publish wakes clients.
+        runtime.database.persistent_store.next_sync_stream_id += 1U;
+        if (runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
+                                           runtime.database.persistent_store.next_sync_stream_id);
+        }
         return make_operation_result(true, std::string{room_id});
     }
     if (!room_has_member(*room, *user_id))
@@ -1009,6 +1025,14 @@ namespace
                                              {"room_id",      std::string{room_id},                 false},
                                              {"member_count", std::to_string(room->members.size()), false}
     });
+    // Membership change from local join is visible in /sync; advance
+    // the sync stream counter so the publish wakes clients.
+    runtime.database.persistent_store.next_sync_stream_id += 1U;
+    if (runtime.sync_notifier != nullptr)
+    {
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
+                                       runtime.database.persistent_store.next_sync_stream_id);
+    }
     return make_operation_result(true, std::string{room_id});
 }
 
@@ -1109,6 +1133,11 @@ namespace
                                               {"prev_events", std::to_string(composed->prev_event_ids.size()), false},
                                               {"auth_events", std::to_string(composed->auth_event_ids.size()), false}
     });
+    if (runtime.sync_notifier != nullptr)
+    {
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
+                                       runtime.database.persistent_store.next_sync_stream_id);
+    }
     wire_federation_callbacks(runtime);
     if (runtime.dispatch_worker != nullptr)
     {

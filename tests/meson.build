@@ -136,6 +136,7 @@ if get_option ('build_tests')
       'unit/test_sync_handler.cpp',
       'unit/test_sync_notifier.cpp',
       'unit/test_tcp_acceptor.cpp',
+      'unit/test_thread_pool.cpp',
       'unit/test_trust_safety_policy.cpp',
     ),
     include_directories: inc,

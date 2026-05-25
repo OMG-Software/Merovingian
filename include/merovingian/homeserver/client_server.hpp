@@ -2,12 +2,14 @@
 #pragma once
 
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/homeserver/dispatch_result.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -96,8 +98,9 @@ struct ClientServerStartResult final
 [[nodiscard]] auto start_client_server(config::Config const& config) -> ClientServerStartResult;
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message) -> std::string;
 [[nodiscard]] auto is_matrix_error_response(LocalHttpResponse const& response) noexcept -> bool;
-[[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request)
-    -> LocalHttpResponse;
+[[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
+                                                bool can_wait = true)
+    -> DispatchResult;
 [[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime, std::string_view raw_request)
     -> LocalHttpResponse;
 [[nodiscard]] auto device_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept -> std::size_t;

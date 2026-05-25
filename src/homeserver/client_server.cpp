@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+// GCC 16 with -O2 and LTO emits a false-positive -Wmaybe-uninitialized warning
+// in std::ranges::any_of when inlining DispatchResult's std::string members.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+
 #include "merovingian/homeserver/client_server.hpp"
 
 #include "local_services.hpp"
@@ -59,6 +65,24 @@ namespace
     [[nodiscard]] auto ends_with(std::string_view v, std::string_view suffix) noexcept -> bool
     {
         return v.size() >= suffix.size() && v.substr(v.size() - suffix.size()) == suffix;
+    }
+
+    // Wrap a complete LocalHttpResponse in a DispatchResult.
+    [[nodiscard]] auto complete(LocalHttpResponse response) -> DispatchResult
+    {
+        return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
+    }
+
+    // Convenience wrappers that build a LocalHttpResponse and wrap it in
+    // a DispatchResult in one call.
+    [[nodiscard]] auto dispatch_resp(std::uint16_t status, std::string body) -> DispatchResult
+    {
+        return DispatchResult{DispatchResult::Status::complete, {status, std::move(body)}, {}};
+    }
+
+    [[nodiscard]] auto dispatch_err(std::uint16_t status, std::string_view errcode, std::string_view error) -> DispatchResult
+    {
+        return DispatchResult{DispatchResult::Status::complete, {status, matrix_error(errcode, error)}, {}};
     }
 
     // Collect the unique remote server names that have members in a room,
@@ -216,7 +240,7 @@ namespace
 
     [[nodiscard]] auto err(std::uint16_t status, std::string_view code, std::string_view message) -> LocalHttpResponse
     {
-        return resp(status, matrix_error(code, message));
+        return {status, matrix_error(code, message)};
     }
 
     [[nodiscard]] auto bad_http_request(std::uint16_t status, std::string_view message) -> LocalHttpResponse
@@ -984,7 +1008,8 @@ namespace
     }
 
     [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
-                                 core::SyncRequest const& request) -> std::string
+                                 core::SyncRequest const& request,
+                                 bool can_wait = true) -> DispatchResult
     {
         auto const since_token =
             request.since.has_value() ? sync::decode_stream_token(*request.since) : std::optional<sync::StreamToken>{};
@@ -1000,19 +1025,18 @@ namespace
         // when the store's sync stream id advances OR a new event appears
         // in the timeline ordering, both of which the mutator helpers below
         // publish through `ensure_sync_notifier(rt).publish(...)`.
-        if (request.timeout.has_value() && *request.timeout > 0U)
+        if (can_wait && request.timeout.has_value() && *request.timeout > 0U)
         {
-            auto& notifier = ensure_sync_notifier(rt);
             auto const has_timeline_advance = rt.homeserver.database.next_stream_ordering - 1U > since_ordering;
             auto const has_sync_advance = store.next_sync_stream_id > since_sync_stream_id;
             if (!has_timeline_advance && !has_sync_advance)
             {
-                auto const observed_id = notifier.current_stream_id();
-                if (observed_id <= since_sync_stream_id)
-                {
-                    std::ignore =
-                        notifier.wait_for_change(since_sync_stream_id, std::chrono::milliseconds{*request.timeout});
-                }
+                return DispatchResult{
+                    DispatchResult::Status::needs_wait,
+                    {},
+                    {since_ordering, since_sync_stream_id,
+                     std::chrono::milliseconds{*request.timeout}}
+                };
             }
         }
 
@@ -1142,7 +1166,7 @@ namespace
         auto const next_token = sync::StreamToken{rt.homeserver.database.next_stream_ordering,
                                                   rt.homeserver.database.next_stream_ordering, advanced_sync_stream_id};
 
-        return json_serialize(json_obj({
+        auto const body = json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
             json_member("rooms", json_obj({
                                      json_member("join", json_obj(std::move(join_members))),
@@ -1159,6 +1183,7 @@ namespace
             json_member("device_one_time_keys_count", canonicaljson::Value{std::move(otk_counts)}),
             json_member("device_unused_fallback_key_types", json_arr(std::move(fallback_key_types))),
         }));
+        return DispatchResult{DispatchResult::Status::complete, {200U, std::move(body)}, {}};
     }
 
     [[nodiscard]] auto error_code_for_status(std::uint16_t status) -> std::string_view
@@ -1277,6 +1302,31 @@ namespace
             !database::store_device_key(store, {std::string{user}, std::string{device_id}, *device_keys}))
         {
             return err(500U, "M_UNKNOWN", "device key persistence failed");
+        }
+        // Device key uploads change the device identity that other users
+        // track; notify every user who shares a room with this user.
+        if (serialized_object_member(*object, "device_keys").has_value())
+        {
+            for (auto const& room : rt.homeserver.database.rooms)
+            {
+                auto const is_member = std::ranges::any_of(room.members, [user](auto const& m) {
+                    return m == user;
+                });
+                if (!is_member)
+                {
+                    continue;
+                }
+                for (auto const& member : room.members)
+                {
+                    if (member == user)
+                    {
+                        continue;
+                    }
+                    auto const change = database::PersistentDeviceListChange{
+                        0U, member, std::string{user}, "changed"};
+                    std::ignore = record_device_list_change(rt, change);
+                }
+            }
         }
         if (auto const* keys = object_member_object(*object, "one_time_keys");
             keys != nullptr && !store_key_object_members(rt, user, device_id, *keys, false))
@@ -1961,7 +2011,7 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
             return bad_http_request(400U, "request body requires Content-Length");
         }
         return handle_client_server_request(
-            rt, {parsed.request.method, parsed.request.target, bearer_access_token(parsed.request.headers), {}});
+            rt, {parsed.request.method, parsed.request.target, bearer_access_token(parsed.request.headers), {}}).response;
     }
 
     if (parsed.request.content_length > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
@@ -1980,10 +2030,11 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
     }
 
     return handle_client_server_request(rt, {parsed.request.method, parsed.request.target,
-                                             bearer_access_token(parsed.request.headers), std::string{available_body}});
+                                             bearer_access_token(parsed.request.headers), std::string{available_body}}).response;
 }
 
-auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req) -> LocalHttpResponse
+auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                    bool can_wait) -> DispatchResult
 {
     log_diagnostic("request.received", {
                                            {"method",           req.method,                                       false},
@@ -1999,7 +2050,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                {"status", "503",                                            false},
                                                {"reason", "runtime not started",                            false}
         });
-        return err(503U, "M_UNAVAILABLE", "runtime not started");
+        return dispatch_err(503U, "M_UNAVAILABLE", "runtime not started");
     }
     if (req.body.size() > rt.limits.max_body_bytes)
     {
@@ -2011,7 +2062,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                {"limit_bytes", std::to_string(rt.limits.max_body_bytes),         false},
                                                {"reason",      "request body too large",                         false}
         });
-        return err(413U, "M_TOO_LARGE", "request body too large");
+        return dispatch_err(413U, "M_TOO_LARGE", "request body too large");
     }
     if (!allow(rt, req))
     {
@@ -2021,7 +2072,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                {"status", "429",                                            false},
                                                {"reason", "rate limit exceeded",                            false}
         });
-        return err(429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
+        return dispatch_err(429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
     }
 
     // CORS preflight: browsers send OPTIONS before any cross-origin POST/PUT/DELETE.
@@ -2029,7 +2080,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // is responsible for adding the Access-Control-* response headers.
     if (req.method == "OPTIONS")
     {
-        return resp(200U, {});
+        return dispatch_resp(200U, {});
     }
 
     // GET /.well-known/matrix/client tells clients where the homeserver lives.
@@ -2038,7 +2089,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     if (req.method == "GET" && req.target == "/.well-known/matrix/client")
     {
         auto const& base_url = rt.homeserver.config.server().public_baseurl;
-        return resp(200U, json_serialize(json_obj({
+        return dispatch_resp(200U, json_serialize(json_obj({
                               json_member("m.homeserver", json_obj({json_member("base_url", json_str(base_url))})),
                           })));
     }
@@ -2054,7 +2105,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             versions.push_back(json_str(spec));
         }
-        return resp(200U, json_serialize(json_obj({
+        return dispatch_resp(200U, json_serialize(json_obj({
                               json_member("versions", json_arr(std::move(versions))),
                               json_member("unstable_features", json_obj({})),
                           })));
@@ -2065,12 +2116,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const body = parse_register_body(req.body);
         if (!body.has_value())
         {
-            return err(400U, "M_BAD_JSON", "registration body must be Matrix JSON");
+            return dispatch_err(400U, "M_BAD_JSON", "registration body must be Matrix JSON");
         }
         // Matrix UI-auth: if no auth object is present, return 401 with the available flow.
         if (!has_auth_field(req.body))
         {
-            return resp(401U,
+            return dispatch_resp(401U,
                         json_serialize(json_obj({
                             json_member("flows", json_arr({json_obj({json_member(
                                                      "stages", json_arr({json_str("m.login.registration_token")}))})})),
@@ -2080,12 +2131,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         }
         auto const result =
             register_local_user(rt.homeserver, body->localpart, body->password, body->registration_token);
-        return result.ok ? resp(200U, json_serialize(json_obj({json_member("user_id", json_str(result.value))})))
-                         : err(result.status, "M_FORBIDDEN", result.reason);
+        return result.ok ? dispatch_resp(200U, json_serialize(json_obj({json_member("user_id", json_str(result.value))})))
+                         : dispatch_err(result.status, "M_FORBIDDEN", result.reason);
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/login")
     {
-        return resp(200U,
+        return dispatch_resp(200U,
                     json_serialize(json_obj({
                         json_member("flows", json_arr({json_obj({json_member("type", json_str("m.login.password"))})})),
                     })));
@@ -2095,12 +2146,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const body = parse_login_body(req.body, rt.homeserver.config.server().server_name);
         if (!body.has_value())
         {
-            return err(400U, "M_BAD_JSON", "login body must be Matrix password JSON");
+            return dispatch_err(400U, "M_BAD_JSON", "login body must be Matrix password JSON");
         }
         auto const result = login_local_user(rt.homeserver, body->user_id, body->password, body->device_id);
         if (!result.ok)
         {
-            return err(result.status, "M_FORBIDDEN", result.reason);
+            return dispatch_err(result.status, "M_FORBIDDEN", result.reason);
         }
         if (find_device(rt, body->user_id, body->device_id) == nullptr)
         {
@@ -2116,30 +2167,30 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             auto const refresh_token = issue_refresh_token_for_session(rt.homeserver, body->user_id, body->device_id);
             if (!refresh_token.ok)
             {
-                return err(refresh_token.status, "M_UNKNOWN", refresh_token.reason);
+                return dispatch_err(refresh_token.status, "M_UNKNOWN", refresh_token.reason);
             }
             response_body.push_back(json_member("refresh_token", json_str(refresh_token.value)));
             response_body.push_back(json_member("expires_in_ms", json_int(3600000)));
         }
-        return resp(200U, json_serialize(json_obj(std::move(response_body))));
+        return dispatch_resp(200U, json_serialize(json_obj(std::move(response_body))));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/refresh")
     {
         auto const body = parse_refresh_body(req.body);
         if (!body.has_value())
         {
-            return err(400U, "M_BAD_JSON", "refresh body must contain refresh_token");
+            return dispatch_err(400U, "M_BAD_JSON", "refresh body must contain refresh_token");
         }
         auto const refreshed = refresh_local_session(rt.homeserver, body->refresh_token);
         if (!refreshed.ok)
         {
-            return err(refreshed.status, refreshed.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", refreshed.reason);
+            return dispatch_err(refreshed.status, refreshed.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", refreshed.reason);
         }
         if (find_device(rt, refreshed.user_id, refreshed.device_id) == nullptr)
         {
             rt.devices.push_back({refreshed.user_id, refreshed.device_id, refreshed.device_id});
         }
-        return resp(200U, json_serialize(json_obj({
+        return dispatch_resp(200U, json_serialize(json_obj({
                               json_member("access_token", json_str(refreshed.access_token)),
                               json_member("refresh_token", json_str(refreshed.refresh_token)),
                               json_member("expires_in_ms", json_int(3600000)),
@@ -2152,7 +2203,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
                        {{"has_token", req.access_token.empty() ? "false" : "true", false},
                         {"status",    std::to_string(r.status),                    false}});
-        return r.status == 200U ? resp(200U, "{}") : err(401U, "M_UNKNOWN_TOKEN", r.body);
+        return r.status == 200U ? dispatch_resp(200U, "{}") : dispatch_err(401U, "M_UNKNOWN_TOKEN", r.body);
     }
 
     // MSC2965 OIDC discovery: Cinny and Element probe auth_metadata and
@@ -2161,15 +2212,15 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // access-token gate, otherwise the probes produce a misleading 401.
     if (req.method == "GET" && starts_with(req.target, "/_matrix/client/unstable/org.matrix.msc2965/"))
     {
-        return err(404U, "M_UNRECOGNIZED", "OIDC not supported");
+        return dispatch_err(404U, "M_UNRECOGNIZED", "OIDC not supported");
     }
 
     auto constexpr media_download_prefix = std::string_view{"/_matrix/media/v3/download/"};
     if (req.method == "GET" && starts_with(req.target, media_download_prefix))
     {
         auto const r = handle_local_http_request(rt.homeserver, req);
-        return r.status == 200U ? resp(200U, r.body)
-                                : err(r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
+        return r.status == 200U ? dispatch_resp(200U, r.body)
+                                : dispatch_err(r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
     }
 
     // GET /_matrix/client/v3/profile/{userId}            (getUserProfile)
@@ -2192,14 +2243,14 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         });
         if (!user_exists)
         {
-            return err(404U, "M_NOT_FOUND", "user not found");
+            return dispatch_err(404U, "M_NOT_FOUND", "user not found");
         }
         auto const profile = database::find_profile(store, target_user);
         auto const displayname = profile.has_value() ? profile->displayname : std::string{};
         auto const avatar_url = profile.has_value() ? profile->avatar_url : std::string{};
         if (field.empty())
         {
-            return resp(200U, json_serialize(json_obj({
+            return dispatch_resp(200U, json_serialize(json_obj({
                                   json_member("displayname", json_str(displayname)),
                                   json_member("avatar_url", json_str(avatar_url)),
                               })));
@@ -2208,13 +2259,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         // field is reported as 404 M_NOT_FOUND per the Matrix spec.
         if (field == "displayname" && !displayname.empty())
         {
-            return resp(200U, json_serialize(json_obj({json_member("displayname", json_str(displayname))})));
+            return dispatch_resp(200U, json_serialize(json_obj({json_member("displayname", json_str(displayname))})));
         }
         if (field == "avatar_url" && !avatar_url.empty())
         {
-            return resp(200U, json_serialize(json_obj({json_member("avatar_url", json_str(avatar_url))})));
+            return dispatch_resp(200U, json_serialize(json_obj({json_member("avatar_url", json_str(avatar_url))})));
         }
-        return err(404U, "M_NOT_FOUND", "profile field not found");
+        return dispatch_err(404U, "M_NOT_FOUND", "profile field not found");
     }
 
     auto const user = auth(rt, req.access_token);
@@ -2226,7 +2277,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                     {"status", "401",                                            false},
                                                     {"reason", "unauthenticated",                                false}
         });
-        return err(401U, "M_UNKNOWN_TOKEN", "unauthenticated");
+        return dispatch_err(401U, "M_UNKNOWN_TOKEN", "unauthenticated");
     }
     log_diagnostic("request.auth.accepted", {
                                                 {"method", req.method,                                       false},
@@ -2239,38 +2290,38 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         log_diagnostic(r.ok ? "account.logout_all.accepted" : "account.logout_all.rejected",
                        {{"actor",  *user,                    false},
                         {"status", std::to_string(r.status), false}});
-        return r.ok ? resp(200U, "{}") : err(r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", r.reason);
+        return r.ok ? dispatch_resp(200U, "{}") : dispatch_err(r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", r.reason);
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/whoami")
     {
         log_diagnostic("account.whoami", {{"actor", *user, false}});
-        return resp(200U, json_serialize(json_obj({json_member("user_id", json_str(*user))})));
+        return dispatch_resp(200U, json_serialize(json_obj({json_member("user_id", json_str(*user))})));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/password")
     {
         auto const object = parsed_json_object(req.body);
         if (!object.has_value())
         {
-            return err(400U, "M_BAD_JSON", "password change body must be JSON");
+            return dispatch_err(400U, "M_BAD_JSON", "password change body must be JSON");
         }
         auto const* new_password = string_member(*object, "new_password");
         if (new_password == nullptr || new_password->empty())
         {
-            return err(400U, "M_BAD_JSON", "new_password is required");
+            return dispatch_err(400U, "M_BAD_JSON", "new_password is required");
         }
         auto const result = change_local_user_password(rt.homeserver, req.access_token, *new_password);
         if (!result.ok)
         {
-            return err(result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN", result.reason);
+            return dispatch_err(result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN", result.reason);
         }
-        return resp(200U, "{}");
+        return dispatch_resp(200U, "{}");
     }
     // Clients (Cinny, Element) fetch /capabilities immediately after login to
     // discover what the server supports. Return a minimal stable set; extend
     // as features are implemented.
     if (req.method == "GET" && req.target == "/_matrix/client/v3/capabilities")
     {
-        return resp(200U,
+        return dispatch_resp(200U,
                     json_serialize(json_obj({json_member(
                         "capabilities",
                         json_obj({
@@ -2287,7 +2338,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // global ruleset so clients can proceed to open their sync connection.
     if (req.method == "GET" && req.target == "/_matrix/client/v3/pushrules/")
     {
-        return resp(200U, json_serialize(json_obj({json_member("global", json_obj({
+        return dispatch_resp(200U, json_serialize(json_obj({json_member("global", json_obj({
                                                                              json_member("content", json_arr({})),
                                                                              json_member("override", json_arr({})),
                                                                              json_member("room", json_arr({})),
@@ -2313,13 +2364,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             auto const target_user = core::percent_decode_path_component(encoded_target);
             if (target_user != *user)
             {
-                return err(403U, "M_FORBIDDEN", "cannot update another user's profile");
+                return dispatch_err(403U, "M_FORBIDDEN", "cannot update another user's profile");
             }
             auto const parsed = canonicaljson::parse_lossless(req.body);
             auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
             if (parsed.error != canonicaljson::ParseError::none || obj == nullptr)
             {
-                return err(400U, "M_BAD_JSON", "profile update body must be a JSON object");
+                return dispatch_err(400U, "M_BAD_JSON", "profile update body must be a JSON object");
             }
             auto& store = rt.homeserver.database.persistent_store;
             if (!database::find_profile(store, *user).has_value())
@@ -2336,7 +2387,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 auto const* val = string_member(*obj, "avatar_url");
                 std::ignore = database::update_profile_avatar_url(store, *user, val != nullptr ? *val : "");
             }
-            return resp(200U, "{}");
+            return dispatch_resp(200U, "{}");
         }
     }
 
@@ -2350,13 +2401,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const bounded_limit = std::min(parsed_limit.valid ? parsed_limit.bytes : std::uint64_t{104857600U},
                                             static_cast<std::uint64_t>(std::numeric_limits<std::int64_t>::max()));
         auto const max_upload_bytes = static_cast<std::int64_t>(bounded_limit);
-        return resp(200U, json_serialize(json_obj({json_member("m.upload.size", json_int(max_upload_bytes))})));
+        return dispatch_resp(200U, json_serialize(json_obj({json_member("m.upload.size", json_int(max_upload_bytes))})));
     }
     if (req.method == "POST" && req.target == "/_matrix/media/v3/upload")
     {
         auto const r = handle_local_http_request(rt.homeserver, req);
-        return r.status == 200U ? resp(200U, media_upload_response_json(r.body))
-                                : err(r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_BAD_REQUEST", r.body);
+        return r.status == 200U ? dispatch_resp(200U, media_upload_response_json(r.body))
+                                : dispatch_err(r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_BAD_REQUEST", r.body);
     }
 
     // GET /_matrix/client/v3/voip/turnServer
@@ -2364,18 +2415,18 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // VoIP gracefully rather than treating a 404 as an error.
     if (req.method == "GET" && req.target == "/_matrix/client/v3/voip/turnServer")
     {
-        return resp(200U, "{}");
+        return dispatch_resp(200U, "{}");
     }
 
     auto const key_route = auth::match_key_api_route(req.method, req.target);
     if (key_route.matched)
     {
         auto const device_id = first_device_id(rt, *user);
-        return handle_key_api_route(rt, key_route.route, *user, device_id, req);
+        return complete(handle_key_api_route(rt, key_route.route, *user, device_id, req));
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/devices")
     {
-        return resp(200U, devices_json(rt, *user));
+        return dispatch_resp(200U, devices_json(rt, *user));
     }
     auto constexpr dev_prefix = std::string_view{"/_matrix/client/v3/devices/"};
     if (req.method == "GET" && starts_with(req.target, dev_prefix))
@@ -2384,9 +2435,9 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const* device = find_device(rt, *user, device_id);
         if (device == nullptr)
         {
-            return err(404U, "M_NOT_FOUND", "device not found");
+            return dispatch_err(404U, "M_NOT_FOUND", "device not found");
         }
-        return resp(200U, device_json(*device));
+        return dispatch_resp(200U, device_json(*device));
     }
     if (req.method == "DELETE" && starts_with(req.target, dev_prefix))
     {
@@ -2394,23 +2445,45 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const result = delete_local_device(rt.homeserver, *user, device_id);
         if (!result.ok)
         {
-            return err(result.status, result.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", result.reason);
+            return dispatch_err(result.status, result.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", result.reason);
         }
         auto const [first, last] = std::ranges::remove_if(rt.devices, [user, device_id](ClientDevice const& device) {
             return device.user_id == *user && device.device_id == device_id;
         });
         rt.devices.erase(first, last);
-        return resp(200U, "{}");
+        // Notify all users who share rooms with this user that the device
+        // list has changed so their /sync streams surface the update.
+        for (auto const& room : rt.homeserver.database.rooms)
+        {
+            auto const is_member = std::ranges::any_of(room.members, [user](auto const& m) {
+                return m == *user;
+            });
+            if (!is_member)
+            {
+                continue;
+            }
+            for (auto const& member : room.members)
+            {
+                if (member == *user)
+                {
+                    continue;
+                }
+                auto const change = database::PersistentDeviceListChange{
+                    0U, member, std::string{*user}, "changed"};
+                std::ignore = record_device_list_change(rt, change);
+            }
+        }
+        return dispatch_resp(200U, "{}");
     }
     auto const safety_route = trust_safety::match_reporting_api_route(req.method, req.target);
     if (safety_route.matched)
     {
         if (safety_route.route.requires_admin && !authenticated_admin_user(rt.homeserver, req.access_token).has_value())
         {
-            return err(403U, "M_FORBIDDEN", "admin authentication required");
+            return dispatch_err(403U, "M_FORBIDDEN", "admin authentication required");
         }
-        return safety_route.route.requires_admin ? handle_admin_safety_route(rt, *user, req)
-                                                 : handle_safety_report(rt, *user, req);
+        return complete(safety_route.route.requires_admin ? handle_admin_safety_route(rt, *user, req)
+                                                           : handle_safety_report(rt, *user, req));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/createRoom")
     {
@@ -2431,7 +2504,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                            {{"actor",  *user,                              false},
                             {"status", std::to_string(create_r.status),    false},
                             {"reason", create_r.body,                      false}});
-            return err(create_r.status, error_code_for_status(create_r.status), create_r.body);
+            return dispatch_err(create_r.status, error_code_for_status(create_r.status), create_r.body);
         }
         auto const room_id = create_r.body;
 
@@ -2478,12 +2551,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         log_diagnostic("room.create.accepted",
                        {{"actor",   *user,   false},
                         {"room_id", room_id, false}});
-        return resp(200U, json_serialize(json_obj({json_member("room_id", json_str(room_id))})));
+        return dispatch_resp(200U, json_serialize(json_obj({json_member("room_id", json_str(room_id))})));
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/joined_rooms")
     {
         log_diagnostic("room.joined_rooms.response", {{"actor", *user, false}});
-        return resp(200U, joined_rooms_json(rt, *user));
+        return dispatch_resp(200U, joined_rooms_json(rt, *user));
     }
     auto constexpr sync_prefix = std::string_view{"/_matrix/client/v3/sync"};
     if (req.method == "GET" && starts_with(req.target, sync_prefix))
@@ -2498,11 +2571,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         log_diagnostic("sync.dispatch",
                        {{"actor",     *user,     false},
                         {"device_id", device_id, false}});
-        auto response_body = sync_json(rt, *user, device_id, sync_request);
-        log_diagnostic("sync.response",
-                       {{"actor",     *user,     false},
-                        {"device_id", device_id, false}});
-        return resp(200U, std::move(response_body));
+        return sync_json(rt, *user, device_id, sync_request, can_wait);
     }
 
     auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
@@ -2527,7 +2596,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                     {"room_id",    path->room_id,     false},
                                     {"event_type", path->event_type,  false},
                                     {"reason",     "event content must be a JSON object", false}});
-                    return err(400U, "M_BAD_JSON", "event content must be a JSON object");
+                    return dispatch_err(400U, "M_BAD_JSON", "event content must be a JSON object");
                 }
                 log_diagnostic("room.send_event.dispatch",
                                {{"actor",      *user,            false},
@@ -2543,7 +2612,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                 {"event_type", path->event_type,                                              false},
                                 {"status",     std::to_string(result.status),                                 false},
                                 {"reason",     result.status == 200U ? std::string{"ok"} : result.body,       false}});
-                return result;
+                return complete(result);
             }
             if (auto const path = room_state_path_parts(req.target); path.has_value())
             {
@@ -2556,7 +2625,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                     {"room_id",    path->room_id,    false},
                                     {"event_type", path->event_type, false},
                                     {"reason",     "state content must be a JSON object", false}});
-                    return err(400U, "M_BAD_JSON", "state content must be a JSON object");
+                    return dispatch_err(400U, "M_BAD_JSON", "state content must be a JSON object");
                 }
                 log_diagnostic("room.state_event.dispatch",
                                {{"actor",      *user,            false},
@@ -2573,7 +2642,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                 {"event_type", path->event_type,                                              false},
                                 {"status",     std::to_string(result.status),                                 false},
                                 {"reason",     result.status == 200U ? std::string{"ok"} : result.body,       false}});
-                return result;
+                return complete(result);
             }
         }
         if (req.method == "POST" && suffix.size() > join_s.size() &&
@@ -2594,7 +2663,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                {"status",  std::to_string(result.status),                           false},
                                {"reason",  result.status == 200U ? std::string{"ok"} : result.body, false}
             });
-            return result;
+            return complete(result);
         }
         if (req.method == "POST" && suffix.size() > send_s.size() &&
             suffix.substr(suffix.size() - send_s.size()) == send_s)
@@ -2610,7 +2679,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                             {"room_id", room_id,                                                       false},
                             {"status",  std::to_string(result.status),                                 false},
                             {"reason",  result.status == 200U ? std::string{"ok"} : result.body,       false}});
-            return result;
+            return complete(result);
         }
         if (req.method == "GET" && suffix.size() > state_s.size() &&
             suffix.substr(suffix.size() - state_s.size()) == state_s)
@@ -2625,9 +2694,9 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                             {"status",  std::to_string(result.status), false}});
             if (result.status != 200U)
             {
-                return err(result.status, error_code_for_status(result.status), result.body);
+                return dispatch_err(result.status, error_code_for_status(result.status), result.body);
             }
-            return result;
+            return complete(result);
         }
         if (req.method == "PUT")
         {
@@ -2639,7 +2708,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                    {{"actor",   *user,          false},
                                     {"room_id", typing->room_id, false},
                                     {"reason",  "cannot set typing state for another user", false}});
-                    return err(403U, "M_FORBIDDEN", "cannot set typing state for another user");
+                    return dispatch_err(403U, "M_FORBIDDEN", "cannot set typing state for another user");
                 }
                 log_diagnostic("room.typing.accepted",
                                {{"actor",   *user,           false},
@@ -2664,7 +2733,30 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                         {"destinations", std::to_string(enqueued), false}});
                     }
                 }
-                return resp(200U, json_serialize(json_obj({})));
+                // Update local in-memory typing state so /sync returns the
+                // change for other local users in the room.
+                {
+                    auto existing = std::ranges::find_if(rt.homeserver.typing_users,
+                        [&typing, user](auto const& t) {
+                            return t.room_id == typing->room_id && t.user_id == *user;
+                        });
+                    if (existing != rt.homeserver.typing_users.end())
+                    {
+                        existing->typing = true;
+                    }
+                    else
+                    {
+                        rt.homeserver.typing_users.push_back(
+                            {typing->room_id, std::string{*user}, true});
+                    }
+                }
+                rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+                if (rt.sync_notifier != nullptr)
+                {
+                    rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                              rt.homeserver.database.persistent_store.next_sync_stream_id);
+                }
+                return dispatch_resp(200U, json_serialize(json_obj({})));
             }
         }
         if (req.method == "GET")
@@ -2681,7 +2773,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                    {{"actor",   *user,           false},
                                     {"room_id", *messages_room,  false},
                                     {"reason",  "room not found", false}});
-                    return err(404U, "M_NOT_FOUND", "room not found");
+                    return dispatch_err(404U, "M_NOT_FOUND", "room not found");
                 }
                 if (!joined(*room, *user))
                 {
@@ -2689,12 +2781,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                    {{"actor",   *user,                          false},
                                     {"room_id", *messages_room,                 false},
                                     {"reason",  "user is not a member of this room", false}});
-                    return err(403U, "M_FORBIDDEN", "user is not a member of this room");
+                    return dispatch_err(403U, "M_FORBIDDEN", "user is not a member of this room");
                 }
                 log_diagnostic("room.messages.response",
                                {{"actor",   *user,          false},
                                 {"room_id", *messages_room, false}});
-                return resp(200U, messages_json(rt, *messages_room, req.target));
+                return dispatch_resp(200U, messages_json(rt, *messages_room, req.target));
             }
         }
         // POST /_matrix/client/v3/rooms/{roomId}/leave
@@ -2714,7 +2806,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                {{"actor",   *user,            false},
                                 {"room_id", room_id,          false},
                                 {"reason",  "room not found", false}});
-                return err(404U, "M_NOT_FOUND", "room not found");
+                return dispatch_err(404U, "M_NOT_FOUND", "room not found");
             }
             if (!joined(*room, *user))
             {
@@ -2722,7 +2814,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                {{"actor",   *user,                                 false},
                                 {"room_id", room_id,                               false},
                                 {"reason",  "user is not a member of this room",   false}});
-                return err(403U, "M_FORBIDDEN", "user is not a member of this room");
+                return dispatch_err(403U, "M_FORBIDDEN", "user is not a member of this room");
             }
             if (!database::update_membership(rt.homeserver.database.persistent_store,
                                              room_id, *user, "leave"))
@@ -2731,14 +2823,22 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                {{"actor",   *user,                        false},
                                 {"room_id", room_id,                      false},
                                 {"reason",  "failed to update membership", false}});
-                return err(500U, "M_UNKNOWN", "failed to update membership");
+                return dispatch_err(500U, "M_UNKNOWN", "failed to update membership");
             }
             // Remove from in-memory member list so joined_rooms reflects the change immediately.
             std::erase(room->members, *user);
+            // Membership changes are visible in /sync; advance the sync
+            // stream counter so the publish wakes parked sync clients.
+            rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+            if (rt.sync_notifier != nullptr)
+            {
+                rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                          rt.homeserver.database.persistent_store.next_sync_stream_id);
+            }
             log_diagnostic("room.leave.accepted",
                            {{"actor",   *user,   false},
                             {"room_id", room_id, false}});
-            return resp(200U, json_serialize(json_obj({})));
+            return dispatch_resp(200U, json_serialize(json_obj({})));
         }
         // POST /_matrix/client/v3/rooms/{roomId}/read_markers
         // Read receipts are transient client-side state; accept without persisting.
@@ -2763,14 +2863,14 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 auto const event_id = fully_read != nullptr ? std::string{*fully_read} : std::string{};
                 if (!event_id.empty())
                 {
+                    auto const now_ts = static_cast<std::int64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count());
                     auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms,
                         [&room_id](auto const& r) { return r.room_id == room_id; });
                     if (room_it != rt.homeserver.database.rooms.end())
                     {
-                        auto const now_ts = static_cast<std::int64_t>(
-                            std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::system_clock::now().time_since_epoch())
-                                .count());
                         // Build the receipt EDU content per Matrix spec.
                         auto receipt_content = canonicaljson::Object{};
                         auto user_receipts = canonicaljson::Object{};
@@ -2796,9 +2896,31 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                             }
                         }
                     }
+                    // Update local in-memory receipt state so /sync returns the
+                    // change for other local users in the room.
+                    auto existing_receipt = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
+                        return r.room_id == room_id && r.user_id == *user;
+                    });
+                    if (existing_receipt != rt.homeserver.receipts.end())
+                    {
+                        existing_receipt->event_id = event_id;
+                        existing_receipt->ts = static_cast<std::uint64_t>(now_ts);
+                    }
+                    else
+                    {
+                        rt.homeserver.receipts.push_back(
+                            {std::string{room_id}, "m.read", std::string{*user}, event_id,
+                             static_cast<std::uint64_t>(now_ts)});
+                    }
+                    rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+                    if (rt.sync_notifier != nullptr)
+                    {
+                        rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                                  rt.homeserver.database.persistent_store.next_sync_stream_id);
+                    }
                 }
             }
-            return resp(200U, json_serialize(json_obj({})));
+            return dispatch_resp(200U, json_serialize(json_obj({})));
         }
     }
 
@@ -2816,13 +2938,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 core::percent_decode_path_component(path_after_prefix.substr(0U, suffix_pos));
             if (user_id_target != *user)
             {
-                return err(403U, "M_FORBIDDEN", "cannot set presence for another user");
+                return dispatch_err(403U, "M_FORBIDDEN", "cannot set presence for another user");
             }
             auto const body = canonicaljson::parse_lossless(req.body);
             auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
             if (body_obj == nullptr)
             {
-                return err(400U, "M_BAD_JSON", "presence body must be Matrix JSON");
+                return dispatch_err(400U, "M_BAD_JSON", "presence body must be Matrix JSON");
             }
             auto const* presence_str = string_member(*body_obj, "presence");
             auto const presence_state = presence_str != nullptr ? *presence_str : std::string{"offline"};
@@ -2836,12 +2958,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             state.currently_active = (presence_state == "online");
             if (!set_presence(rt, state))
             {
-                return err(500U, "M_UNKNOWN", "presence persistence failed");
+                return dispatch_err(500U, "M_UNKNOWN", "presence persistence failed");
             }
             log_diagnostic("presence.set",
                            {{"actor", *user, false},
                             {"presence", presence_state, false}});
-            return resp(200U, json_serialize(json_obj({})));
+            return dispatch_resp(200U, json_serialize(json_obj({})));
         }
     }
 
@@ -2866,7 +2988,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                {"status", "400",                                            false},
                                {"reason", "room id or alias must not be empty",             false}
             });
-            return err(400U, "M_INVALID_PARAM", "room id or alias must not be empty");
+            return dispatch_err(400U, "M_INVALID_PARAM", "room id or alias must not be empty");
         }
         auto const decoded_room_segment = core::percent_decode_path_component(room_segment);
         auto rewritten = req;
@@ -2886,7 +3008,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                            {"status",           std::to_string(result.status),                           false},
                            {"reason",           result.status == 200U ? std::string{"ok"} : result.body, false}
         });
-        return result;
+        return complete(result);
     }
 
     // POST  /_matrix/client/v3/user/{userId}/filter   — upload and store a sync filter
@@ -2907,11 +3029,11 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             auto const path_user = core::percent_decode_path_component(encoded_user);
             if (path_user != *user)
             {
-                return err(403U, "M_FORBIDDEN", "cannot upload filter for another user");
+                return dispatch_err(403U, "M_FORBIDDEN", "cannot upload filter for another user");
             }
             if (req.body.empty())
             {
-                return err(400U, "M_BAD_JSON", "filter body must not be empty");
+                return dispatch_err(400U, "M_BAD_JSON", "filter body must not be empty");
             }
             auto const filter_id = generate_filter_id();
             if (!database::store_filter(rt.homeserver.database.persistent_store, {path_user, filter_id, req.body}))
@@ -2920,12 +3042,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                {{"actor",     *user,     false},
                                 {"filter_id", filter_id, false},
                                 {"reason",    "failed to persist filter", false}});
-                return err(500U, "M_UNKNOWN", "failed to persist filter");
+                return dispatch_err(500U, "M_UNKNOWN", "failed to persist filter");
             }
             log_diagnostic("filter.stored",
                            {{"actor",     *user,     false},
                             {"filter_id", filter_id, false}});
-            return resp(200U, json_serialize(json_obj({json_member("filter_id", json_str(filter_id))})));
+            return dispatch_resp(200U, json_serialize(json_obj({json_member("filter_id", json_str(filter_id))})));
         }
 
         auto const mid_pos = suffix.find(filter_m);
@@ -2935,7 +3057,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             auto const path_user = core::percent_decode_path_component(encoded_user);
             if (path_user != *user)
             {
-                return err(403U, "M_FORBIDDEN", "cannot access filter for another user");
+                return dispatch_err(403U, "M_FORBIDDEN", "cannot access filter for another user");
             }
             auto const filter_id = std::string{suffix.substr(mid_pos + filter_m.size())};
             auto const stored = database::find_filter(rt.homeserver.database.persistent_store, path_user, filter_id);
@@ -2945,12 +3067,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                {{"actor",     *user,     false},
                                 {"filter_id", filter_id, false},
                                 {"reason",    "filter not found", false}});
-                return err(404U, "M_NOT_FOUND", "filter not found");
+                return dispatch_err(404U, "M_NOT_FOUND", "filter not found");
             }
             log_diagnostic("filter.retrieved",
                            {{"actor",     *user,     false},
                             {"filter_id", filter_id, false}});
-            return resp(200U, stored->json);
+            return dispatch_resp(200U, stored->json);
         }
 
         // Global (non-room) account data. The userId path segment is
@@ -2967,13 +3089,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 auto const path_user = core::percent_decode_path_component(encoded_user);
                 if (path_user != *user)
                 {
-                    return err(403U, "M_FORBIDDEN", "cannot access account data for another user");
+                    return dispatch_err(403U, "M_FORBIDDEN", "cannot access account data for another user");
                 }
                 if (req.method == "PUT")
                 {
                     if (req.body.empty())
                     {
-                        return err(400U, "M_BAD_JSON", "account data body must not be empty");
+                        return dispatch_err(400U, "M_BAD_JSON", "account data body must not be empty");
                     }
                     if (!set_account_data(rt, {path_user, std::string{}, type, req.body, 0U}))
                     {
@@ -2981,12 +3103,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                        {{"actor",  *user, false},
                                         {"type",   type,  false},
                                         {"reason", "failed to persist account data", false}});
-                        return err(500U, "M_UNKNOWN", "failed to persist account data");
+                        return dispatch_err(500U, "M_UNKNOWN", "failed to persist account data");
                     }
                     log_diagnostic("account_data.stored",
                                    {{"actor", *user, false},
                                     {"type",  type,  false}});
-                    return resp(200U, "{}");
+                    return dispatch_resp(200U, "{}");
                 }
                 if (req.method == "GET")
                 {
@@ -3001,12 +3123,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                        {{"actor",  *user,                    false},
                                         {"type",   type,                     false},
                                         {"reason", "account data not found", false}});
-                        return err(404U, "M_NOT_FOUND", "account data not found");
+                        return dispatch_err(404U, "M_NOT_FOUND", "account data not found");
                     }
                     log_diagnostic("account_data.retrieved",
                                    {{"actor", *user, false},
                                     {"type",  type,  false}});
-                    return resp(200U, found->content_json);
+                    return dispatch_resp(200U, found->content_json);
                 }
             }
         }
@@ -3064,10 +3186,10 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 log_diagnostic("room_summary.response",
                                {{"room_id", room_id, false},
                                 {"actor", *user, false}});
-                return resp(200U, body.error == canonicaljson::CanonicalJsonError::none ? body.output : "{}");
+                return dispatch_resp(200U, body.error == canonicaljson::CanonicalJsonError::none ? body.output : "{}");
             }
         }
-        return err(404U, "M_NOT_FOUND", "room summary not found");
+        return dispatch_err(404U, "M_NOT_FOUND", "room summary not found");
     }
 
     log_diagnostic("request.route_not_found", {
@@ -3076,7 +3198,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                   {"actor",  *user,                                            false},
                                                   {"status", "404",                                            false}
     });
-    return err(404U, "M_UNRECOGNIZED", "route not found");
+    return dispatch_err(404U, "M_UNRECOGNIZED", "route not found");
 }
 
 auto device_count(ClientServerRuntime const& rt, std::string_view user) noexcept -> std::size_t
@@ -3107,7 +3229,8 @@ auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&
         runtime.sync_notifier = std::make_unique<sync::SyncNotifier>();
         runtime.homeserver.sync_notifier = runtime.sync_notifier.get();
     }
-    runtime.sync_notifier->publish(runtime.homeserver.database.persistent_store.next_sync_stream_id);
+    auto const& db = runtime.homeserver.database;
+    runtime.sync_notifier->publish(db.next_stream_ordering - 1U, db.persistent_store.next_sync_stream_id);
     return *runtime.sync_notifier;
 }
 
@@ -3172,27 +3295,27 @@ auto run_client_server_flow(config::Config const& config) -> OperationResult
          "/_matrix/client/v3/login",
          {},
          R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
-    auto const token = json_value(login.body, "\"access_token\":\"");
+    auto const token = json_value(login.response.body, "\"access_token\":\"");
     auto whoami = handle_client_server_request(rt, {"GET", "/_matrix/client/v3/account/whoami", token, {}});
     auto room = handle_client_server_request(rt, {"POST", "/_matrix/client/v3/createRoom", token, {}});
-    auto const room_id = json_value(room.body, "\"room_id\":\"");
+    auto const room_id = json_value(room.response.body, "\"room_id\":\"");
     auto send = handle_client_server_request(rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/send", token,
                                                   R"({"type":"m.room.encrypted","content":"secret"})"});
     auto state = handle_client_server_request(rt, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state", token, {}});
     auto joined_r = handle_client_server_request(rt, {"GET", "/_matrix/client/v3/joined_rooms", token, {}});
     auto devices = handle_client_server_request(rt, {"GET", "/_matrix/client/v3/devices", token, {}});
     auto sync = handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token, {}});
-    if (reg.status != 200U || login.status != 200U || whoami.status != 200U || room.status != 200U ||
-        send.status != 200U || state.status != 200U || joined_r.status != 200U || devices.status != 200U ||
-        sync.status != 200U)
+    if (reg.response.status != 200U || login.response.status != 200U || whoami.response.status != 200U || room.response.status != 200U ||
+        send.response.status != 200U || state.response.status != 200U || joined_r.response.status != 200U || devices.response.status != 200U ||
+        sync.response.status != 200U)
     {
         return {false, 400U, {}, "client-server flow failed"};
     }
-    if (sync.body.find("secret") != std::string::npos || sync.body.find("m.room.encrypted") != std::string::npos)
+    if (sync.response.body.find("secret") != std::string::npos || sync.response.body.find("m.room.encrypted") != std::string::npos)
     {
         return {false, 500U, {}, "sync leaked plaintext event content"};
     }
-    return {true, 200U, sync.body, {}};
+    return {true, 200U, sync.response.body, {}};
 }
 
 } // namespace merovingian::homeserver

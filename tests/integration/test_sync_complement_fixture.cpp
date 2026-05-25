@@ -209,11 +209,11 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
         {
             auto const expected = value_as_integer(*expect_status).value_or(-1);
             INFO("Fixture " << filename << " failed at " << request.method << ' ' << request.target << " body "
-                            << response.body);
-            REQUIRE(response.status == static_cast<std::uint16_t>(expected));
+                            << response.response.body);
+            REQUIRE(response.response.status == static_cast<std::uint16_t>(expected));
         }
 
-        auto parsed_body = merovingian::canonicaljson::parse_lossless(response.body);
+        auto parsed_body = merovingian::canonicaljson::parse_lossless(response.response.body);
         if (parsed_body.error == merovingian::canonicaljson::ParseError::none)
         {
             if (auto const* keys = object_member(*step, "expect_keys_present"); keys != nullptr)

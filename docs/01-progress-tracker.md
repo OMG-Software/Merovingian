@@ -390,6 +390,40 @@ a non-production environment.
 - Fix (0.4.6): `PUT /_matrix/federation/v1/send/{txnId}` response body returned
   plain-text diagnostic strings instead of the Matrix-required `{"pdus":{}}` JSON,
   causing Synapse JSONDecodeError on transaction responses.
+- Fix (0.4.7): `runtime_lock` held during `/sync` long-poll wait blocked
+  federation request dispatch for up to 30 seconds, causing Synapse
+  CancelledError on profile queries and key claims. Lock is now released
+  before the condition_variable wait and reacquired after.
+- Fix (0.4.7): `SyncNotifier` only tracked `sync_stream_id`; timeline events
+  from local actions never woke parked `/sync` requests. Extended to track
+  both `stream_ordering` and `sync_stream_id` so either counter advancing
+  wakes all waiters.
+- Fix (0.4.7): Missing `sync_notifier->publish()` calls on room leave,
+  client-side typing and read receipts, federation send_join membership
+  acceptance, inbound typing and receipt EDUs, device deletion, and device
+  key uploads. Each path now publishes with the correct stream counters so
+  `/sync` long-polls return promptly.
+- Fix (0.4.7): `record_device_list_change` not called on device deletion or
+  device key upload; other users sharing a room with the affected user did
+  not see the device list change in their `/sync` stream.
+- Fix (0.4.7): `stream_ordering=0` in federation `membership_acceptor` caused
+  inbound `send_join` events to be silently skipped by the `/sync` timeline
+  filter. `next_stream_ordering` is now advanced before storing the event.
+- Fix (0.4.7): `next_sync_stream_id` not advanced on membership changes
+  (room creation, local join, remote join, leave) made the publish call a
+  no-op, so `/sync` timed out instead of waking on membership changes.
+- Fix (0.4.8): Single-threaded listener model caused all client-server and
+  federation requests to be processed one at a time. Replaced with a bounded
+  `ThreadPool` of `std::jthread` workers for concurrent request dispatch.
+- Fix (0.4.8): `dispatch_lock` parameter threaded through handler signatures,
+  leaking lock management into the handler chain. Replaced with two-phase
+  `DispatchResult` dispatch: handlers return `needs_wait` instead of managing
+  the lock, and `dispatch_local_http_request()` handles the wait/retry cycle
+  transparently.
+- Fix (0.4.8): `SocketHandle` fd ownership transferred incorrectly to pool
+  workers — `native_handle()` followed by reset closed the fd before the
+  worker could read. Added `SocketHandle::release()` to transfer ownership
+  without premature close.
 
 ### Production v1.0.0
 

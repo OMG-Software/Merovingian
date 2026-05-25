@@ -6,49 +6,96 @@
 
 #include <atomic>
 #include <chrono>
+#include <mutex>
 #include <thread>
 
-SCENARIO("SyncNotifier returns immediately when the stream id has already advanced",
+SCENARIO("SyncNotifier returns immediately when the sync stream id has already advanced",
          "[sync][notifier]")
 {
     GIVEN("a notifier published past the caller's since-token")
     {
         auto notifier = merovingian::sync::SyncNotifier{};
-        notifier.publish(5U);
+        notifier.publish(0U, 5U);
 
-        WHEN("a sync call waits with since=3 and a long timeout")
+        WHEN("a sync call waits with since_stream_ordering=0 and since_sync_stream_id=3")
         {
-            auto const woke = notifier.wait_for_change(3U, std::chrono::milliseconds{500});
+            auto const woke =
+                notifier.wait_for_change(0U, 3U, std::chrono::milliseconds{500});
 
             THEN("wait returns true without blocking on the timeout")
             {
                 REQUIRE(woke);
-                REQUIRE(notifier.current_stream_id() == 5U);
+                REQUIRE(notifier.current_sync_stream_id() == 5U);
             }
         }
     }
 }
 
-SCENARIO("SyncNotifier blocks until publish bumps the stream id", "[sync][notifier]")
+SCENARIO("SyncNotifier returns immediately when stream_ordering has advanced",
+         "[sync][notifier]")
 {
-    GIVEN("a fresh notifier at stream id 0 and a sync waiter parked at since=0")
+    GIVEN("a notifier with stream_ordering=10 and sync_stream_id=0")
+    {
+        auto notifier = merovingian::sync::SyncNotifier{};
+        notifier.publish(10U, 0U);
+
+        WHEN("a sync call waits with since_stream_ordering=5")
+        {
+            auto const woke =
+                notifier.wait_for_change(5U, 0U, std::chrono::milliseconds{500});
+
+            THEN("wait returns true because timeline events are available")
+            {
+                REQUIRE(woke);
+            }
+        }
+    }
+}
+
+SCENARIO("SyncNotifier blocks until publish bumps either counter", "[sync][notifier]")
+{
+    GIVEN("a fresh notifier at counters 0,0 and a sync waiter parked at since=0,0")
     {
         auto notifier = merovingian::sync::SyncNotifier{};
         auto woke = std::atomic<bool>{false};
         auto waiter = std::thread{[&] {
-            woke.store(notifier.wait_for_change(0U, std::chrono::milliseconds{2000}));
+            woke.store(notifier.wait_for_change(0U, 0U, std::chrono::milliseconds{2000}));
         }};
 
-        WHEN("a producer publishes id=1")
+        WHEN("a producer publishes sync_stream_id=1")
         {
             std::this_thread::sleep_for(std::chrono::milliseconds{20});
-            notifier.publish(1U);
+            notifier.publish(0U, 1U);
             waiter.join();
 
             THEN("the waiter wakes and reports the change")
             {
                 REQUIRE(woke.load());
-                REQUIRE(notifier.current_stream_id() == 1U);
+                REQUIRE(notifier.current_sync_stream_id() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("SyncNotifier wakes on stream_ordering advance while waiting", "[sync][notifier]")
+{
+    GIVEN("a fresh notifier and a waiter parked at since_stream_ordering=0")
+    {
+        auto notifier = merovingian::sync::SyncNotifier{};
+        auto woke = std::atomic<bool>{false};
+        auto waiter = std::thread{[&] {
+            woke.store(notifier.wait_for_change(0U, 0U, std::chrono::milliseconds{2000}));
+        }};
+
+        WHEN("a producer publishes stream_ordering=7 (timeline event)")
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            notifier.publish(7U, 0U);
+            waiter.join();
+
+            THEN("the waiter wakes because a timeline event arrived")
+            {
+                REQUIRE(woke.load());
             }
         }
     }
@@ -56,17 +103,63 @@ SCENARIO("SyncNotifier blocks until publish bumps the stream id", "[sync][notifi
 
 SCENARIO("SyncNotifier wait returns false on timeout when nothing publishes", "[sync][notifier]")
 {
-    GIVEN("a notifier at id 0 with no pending publish")
+    GIVEN("a notifier at counters 0,0 with no pending publish")
     {
         auto notifier = merovingian::sync::SyncNotifier{};
 
         WHEN("a sync call waits with a tiny timeout")
         {
-            auto const woke = notifier.wait_for_change(0U, std::chrono::milliseconds{20});
+            auto const woke = notifier.wait_for_change(0U, 0U, std::chrono::milliseconds{20});
 
             THEN("wait reports timeout")
             {
                 REQUIRE_FALSE(woke);
+            }
+        }
+    }
+}
+
+SCENARIO("An external mutex is releasable while a sync wait is parked",
+         "[sync][notifier][lock-release]")
+{
+    GIVEN("a unique_lock holding a mutex and a SyncNotifier at counters 0,0")
+    {
+        auto notifier = merovingian::sync::SyncNotifier{};
+        auto mtx = std::timed_mutex{};
+        auto lock = std::unique_lock<std::timed_mutex>{mtx};
+
+        WHEN("a waiter thread unlocks the mutex, calls wait_for_change, then re-locks")
+        {
+            auto waiter_done = std::atomic<bool>{false};
+            auto waiter = std::thread{[&] {
+                lock.unlock();
+                std::ignore = notifier.wait_for_change(0U, 0U, std::chrono::milliseconds{2000});
+                lock.lock();
+                waiter_done.store(true);
+            }};
+
+            // Give the waiter a moment to enter the condition_variable wait.
+            std::this_thread::sleep_for(std::chrono::milliseconds{50});
+
+            THEN("another thread can acquire the mutex while the waiter is parked")
+            {
+                auto acquired = std::atomic<bool>{false};
+                auto probe = std::thread{[&] {
+                    auto probe_lock = std::unique_lock<std::timed_mutex>{mtx, std::defer_lock};
+                    acquired.store(probe_lock.try_lock_for(std::chrono::milliseconds{500}));
+                    if (acquired.load())
+                    {
+                        probe_lock.unlock();
+                    }
+                }};
+                probe.join();
+
+                // Wake the waiter so the test doesn't hang.
+                notifier.publish(1U, 1U);
+                waiter.join();
+
+                REQUIRE(acquired.load());
+                REQUIRE(waiter_done.load());
             }
         }
     }
