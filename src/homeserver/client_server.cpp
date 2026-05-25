@@ -1,5 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+// GCC 16 with -O2 and LTO emits a false-positive -Wmaybe-uninitialized warning
+// in std::ranges::any_of when inlining DispatchResult's std::string members.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
+#endif
+
 #include "merovingian/homeserver/client_server.hpp"
 
 #include "local_services.hpp"
