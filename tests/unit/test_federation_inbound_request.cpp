@@ -290,9 +290,9 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
             THEN("the transaction is accepted once and retries are idempotent")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "accepted pdus=1");
+                REQUIRE(response.body == R"({"pdus":{}})");
                 REQUIRE(duplicate.status == 200U);
-                REQUIRE(duplicate.body == "duplicate transaction accepted");
+                REQUIRE(duplicate.body == R"({"pdus":{}})");
                 REQUIRE(runtime.accepted_transactions.size() == 1U);
                 REQUIRE(runtime.accepted_transactions.front().transaction_id == "txn123");
                 REQUIRE(runtime.remotes.front().trust.consecutive_failures == 0U);
@@ -331,7 +331,7 @@ SCENARIO("Inbound federation seeds discovery state for remotes resolved on deman
             THEN("the resolved discovery and signing state allow the transaction")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "accepted pdus=1");
+                REQUIRE(response.body == R"({"pdus":{}})");
                 REQUIRE(runtime.remotes.size() == 1U);
                 REQUIRE(runtime.remotes.front().discovery.resolved_addresses ==
                         std::vector<std::string>{"203.0.113.10"});

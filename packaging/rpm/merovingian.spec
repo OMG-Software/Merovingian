@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.5
+Version:        0.4.6
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,13 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.6-1
+- Fix federation transaction response to return spec-required JSON {"pdus":{}}
+
+* Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.5-1
+- Add v1.18 conformance fixtures for client-server and federation
+- Fix DispatchWorker overwrite and empty transaction_id bugs
+
 * Sat May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.4-1
 - Wire inbound EDU sink for all five EDU types (typing, receipt, presence, to-device, device_list_update)
 - Wire outbound membership into join_room for remote rooms (make_join → sign → send_join)
