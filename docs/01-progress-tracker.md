@@ -387,6 +387,9 @@ a non-production environment.
   replaced a test-injected dispatch worker with a new one.
 - Fix (0.4.5): Empty `transaction_id` in outbound membership and EDU transactions
   causing `transaction_is_well_formed` rejection.
+- Fix (0.4.6): `PUT /_matrix/federation/v1/send/{txnId}` response body returned
+  plain-text diagnostic strings instead of the Matrix-required `{"pdus":{}}` JSON,
+  causing Synapse JSONDecodeError on transaction responses.
 
 ### Production v1.0.0
 

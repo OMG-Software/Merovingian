@@ -1,26 +1,13 @@
 # Changelog
 
-## 0.4.5
+## 0.4.6
 
-- Extended `client_server_v1_18.json` conformance fixture with login edge
-  cases, createRoom with name and visibility, room join and leave, message
-  send idempotency, and PUT state events. Promotes seven client-server
-  endpoints from `partial` to `spec-covered`.
-- Added `federation_v1_18.json` reference fixture documenting expected
-  behaviors for inbound make_join, send_join, make_leave, send_leave, invite
-  (v1/v2), backfill, and key publishing against the Matrix v1.18 federation
-  contract.
-- Added `test_federation_conformance.cpp` with BDD scenarios covering make_join,
-  send_join, make_leave, send_leave, invite v1/v2, backfill, key publishing
-  routing, and unwired-endpoint 501 hardening.
-- Fixed DispatchWorker overwrite bug in `wire_federation_callbacks_impl` that
-  replaced a test-injected dispatch worker with a new one.
-- Fixed empty `transaction_id` in outbound membership and EDU transactions
-  causing `transaction_is_well_formed` rejection.
 - Fixed `PUT /_matrix/federation/v1/send/{txnId}` response body returning
   plain-text diagnostic strings instead of the Matrix-required `{"pdus":{}}`
   JSON, which caused Synapse to fail with JSONDecodeError on transaction
   responses. The 400 rejection now also returns proper JSON with `M_BAD_JSON`.
+
+## 0.4.5
 
 ## 0.4.4
 
