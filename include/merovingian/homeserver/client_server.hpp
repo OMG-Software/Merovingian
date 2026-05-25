@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -96,7 +97,8 @@ struct ClientServerStartResult final
 [[nodiscard]] auto start_client_server(config::Config const& config) -> ClientServerStartResult;
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message) -> std::string;
 [[nodiscard]] auto is_matrix_error_response(LocalHttpResponse const& response) noexcept -> bool;
-[[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request)
+[[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
+                                                std::unique_lock<std::mutex>* dispatch_lock = nullptr)
     -> LocalHttpResponse;
 [[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime, std::string_view raw_request)
     -> LocalHttpResponse;

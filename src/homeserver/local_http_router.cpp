@@ -263,7 +263,8 @@ namespace
             }
             if (rt->sync_notifier != nullptr)
             {
-                rt->sync_notifier->publish(rt->database.persistent_store.next_sync_stream_id);
+                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                                           rt->database.persistent_store.next_sync_stream_id);
             }
             return {federation::PduIngestionStatus::accepted, {}};
         };
@@ -328,6 +329,12 @@ namespace
                     {
                         rt->typing_users.erase(existing);
                     }
+                }
+                rt->database.persistent_store.next_sync_stream_id += 1U;
+                if (rt->sync_notifier != nullptr)
+                {
+                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                                               rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
@@ -412,6 +419,12 @@ namespace
                 {
                     rt->receipts.push_back({std::string{room_id}, "m.read", std::string{user_id}, event_id, ts});
                 }
+                rt->database.persistent_store.next_sync_stream_id += 1U;
+                if (rt->sync_notifier != nullptr)
+                {
+                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                                               rt->database.persistent_store.next_sync_stream_id);
+                }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::presence:
@@ -482,7 +495,8 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.persistent_store.next_sync_stream_id);
+                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                                           rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
@@ -601,7 +615,8 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.persistent_store.next_sync_stream_id);
+                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                                           rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
@@ -637,7 +652,8 @@ namespace
                 }
                 if (rt->sync_notifier != nullptr)
                 {
-                    rt->sync_notifier->publish(rt->database.persistent_store.next_sync_stream_id);
+                    rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                                           rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
@@ -722,6 +738,7 @@ namespace
             event.sender_user_id = envelope.sender;
             event.json = envelope.json;
             event.depth = envelope.depth;
+            event.stream_ordering = rt->database.next_stream_ordering++;
             auto state = std::optional<database::PersistentStateEvent>{};
             if (envelope.state_key.has_value())
             {
@@ -731,6 +748,11 @@ namespace
             if (!database::store_event_with_state(store, std::move(event), state))
             {
                 return {false, 500U, "event persistence failed", {}, {}};
+            }
+            if (rt->sync_notifier != nullptr)
+            {
+                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                                           rt->database.persistent_store.next_sync_stream_id);
             }
             auto auth_chain = std::vector<std::string>{};
             auto state_events = std::vector<std::string>{};

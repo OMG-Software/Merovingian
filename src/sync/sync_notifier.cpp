@@ -22,45 +22,67 @@ namespace
 
 } // namespace
 
-auto SyncNotifier::publish(std::uint64_t new_stream_id) -> void
+auto SyncNotifier::publish(std::uint64_t new_stream_ordering, std::uint64_t new_sync_stream_id) -> void
 {
+    auto changed = false;
     {
         auto lock = std::lock_guard{mutex_};
-        if (new_stream_id <= stream_id_)
+        if (new_stream_ordering > stream_ordering_)
         {
-            return;
+            stream_ordering_ = new_stream_ordering;
+            changed = true;
         }
-        stream_id_ = new_stream_id;
+        if (new_sync_stream_id > sync_stream_id_)
+        {
+            sync_stream_id_ = new_sync_stream_id;
+            changed = true;
+        }
     }
-    cv_.notify_all();
-    log_diagnostic("stream.published", {{"stream_id", std::to_string(new_stream_id), false}});
+    if (changed)
+    {
+        cv_.notify_all();
+        log_diagnostic("stream.published",
+                       {{"stream_ordering", std::to_string(new_stream_ordering),  false},
+                        {"sync_stream_id",  std::to_string(new_sync_stream_id), false}});
+    }
 }
 
-auto SyncNotifier::wait_for_change(std::uint64_t since, std::chrono::milliseconds timeout) -> bool
+auto SyncNotifier::wait_for_change(std::uint64_t since_stream_ordering,
+                                    std::uint64_t since_sync_stream_id,
+                                    std::chrono::milliseconds timeout) -> bool
 {
     auto lock = std::unique_lock{mutex_};
-    if (stream_id_ > since)
+    if (stream_ordering_ > since_stream_ordering || sync_stream_id_ > since_sync_stream_id)
     {
-        log_diagnostic("stream.changed_immediate", {{"since",     std::to_string(since),     false},
-                                                    {"stream_id", std::to_string(stream_id_), false}});
+        log_diagnostic("stream.changed_immediate",
+                       {{"since_stream_ordering", std::to_string(since_stream_ordering), false},
+                        {"since_sync_stream_id",  std::to_string(since_sync_stream_id),  false},
+                        {"stream_ordering",       std::to_string(stream_ordering_),       false},
+                        {"sync_stream_id",        std::to_string(sync_stream_id_),        false}});
         return true;
     }
     if (timeout.count() <= 0)
     {
         return false;
     }
-    auto const changed = cv_.wait_for(lock, timeout, [this, since] { return stream_id_ > since; });
+    auto const changed = cv_.wait_for(
+        lock, timeout,
+        [this, since_stream_ordering, since_sync_stream_id] {
+            return stream_ordering_ > since_stream_ordering || sync_stream_id_ > since_sync_stream_id;
+        });
     log_diagnostic(changed ? "stream.changed" : "stream.timeout",
-                   {{"since",     std::to_string(since),                                  false},
-                    {"stream_id", std::to_string(stream_id_),                              false},
-                    {"timeout_ms", std::to_string(timeout.count()),                        false}});
+                   {{"since_stream_ordering", std::to_string(since_stream_ordering),                          false},
+                    {"since_sync_stream_id",  std::to_string(since_sync_stream_id),                           false},
+                    {"stream_ordering",       std::to_string(stream_ordering_),                                false},
+                    {"sync_stream_id",        std::to_string(sync_stream_id_),                                 false},
+                    {"timeout_ms",            std::to_string(timeout.count()),                                  false}});
     return changed;
 }
 
-auto SyncNotifier::current_stream_id() const -> std::uint64_t
+auto SyncNotifier::current_sync_stream_id() const -> std::uint64_t
 {
     auto lock = std::lock_guard{mutex_};
-    return stream_id_;
+    return sync_stream_id_;
 }
 
 } // namespace merovingian::sync

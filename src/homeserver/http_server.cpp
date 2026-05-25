@@ -425,8 +425,8 @@ namespace
 
         auto response = LocalHttpResponse{};
         {
-            auto guard = std::lock_guard<std::mutex>{runtime_lock};
-            response = dispatch_local_http_request(runtime, local_request, dispatch_mode);
+            auto guard = std::unique_lock<std::mutex>{runtime_lock};
+            response = dispatch_local_http_request(runtime, local_request, dispatch_mode, &guard);
             ++stats.completed_requests;
         }
 
@@ -443,13 +443,13 @@ namespace
 
 } // namespace
 
-auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode)
-    -> LocalHttpResponse
+auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode,
+                                  std::unique_lock<std::mutex>* dispatch_lock) -> LocalHttpResponse
 {
     switch (mode)
     {
     case HttpDispatchMode::client_server:
-        return handle_client_server_request(runtime, request);
+        return handle_client_server_request(runtime, request, dispatch_lock);
     case HttpDispatchMode::federation:
         return handle_federation_http_request(runtime.homeserver, request);
     case HttpDispatchMode::local_router:

@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.4.7
+
+- Fixed `runtime_lock` being held during `/sync` long-poll wait, which blocked
+  federation request dispatch for up to 30 seconds and caused Synapse
+  CancelledError on profile queries and key claims. The lock is now released
+  before the condition_variable wait and reacquired after, allowing federation
+  and other listeners to dispatch concurrently with sync long-polls.
+- Extended `SyncNotifier` to track both `stream_ordering` (timeline events) and
+  `sync_stream_id` (to-device, presence, device_lists, account_data) so that
+  timeline events from local actions wake parked `/sync` requests immediately.
+- Added missing `sync_notifier->publish()` calls for all local event paths:
+  room leave, client-side typing and read receipts, federation send_join
+  membership acceptance, inbound typing and receipt EDUs, device deletion,
+  and device key uploads. Each publishes with the correct stream counters so
+  `/sync` long-polls return promptly instead of waiting for the full timeout.
+- Added `record_device_list_change` calls for device deletion and device key
+  upload so that other users sharing a room with the affected user see the
+  device list update in their `/sync` stream.
+- Fixed `stream_ordering=0` bug in the federation `membership_acceptor`:
+  inbound `send_join` events now advance `next_stream_ordering` before being
+  stored, so they appear in the `/sync` timeline instead of being silently
+  skipped.
+- Fixed `next_sync_stream_id` not advancing on membership changes (room
+  creation, local join, remote join, leave): the sync stream counter is now
+  incremented before the publish call so `/sync` actually wakes on membership
+  changes rather than timing out.
+
 ## 0.4.6
 
 - Fixed `PUT /_matrix/federation/v1/send/{txnId}` response body returning

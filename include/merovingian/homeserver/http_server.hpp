@@ -28,7 +28,9 @@ enum class HttpDispatchMode
 };
 
 [[nodiscard]] auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
-                                               HttpDispatchMode mode) -> LocalHttpResponse;
+                                               HttpDispatchMode mode,
+                                               std::unique_lock<std::mutex>* dispatch_lock = nullptr)
+    -> LocalHttpResponse;
 
 // Read one HTTP/1.1 request from the connected socket, dispatch it through
 // the selected runtime router, and write a single response. Closes the

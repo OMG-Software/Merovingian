@@ -278,7 +278,7 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
 
         WHEN("a producer pushes a to-device message mid-wait")
         {
-            auto const before_id = rt.sync_notifier->current_stream_id();
+            auto const before_id = rt.sync_notifier->current_sync_stream_id();
             auto const device_id = first_device_id_for(rt, alice_id);
             auto producer = std::thread{[&] {
                 std::this_thread::sleep_for(std::chrono::milliseconds{40});
@@ -286,14 +286,14 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
                     rt, {0U, "@bob:example.org", alice_id, device_id, "m.room_key", R"({"k":"v"})"});
             }};
             auto const before = std::chrono::steady_clock::now();
-            auto const woke = rt.sync_notifier->wait_for_change(before_id, std::chrono::milliseconds{2000});
+            auto const woke = rt.sync_notifier->wait_for_change(0U, before_id, std::chrono::milliseconds{2000});
             producer.join();
             auto const elapsed = std::chrono::steady_clock::now() - before;
 
             THEN("wait returns true well before the timeout and the stream id advances")
             {
                 REQUIRE(woke);
-                REQUIRE(rt.sync_notifier->current_stream_id() > before_id);
+                REQUIRE(rt.sync_notifier->current_sync_stream_id() > before_id);
                 REQUIRE(elapsed < std::chrono::seconds{1});
             }
         }

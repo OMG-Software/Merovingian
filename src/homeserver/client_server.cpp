@@ -984,7 +984,8 @@ namespace
     }
 
     [[nodiscard]] auto sync_json(ClientServerRuntime& rt, std::string_view user, std::string_view device_id,
-                                 core::SyncRequest const& request) -> std::string
+                                 core::SyncRequest const& request,
+                                 std::unique_lock<std::mutex>* dispatch_lock) -> std::string
     {
         auto const since_token =
             request.since.has_value() ? sync::decode_stream_token(*request.since) : std::optional<sync::StreamToken>{};
@@ -1007,11 +1008,17 @@ namespace
             auto const has_sync_advance = store.next_sync_stream_id > since_sync_stream_id;
             if (!has_timeline_advance && !has_sync_advance)
             {
-                auto const observed_id = notifier.current_stream_id();
-                if (observed_id <= since_sync_stream_id)
+                // Release the runtime_lock so federation and other
+                // listeners can dispatch while this thread waits.
+                if (dispatch_lock != nullptr)
                 {
-                    std::ignore =
-                        notifier.wait_for_change(since_sync_stream_id, std::chrono::milliseconds{*request.timeout});
+                    dispatch_lock->unlock();
+                }
+                std::ignore = notifier.wait_for_change(since_ordering, since_sync_stream_id,
+                                                       std::chrono::milliseconds{*request.timeout});
+                if (dispatch_lock != nullptr)
+                {
+                    dispatch_lock->lock();
                 }
             }
         }
@@ -1277,6 +1284,31 @@ namespace
             !database::store_device_key(store, {std::string{user}, std::string{device_id}, *device_keys}))
         {
             return err(500U, "M_UNKNOWN", "device key persistence failed");
+        }
+        // Device key uploads change the device identity that other users
+        // track; notify every user who shares a room with this user.
+        if (serialized_object_member(*object, "device_keys").has_value())
+        {
+            for (auto const& room : rt.homeserver.database.rooms)
+            {
+                auto const is_member = std::ranges::any_of(room.members, [user](auto const& m) {
+                    return m == user;
+                });
+                if (!is_member)
+                {
+                    continue;
+                }
+                for (auto const& member : room.members)
+                {
+                    if (member == user)
+                    {
+                        continue;
+                    }
+                    auto const change = database::PersistentDeviceListChange{
+                        0U, member, std::string{user}, "changed"};
+                    std::ignore = record_device_list_change(rt, change);
+                }
+            }
         }
         if (auto const* keys = object_member_object(*object, "one_time_keys");
             keys != nullptr && !store_key_object_members(rt, user, device_id, *keys, false))
@@ -1983,7 +2015,8 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
                                              bearer_access_token(parsed.request.headers), std::string{available_body}});
 }
 
-auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req) -> LocalHttpResponse
+auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                    std::unique_lock<std::mutex>* dispatch_lock) -> LocalHttpResponse
 {
     log_diagnostic("request.received", {
                                            {"method",           req.method,                                       false},
@@ -2400,6 +2433,28 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             return device.user_id == *user && device.device_id == device_id;
         });
         rt.devices.erase(first, last);
+        // Notify all users who share rooms with this user that the device
+        // list has changed so their /sync streams surface the update.
+        for (auto const& room : rt.homeserver.database.rooms)
+        {
+            auto const is_member = std::ranges::any_of(room.members, [user](auto const& m) {
+                return m == *user;
+            });
+            if (!is_member)
+            {
+                continue;
+            }
+            for (auto const& member : room.members)
+            {
+                if (member == *user)
+                {
+                    continue;
+                }
+                auto const change = database::PersistentDeviceListChange{
+                    0U, member, std::string{*user}, "changed"};
+                std::ignore = record_device_list_change(rt, change);
+            }
+        }
         return resp(200U, "{}");
     }
     auto const safety_route = trust_safety::match_reporting_api_route(req.method, req.target);
@@ -2498,7 +2553,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         log_diagnostic("sync.dispatch",
                        {{"actor",     *user,     false},
                         {"device_id", device_id, false}});
-        auto response_body = sync_json(rt, *user, device_id, sync_request);
+        auto response_body = sync_json(rt, *user, device_id, sync_request, dispatch_lock);
         log_diagnostic("sync.response",
                        {{"actor",     *user,     false},
                         {"device_id", device_id, false}});
@@ -2664,6 +2719,29 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                         {"destinations", std::to_string(enqueued), false}});
                     }
                 }
+                // Update local in-memory typing state so /sync returns the
+                // change for other local users in the room.
+                {
+                    auto existing = std::ranges::find_if(rt.homeserver.typing_users,
+                        [&typing, user](auto const& t) {
+                            return t.room_id == typing->room_id && t.user_id == *user;
+                        });
+                    if (existing != rt.homeserver.typing_users.end())
+                    {
+                        existing->typing = true;
+                    }
+                    else
+                    {
+                        rt.homeserver.typing_users.push_back(
+                            {typing->room_id, std::string{*user}, true});
+                    }
+                }
+                rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+                if (rt.sync_notifier != nullptr)
+                {
+                    rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                              rt.homeserver.database.persistent_store.next_sync_stream_id);
+                }
                 return resp(200U, json_serialize(json_obj({})));
             }
         }
@@ -2735,6 +2813,14 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             }
             // Remove from in-memory member list so joined_rooms reflects the change immediately.
             std::erase(room->members, *user);
+            // Membership changes are visible in /sync; advance the sync
+            // stream counter so the publish wakes parked sync clients.
+            rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+            if (rt.sync_notifier != nullptr)
+            {
+                rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                          rt.homeserver.database.persistent_store.next_sync_stream_id);
+            }
             log_diagnostic("room.leave.accepted",
                            {{"actor",   *user,   false},
                             {"room_id", room_id, false}});
@@ -2763,14 +2849,14 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 auto const event_id = fully_read != nullptr ? std::string{*fully_read} : std::string{};
                 if (!event_id.empty())
                 {
+                    auto const now_ts = static_cast<std::int64_t>(
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::system_clock::now().time_since_epoch())
+                            .count());
                     auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms,
                         [&room_id](auto const& r) { return r.room_id == room_id; });
                     if (room_it != rt.homeserver.database.rooms.end())
                     {
-                        auto const now_ts = static_cast<std::int64_t>(
-                            std::chrono::duration_cast<std::chrono::milliseconds>(
-                                std::chrono::system_clock::now().time_since_epoch())
-                                .count());
                         // Build the receipt EDU content per Matrix spec.
                         auto receipt_content = canonicaljson::Object{};
                         auto user_receipts = canonicaljson::Object{};
@@ -2795,6 +2881,28 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                 {"destinations", std::to_string(enqueued), false}});
                             }
                         }
+                    }
+                    // Update local in-memory receipt state so /sync returns the
+                    // change for other local users in the room.
+                    auto existing_receipt = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
+                        return r.room_id == room_id && r.user_id == *user;
+                    });
+                    if (existing_receipt != rt.homeserver.receipts.end())
+                    {
+                        existing_receipt->event_id = event_id;
+                        existing_receipt->ts = static_cast<std::uint64_t>(now_ts);
+                    }
+                    else
+                    {
+                        rt.homeserver.receipts.push_back(
+                            {std::string{room_id}, "m.read", std::string{*user}, event_id,
+                             static_cast<std::uint64_t>(now_ts)});
+                    }
+                    rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+                    if (rt.sync_notifier != nullptr)
+                    {
+                        rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                                  rt.homeserver.database.persistent_store.next_sync_stream_id);
                     }
                 }
             }
@@ -3107,7 +3215,8 @@ auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&
         runtime.sync_notifier = std::make_unique<sync::SyncNotifier>();
         runtime.homeserver.sync_notifier = runtime.sync_notifier.get();
     }
-    runtime.sync_notifier->publish(runtime.homeserver.database.persistent_store.next_sync_stream_id);
+    auto const& db = runtime.homeserver.database;
+    runtime.sync_notifier->publish(db.next_stream_ordering - 1U, db.persistent_store.next_sync_stream_id);
     return *runtime.sync_notifier;
 }
 
