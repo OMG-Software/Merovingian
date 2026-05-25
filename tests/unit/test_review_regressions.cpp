@@ -165,9 +165,13 @@ SCENARIO("Public registration enforces configured token policy and never bootstr
             THEN("only the valid token creates a non-admin user")
             {
                 // No auth field yields the UI-auth challenge (401); a present
-                // but invalid token is rejected outright (403).
+                // but invalid token is rejected outright (403). All three
+                // dispatches should complete (not request a long-poll wait).
+                REQUIRE(missing_token.status == merovingian::homeserver::DispatchResult::Status::complete);
                 REQUIRE(missing_token.response.status == 401U);
+                REQUIRE(invalid_token.status == merovingian::homeserver::DispatchResult::Status::complete);
                 REQUIRE(invalid_token.response.status == 403U);
+                REQUIRE(accepted.status == merovingian::homeserver::DispatchResult::Status::complete);
                 REQUIRE(accepted.response.status == 200U);
                 REQUIRE_FALSE(runtime.homeserver.database.users.empty());
                 REQUIRE_FALSE(runtime.homeserver.database.users.front().admin);
@@ -209,6 +213,35 @@ SCENARIO("Federation dispatch exposes only federation routes", "[homeserver][sec
                 REQUIRE(client_register.status == 404U);
                 REQUIRE(keys.status == 200U);
                 REQUIRE(keys.body.find("\"verify_keys\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation auth failures do not surface as client-style 401s", "[homeserver][security][federation][review]")
+{
+    GIVEN("a started runtime handling a federation request without valid auth")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the inbound federation profile route is requested without an X-Matrix signature")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime,
+                {"GET",
+                 "/_matrix/federation/v1/query/profile?user_id=%40jcadmin%3Apong.ping.me.uk&field=displayname",
+                 {},
+                 {}});
+
+            THEN("the failure is reported as a server-side federation error instead of 401")
+            {
+                // Synapse can propagate 401 from a federation exchange back to a
+                // client-server request, which Element interprets as an invalid
+                // access token and turns into an automatic logout.
+                REQUIRE(response.status == 502U);
+                REQUIRE(response.body == "malformed federation authorization");
             }
         }
     }

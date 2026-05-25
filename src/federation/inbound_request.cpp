@@ -5,6 +5,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/authorization.hpp"
@@ -566,7 +567,7 @@ namespace
         auto const profile = runtime.profile_query_provider(user_id);
         if (!profile.found)
         {
-            return {404U, R"({"errcode":"M_NOT_FOUND","error":"Profile not found"})"};
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Profile not found")};
         }
         auto response = canonicaljson::Object{};
         if (field.empty() || field == "displayname")
@@ -632,7 +633,7 @@ namespace
         auto body = runtime.user_devices_provider(user_id);
         if (body.empty())
         {
-            return {404U, R"({"errcode":"M_NOT_FOUND","error":"User has no published devices"})"};
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", "User has no published devices")};
         }
         return {200U, std::move(body)};
     }
@@ -665,7 +666,7 @@ namespace
         auto body = runtime.event_query_provider(event_id);
         if (body.empty())
         {
-            return {404U, R"({"errcode":"M_NOT_FOUND","error":"Event not found"})"};
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Event not found")};
         }
         return {200U, std::move(body)};
     }
@@ -685,7 +686,7 @@ namespace
         auto body = runtime.state_query_provider(room_id);
         if (body.empty())
         {
-            return {404U, R"({"errcode":"M_NOT_FOUND","error":"Room state not found"})"};
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room state not found")};
         }
         return {200U, std::move(body)};
     }
@@ -705,7 +706,7 @@ namespace
         auto body = runtime.state_ids_query_provider(room_id);
         if (body.empty())
         {
-            return {404U, R"({"errcode":"M_NOT_FOUND","error":"Room state not found"})"};
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room state not found")};
         }
         return {200U, std::move(body)};
     }
@@ -932,11 +933,16 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
 {
     if (request.origin != key.server_name || request.key_id != key.key_id)
     {
-        return make_decision(false, 401U, "request signing key does not match origin");
+        // 502 rather than 401: a key mismatch likely means our cache is stale,
+        // not that the remote is malicious. Synapse propagates 401 to clients
+        // as an auth error, triggering automatic logout.
+        return make_decision(false, 502U, "request signing key does not match origin");
     }
     if (key.valid_until_ts != 0U && request.now_ts > key.valid_until_ts)
     {
-        return make_decision(false, 401U, "request signing key has expired");
+        // 502 rather than 401: an expired key could be due to clock skew or a
+        // stale cache, not a genuinely unauthorized request.
+        return make_decision(false, 502U, "request signing key has expired");
     }
     auto const payload =
         federation_request_payload(request.origin, request.destination, request.method, request.target, request.body);
@@ -947,13 +953,18 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
                                     reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),
                                     reinterpret_cast<unsigned char const*>(key.public_key_bytes.data())) != 0)
     {
-        return make_decision(false, 401U, "request signature verification failed");
+        // 502 rather than 401: signature verification failure could be caused
+        // by a stale key cache or key rotation on the remote side. Synapse
+        // propagates 401 to clients, triggering automatic logout.
+        return make_decision(false, 502U, "request signature verification failed");
     }
     auto const boundary = verify_federation_request_signature(
         {request.origin, request.key_id, request.signature, request.canonical_json_verified});
     if (!boundary.accepted)
     {
-        return make_decision(false, 401U, boundary.reason);
+        // 502 rather than 401: boundary verification failure is a server-side
+        // issue, not a client auth failure.
+        return make_decision(false, 502U, boundary.reason);
     }
     return make_decision(true, 200U, {});
 }
@@ -1256,14 +1267,16 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                                                    {"edu_count",      std::to_string(transaction.edus.size()), false}
         });
         audit_federation(runtime, "federation.rejected", request.origin, request.target, transaction_decision.reason);
-        return {400U, R"({"errcode":"M_BAD_JSON","error":")" + transaction_decision.reason + R"("})"};
+        return {400U, homeserver::matrix_error("M_BAD_JSON", transaction_decision.reason)};
     }
     if (transaction_already_accepted(runtime, request.origin, transaction.transaction_id))
     {
         remote->trust.consecutive_failures = 0U;
         audit_federation(runtime, "federation.duplicate", request.origin, request.target,
                          "transaction already accepted");
-        return {200U, R"({"pdus":{}})"};
+        return {200U, serialize_response_object(canonicaljson::Object{
+            canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Object{}}),
+        })};
     }
     auto pdus_appended = std::size_t{0U};
     auto pdus_state_conflict = std::size_t{0U};
@@ -1395,9 +1408,13 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                      federation_route_audit_event(route_match.route, request.origin));
     if (!runtime.pdu_sink && !runtime.edu_sink && transaction.edus.empty())
     {
-        return {200U, R"({"pdus":{}})"};
+        return {200U, serialize_response_object(canonicaljson::Object{
+            canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Object{}}),
+        })};
     }
-    return {200U, R"({"pdus":{}})"};
+    return {200U, serialize_response_object(canonicaljson::Object{
+        canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Object{}}),
+    })};
 }
 
 auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string

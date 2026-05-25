@@ -69,6 +69,12 @@ if get_option ('build_tests')
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_security_workflows.py'],
   )
 
+  test(
+    'live-integration-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_live_integration_registration.py'],
+  )
+
   unit_tests = executable(
     'merovingian-unit-tests',
     sources: files(
@@ -169,6 +175,21 @@ if get_option ('build_tests')
   )
 
   test('integration-tests', integration_tests)
+
+  if get_option('build_live_tests')
+    live_integration_tests = executable(
+      'merovingian-live-integration-tests',
+      sources: files(
+        'integration/test_main.cpp',
+        'integration/test_live_synapse_federation.cpp',
+      ),
+      include_directories: inc,
+      dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
+      link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+    )
+
+    test('live-integration-tests', live_integration_tests)
+  endif
 
   subdir('smoke')
 endif

@@ -1217,15 +1217,19 @@ namespace
         switch (endpoint)
         {
         case auth::KeyApiEndpoint::upload_keys:
-            return R"({"one_time_key_counts":{}})";
+            return json_serialize(json_obj({json_member("one_time_key_counts", json_obj({}))}));
         case auth::KeyApiEndpoint::query_keys:
-            return R"({"device_keys":{}})";
+            return json_serialize(json_obj({json_member("device_keys", json_obj({}))}));
         case auth::KeyApiEndpoint::claim_keys:
-            return R"({"one_time_keys":{}})";
+            return json_serialize(json_obj({json_member("one_time_keys", json_obj({}))}));
         case auth::KeyApiEndpoint::get_key_backup_version:
-            return R"({"algorithm":"m.megolm_backup.v1","auth_data":{},"version":"1"})";
+            return json_serialize(json_obj({
+                json_member("algorithm", json_str("m.megolm_backup.v1")),
+                json_member("auth_data", json_obj({})),
+                json_member("version", json_str("1")),
+            }));
         case auth::KeyApiEndpoint::get_room_key_backup:
-            return R"({"rooms":{}})";
+            return json_serialize(json_obj({json_member("rooms", json_obj({}))}));
         case auth::KeyApiEndpoint::device_list_update:
         case auth::KeyApiEndpoint::upload_cross_signing_keys:
         case auth::KeyApiEndpoint::upload_signatures:
@@ -1338,8 +1342,11 @@ namespace
         {
             return err(500U, "M_UNKNOWN", "fallback key persistence failed");
         }
-        return resp(200U, "{\"one_time_key_counts\":{\"signed_curve25519\":" +
-                              std::to_string(one_time_key_count(rt, user, device_id)) + "}}");
+        return resp(200U, json_serialize(json_obj({
+            json_member("one_time_key_counts", json_obj({
+                json_member("signed_curve25519", json_int(static_cast<std::int64_t>(one_time_key_count(rt, user, device_id)))),
+            })),
+        })));
     }
 
     [[nodiscard]] auto key_id_matches_algorithm(std::string_view key_id, std::string_view algorithm) -> bool
@@ -1818,7 +1825,7 @@ namespace
             }
             return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
         case auth::KeyApiEndpoint::get_room_key_backup:
-            return resp(200U, R"({"rooms":{}})");
+            return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
         case auth::KeyApiEndpoint::upload_cross_signing_keys:
         case auth::KeyApiEndpoint::upload_signatures:
         case auth::KeyApiEndpoint::create_key_backup_version:
@@ -2011,7 +2018,7 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
             return bad_http_request(400U, "request body requires Content-Length");
         }
         return handle_client_server_request(
-            rt, {parsed.request.method, parsed.request.target, bearer_access_token(parsed.request.headers), {}}).response;
+            rt, {parsed.request.method, parsed.request.target, bearer_access_token(parsed.request.headers), {}}, false).response;
     }
 
     if (parsed.request.content_length > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()))
@@ -2030,7 +2037,7 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
     }
 
     return handle_client_server_request(rt, {parsed.request.method, parsed.request.target,
-                                             bearer_access_token(parsed.request.headers), std::string{available_body}}).response;
+                                             bearer_access_token(parsed.request.headers), std::string{available_body}}, false).response;
 }
 
 auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req,
@@ -2203,7 +2210,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
                        {{"has_token", req.access_token.empty() ? "false" : "true", false},
                         {"status",    std::to_string(r.status),                    false}});
-        return r.status == 200U ? dispatch_resp(200U, "{}") : dispatch_err(401U, "M_UNKNOWN_TOKEN", r.body);
+        return r.status == 200U ? dispatch_resp(200U, "{}") : dispatch_err(r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_UNKNOWN", r.body);
     }
 
     // MSC2965 OIDC discovery: Cinny and Element probe auth_metadata and
@@ -3294,13 +3301,24 @@ auto run_client_server_flow(config::Config const& config) -> OperationResult
         {"POST",
          "/_matrix/client/v3/login",
          {},
-         R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+         json_serialize(json_obj({
+             json_member("type", json_str("m.login.password")),
+             json_member("identifier", json_obj({
+                 json_member("type", json_str("m.id.user")),
+                 json_member("user", json_str("@alice:example.org")),
+             })),
+             json_member("password", json_str("CorrectHorse7!")),
+             json_member("device_id", json_str("DEVICE1")),
+         }))});
     auto const token = json_value(login.response.body, "\"access_token\":\"");
     auto whoami = handle_client_server_request(rt, {"GET", "/_matrix/client/v3/account/whoami", token, {}});
     auto room = handle_client_server_request(rt, {"POST", "/_matrix/client/v3/createRoom", token, {}});
     auto const room_id = json_value(room.response.body, "\"room_id\":\"");
     auto send = handle_client_server_request(rt, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/send", token,
-                                                  R"({"type":"m.room.encrypted","content":"secret"})"});
+                                                  json_serialize(json_obj({
+                                                      json_member("type", json_str("m.room.encrypted")),
+                                                      json_member("content", json_str("secret")),
+                                                  }))});
     auto state = handle_client_server_request(rt, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state", token, {}});
     auto joined_r = handle_client_server_request(rt, {"GET", "/_matrix/client/v3/joined_rooms", token, {}});
     auto devices = handle_client_server_request(rt, {"GET", "/_matrix/client/v3/devices", token, {}});

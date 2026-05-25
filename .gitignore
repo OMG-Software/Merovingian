@@ -4,6 +4,7 @@
 .worktrees/
 __pycache__/
 *.py[cod]
+native.ini
 /subprojects/yyjson/
 /subprojects/openssl-3.0.8/
 /subprojects/openssl-3.0.20/

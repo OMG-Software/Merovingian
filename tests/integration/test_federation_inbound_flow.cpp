@@ -365,9 +365,9 @@ SCENARIO("Homeserver rejects malformed overflow and private-address federation r
 
             THEN("all fail closed before accepting a transaction")
             {
-                REQUIRE(malformed.status == 401U);
+                REQUIRE(malformed.status == 502U);
                 REQUIRE(malformed.body == "malformed federation authorization");
-                REQUIRE(overflow.status == 401U);
+                REQUIRE(overflow.status == 502U);
                 REQUIRE(overflow.body == "malformed federation authorization");
                 REQUIRE(uncanonical.status == 403U);
                 REQUIRE(uncanonical.body == "remote address is private or loopback");

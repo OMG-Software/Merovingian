@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.9
+
+- Added live Synapse federation integration tests against matrix.ping.me.uk
+  and pong.ping.me.uk. Seven test scenarios exercise real TLS, DNS, and
+  HTTPS against a production Synapse server: key fetch, version endpoint,
+  profile query, well-known discovery, full discovery + key verification
+  pipeline, and inbound probes of Merovingian's key and well-known
+  endpoints.
+- Moved the live Synapse federation suite behind the new Meson option
+  `-Dbuild_live_tests=true` so default integration builds remain deterministic
+  and do not depend on external homeserver availability. The live scenarios
+  still SKIP when the remote server is unreachable.
+- Fixed live federation DNS pinning to extract the actual IPv4/IPv6 address
+  payload from each resolved `sockaddr` before passing it to `inet_ntop`.
+- Locked in the federation auth compatibility behavior that returns `502`
+  rather than `401` for malformed or unverifiable federation signatures, so
+  Synapse does not propagate those failures to clients as logout-triggering
+  `401 Unauthorized` responses.
+
 ## 0.4.8
 
 - Replaced the single-threaded listener model with a bounded `ThreadPool`
