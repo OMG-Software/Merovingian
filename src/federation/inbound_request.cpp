@@ -1256,14 +1256,14 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                                                    {"edu_count",      std::to_string(transaction.edus.size()), false}
         });
         audit_federation(runtime, "federation.rejected", request.origin, request.target, transaction_decision.reason);
-        return {400U, transaction_decision.reason};
+        return {400U, R"({"errcode":"M_BAD_JSON","error":")" + transaction_decision.reason + R"("})"};
     }
     if (transaction_already_accepted(runtime, request.origin, transaction.transaction_id))
     {
         remote->trust.consecutive_failures = 0U;
         audit_federation(runtime, "federation.duplicate", request.origin, request.target,
                          "transaction already accepted");
-        return {200U, "duplicate transaction accepted"};
+        return {200U, R"({"pdus":{}})"};
     }
     auto pdus_appended = std::size_t{0U};
     auto pdus_state_conflict = std::size_t{0U};
@@ -1395,14 +1395,9 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                      federation_route_audit_event(route_match.route, request.origin));
     if (!runtime.pdu_sink && !runtime.edu_sink && transaction.edus.empty())
     {
-        return {200U, "accepted pdus=" + std::to_string(transaction.pdus.size())};
+        return {200U, R"({"pdus":{}})"};
     }
-    auto detail =
-        "accepted pdus=" + std::to_string(transaction.pdus.size()) + " appended=" + std::to_string(pdus_appended) +
-        " state_conflicts=" + std::to_string(pdus_state_conflict) +
-        " state_resolved=" + std::to_string(pdus_state_resolved) + " edus=" + std::to_string(transaction.edus.size()) +
-        " edus_dispatched=" + std::to_string(edus_dispatched) + " edus_dropped=" + std::to_string(edus_dropped);
-    return {200U, std::move(detail)};
+    return {200U, R"({"pdus":{}})"};
 }
 
 auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string

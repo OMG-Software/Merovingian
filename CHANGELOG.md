@@ -17,6 +17,10 @@
   replaced a test-injected dispatch worker with a new one.
 - Fixed empty `transaction_id` in outbound membership and EDU transactions
   causing `transaction_is_well_formed` rejection.
+- Fixed `PUT /_matrix/federation/v1/send/{txnId}` response body returning
+  plain-text diagnostic strings instead of the Matrix-required `{"pdus":{}}`
+  JSON, which caused Synapse to fail with JSONDecodeError on transaction
+  responses. The 400 rejection now also returns proper JSON with `M_BAD_JSON`.
 
 ## 0.4.4
 

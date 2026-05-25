@@ -320,7 +320,7 @@ SCENARIO("Homeserver routes signed inbound federation transactions through runti
             THEN("the transaction is accepted and recorded")
             {
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body == "accepted pdus=1");
+                REQUIRE(response.body == R"({"pdus":{}})");
                 REQUIRE(runtime.federation.accepted_transactions.size() == 1U);
                 REQUIRE(runtime.federation.accepted_transactions.front().origin == origin);
                 REQUIRE(runtime.federation.audit_events.size() == 1U);
