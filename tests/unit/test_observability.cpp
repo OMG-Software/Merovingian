@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/database/statement.hpp"
+#include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <string>
 #include <vector>
 
@@ -139,6 +141,62 @@ SCENARIO("Structured log summaries redact sensitive values and document boundari
                 REQUIRE(notes.size() == 3U);
                 REQUIRE(notes[1].find("access tokens") != std::string::npos);
                 REQUIRE(notes[1].find("event content") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Low-severity logging flushes after one second or one hundred messages", "[observability][logging]")
+{
+    using FlushPolicy = merovingian::observability::LowSeverityFlushPolicy;
+
+    GIVEN("a fresh low-severity flush policy")
+    {
+        auto policy = FlushPolicy{};
+        auto const start = FlushPolicy::Clock::time_point{};
+
+        WHEN("the first low-severity message is recorded")
+        {
+            auto const flush_requested = policy.observe_message(false, start);
+
+            THEN("the message does not flush immediately, but arms a one-second deadline")
+            {
+                REQUIRE_FALSE(flush_requested);
+                REQUIRE(policy.pending_count() == 1U);
+                REQUIRE(policy.next_deadline().has_value());
+                REQUIRE(*policy.next_deadline() == start + FlushPolicy::time_interval());
+                REQUIRE_FALSE(policy.flush_due(start + std::chrono::milliseconds{999}));
+                REQUIRE(policy.flush_due(start + FlushPolicy::time_interval()));
+            }
+        }
+
+        WHEN("one hundred low-severity messages are recorded before the deadline")
+        {
+            auto flush_requested = false;
+            for (auto index = std::size_t{0U}; index < FlushPolicy::message_interval(); ++index)
+            {
+                flush_requested = policy.observe_message(false, start);
+            }
+
+            THEN("the one-hundredth message forces a flush and resets the timer state")
+            {
+                REQUIRE(flush_requested);
+                REQUIRE(policy.pending_count() == 0U);
+                REQUIRE_FALSE(policy.next_deadline().has_value());
+            }
+        }
+
+        WHEN("a high-severity message arrives while low-severity data is pending")
+        {
+            REQUIRE_FALSE(policy.observe_message(false, start));
+            auto const flush_requested =
+                policy.observe_message(true, start + std::chrono::milliseconds{250});
+
+            THEN("the flush happens immediately and clears the pending low-severity state")
+            {
+                REQUIRE(flush_requested);
+                REQUIRE(policy.pending_count() == 0U);
+                REQUIRE_FALSE(policy.next_deadline().has_value());
             }
         }
     }

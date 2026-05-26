@@ -437,6 +437,12 @@ namespace
         // historically used a [status, body] tuple; we always emit the v2 shape
         // which the v1 path tolerates because clients ignore unknown wrappers.
         auto response = canonicaljson::Object{};
+        response.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{std::string{"12"}}));
+        if (route.endpoint == FederationEndpoint::send_join)
+        {
+            response.push_back(
+                canonicaljson::make_member("origin", canonicaljson::Value{runtime.config.server_name}));
+        }
         response.push_back(canonicaljson::make_member("auth_chain", build_array_value(acceptance.auth_chain_json)));
         response.push_back(canonicaljson::make_member("state", build_array_value(acceptance.state_json)));
         auto body = serialize_response_object(std::move(response));

@@ -14,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <mutex>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <thread>
@@ -37,6 +38,70 @@ enum class LogLevel
     error = 600,
     critical = 700,
     off = 1000,
+};
+
+class LowSeverityFlushPolicy final
+{
+public:
+    using Clock = std::chrono::steady_clock;
+
+    [[nodiscard]] static constexpr auto message_interval() noexcept -> std::size_t
+    {
+        return 100U;
+    }
+
+    [[nodiscard]] static constexpr auto time_interval() noexcept -> Clock::duration
+    {
+        return std::chrono::seconds{1};
+    }
+
+    [[nodiscard]] auto observe_message(bool immediate_flush, Clock::time_point now) noexcept -> bool
+    {
+        if (immediate_flush)
+        {
+            mark_flushed();
+            return true;
+        }
+
+        if (m_pending_count == 0U)
+        {
+            m_next_deadline = now + time_interval();
+        }
+
+        ++m_pending_count;
+        if (m_pending_count >= message_interval() || flush_due(now))
+        {
+            mark_flushed();
+            return true;
+        }
+
+        return false;
+    }
+
+    [[nodiscard]] auto flush_due(Clock::time_point now) const noexcept -> bool
+    {
+        return m_next_deadline.has_value() && now >= *m_next_deadline;
+    }
+
+    auto mark_flushed() noexcept -> void
+    {
+        m_pending_count = 0U;
+        m_next_deadline.reset();
+    }
+
+    [[nodiscard]] auto pending_count() const noexcept -> std::size_t
+    {
+        return m_pending_count;
+    }
+
+    [[nodiscard]] auto next_deadline() const noexcept -> std::optional<Clock::time_point>
+    {
+        return m_next_deadline;
+    }
+
+private:
+    std::size_t m_pending_count{0U};
+    std::optional<Clock::time_point> m_next_deadline{};
 };
 
 class SingleLog final
@@ -164,8 +229,6 @@ private:
         bool flush{false};
     };
 
-    static constexpr std::size_t low_severity_flush_interval = 100U;
-
     SingleLog()
         : m_console_writer{&SingleLog::console_writer, this}
         , m_file_writer{&SingleLog::file_writer, this}
@@ -234,24 +297,70 @@ private:
 
     auto console_writer() -> void
     {
+        auto flush_policy = LowSeverityFlushPolicy{};
+
         while (true)
         {
             auto entry = LogEntry{};
+            auto flush_without_entry = false;
+            auto exit_without_entry = false;
             {
                 auto lock = std::unique_lock<std::mutex>{m_console_queue_lock};
-                m_console_cv.wait(lock, [this] {
-                    return m_console_exit || !m_console_queue.empty();
-                });
-                if (m_console_exit && m_console_queue.empty())
+                while (!m_console_exit && m_console_queue.empty())
+                {
+                    if (auto const deadline = flush_policy.next_deadline(); deadline.has_value())
+                    {
+                        auto const ready = m_console_cv.wait_until(lock, *deadline, [this] {
+                            return m_console_exit || !m_console_queue.empty();
+                        });
+                        if (!ready && m_console_queue.empty() &&
+                            flush_policy.flush_due(LowSeverityFlushPolicy::Clock::now()))
+                        {
+                            flush_without_entry = true;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        m_console_cv.wait(lock, [this] {
+                            return m_console_exit || !m_console_queue.empty();
+                        });
+                    }
+                }
+
+                if (!flush_without_entry)
+                {
+                    if (m_console_exit && m_console_queue.empty())
+                    {
+                        flush_without_entry = flush_policy.pending_count() != 0U;
+                        exit_without_entry = true;
+                    }
+                    else if (!m_console_queue.empty())
+                    {
+                        entry = std::move(m_console_queue.front());
+                        m_console_queue.pop_front();
+                    }
+                }
+            }
+
+            if (flush_without_entry)
+            {
+                std::cout.flush();
+                flush_policy.mark_flushed();
+                if (exit_without_entry)
                 {
                     break;
                 }
-                entry = std::move(m_console_queue.front());
-                m_console_queue.pop_front();
+                continue;
+            }
+
+            if (exit_without_entry)
+            {
+                break;
             }
 
             std::cout << entry.message;
-            if (entry.flush)
+            if (flush_policy.observe_message(entry.flush, LowSeverityFlushPolicy::Clock::now()))
             {
                 std::cout.flush();
             }
@@ -260,38 +369,84 @@ private:
 
     auto file_writer() -> void
     {
-        auto low_severity_since_flush = std::size_t{0U};
+        auto flush_policy = LowSeverityFlushPolicy{};
 
         while (true)
         {
             auto entry = LogEntry{};
+            auto flush_without_entry = false;
+            auto exit_without_entry = false;
             {
                 auto lock = std::unique_lock<std::mutex>{m_file_queue_lock};
-                m_file_cv.wait(lock, [this] {
-                    return m_file_exit || !m_file_queue.empty();
-                });
-                if (m_file_exit && m_file_queue.empty())
+                while (!m_file_exit && m_file_queue.empty())
+                {
+                    if (auto const deadline = flush_policy.next_deadline(); deadline.has_value())
+                    {
+                        auto const ready = m_file_cv.wait_until(lock, *deadline, [this] {
+                            return m_file_exit || !m_file_queue.empty();
+                        });
+                        if (!ready && m_file_queue.empty() &&
+                            flush_policy.flush_due(LowSeverityFlushPolicy::Clock::now()))
+                        {
+                            flush_without_entry = true;
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        m_file_cv.wait(lock, [this] {
+                            return m_file_exit || !m_file_queue.empty();
+                        });
+                    }
+                }
+
+                if (!flush_without_entry)
+                {
+                    if (m_file_exit && m_file_queue.empty())
+                    {
+                        flush_without_entry = flush_policy.pending_count() != 0U;
+                        exit_without_entry = true;
+                    }
+                    else if (!m_file_queue.empty())
+                    {
+                        entry = std::move(m_file_queue.front());
+                        m_file_queue.pop_front();
+                    }
+                }
+            }
+
+            if (flush_without_entry)
+            {
+                auto lock = std::lock_guard<std::mutex>{m_file_lock};
+                if (m_file_out.is_open())
+                {
+                    m_file_out.flush();
+                }
+                flush_policy.mark_flushed();
+                if (exit_without_entry)
                 {
                     break;
                 }
-                entry = std::move(m_file_queue.front());
-                m_file_queue.pop_front();
+                continue;
+            }
+
+            if (exit_without_entry)
+            {
+                break;
             }
 
             auto lock = std::lock_guard<std::mutex>{m_file_lock};
             if (m_file_out.is_open())
             {
                 m_file_out << entry.message;
-                if (entry.flush)
+                if (flush_policy.observe_message(entry.flush, LowSeverityFlushPolicy::Clock::now()))
                 {
                     m_file_out.flush();
-                    low_severity_since_flush = 0U;
                 }
-                else if (++low_severity_since_flush >= low_severity_flush_interval)
-                {
-                    m_file_out.flush();
-                    low_severity_since_flush = 0U;
-                }
+            }
+            else
+            {
+                std::ignore = flush_policy.observe_message(entry.flush, LowSeverityFlushPolicy::Clock::now());
             }
         }
     }

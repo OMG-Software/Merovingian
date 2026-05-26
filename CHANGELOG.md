@@ -2,6 +2,15 @@
 
 ## 0.4.11
 
+- Signed Matrix events over the full canonical event payload instead of a
+  redacted copy, so Synapse can verify room-state signatures during federation
+  joins.
+- Added `room_version` and `origin` to federated `send_join` responses, and
+  `room_version` to other `send_*` membership responses, matching the documented
+  federation response shape.
+- Flushed low-severity console and file logs every 1 second or every 100
+  messages, whichever comes first, so debug diagnostics appear promptly even
+  during quiet periods.
 - Logged `Starting merovingian-server <version>` during normal startup so operators can
   identify the running binary version from startup logs, and removed the
   misleading "bootstrap server" wording from normal help/startup surfaces.

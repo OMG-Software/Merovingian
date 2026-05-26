@@ -175,9 +175,9 @@ SCENARIO("Event signing payload excludes unsigned and signatures", "[events][sig
     }
 }
 
-SCENARIO("Event signing payload is redacted before signing", "[events][signing]")
+SCENARIO("Event signing payload removes unsigned metadata but keeps event content", "[events][signing]")
 {
-    GIVEN("a room v11 event with unsigned data signatures and redactable content")
+    GIVEN("a room v11 event with unsigned data signatures and message content")
     {
         auto const* policy = merovingian::rooms::find_room_version_policy("11");
         REQUIRE(policy != nullptr);
@@ -191,13 +191,14 @@ SCENARIO("Event signing payload is redacted before signing", "[events][signing]"
         {
             auto const payload = merovingian::events::make_event_signing_payload(parsed.value, *policy);
 
-            THEN("unsigned signatures and redactable content are omitted")
+            THEN("unsigned metadata is omitted, but the canonical event content remains signable")
             {
                 REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
                 REQUIRE(payload.output.find("unsigned") == std::string::npos);
                 REQUIRE(payload.output.find("signatures") == std::string::npos);
-                REQUIRE(payload.output.find("secret") == std::string::npos);
-                REQUIRE(payload.output.find(R"("content":{})") != std::string::npos);
+                REQUIRE(payload.output.find("secret") != std::string::npos);
+                REQUIRE(payload.output.find(R"("content":{"body":"secret","msgtype":"m.text"})") !=
+                        std::string::npos);
                 REQUIRE(payload.output.find(R"("hashes":{"sha256":"hash"})") != std::string::npos);
             }
         }
@@ -257,14 +258,46 @@ SCENARIO("Event signing stores Matrix base64 Ed25519 signatures and verifies the
                 reparsed.value, *policy, {"example.org", "ed25519:auto"},
                 merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')}, provider);
 
-            THEN("the signature is base64 encoded and bound to the redacted canonical payload")
+            THEN("the signature is base64 encoded and bound to the canonical event payload")
             {
                 REQUIRE(signed_event.error.empty());
                 REQUIRE(signed_event.signature ==
                         "c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzcw");
-                REQUIRE(provider.signed_message.find("secret") == std::string::npos);
+                REQUIRE(provider.signed_message.find("secret") != std::string::npos);
                 REQUIRE(verified.valid);
                 REQUIRE(verified.error.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Event signing keeps member profile fields in the signed payload", "[events][signing][member]")
+{
+    GIVEN("a room v12 member event with a displayname")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto parsed = merovingian::canonicaljson::parse_lossless(
+            "{\"room_id\":\"!room:example.org\",\"type\":\"m.room.member\",\"sender\":\"@alice:example.org\","
+            "\"state_key\":\"@alice:example.org\",\"origin_server_ts\":1,\"hashes\":{\"sha256\":\"hash\"},"
+            "\"content\":{\"membership\":\"join\",\"displayname\":\"Alice\"}}");
+        auto store = FixedSigningKeyStore{
+            merovingian::crypto::SigningKeyRecord{
+                                                  "example.org", "ed25519:auto",
+                                                  merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                                                  true, }
+        };
+        auto provider = CapturingEd25519Provider{};
+
+        WHEN("the event is signed")
+        {
+            auto const signed_event =
+                merovingian::events::sign_event_for_server(parsed.value, *policy, store, provider, "example.org");
+
+            THEN("the signed payload still contains the member displayname")
+            {
+                REQUIRE(signed_event.error.empty());
+                REQUIRE(provider.signed_message.find("\"displayname\":\"Alice\"") != std::string::npos);
             }
         }
     }

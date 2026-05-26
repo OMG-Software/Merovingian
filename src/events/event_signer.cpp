@@ -216,16 +216,10 @@ auto make_event_signing_payload(canonicaljson::Value const& event) -> canonicalj
     return canonicaljson::serialize_canonical(canonicaljson::Value{clone_without_unsigned_and_signatures(*object)});
 }
 
-auto make_event_signing_payload(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
+auto make_event_signing_payload(canonicaljson::Value const& event, [[maybe_unused]] rooms::RoomVersionPolicy const& policy)
     -> canonicaljson::SerializeResult
 {
-    auto redacted = redact_event(event, policy);
-    if (!redacted.error.empty())
-    {
-        return {{}, canonicaljson::CanonicalJsonError::invalid_string};
-    }
-
-    return make_event_signing_payload(redacted.event);
+    return make_event_signing_payload(event);
 }
 
 auto attach_event_signature(canonicaljson::Value const& event, SigningKeyId const& key_id, std::string_view signature)

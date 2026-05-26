@@ -429,6 +429,15 @@ a non-production environment.
   from startup logs. Normal help/startup surfaces no longer describe the
   server as a bootstrap server; bootstrap wording is reserved for the explicit
   admin bootstrap path.
+- Fix (0.4.11): Low-severity console and file logs now flush every 1 second or
+  every 100 messages, whichever comes first, so quiet debug sessions no longer
+  wait for a high-severity line or a large backlog before output appears.
+- Fix (0.4.11): Matrix event signing now uses the full canonical event payload
+  rather than a redacted copy, so Synapse can verify federated room-state
+  signatures during joins.
+- Fix (0.4.11): Federation `send_join` responses now include `room_version` and
+  `origin`, and other `send_*` membership responses include `room_version`,
+  matching the documented v1.18 response shape.
 - Fix (0.4.11): Federation membership path parsing now percent-decodes encoded
   room and event IDs before invite validation, so Synapse federation invites
   no longer compare decoded event JSON against encoded path segments.
