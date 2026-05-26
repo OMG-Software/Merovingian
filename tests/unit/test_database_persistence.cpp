@@ -263,7 +263,7 @@ SCENARIO("Database migration plans are contiguous and direction-aware", "[databa
     }
 }
 
-SCENARIO("Database migration runner applies the initial schema and the matching explicit downgrade",
+SCENARIO("Database migration runner applies the current schema and the matching explicit downgrade",
          "[database][migration]")
 {
     GIVEN("an empty schema state")
@@ -279,19 +279,16 @@ SCENARIO("Database migration runner applies the initial schema and the matching 
             auto const downgrade_plan = merovingian::database::migration_plan_between(upgraded.state.version, 0U);
             auto const downgraded = merovingian::database::apply_migration_plan(upgraded.state, downgrade_plan);
 
-            THEN("the single initial-schema step deploys the final table inventory and is reversible")
+            THEN("the upgrade chain reaches the current schema version and is reversible")
             {
                 REQUIRE(upgrade_plan.direction == merovingian::database::MigrationDirection::upgrade);
                 REQUIRE(upgrade_plan.current_version == 0U);
                 REQUIRE(upgrade_plan.target_version == merovingian::database::current_schema_version());
-                // The schema lives at v1 in its final shape; there are no
-                // historic DBs to migrate, so the upgrade plan is exactly
-                // the initial-schema step.
                 REQUIRE(upgrade_plan.steps.size() == 1U);
                 REQUIRE(upgrade_plan.steps.front().version == 1U);
                 REQUIRE(upgrade_plan.steps.front().name == "initial_schema");
                 REQUIRE(upgraded.ok);
-                REQUIRE(upgraded.state.version == 1U);
+                REQUIRE(upgraded.state.version == merovingian::database::current_schema_version());
                 REQUIRE(upgraded.state.applied_migrations.size() == 1U);
                 REQUIRE(upgraded.state.applied_migrations.front().name == "initial_schema");
                 REQUIRE(upgraded.state.tables.size() == merovingian::database::initial_schema_tables().size());
@@ -853,6 +850,49 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 REQUIRE(current_state_columns.find("PRIMARY KEY (room_id, event_type, state_key)") !=
                         std::string_view::npos);
                 REQUIRE_FALSE(unknown_is_core);
+            }
+        }
+    }
+}
+
+SCENARIO("Persistent store upserts inbound invite metadata for sync replay", "[database][persistence][invite]")
+{
+    GIVEN("an open store and an invited local user")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+
+        auto invite = merovingian::database::PersistentInvite{
+            "!remote:example.org",
+            "@alice:example.org",
+            "@bob:remote.example.org",
+            "$invite:remote.example.org",
+            R"({"event_id":"$invite:remote.example.org","type":"m.room.member","content":{"membership":"invite"}})",
+            {
+              R"({"type":"m.room.create","state_key":"","content":{"creator":"@bob:remote.example.org","room_version":"12"}})",
+              R"({"type":"m.room.name","state_key":"","content":{"name":"Remote DM"}})", },
+            7U,
+        };
+
+        WHEN("the invite is stored, updated, and queried for the invited user")
+        {
+            REQUIRE(merovingian::database::upsert_invite(opened.store, invite));
+
+            invite.invite_state_events_json[1] =
+                R"({"type":"m.room.name","state_key":"","content":{"name":"Remote DM Updated"}})";
+            invite.stream_ordering = 8U;
+            REQUIRE(merovingian::database::upsert_invite(opened.store, invite));
+            auto const stored =
+                merovingian::database::find_invite(opened.store, "!remote:example.org", "@alice:example.org");
+
+            THEN("the signed invite event and stripped state round-trip through the store")
+            {
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->event_id == "$invite:remote.example.org");
+                REQUIRE(stored->signed_event_json.find("\"membership\":\"invite\"") != std::string::npos);
+                REQUIRE(stored->invite_state_events_json.size() == 2U);
+                REQUIRE(stored->invite_state_events_json[1].find("Remote DM Updated") != std::string::npos);
+                REQUIRE(stored->stream_ordering == 8U);
             }
         }
     }

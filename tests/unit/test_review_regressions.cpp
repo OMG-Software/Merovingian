@@ -8,13 +8,12 @@
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
 
-#include <mutex>
-
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -229,11 +228,10 @@ SCENARIO("Federation auth failures do not surface as client-style 401s", "[homes
         WHEN("the inbound federation profile route is requested without an X-Matrix signature")
         {
             auto const response = merovingian::homeserver::handle_federation_http_request(
-                runtime,
-                {"GET",
-                 "/_matrix/federation/v1/query/profile?user_id=%40jcadmin%3Apong.ping.me.uk&field=displayname",
-                 {},
-                 {}});
+                runtime, {"GET",
+                          "/_matrix/federation/v1/query/profile?user_id=%40jcadmin%3Apong.ping.me.uk&field=displayname",
+                          {},
+                          {}});
 
             THEN("the failure is reported as a server-side federation error instead of 401")
             {
@@ -274,22 +272,24 @@ SCENARIO("Migration application reapplies upgrade statements after downgrade", "
 {
     GIVEN("a schema upgraded, downgraded, and then upgraded again")
     {
-        auto const upgraded =
-            merovingian::database::apply_migration_plan({}, merovingian::database::migration_plan_between(0U, 1U));
+        auto const upgraded = merovingian::database::apply_migration_plan(
+            {}, merovingian::database::migration_plan_between(0U, merovingian::database::current_schema_version()));
         REQUIRE(upgraded.ok);
         auto const downgraded = merovingian::database::apply_migration_plan(
-            upgraded.state, merovingian::database::migration_plan_between(1U, 0U));
+            upgraded.state,
+            merovingian::database::migration_plan_between(merovingian::database::current_schema_version(), 0U));
         REQUIRE(downgraded.ok);
 
         WHEN("the schema is upgraded again")
         {
             auto const reapplied = merovingian::database::apply_migration_plan(
-                downgraded.state, merovingian::database::migration_plan_between(0U, 1U));
+                downgraded.state,
+                merovingian::database::migration_plan_between(0U, merovingian::database::current_schema_version()));
 
             THEN("tables are recreated even though migration history still contains the old upgrade record")
             {
                 REQUIRE(reapplied.ok);
-                REQUIRE(reapplied.state.version == 1U);
+                REQUIRE(reapplied.state.version == merovingian::database::current_schema_version());
                 REQUIRE(reapplied.state.tables.size() == merovingian::database::initial_schema_tables().size());
             }
         }

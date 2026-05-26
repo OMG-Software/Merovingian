@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include <merovingian/database/postgresql_store.hpp>
-#include <merovingian/database/schema.hpp>
-#include <merovingian/observability/logger.hpp>
-#include <merovingian/observability/observability.hpp>
-
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -18,11 +13,43 @@
 #include <vector>
 
 #include <libpq-fe.h>
+#include <merovingian/canonicaljson/parser.hpp>
+#include <merovingian/canonicaljson/serializer.hpp>
+#include <merovingian/database/postgresql_store.hpp>
+#include <merovingian/database/schema.hpp>
+#include <merovingian/observability/logger.hpp>
+#include <merovingian/observability/observability.hpp>
 
 namespace merovingian::database
 {
 namespace
 {
+
+    [[nodiscard]] auto parse_invite_state_events_json(std::string_view json) -> std::vector<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* events = std::get_if<canonicaljson::Array>(&parsed.value.storage());
+        if (events == nullptr)
+        {
+            return {};
+        }
+        auto result = std::vector<std::string>{};
+        result.reserve(events->size());
+        for (auto const& event : *events)
+        {
+            auto serialized = canonicaljson::serialize_canonical(event);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return {};
+            }
+            result.push_back(std::move(serialized.output));
+        }
+        return result;
+    }
 
     struct PostgresqlConnectionDeleter final
     {
@@ -440,6 +467,23 @@ namespace
             if (row.size() >= 4U)
             {
                 store.memberships.push_back({row[0], row[1], row[2], parse_u64(row[3])});
+            }
+        }
+
+        auto invites =
+            query_rows(connection, "postgresql_load_invites",
+                       "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, invite_state_json, "
+                       "stream_ordering FROM invites ORDER BY room_id, user_id");
+        if (!invites.ok)
+        {
+            return false;
+        }
+        for (auto const& row : invites.rows)
+        {
+            if (row.size() >= 7U)
+            {
+                store.invites.push_back({row[0], row[1], row[2], row[3], row[4], parse_invite_state_events_json(row[5]),
+                                         parse_u64(row[6])});
             }
         }
 
@@ -973,8 +1017,9 @@ auto postgresql_schema_bootstrap_statements() -> std::vector<PreparedStatement>
     {
         statements.push_back({"postgresql_create_" + std::string{table.name}, create_table_if_missing_sql(table), {}});
     }
-    // The schema deploys at v1 in its final shape; only the initial
-    // migration row is recorded.
+    // Bootstrap records only the initial schema row. Runtime startup can
+    // then apply newer numbered migrations against the freshly created
+    // tables when current_schema_version() is greater than 1.
     statements.push_back(migration_record_statement(1U, "initial_schema"));
     return statements;
 }
@@ -983,11 +1028,15 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
 {
     auto const policy = validate_postgresql_conninfo(conninfo);
     auto const redacted = redact_postgresql_conninfo(conninfo);
-    log_diagnostic("connection.opening", {{"conninfo", redacted, false}});
+    log_diagnostic("connection.opening", {
+                                             {"conninfo", redacted, false}
+    });
     if (!policy.allowed)
     {
-        log_diagnostic("connection.rejected", {{"conninfo", redacted,       false},
-                                               {"reason",   policy.reason,  false}});
+        log_diagnostic("connection.rejected", {
+                                                  {"conninfo", redacted,      false},
+                                                  {"reason",   policy.reason, false}
+        });
         return {false, policy.reason, redacted, {}};
     }
 
@@ -995,19 +1044,26 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
     auto connection = PostgresqlConnectionPtr{PQconnectdb(conninfo_string.c_str())};
     if (connection == nullptr)
     {
-        log_diagnostic("connection.rejected", {{"conninfo", redacted, false},
-                                               {"reason",   "connection allocation failed", false}});
+        log_diagnostic("connection.rejected",
+                       {
+                           {"conninfo", redacted,                       false},
+                           {"reason",   "connection allocation failed", false}
+        });
         return {false, "PostgreSQL connection allocation failed", redacted, {}};
     }
     if (PQstatus(connection.get()) != CONNECTION_OK)
     {
         auto reason = connection_error(*connection);
-        log_diagnostic("connection.rejected", {{"conninfo", redacted, false},
-                                               {"reason",   reason,   false}});
+        log_diagnostic("connection.rejected", {
+                                                  {"conninfo", redacted, false},
+                                                  {"reason",   reason,   false}
+        });
         return {false, reason, redacted, {}};
     }
 
-    log_diagnostic("connection.ready", {{"conninfo", redacted, false}});
+    log_diagnostic("connection.ready", {
+                                           {"conninfo", redacted, false}
+    });
     auto handle = std::make_unique<PostgresqlConnectionHandle>();
     handle->connection = std::move(connection);
     return {true, {}, redacted, PostgresqlConnection{std::move(handle)}};
@@ -1015,11 +1071,15 @@ auto open_postgresql_connection(std::string_view conninfo) -> PostgresqlConnecti
 
 auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentStoreOpenResult
 {
-    log_diagnostic("store.opening", {{"backend", "postgresql", false}});
+    log_diagnostic("store.opening", {
+                                        {"backend", "postgresql", false}
+    });
     auto opened = open_postgresql_connection(conninfo);
     if (!opened.ok)
     {
-        log_diagnostic("store.rejected", {{"reason", opened.reason, false}});
+        log_diagnostic("store.rejected", {
+                                             {"reason", opened.reason, false}
+        });
         return {false, opened.reason, {}};
     }
 
@@ -1027,7 +1087,9 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     auto const has_schema = merovingian_schema_is_initialized(connection);
     if (!has_schema.has_value())
     {
-        log_diagnostic("store.rejected", {{"reason", "unable to inspect schema", false}});
+        log_diagnostic("store.rejected", {
+                                             {"reason", "unable to inspect schema", false}
+        });
         return {false, "unable to inspect PostgreSQL schema", {}};
     }
     if (!*has_schema)
@@ -1036,7 +1098,9 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
         auto const bootstrap = postgresql_schema_bootstrap_statements();
         if (!connection.execute_transaction(bootstrap))
         {
-            log_diagnostic("store.rejected", {{"reason", "schema bootstrap failed", false}});
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "schema bootstrap failed", false}
+            });
             return {false, "unable to initialize PostgreSQL schema", {}};
         }
         log_diagnostic("store.schema_bootstrapped", {});
@@ -1045,10 +1109,14 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     auto schema = load_schema_state(connection);
     if (!schema.has_value())
     {
-        log_diagnostic("store.rejected", {{"reason", "unable to hydrate schema state", false}});
+        log_diagnostic("store.rejected", {
+                                             {"reason", "unable to hydrate schema state", false}
+        });
         return {false, "unable to hydrate PostgreSQL schema state", {}};
     }
-    log_diagnostic("store.schema_loaded", {{"version", std::to_string(schema->version), false}});
+    log_diagnostic("store.schema_loaded", {
+                                              {"version", std::to_string(schema->version), false}
+    });
 
     auto store = PersistentStore{};
     store.open = true;
@@ -1057,21 +1125,28 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     store.schema = std::move(*schema);
     if (store.schema.version < current_schema_version())
     {
-        log_diagnostic("store.migrating",
-                       {{"from", std::to_string(store.schema.version), false},
-                        {"to",   std::to_string(current_schema_version()), false}});
+        log_diagnostic("store.migrating", {
+                                              {"from", std::to_string(store.schema.version),     false},
+                                              {"to",   std::to_string(current_schema_version()), false}
+        });
         auto migrated = apply_pending_migrations(connection, store.schema);
         if (!migrated.has_value())
         {
-            log_diagnostic("store.rejected", {{"reason", "migration failed", false}});
+            log_diagnostic("store.rejected", {
+                                                 {"reason", "migration failed", false}
+            });
             return {false, "unable to migrate PostgreSQL schema", {}};
         }
-        log_diagnostic("store.migrated", {{"version", std::to_string(migrated->version), false}});
+        log_diagnostic("store.migrated", {
+                                             {"version", std::to_string(migrated->version), false}
+        });
         store.schema = std::move(*migrated);
     }
     if (!load_persistent_rows(connection, store))
     {
-        log_diagnostic("store.rejected", {{"reason", "unable to hydrate rows", false}});
+        log_diagnostic("store.rejected", {
+                                             {"reason", "unable to hydrate rows", false}
+        });
         return {false, "unable to hydrate PostgreSQL persistent rows", {}};
     }
     restore_sync_stream_id(store);
@@ -1079,12 +1154,16 @@ auto open_postgresql_persistent_store(std::string_view conninfo) -> PersistentSt
     auto compatibility = validate_persistent_store(store);
     if (!compatibility.valid)
     {
-        log_diagnostic("store.rejected", {{"reason", compatibility.reason, false}});
+        log_diagnostic("store.rejected", {
+                                             {"reason", compatibility.reason, false}
+        });
         return {false, compatibility.reason, {}};
     }
     log_diagnostic("store.ready",
-                   {{"backend", "postgresql",                         false},
-                    {"version", std::to_string(store.schema.version), false}});
+                   {
+                       {"backend", "postgresql",                         false},
+                       {"version", std::to_string(store.schema.version), false}
+    });
     return {true, {}, std::move(store)};
 }
 
