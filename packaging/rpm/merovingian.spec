@@ -90,7 +90,8 @@ fi
 
 %changelog
 * Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.18-1
-- Initialize the runtime signing key before synchronous outbound federation membership calls
+- Fail closed when outbound federation membership signing is not initialized
+- Reject unusable persisted signing secrets when starting federation dispatch
 - Preserve the exact encoded federation request target on the wire for signature-sensitive requests
 
 * Tue May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.17-1

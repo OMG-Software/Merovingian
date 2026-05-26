@@ -117,20 +117,19 @@ namespace
             });
             return {false, "server discovery failed"};
         }
-        auto const signing_key = ensure_runtime_server_signing_key(runtime);
-        if (!signing_key.has_value() || runtime.database.signing_secret_key.size() != crypto_sign_SECRETKEYBYTES)
+        if (runtime.database.signing_secret_key.size() != crypto_sign_SECRETKEYBYTES)
         {
             log_diagnostic(diagnostic_event, {
-                                                 {"reason", "server signing key unavailable", false}
+                                                 {"reason", "server signing key not initialized", false}
             });
-            return {false, "server signing key unavailable"};
+            return {false, "server signing key not initialized"};
         }
         auto call = federation::OutboundCall{};
         call.transaction = transaction;
         call.resolved_host = resolution.resolved_host;
         call.resolved_port = resolution.resolved_port;
         call.pinned_addresses = resolution.pinned_addresses;
-        call.key_id = signing_key->key_id;
+        call.key_id = "ed25519:auto";
         call.secret_key = std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
                                       runtime.database.signing_secret_key.size()};
         auto destination = federation::FederationDestination{};

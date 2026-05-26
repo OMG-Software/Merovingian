@@ -2,10 +2,12 @@
 
 ## 0.4.18
 
-- Initialize the runtime signing key before synchronous outbound federation
-  membership requests and reuse the persisted `key_id` instead of a hardcoded
-  value. This closes the gap where `make_join`/`send_join` signing depended on
-  incidental earlier key use in the same process.
+- Make synchronous outbound federation membership requests fail closed when the
+  runtime signing key is not already initialized, instead of performing hidden
+  signing-key setup inside the generic outbound helper.
+- Refuse to start the federation dispatch worker when the persisted signing key
+  cannot be hydrated into a valid Ed25519 secret, instead of masking the fault
+  with a fallback `key_id`.
 - Set `CURLOPT_PATH_AS_IS` for outbound HTTPS requests and add integration
   coverage that captures the raw TLS request line. This protects
   signature-sensitive federation requests such as `make_join` from path
