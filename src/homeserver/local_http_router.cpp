@@ -1121,10 +1121,10 @@ namespace
                                                           std::chrono::system_clock::now().time_since_epoch())
                                                           .count());
                 });
-            std::ignore = ensure_runtime_server_signing_key(runtime);
+            auto key = ensure_runtime_server_signing_key(runtime);
             auto dispatch_config = federation::DispatchWorkerConfig{};
             dispatch_config.origin = runtime.config.server().server_name;
-            dispatch_config.key_id = "ed25519:auto";
+            dispatch_config.key_id = key.has_value() ? key->key_id : std::string{"ed25519:auto"};
             dispatch_config.secret_key =
                 std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
                             runtime.database.signing_secret_key.size()};

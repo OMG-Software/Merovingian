@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.17
+Version:        0.4.18
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.18-1
+- Initialize the runtime signing key before synchronous outbound federation membership calls
+- Preserve the exact encoded federation request target on the wire for signature-sensitive requests
+
 * Tue May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.17-1
 - Store Ed25519 signing key secret as base64 to prevent null-byte truncation on SQLite/PostgreSQL reload
 

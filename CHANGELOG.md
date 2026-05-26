@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.18
+
+- Initialize the runtime signing key before synchronous outbound federation
+  membership requests and reuse the persisted `key_id` instead of a hardcoded
+  value. This closes the gap where `make_join`/`send_join` signing depended on
+  incidental earlier key use in the same process.
+- Set `CURLOPT_PATH_AS_IS` for outbound HTTPS requests and add integration
+  coverage that captures the raw TLS request line. This protects
+  signature-sensitive federation requests such as `make_join` from path
+  normalization drifting the on-wire URI away from the URI that was signed.
+
 ## 0.4.17
 
 - Fix null-byte truncation of the Ed25519 signing key secret on database reload.

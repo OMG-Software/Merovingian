@@ -351,10 +351,10 @@ SCENARIO("Joining a room succeeds when user is already a member in the persisten
         // but the in-memory room member list is empty, as can happen after a restart
         // when hydration is incomplete or when a prior join left the DB record but
         // failed to update the in-memory list.
-        auto const room_it = std::ranges::find_if(runtime.database.rooms,
-                                                  [&room](merovingian::homeserver::LocalRoom const& r) {
-                                                      return r.room_id == room.body;
-                                                  });
+        auto const room_it =
+            std::ranges::find_if(runtime.database.rooms, [&room](merovingian::homeserver::LocalRoom const& r) {
+                return r.room_id == room.body;
+            });
         REQUIRE(room_it != runtime.database.rooms.end());
         room_it->members.clear();
 

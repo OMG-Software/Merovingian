@@ -172,8 +172,8 @@ struct FileDeleter final
 // closes. The server thread joins quickly even when the client aborts
 // because both the accept poll and the TLS handshake carry bounded timeouts.
 auto run_one_shot_tls_server(merovingian::net::TcpAcceptor& acceptor,
-                             merovingian::homeserver::TlsServerContext& tls_context,
-                             std::string const& http_response) noexcept -> void
+                             merovingian::homeserver::TlsServerContext& tls_context, std::string const& http_response,
+                             std::string* captured_request = nullptr) noexcept -> void
 {
     auto const client_fd = accept_loopback(acceptor, 5000);
     if (client_fd < 0)
@@ -188,7 +188,24 @@ auto run_one_shot_tls_server(merovingian::net::TcpAcceptor& acceptor,
     }
     auto& tls_connection = *tls_result.connection;
     auto buffer = std::array<char, 8192>{};
-    static_cast<void>(tls_connection.read(buffer.data(), buffer.size()));
+    auto request_bytes = std::string{};
+    while (request_bytes.find("\r\n\r\n") == std::string::npos)
+    {
+        auto const bytes_read = tls_connection.read(buffer.data(), buffer.size());
+        if (bytes_read <= 0)
+        {
+            break;
+        }
+        request_bytes.append(buffer.data(), static_cast<std::size_t>(bytes_read));
+        if (static_cast<std::size_t>(bytes_read) < buffer.size())
+        {
+            break;
+        }
+    }
+    if (captured_request != nullptr)
+    {
+        *captured_request = std::move(request_bytes);
+    }
     static_cast<void>(tls_connection.write(http_response));
 }
 
@@ -299,6 +316,55 @@ SCENARIO("OutboundClient rejects a TLS handshake whose certificate hostname does
             {
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.error == merovingian::http::OutboundError::tls_verification_failed);
+            }
+        }
+    }
+}
+
+SCENARIO("OutboundClient preserves a percent-encoded federation request target on the wire",
+         "[http][outbound][tls][integration][request-target]")
+{
+    GIVEN("a trusted TLS server and a request URL with encoded Matrix path components")
+    {
+        auto const certificate = write_test_tls_certificate();
+        auto tls_context = merovingian::homeserver::make_tls_server_context(certificate.certificate_file,
+                                                                            certificate.private_key_file);
+        REQUIRE(tls_context.ok());
+
+        auto acceptor = merovingian::net::TcpAcceptor{};
+        REQUIRE(acceptor.bind("127.0.0.1", 0U).ok);
+        auto const port = acceptor.bound_port();
+        auto const response = json_http_response("200 OK", std::string{R"({"ok":true})"});
+        auto captured_request = std::string{};
+
+        WHEN("OutboundClient::perform sends a federation make_join URL")
+        {
+            auto server_thread = std::thread{[&]() {
+                run_one_shot_tls_server(acceptor, *tls_context.context, response, &captured_request);
+            }};
+
+            auto client = merovingian::http::OutboundClient{};
+            auto request = merovingian::http::OutboundRequest{};
+            request.method = "GET";
+            request.url = "https://localhost:" + std::to_string(port) +
+                          "/_matrix/federation/v1/make_join/%21room%3Aexample.org/%40alice%3Aremote.example.org?ver=12";
+            request.pinned_addresses = {"127.0.0.1"};
+            request.connect_timeout_seconds = 5U;
+            request.total_timeout_seconds = 10U;
+            request.trusted_ca_pem = certificate.certificate_pem;
+
+            auto const result = client.perform(request);
+
+            server_thread.join();
+
+            THEN("the first request line preserves the exact encoded path and query string")
+            {
+                REQUIRE(result.ok);
+                auto const request_line_end = captured_request.find("\r\n");
+                REQUIRE(request_line_end != std::string::npos);
+                REQUIRE(captured_request.substr(0U, request_line_end) ==
+                        "GET /_matrix/federation/v1/make_join/%21room%3Aexample.org/"
+                        "%40alice%3Aremote.example.org?ver=12 HTTP/1.1");
             }
         }
     }

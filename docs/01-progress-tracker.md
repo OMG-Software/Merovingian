@@ -93,6 +93,11 @@ separate operator decision once this branch is approved._
   rejection, outbound transaction types, exponential backoff,
   circuit-breaker policy, `OutboundClient`, `perform_outbound_transaction`,
   and per-platform TLS outbound integration coverage exist.
+- Federation request-signing interop: synchronous outbound membership calls now
+  initialize the runtime signing key before signing, dispatch-worker config
+  reuses the persisted `key_id`, `OutboundClient` preserves raw encoded request
+  targets with `CURLOPT_PATH_AS_IS`, and TLS integration coverage captures the
+  exact `make_join` request line to guard against signature drift.
 - Media repository foundation: authenticated local upload/download, MIME
   policy, quarantine/release/remove, LibSodium digest, metrics, audit,
   metadata/blob persistence, sandbox/AV/decoder/decompression processing
