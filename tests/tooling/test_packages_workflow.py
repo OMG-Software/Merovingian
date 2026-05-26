@@ -67,6 +67,25 @@ class PackagesWorkflowTests(unittest.TestCase):
                 content = (REPO_ROOT / script).read_text(encoding="utf-8")
                 self.assertIn(expected, content)
 
+    def test_versioned_binaries_and_package_metadata_use_the_project_version(self) -> None:
+        # GIVEN the Meson project version is the canonical release version.
+        version = project_version()
+
+        # WHEN release artifacts and operators inspect binary/package version
+        # metadata across the repository.
+        # THEN every required location from the versioning policy reports the
+        # same version string.
+        expected_versions = {
+            "src/main.cpp": f'constexpr auto version = std::string_view{{"{version}"}};',
+            "src/db_migrate.cpp": f'constexpr auto version = std::string_view{{"{version}"}};',
+            "packaging/freebsd/+MANIFEST": f'version: "{version}"',
+            "packaging/rpm/merovingian.spec": f"Version:        {version}",
+        }
+        for path, expected in expected_versions.items():
+            with self.subTest(path=path):
+                content = (REPO_ROOT / path).read_text(encoding="utf-8")
+                self.assertIn(expected, content)
+
 
 if __name__ == "__main__":
     unittest.main()
