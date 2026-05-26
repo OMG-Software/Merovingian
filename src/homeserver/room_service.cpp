@@ -531,13 +531,12 @@ namespace
     auto constexpr key_id = std::string_view{"ed25519:auto"};
     auto const& server_name = runtime.config.server().server_name;
 
-    if (!runtime.database.signing_secret_key.empty())
+    auto existing = database::find_server_signing_key(runtime.database.persistent_store, server_name, key_id);
+    if (existing.has_value() && !existing->secret_key.empty())
     {
-        auto existing = database::find_server_signing_key(runtime.database.persistent_store, server_name, key_id);
-        if (existing.has_value())
-        {
-            return existing;
-        }
+        runtime.database.signing_secret_key = std::vector<unsigned char>(existing->secret_key.begin(),
+                                                                         existing->secret_key.end());
+        return existing;
     }
 
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
@@ -552,6 +551,7 @@ namespace
         events::matrix_base64_from_bytes(
             std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
         32503680000000ULL,
+        std::string{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()},
     };
     if (!database::store_server_signing_key(runtime.database.persistent_store, key))
     {

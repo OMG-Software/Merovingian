@@ -424,6 +424,12 @@ a non-production environment.
   workers — `native_handle()` followed by reset closed the fd before the
   worker could read. Added `SocketHandle::release()` to transfer ownership
   without premature close.
+- Fix (0.4.16): The server Ed25519 signing key secret is now persisted in
+  `server_signing_keys.secret_key` and restored on startup. Previously every
+  restart generated a new keypair; the UPSERT overwrote the public key while
+  the secret lived in-memory only, so Synapse's cached copy of the old public
+  key became invalid and all outbound federation requests were rejected with
+  `401 Unauthorized`, opening the circuit breaker after three failures.
 - Fix (0.4.13): Inbound federation invites now persist stripped invite-state
   metadata and replay it through `rooms.invite.*.invite_state.events` in
   `/sync`, so Element can render direct-message invites initiated from a

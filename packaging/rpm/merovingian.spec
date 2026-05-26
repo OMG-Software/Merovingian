@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.14
+Version:        0.4.16
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.16-1
+- Persist server Ed25519 signing key secret across restarts so outbound federation requests use a stable identity
+
 * Mon May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.14-1
 - Percent-encode outbound federation membership path components before signing
 

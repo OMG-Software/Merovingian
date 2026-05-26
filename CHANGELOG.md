@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.16
+
+- Persist the server Ed25519 signing key secret across restarts. Previously
+  every restart generated a new keypair (UPSERT overwrote the public key, secret
+  lived in-memory only), so Synapse's cached public key became invalid and all
+  outbound federation requests were rejected with 401, opening the circuit
+  breaker. The secret key is now stored in `server_signing_keys.secret_key` and
+  restored on startup so the server's identity is stable across restarts.
+
 ## 0.4.14
 
 - Percent-encode outbound federation membership path components (`make_join`,

@@ -666,12 +666,14 @@ namespace
         return false;
     }
     if (!record_and_persist(
-            store, record_statement(
-                       "upsert_server_signing_key",
-                       "INSERT INTO server_signing_keys VALUES ($1, $2, $3, $4) ON CONFLICT (server_name, key_id) "
-                       "DO UPDATE SET public_key = $3, valid_until_ts = $4",
-                       {public_value(key.server_name), public_value(key.key_id), public_value(key.public_key),
-                        public_value(std::to_string(key.valid_until_ts))})))
+            store,
+            record_statement(
+                "upsert_server_signing_key",
+                "INSERT INTO server_signing_keys VALUES ($1, $2, $3, $4, $5) ON CONFLICT (server_name, key_id) "
+                "DO UPDATE SET public_key = $3, valid_until_ts = $4, "
+                "secret_key = CASE WHEN $5 = '' THEN server_signing_keys.secret_key ELSE $5 END",
+                {public_value(key.server_name), public_value(key.key_id), public_value(key.public_key),
+                 public_value(std::to_string(key.valid_until_ts)), public_value(key.secret_key)})))
     {
         return false;
     }
@@ -683,6 +685,10 @@ namespace
     {
         existing->public_key = std::move(key.public_key);
         existing->valid_until_ts = key.valid_until_ts;
+        if (!key.secret_key.empty())
+        {
+            existing->secret_key = std::move(key.secret_key);
+        }
         return true;
     }
     store.server_signing_keys.push_back(std::move(key));
