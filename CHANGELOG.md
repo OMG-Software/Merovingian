@@ -12,6 +12,9 @@
   coverage that captures the raw TLS request line. This protects
   signature-sensitive federation requests such as `make_join` from path
   normalization drifting the on-wire URI away from the URI that was signed.
+- Add `GET /_matrix/client/v3/publicRooms` so Matrix clients can load the room
+  directory after login without hitting `M_UNRECOGNIZED`; the route now lists
+  locally created `public_chat` rooms from persisted room state.
 - Split the old `vertical_slice.hpp` umbrella into implementation-matched
   homeserver headers (`runtime`, `auth_service`, `room_service`,
   `media_service`, `local_http_router`) and rename the old demo helper to
