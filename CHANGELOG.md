@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.14
+
+- Percent-encode outbound federation membership path components (`make_join`,
+  `send_join`, `invite`, `backfill`) before signing and sending, so Synapse no
+  longer rejects remote invites with `401 Unauthorized` due to a signed URI
+  mismatch.
+- Add `query_params::encode_path_component()` for safe percent-encoding of
+  Matrix path segments.
+
 ## 0.4.13
 
 - Percent-encoded outbound federation membership path components before signing
