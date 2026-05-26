@@ -2,6 +2,10 @@
 
 ## 0.4.13
 
+- Percent-encoded outbound federation membership path components before signing
+  and sending `make_join`, `send_join`, `invite`, and `backfill` requests, so
+  Synapse no longer rejects remote invites with `401 Unauthorized` due to a
+  signed URI mismatch.
 - Rewrote `README.md` so it now opens with an explicit active-development /
   not-ready warning, explains Merovingian's security-first design goals, and
   links directly to deployment/runtime and development onboarding docs.

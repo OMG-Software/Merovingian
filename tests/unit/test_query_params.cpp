@@ -164,3 +164,20 @@ SCENARIO("URL path component decoding preserves path literal characters", "[core
         }
     }
 }
+
+SCENARIO("URL path component encoding escapes Matrix identifiers for outbound routing", "[core][http][routing]")
+{
+    GIVEN("a Matrix identifier containing reserved path characters")
+    {
+        WHEN("the identifier is encoded as a path component")
+        {
+            auto const encoded =
+                merovingian::core::percent_encode_path_component("!room2:matrix.example.org+$event@alice");
+
+            THEN("reserved delimiters are percent-encoded while unreserved bytes pass through")
+            {
+                REQUIRE(encoded == "%21room2%3Amatrix.example.org%2B%24event%40alice");
+            }
+        }
+    }
+}

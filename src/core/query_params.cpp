@@ -27,6 +27,17 @@ namespace
         return 0U;
     }
 
+    [[nodiscard]] auto is_unreserved_path_byte(unsigned char byte) noexcept -> bool
+    {
+        return (byte >= 'A' && byte <= 'Z') || (byte >= 'a' && byte <= 'z') || (byte >= '0' && byte <= '9') ||
+               byte == '-' || byte == '.' || byte == '_' || byte == '~';
+    }
+
+    [[nodiscard]] auto hex_digit(unsigned char nibble) noexcept -> char
+    {
+        return static_cast<char>(nibble < 10U ? ('0' + nibble) : ('A' + (nibble - 10U)));
+    }
+
 } // namespace
 
 auto percent_decode(std::string_view encoded) -> std::string
@@ -76,6 +87,25 @@ auto percent_decode_path_component(std::string_view encoded) -> std::string
             result.push_back(encoded[i]);
             ++i;
         }
+    }
+    return result;
+}
+
+auto percent_encode_path_component(std::string_view decoded) -> std::string
+{
+    auto result = std::string{};
+    result.reserve(decoded.size() * 3U);
+    for (auto const ch : decoded)
+    {
+        auto const byte = static_cast<unsigned char>(ch);
+        if (is_unreserved_path_byte(byte))
+        {
+            result.push_back(static_cast<char>(byte));
+            continue;
+        }
+        result.push_back('%');
+        result.push_back(hex_digit(static_cast<unsigned char>(byte >> 4U)));
+        result.push_back(hex_digit(static_cast<unsigned char>(byte & 0x0FU)));
     }
     return result;
 }

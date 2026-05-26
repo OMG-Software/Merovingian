@@ -5,6 +5,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -80,9 +81,9 @@ auto make_outbound_make_membership(FederationEndpoint endpoint, std::string_view
     default:
         return {};
     }
-    target.append(room_id);
+    target.append(core::percent_encode_path_component(room_id));
     target.push_back('/');
-    target.append(user_id);
+    target.append(core::percent_encode_path_component(user_id));
     auto first_query = true;
     for (auto const& version : supported_room_versions)
     {
@@ -119,9 +120,9 @@ auto make_outbound_send_membership(FederationEndpoint endpoint, std::string_view
     default:
         return {};
     }
-    target.append(room_id);
+    target.append(core::percent_encode_path_component(room_id));
     target.push_back('/');
-    target.append(event_id);
+    target.append(core::percent_encode_path_component(event_id));
     auto transaction = make_outbound_transaction(destination, "PUT", target, origin, signed_event_json);
     log_diagnostic("outbound.membership.send",
                    {
@@ -144,9 +145,9 @@ auto make_outbound_invite(std::string_view destination, std::string_view origin,
     {
         // v1 invite: body IS the bare event.
         auto target = std::string{"/_matrix/federation/v1/invite/"};
-        target.append(room_id);
+        target.append(core::percent_encode_path_component(room_id));
         target.push_back('/');
-        target.append(event_id);
+        target.append(core::percent_encode_path_component(event_id));
         auto transaction = make_outbound_transaction(destination, "PUT", target, origin, signed_invite_event_json);
         log_diagnostic("outbound.invite",
                        {
@@ -160,9 +161,9 @@ auto make_outbound_invite(std::string_view destination, std::string_view origin,
         return transaction;
     }
     auto target = std::string{"/_matrix/federation/v2/invite/"};
-    target.append(room_id);
+    target.append(core::percent_encode_path_component(room_id));
     target.push_back('/');
-    target.append(event_id);
+    target.append(core::percent_encode_path_component(event_id));
     auto body = build_v2_invite_body(room_version, signed_invite_event_json, invite_room_state_json);
     auto transaction = make_outbound_transaction(destination, "PUT", target, origin, body);
     log_diagnostic("outbound.invite", {
@@ -181,7 +182,7 @@ auto make_outbound_backfill(std::string_view destination, std::string_view origi
                             std::vector<std::string> const& event_ids, std::size_t limit) -> OutboundTransaction
 {
     auto target = std::string{"/_matrix/federation/v1/backfill/"};
-    target.append(room_id);
+    target.append(core::percent_encode_path_component(room_id));
     auto first_query = true;
     for (auto const& event_id : event_ids)
     {

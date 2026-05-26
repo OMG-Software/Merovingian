@@ -24,4 +24,6 @@ struct SyncRequest final
 
 [[nodiscard]] auto percent_decode_path_component(std::string_view encoded) -> std::string;
 
+[[nodiscard]] auto percent_encode_path_component(std::string_view decoded) -> std::string;
+
 } // namespace merovingian::core
