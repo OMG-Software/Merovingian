@@ -435,6 +435,9 @@ a non-production environment.
 - Fix (0.4.10): `createRoom` ignored remote users in the `invite` array.
   Remote invitees now get a signed membership invite and an outbound federation
   invite transaction with a queue transaction id accepted by `DispatchWorker`.
+- Fix (0.4.10): Package helper scripts now build `0.4.10` Debian, RPM,
+  FreeBSD, and static Linux artifacts, keeping generated archive names aligned
+  with the package metadata.
 - Fix (0.4.10): Remote-room joins only added the local user to the runtime
   room. The `send_join` state response now hydrates joined remote members and
   persists the remote room so post-join messages have federation destinations.

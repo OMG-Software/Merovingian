@@ -13,6 +13,8 @@
 - Fixed outbound `createRoom` invite dispatch to assign a federation
   transaction id before queueing, so the dispatch worker accepts the invite
   transaction for delivery.
+- Fixed release packaging helper scripts to build `0.4.10` artifacts after
+  the branch version bump.
 - Fixed join-after-invite membership transitions so successful local or remote
   joins update existing durable invite rows to `join`.
 - Fixed remote-room joins to persist the remote room and hydrate joined members

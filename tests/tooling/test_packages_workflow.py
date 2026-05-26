@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import re
 import unittest
 from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PACKAGES_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "packages.yml"
+
+
+def project_version() -> str:
+    meson_build = (REPO_ROOT / "meson.build").read_text(encoding="utf-8")
+    match = re.search(r"version:\s*'([^']+)'", meson_build)
+    if match is None:
+        raise AssertionError("meson project version is missing")
+    return match.group(1)
 
 
 class PackagesWorkflowTests(unittest.TestCase):
@@ -39,6 +48,24 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("gh release delete latest \\", workflow)
         self.assertIn('--repo "${{ github.repository }}"', workflow)
         self.assertIn("gh release create latest \\", workflow)
+
+    def test_package_scripts_use_the_project_version(self) -> None:
+        # GIVEN the Meson project version is the canonical release version.
+        version = project_version()
+
+        # WHEN package helper scripts build release artifacts.
+        # THEN each script uses the same version so source archive names match
+        # the package metadata consumed by downstream packaging tools.
+        expected_versions = {
+            "scripts/build-deb.sh": f'VERSION="{version}"',
+            "scripts/build-rpm.sh": f'VERSION="{version}"',
+            "scripts/build-freebsd-pkg.sh": f'VERSION="{version}"',
+            "scripts/build-static-linux.sh": f'VERSION="${{MEROVINGIAN_VERSION:-{version}}}"',
+        }
+        for script, expected in expected_versions.items():
+            with self.subTest(script=script):
+                content = (REPO_ROOT / script).read_text(encoding="utf-8")
+                self.assertIn(expected, content)
 
 
 if __name__ == "__main__":
