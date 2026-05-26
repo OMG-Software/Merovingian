@@ -15,6 +15,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/outbound_membership.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/vertical_slice.hpp"
@@ -340,6 +341,59 @@ namespace
             return nullptr;
         }
         return std::get_if<bool>(&value->storage());
+    }
+
+    [[nodiscard]] auto string_array_member(canonicaljson::Object const& object, std::string_view key)
+        -> std::vector<std::string>
+    {
+        auto const* value = object_member(object, key);
+        auto const* array = value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
+        auto result = std::vector<std::string>{};
+        if (array == nullptr)
+        {
+            return result;
+        }
+        for (auto const& entry : *array)
+        {
+            if (auto const* text = std::get_if<std::string>(&entry.storage()); text != nullptr && !text->empty())
+            {
+                result.push_back(*text);
+            }
+        }
+        return result;
+    }
+
+    [[nodiscard]] auto server_name_from_user_id(std::string_view user_id) -> std::string_view
+    {
+        auto const colon = user_id.rfind(':');
+        return colon == std::string_view::npos ? std::string_view{} : user_id.substr(colon + 1U);
+    }
+
+    [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store, std::string_view event_id)
+        -> std::optional<std::string>
+    {
+        auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
+            return current.event_id == event_id;
+        });
+        return event == store.events.end() ? std::nullopt : std::optional<std::string>{event->json};
+    }
+
+    [[nodiscard]] auto upsert_membership(database::PersistentStore& store, std::string_view room_id,
+                                         std::string_view user_id, std::string_view membership,
+                                         std::uint64_t stream_ordering) -> bool
+    {
+        auto const result = database::store_membership(
+            store,
+            {std::string{room_id}, std::string{user_id}, std::string{membership}, stream_ordering});
+        if (result == database::MembershipStoreResult::stored)
+        {
+            return true;
+        }
+        if (result == database::MembershipStoreResult::already_exists)
+        {
+            return database::update_membership(store, room_id, user_id, membership);
+        }
+        return false;
     }
 
     [[nodiscard]] auto ascii_equal_case_insensitive(std::string_view left, std::string_view right) noexcept -> bool
@@ -2500,6 +2554,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const* name_val = body_obj != nullptr ? string_member(*body_obj, "name") : nullptr;
         auto const* topic_val = body_obj != nullptr ? string_member(*body_obj, "topic") : nullptr;
         auto const* preset_val = body_obj != nullptr ? string_member(*body_obj, "preset") : nullptr;
+        auto const invitees = body_obj != nullptr ? string_array_member(*body_obj, "invite") : std::vector<std::string>{};
         auto const join_rule = (preset_val != nullptr && *preset_val == "public_chat") ? "public" : "invite";
         auto const history_vis = (preset_val != nullptr && *preset_val == "public_chat") ? "world_readable" : "shared";
 
@@ -2519,17 +2574,18 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         // optional state_key defaults to "" for room-scoped state events;
         // m.room.member must be keyed by the joining user's MXID.
         auto const send_state = [&](std::string_view event_type, std::string_view content_json,
-                                    std::string_view state_key = std::string_view{}) {
+                                    std::string_view state_key = std::string_view{}) -> std::optional<std::string> {
             auto ev = event_body_from_content(event_type, content_json, std::string{state_key});
             if (!ev.has_value())
             {
-                return;
+                return std::nullopt;
             }
             auto inner = req;
             inner.method = "POST";
             inner.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
             inner.body = std::move(*ev);
-            std::ignore = handle_local_http_request(rt.homeserver, inner);
+            auto const sent = handle_local_http_request(rt.homeserver, inner);
+            return sent.status == 200U && !sent.body.empty() ? std::optional<std::string>{sent.body} : std::nullopt;
         };
 
         send_state("m.room.create", json_serialize(json_obj({json_member("creator", json_str(*user)),
@@ -2554,6 +2610,53 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         if (topic_val != nullptr)
         {
             send_state("m.room.topic", json_serialize(json_obj({json_member("topic", json_str(*topic_val))})));
+        }
+        for (auto const& invitee : invitees)
+        {
+            auto const invite_event_id =
+                send_state("m.room.member", json_serialize(json_obj({json_member("membership", json_str("invite"))})),
+                           invitee);
+            if (!invite_event_id.has_value())
+            {
+                log_diagnostic("room.create.invite.rejected",
+                               {{"actor", *user, false}, {"room_id", room_id, false}, {"invitee", invitee, false}});
+                continue;
+            }
+            auto const membership_stream = rt.homeserver.database.next_stream_ordering++;
+            if (!upsert_membership(rt.homeserver.database.persistent_store, room_id, invitee, "invite",
+                                   membership_stream))
+            {
+                log_diagnostic("room.create.invite.rejected",
+                               {{"actor", *user, false}, {"room_id", room_id, false}, {"invitee", invitee, false}});
+                continue;
+            }
+            auto const invitee_server = server_name_from_user_id(invitee);
+            if (invitee_server.empty() || invitee_server == rt.homeserver.config.server().server_name)
+            {
+                continue;
+            }
+            auto const invite_json = event_json_for_id(rt.homeserver.database.persistent_store, *invite_event_id);
+            if (!invite_json.has_value())
+            {
+                continue;
+            }
+            merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
+            if (rt.homeserver.dispatch_worker != nullptr)
+            {
+                auto transaction = federation::make_outbound_invite(
+                    invitee_server, rt.homeserver.config.server().server_name, room_id, *invite_event_id, "12",
+                    *invite_json, {});
+                std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
+            }
+        }
+        if (!invitees.empty())
+        {
+            rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+            if (rt.homeserver.sync_notifier != nullptr)
+            {
+                rt.homeserver.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                                     rt.homeserver.database.persistent_store.next_sync_stream_id);
+            }
         }
         log_diagnostic("room.create.accepted",
                        {{"actor",   *user,   false},
