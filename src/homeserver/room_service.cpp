@@ -543,9 +543,23 @@ namespace
         // secret_key is stored as Matrix base64 — decode back to raw bytes before putting into memory.
         auto const raw_secret = events::matrix_bytes_from_base64(existing->secret_key);
         runtime.database.signing_secret_key = std::vector<unsigned char>(raw_secret.begin(), raw_secret.end());
+        // Log the public key being loaded so operators can cross-check it against every
+        // outbound signature.signing log event (which also logs embedded_pk from the secret key).
+        log_diagnostic("signing_key.loaded",
+                       {{"server_name", std::string{server_name},                    false},
+                        {"key_id",      std::string{key_id},                         false},
+                        {"public_key",  existing->public_key,                        false},
+                        {"secret_size", std::to_string(raw_secret.size()),           false}});
         return existing;
     }
 
+    // No usable key found in the persistent store — generate a fresh Ed25519 keypair.
+    // This should only happen on the very first startup for a given server name.
+    log_diagnostic("signing_key.generating",
+                   {{"server_name",        std::string{server_name},                          false},
+                    {"store_has_entry",     existing.has_value() ? "true" : "false",           false},
+                    {"entry_secret_empty",  (existing.has_value() && existing->secret_key.empty())
+                                               ? "true" : "false",                            false}});
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
     if (!generate_random_signing_keypair(public_key, secret_key))
@@ -563,6 +577,10 @@ namespace
         events::matrix_base64_from_bytes(
             std::string_view{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()}),
     };
+    log_diagnostic("signing_key.generated",
+                   {{"server_name", std::string{server_name}, false},
+                    {"key_id",      std::string{key_id},      false},
+                    {"public_key",  key.public_key,           false}});
     if (!database::store_server_signing_key(runtime.database.persistent_store, key))
     {
         return std::nullopt;
