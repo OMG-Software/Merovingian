@@ -43,6 +43,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <map>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -896,6 +897,147 @@ namespace
         return std::ranges::any_of(room.members, [user](std::string const& member) {
             return member == user;
         });
+    }
+
+    // Keyed by (room_id, event_type, state_key) → event_id. Built once per request
+    // so all state lookups within the same response are O(log n) rather than O(n).
+    using StateIndex =
+        std::map<std::tuple<std::string_view, std::string_view, std::string_view>, std::string_view>;
+
+    [[nodiscard]] auto build_state_index(database::PersistentStore const& store) -> StateIndex
+    {
+        auto index = StateIndex{};
+        for (auto const& entry : store.state)
+        {
+            // Views into store.state strings — safe for the lifetime of the store reference.
+            index.emplace(std::make_tuple(std::string_view{entry.room_id}, std::string_view{entry.event_type},
+                                          std::string_view{entry.state_key}),
+                          std::string_view{entry.event_id});
+        }
+        return index;
+    }
+
+    [[nodiscard]] auto state_event_json(database::PersistentStore const& store, StateIndex const& index,
+                                        std::string_view room_id, std::string_view event_type,
+                                        std::string_view state_key = {}) -> std::optional<std::string>
+    {
+        auto const it = index.find(std::make_tuple(room_id, event_type, state_key));
+        if (it == index.end())
+        {
+            return std::nullopt;
+        }
+        return event_json_for_id(store, std::string{it->second});
+    }
+
+    [[nodiscard]] auto event_content_string(std::string_view event_json, std::string_view key)
+        -> std::optional<std::string>
+    {
+        auto parsed = canonicaljson::parse_lossless(event_json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return std::nullopt;
+        }
+        auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (event == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* content = object_member(*event, "content");
+        auto const* content_obj =
+            content == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content->storage());
+        if (content_obj == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* value = string_member(*content_obj, key);
+        return value == nullptr ? std::nullopt : std::optional<std::string>{*value};
+    }
+
+    [[nodiscard]] auto room_state_string(database::PersistentStore const& store, StateIndex const& index,
+                                         std::string_view room_id, std::string_view event_type,
+                                         std::string_view content_key,
+                                         std::string_view state_key = {}) -> std::optional<std::string>
+    {
+        auto const event_json = state_event_json(store, index, room_id, event_type, state_key);
+        if (!event_json.has_value())
+        {
+            return std::nullopt;
+        }
+        return event_content_string(*event_json, content_key);
+    }
+
+    [[nodiscard]] auto joined_member_count(ClientServerRuntime const& rt, std::string_view room_id) -> std::size_t
+    {
+        auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [&](LocalRoom const& current) {
+            return current.room_id == room_id;
+        });
+        if (room != rt.homeserver.database.rooms.end())
+        {
+            return room->members.size();
+        }
+        return static_cast<std::size_t>(std::ranges::count_if(
+            rt.homeserver.database.persistent_store.memberships, [&](database::PersistentMembership const& membership) {
+                return membership.room_id == room_id && membership.membership == "join";
+            }));
+    }
+
+    [[nodiscard]] auto public_rooms_json(ClientServerRuntime const& rt) -> std::string
+    {
+        auto chunk = canonicaljson::Array{};
+        auto const& store = rt.homeserver.database.persistent_store;
+        // Build the index once for the whole response — all per-room state lookups below are O(log n).
+        auto const index = build_state_index(store);
+        for (auto const& room : rt.homeserver.database.rooms)
+        {
+            auto const join_rule = room_state_string(store, index, room.room_id, "m.room.join_rules", "join_rule");
+            if (!join_rule.has_value() || *join_rule != "public")
+            {
+                continue;
+            }
+
+            auto room_entry = canonicaljson::Object{};
+            room_entry.push_back(json_member("room_id", json_str(room.room_id)));
+            room_entry.push_back(json_member(
+                "num_joined_members", json_int(static_cast<std::int64_t>(joined_member_count(rt, room.room_id)))));
+            room_entry.push_back(json_member("join_rule", json_str(*join_rule)));
+
+            auto const history_visibility =
+                room_state_string(store, index, room.room_id, "m.room.history_visibility", "history_visibility");
+            room_entry.push_back(json_member("world_readable", json_bool(history_visibility.has_value() &&
+                                                                         *history_visibility == "world_readable")));
+
+            auto const guest_access =
+                room_state_string(store, index, room.room_id, "m.room.guest_access", "guest_access");
+            room_entry.push_back(
+                json_member("guest_can_join", json_bool(guest_access.has_value() && *guest_access == "can_join")));
+
+            if (auto const name = room_state_string(store, index, room.room_id, "m.room.name", "name");
+                name.has_value())
+            {
+                room_entry.push_back(json_member("name", json_str(*name)));
+            }
+            if (auto const topic = room_state_string(store, index, room.room_id, "m.room.topic", "topic");
+                topic.has_value())
+            {
+                room_entry.push_back(json_member("topic", json_str(*topic)));
+            }
+            if (auto const alias = room_state_string(store, index, room.room_id, "m.room.canonical_alias", "alias");
+                alias.has_value())
+            {
+                room_entry.push_back(json_member("canonical_alias", json_str(*alias)));
+            }
+            if (auto const avatar = room_state_string(store, index, room.room_id, "m.room.avatar", "url"); avatar.has_value())
+            {
+                room_entry.push_back(json_member("avatar_url", json_str(*avatar)));
+            }
+            chunk.push_back(json_obj(std::move(room_entry)));
+        }
+        auto const total_room_count = static_cast<std::int64_t>(chunk.size());
+
+        return json_serialize(json_obj({
+            json_member("chunk", json_arr(std::move(chunk))),
+            json_member("total_room_count_estimate", json_int(total_room_count)),
+        }));
     }
 
     [[nodiscard]] auto joined_rooms_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
@@ -2229,6 +2371,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                        json_member("versions", json_arr(std::move(versions))),
                                        json_member("unstable_features", json_obj({})),
                                    })));
+    }
+
+    auto const request_path = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/publicRooms")
+    {
+        return dispatch_resp(200U, public_rooms_json(rt));
     }
 
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register")

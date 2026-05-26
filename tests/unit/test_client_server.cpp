@@ -386,6 +386,60 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
     }
 }
 
+SCENARIO("Client-server publicRooms lists local public-chat rooms instead of returning M_UNRECOGNIZED",
+         "[homeserver][client-server][public-rooms]")
+{
+    GIVEN("a started runtime with one private room and one public room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto const private_room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"name":"Private room"})"});
+        REQUIRE(private_room.response.status == 200U);
+        auto const private_room_id = room_id(private_room.response.body);
+
+        auto const public_room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token,
+                      R"({"preset":"public_chat","name":"Lobby","topic":"Open to everyone"})"});
+        REQUIRE(public_room.response.status == 200U);
+        auto const public_room_id = room_id(public_room.response.body);
+
+        WHEN("the client requests GET /_matrix/client/v3/publicRooms with a server query parameter")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/publicRooms?server=example.org", {}, {}});
+
+            THEN("the response is 200 and lists only the public room in the chunk")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("\"chunk\"") != std::string::npos);
+                REQUIRE(response.response.body.find(public_room_id) != std::string::npos);
+                REQUIRE(response.response.body.find(private_room_id) == std::string::npos);
+                REQUIRE(response.response.body.find("\"name\":\"Lobby\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"topic\":\"Open to everyone\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"join_rule\":\"public\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"world_readable\":true") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server im.nheko.summary endpoints return room membership summaries",
          "[homeserver][client-server][nheko-summary]")
 {
@@ -395,12 +449,16 @@ SCENARIO("Client-server im.nheko.summary endpoints return room membership summar
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
@@ -442,12 +500,16 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
@@ -510,8 +572,7 @@ SCENARIO("Client-server typing and messages routes dispatch through the room blo
     }
 }
 
-SCENARIO("Client-server leave and read_markers routes",
-         "[homeserver][client-server][leave][read_markers]")
+SCENARIO("Client-server leave and read_markers routes", "[homeserver][client-server][leave][read_markers]")
 {
     GIVEN("a logged-in user with a created room")
     {
@@ -519,12 +580,16 @@ SCENARIO("Client-server leave and read_markers routes",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
                               merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
@@ -562,8 +627,7 @@ SCENARIO("Client-server leave and read_markers routes",
         WHEN("the user tries to leave a non-existent room")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/rooms/!nonexistent:example.org/leave", token, "{}"});
+                runtime, {"POST", "/_matrix/client/v3/rooms/!nonexistent:example.org/leave", token, "{}"});
 
             THEN("the response is 404 M_NOT_FOUND")
             {
@@ -576,12 +640,16 @@ SCENARIO("Client-server leave and read_markers routes",
         {
             // Register a second user who never joined the room
             REQUIRE(merovingian::homeserver::handle_client_server_request(
-                        runtime, {"POST", "/_matrix/client/v3/register", {},
+                        runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
                                   merovingian::tests::registration_json("bob", "CorrectHorse7!")})
                         .response.status == 200U);
             auto const bob_login = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"POST", "/_matrix/client/v3/login", {},
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
                  R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"BOBDEV"})"});
             REQUIRE(bob_login.response.status == 200U);
             auto const bob_token = login_token(bob_login.response.body);
@@ -597,7 +665,6 @@ SCENARIO("Client-server leave and read_markers routes",
         }
     }
 }
-
 
 SCENARIO("Client-server runtime signs sent events and persists their DAG metadata",
          "[homeserver][client-server][events]")

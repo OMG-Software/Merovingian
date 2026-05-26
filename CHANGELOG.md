@@ -12,6 +12,15 @@
   coverage that captures the raw TLS request line. This protects
   signature-sensitive federation requests such as `make_join` from path
   normalization drifting the on-wire URI away from the URI that was signed.
+- Publish `valid_until_ts = now + 7 days` in `GET /_matrix/key/v2/server`
+  instead of a far-future sentinel (year 2999). A year-2999 expiry caused
+  federation peers to cache our public key permanently; when the key rotated
+  between restarts (during earlier development), peers held the stale old key
+  forever and rejected every `make_join` with `401 BadSignatureError`. Rolling
+  the expiry ensures peers re-fetch within a week whenever the key changes.
+- Add `GET /_matrix/client/v3/publicRooms` so Matrix clients can load the room
+  directory after login without hitting `M_UNRECOGNIZED`; the route now lists
+  locally created `public_chat` rooms from persisted room state.
 - Split the old `vertical_slice.hpp` umbrella into implementation-matched
   homeserver headers (`runtime`, `auth_service`, `room_service`,
   `media_service`, `local_http_router`) and rename the old demo helper to
