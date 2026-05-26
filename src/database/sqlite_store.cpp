@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -49,6 +51,32 @@ namespace
     using SqliteStatement = std::unique_ptr<sqlite3_stmt, SqliteStatementDeleter>;
 
     [[nodiscard]] auto execute_sql(sqlite3& connection, std::string const& sql) -> bool;
+
+    [[nodiscard]] auto parse_invite_state_events_json(std::string_view json) -> std::vector<std::string>
+    {
+        auto const parsed = canonicaljson::parse_lossless(json);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return {};
+        }
+        auto const* events = std::get_if<canonicaljson::Array>(&parsed.value.storage());
+        if (events == nullptr)
+        {
+            return {};
+        }
+        auto result = std::vector<std::string>{};
+        result.reserve(events->size());
+        for (auto const& event : *events)
+        {
+            auto serialized = canonicaljson::serialize_canonical(event);
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                return {};
+            }
+            result.push_back(std::move(serialized.output));
+        }
+        return result;
+    }
 
     class SqliteTransaction final
     {
@@ -236,6 +264,9 @@ namespace
         // The schema lands at v1 in its final shape — there are no historic
         // database deployments to upgrade, so only the initial migration
         // record needs to be present.
+        // Bootstrap records only the initial schema row. Runtime startup can
+        // then apply newer numbered migrations against the freshly created
+        // tables when current_schema_version() is greater than 1.
         return execute_sql(connection,
                            "INSERT OR IGNORE INTO schema_migrations VALUES ('1', 'initial_schema', 'upgrade')");
     }
@@ -343,6 +374,15 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.memberships.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
                                                           parse_u64(column_text(row, 3))});
+                         }) &&
+               load_rows(connection,
+                         "SELECT room_id, user_id, sender_user_id, event_id, signed_event_json, invite_state_json, "
+                         "stream_ordering FROM invites",
+                         [&store](sqlite3_stmt& row) {
+                             store.invites.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2),
+                                                      column_text(row, 3), column_text(row, 4),
+                                                      parse_invite_state_events_json(column_text(row, 5)),
+                                                      parse_u64(column_text(row, 6))});
                          }) &&
                load_rows(connection,
                          "SELECT event_id, room_id, sender_user_id, json, depth, stream_ordering FROM events",
@@ -505,13 +545,13 @@ namespace
                              entry.currently_active = text_is_true(column_text(row, 5));
                              store.presence_states.push_back(std::move(entry));
                          }) &&
-               load_rows(connection, "SELECT user_id, filter_id, json FROM filters", [&store](sqlite3_stmt& row) {
-                   store.filters.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
-               }) &&
+               load_rows(connection, "SELECT user_id, filter_id, json FROM filters",
+                         [&store](sqlite3_stmt& row) {
+                             store.filters.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
                load_rows(connection, "SELECT user_id, displayname, avatar_url FROM profiles",
                          [&store](sqlite3_stmt& row) {
-                             store.profiles.push_back(
-                                 {column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                             store.profiles.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          });
     }
 
@@ -572,28 +612,36 @@ namespace
 
 auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult
 {
-    log_diagnostic("store.opening", {{"path", path, false}});
+    log_diagnostic("store.opening", {
+                                        {"path", path, false}
+    });
     auto connection = open_sqlite_connection(path);
     if (!connection.has_value())
     {
         log_diagnostic("store.rejected",
-                       {{"path",   path,                                        false},
-                        {"reason", "unable to open SQLite persistent store",    false}});
+                       {
+                           {"path",   path,                                     false},
+                           {"reason", "unable to open SQLite persistent store", false}
+        });
         return {false, "unable to open SQLite persistent store", {}};
     }
     auto& sqlite = **connection;
     if (!execute_sql(sqlite, "PRAGMA foreign_keys = ON"))
     {
         log_diagnostic("store.rejected",
-                       {{"path",   path,                                        false},
-                        {"reason", "unable to configure SQLite persistent store", false}});
+                       {
+                           {"path",   path,                                          false},
+                           {"reason", "unable to configure SQLite persistent store", false}
+        });
         return {false, "unable to configure SQLite persistent store", {}};
     }
     if (load_table_names(sqlite).empty() && !initialize_current_schema(sqlite))
     {
         log_diagnostic("store.rejected",
-                       {{"path",   path,                               false},
-                        {"reason", "unable to initialize SQLite schema", false}});
+                       {
+                           {"path",   path,                                 false},
+                           {"reason", "unable to initialize SQLite schema", false}
+        });
         return {false, "unable to initialize SQLite schema", {}};
     }
 
@@ -603,32 +651,41 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     store.sqlite_path = path;
     store.schema = load_schema_state(sqlite);
     log_diagnostic("store.schema_loaded",
-                   {{"path",    path,                                    false},
-                    {"version", std::to_string(store.schema.version),    false}});
+                   {
+                       {"path",    path,                                 false},
+                       {"version", std::to_string(store.schema.version), false}
+    });
     if (store.schema.version < current_schema_version())
     {
-        log_diagnostic("store.migrating",
-                       {{"path",             path,                                              false},
-                        {"current_version",  std::to_string(store.schema.version),              false},
-                        {"target_version",   std::to_string(current_schema_version()),          false}});
+        log_diagnostic("store.migrating", {
+                                              {"path",            path,                                     false},
+                                              {"current_version", std::to_string(store.schema.version),     false},
+                                              {"target_version",  std::to_string(current_schema_version()), false}
+        });
         auto migrated = apply_pending_migrations(sqlite, store.schema);
         if (!migrated.has_value())
         {
             log_diagnostic("store.rejected",
-                           {{"path",   path,                             false},
-                            {"reason", "unable to migrate SQLite schema", false}});
+                           {
+                               {"path",   path,                              false},
+                               {"reason", "unable to migrate SQLite schema", false}
+            });
             return {false, "unable to migrate SQLite schema", {}};
         }
         store.schema = std::move(*migrated);
         log_diagnostic("store.migrated",
-                       {{"path",    path,                                  false},
-                        {"version", std::to_string(store.schema.version),  false}});
+                       {
+                           {"path",    path,                                 false},
+                           {"version", std::to_string(store.schema.version), false}
+        });
     }
     if (!load_persistent_rows(sqlite, store))
     {
         log_diagnostic("store.rejected",
-                       {{"path",   path,                              false},
-                        {"reason", "unable to hydrate SQLite rows",   false}});
+                       {
+                           {"path",   path,                            false},
+                           {"reason", "unable to hydrate SQLite rows", false}
+        });
         return {false, "unable to hydrate SQLite rows", {}};
     }
     restore_sync_stream_id(store);
@@ -636,14 +693,16 @@ auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpe
     auto compatibility = validate_persistent_store(store);
     if (!compatibility.valid)
     {
-        log_diagnostic("store.rejected",
-                       {{"path",   path,                    false},
-                        {"reason", compatibility.reason,    false}});
+        log_diagnostic("store.rejected", {
+                                             {"path",   path,                 false},
+                                             {"reason", compatibility.reason, false}
+        });
         return {false, compatibility.reason, {}};
     }
-    log_diagnostic("store.ready",
-                   {{"path",    path,                                  false},
-                    {"version", std::to_string(store.schema.version),  false}});
+    log_diagnostic("store.ready", {
+                                      {"path",    path,                                 false},
+                                      {"version", std::to_string(store.schema.version), false}
+    });
     return {true, {}, std::move(store)};
 }
 

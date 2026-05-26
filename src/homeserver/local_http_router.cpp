@@ -76,7 +76,8 @@ namespace
             }
             auto public_key = events::matrix_bytes_from_base64(key_.public_key);
             return {
-                crypto::SigningKeyRecord{server_name_, key_.key_id, crypto::Ed25519PublicKey{std::move(public_key)}, true},
+                crypto::SigningKeyRecord{server_name_, key_.key_id, crypto::Ed25519PublicKey{std::move(public_key)},
+                                         true},
                 {}
             };
         }
@@ -177,8 +178,7 @@ namespace
                                          std::uint64_t stream_ordering) -> bool
     {
         auto const result = database::store_membership(
-            store,
-            {std::string{room_id}, std::string{user_id}, std::string{membership}, stream_ordering});
+            store, {std::string{room_id}, std::string{user_id}, std::string{membership}, stream_ordering});
         if (result == database::MembershipStoreResult::stored)
         {
             return true;
@@ -246,8 +246,8 @@ namespace
         }
         auto key_store = RuntimeSigningKeyStore{runtime.config.server().server_name, *key};
         auto provider = RuntimeEd25519Provider{std::move(secret_key)};
-        auto signed_event =
-            events::sign_event_for_server(event_value, *policy, key_store, provider, runtime.config.server().server_name);
+        auto signed_event = events::sign_event_for_server(event_value, *policy, key_store, provider,
+                                                          runtime.config.server().server_name);
         return signed_event.error.empty() ? std::optional<std::string>{std::move(signed_event.event_json)}
                                           : std::nullopt;
     }
@@ -438,8 +438,8 @@ namespace
         auto* discovery = runtime.discovery_network.get();
         auto const timeout = runtime.federation.config.remote_timeout_seconds;
 
-        runtime.federation.pdu_sink = [rt](federation::InboundPduEnvelope const& envelope)
-            -> federation::PduIngestionResult {
+        runtime.federation.pdu_sink =
+            [rt](federation::InboundPduEnvelope const& envelope) -> federation::PduIngestionResult {
             auto event = database::PersistentEvent{};
             event.event_id = envelope.event_id;
             event.room_id = envelope.room_id;
@@ -468,12 +468,11 @@ namespace
             return {federation::PduIngestionStatus::accepted, {}};
         };
 
-        runtime.federation.edu_sink = [rt](federation::InboundEduEnvelope const& envelope)
-            -> federation::EduDispositionResult {
+        runtime.federation.edu_sink =
+            [rt](federation::InboundEduEnvelope const& envelope) -> federation::EduDispositionResult {
             switch (envelope.type)
             {
-            case federation::EduType::typing:
-            {
+            case federation::EduType::typing: {
                 // content: {room_id, user_id, typing}
                 auto const& content = envelope.content_json;
                 auto const room_id_pos = content.find("\"room_id\"");
@@ -537,8 +536,7 @@ namespace
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
-            case federation::EduType::receipt:
-            {
+            case federation::EduType::receipt: {
                 // content: { <room_id>: { "m.read": { <user_id>: { ts } } } }
                 auto const& content = envelope.content_json;
                 auto const m_read_pos = content.find("\"m.read\"");
@@ -626,8 +624,7 @@ namespace
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
-            case federation::EduType::presence:
-            {
+            case federation::EduType::presence: {
                 // content: { push: [ { user_id, presence } ] }
                 auto const& content = envelope.content_json;
                 auto const push_pos = content.find("\"push\"");
@@ -695,12 +692,11 @@ namespace
                 if (rt->sync_notifier != nullptr)
                 {
                     rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
-                                           rt->database.persistent_store.next_sync_stream_id);
+                                               rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
-            case federation::EduType::direct_to_device:
-            {
+            case federation::EduType::direct_to_device: {
                 // content: { sender, type, message_id?, messages: { <user_id>: { <device_id>: content } } }
                 auto const& content = envelope.content_json;
                 auto sender = std::string{};
@@ -751,7 +747,8 @@ namespace
                             {
                                 break;
                             }
-                            auto target_user_id = content.substr(target_user_start + 1U, target_user_end - target_user_start - 1U);
+                            auto target_user_id =
+                                content.substr(target_user_start + 1U, target_user_end - target_user_start - 1U);
                             // Find the device map for this user
                             auto device_obj_start = content.find('{', target_user_end);
                             if (device_obj_start == std::string::npos)
@@ -777,7 +774,8 @@ namespace
                                 {
                                     break;
                                 }
-                                auto target_device_id = content.substr(dev_key_start + 1U, dev_key_end - dev_key_start - 1U);
+                                auto target_device_id =
+                                    content.substr(dev_key_start + 1U, dev_key_end - dev_key_start - 1U);
                                 // The value is the content JSON object
                                 auto content_start = content.find('{', dev_key_end);
                                 if (content_start == std::string::npos || content_start >= device_obj_end)
@@ -805,7 +803,8 @@ namespace
                                 msg.target_device_id = target_device_id;
                                 msg.message_type = msg_type;
                                 msg.content_json = content.substr(content_start, content_end - content_start);
-                                std::ignore = database::enqueue_to_device_message(rt->database.persistent_store, std::move(msg));
+                                std::ignore =
+                                    database::enqueue_to_device_message(rt->database.persistent_store, std::move(msg));
                                 dev_scan = content_end;
                             }
                             scan = device_obj_end + 1U;
@@ -815,12 +814,11 @@ namespace
                 if (rt->sync_notifier != nullptr)
                 {
                     rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
-                                           rt->database.persistent_store.next_sync_stream_id);
+                                               rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
-            case federation::EduType::device_list_update:
-            {
+            case federation::EduType::device_list_update: {
                 // content: { user_id, device_id?, stream_id? }
                 auto const& content = envelope.content_json;
                 auto user_id = std::string{};
@@ -846,13 +844,14 @@ namespace
                         change.observer_user_id = user.user_id;
                         change.subject_user_id = user_id;
                         change.change_type = "changed";
-                        std::ignore = database::record_device_list_change(rt->database.persistent_store, std::move(change));
+                        std::ignore =
+                            database::record_device_list_change(rt->database.persistent_store, std::move(change));
                     }
                 }
                 if (rt->sync_notifier != nullptr)
                 {
                     rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
-                                           rt->database.persistent_store.next_sync_stream_id);
+                                               rt->database.persistent_store.next_sync_stream_id);
                 }
                 return {federation::EduDispositionStatus::accepted, {}};
             }
@@ -861,8 +860,8 @@ namespace
             }
         };
 
-        runtime.federation.state_conflict_resolver = [rt](federation::PduStateConflictContext const& context)
-            -> federation::PduIngestionResult {
+        runtime.federation.state_conflict_resolver =
+            [rt](federation::PduStateConflictContext const& context) -> federation::PduIngestionResult {
             return federation::apply_state_resolution_v2(
                 context,
                 [rt, room_id = context.incoming_pdu.room_id](
@@ -879,15 +878,14 @@ namespace
                 });
         };
 
-        runtime.federation.membership_template_provider =
-            [rt](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view user_id,
-                 std::vector<std::string> const& /*supported_versions*/)
+        runtime.federation.membership_template_provider = [rt](federation::FederationEndpoint endpoint,
+                                                               std::string_view room_id, std::string_view user_id,
+                                                               std::vector<std::string> const& /*supported_versions*/)
             -> std::optional<federation::MembershipEventTemplate> {
             auto const& store = rt->database.persistent_store;
-            auto const room_it =
-                std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
-                    return r.room_id == room_id;
-                });
+            auto const room_it = std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
+                return r.room_id == room_id;
+            });
             if (room_it == store.rooms.end())
             {
                 return std::nullopt;
@@ -916,7 +914,8 @@ namespace
                 }
             }
             auto content_obj = canonicaljson::Object{};
-            content_obj.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{tmpl.membership}}));
+            content_obj.push_back(
+                canonicaljson::make_member("membership", canonicaljson::Value{std::string{tmpl.membership}}));
             auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content_obj)});
             tmpl.content_json = serialized.output;
             return tmpl;
@@ -926,10 +925,9 @@ namespace
             [rt](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view event_id,
                  federation::InboundPduEnvelope const& envelope) -> federation::MembershipAcceptResult {
             auto& store = rt->database.persistent_store;
-            auto const room_it =
-                std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
-                    return r.room_id == room_id;
-                });
+            auto const room_it = std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
+                return r.room_id == room_id;
+            });
             if (room_it == store.rooms.end())
             {
                 return {false, 404U, "room not found", {}, {}};
@@ -1004,8 +1002,8 @@ namespace
             return {true, 200U, {}, std::move(auth_chain), std::move(state_events)};
         };
 
-        runtime.federation.invite_handler = [rt](federation::InviteRequest const& invite)
-            -> federation::InviteAcceptResult {
+        runtime.federation.invite_handler =
+            [rt](federation::InviteRequest const& invite) -> federation::InviteAcceptResult {
             auto const parsed = canonicaljson::parse_lossless(invite.invite_event_json);
             auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
             if (parsed.error != canonicaljson::ParseError::none || event == nullptr)
@@ -1018,9 +1016,8 @@ namespace
             auto const* event_type = string_member(*event, "type");
             auto const* membership = content_membership(*event);
             if (target_user == nullptr || target_user->empty() || sender == nullptr || sender->empty() ||
-                event_room_id == nullptr || *event_room_id != invite.room_id ||
-                event_type == nullptr || *event_type != "m.room.member" ||
-                membership == nullptr || *membership != "invite")
+                event_room_id == nullptr || *event_room_id != invite.room_id || event_type == nullptr ||
+                *event_type != "m.room.member" || membership == nullptr || *membership != "invite")
             {
                 return {false, 400U, "invite event must be an m.room.member invite", {}};
             }
@@ -1040,6 +1037,12 @@ namespace
             {
                 return {false, 500U, "invite membership persistence failed", {}};
             }
+            if (!database::upsert_invite(rt->database.persistent_store,
+                                         {invite.room_id, *target_user, *sender, invite.event_id, *signed_event,
+                                          invite.invite_room_state_json, stream_ordering}))
+            {
+                return {false, 500U, "invite metadata persistence failed", {}};
+            }
             rt->database.persistent_store.next_sync_stream_id += 1U;
             if (rt->sync_notifier != nullptr)
             {
@@ -1049,8 +1052,8 @@ namespace
             return {true, 200U, {}, std::move(*signed_event)};
         };
 
-        runtime.federation.backfill_provider = [rt](federation::BackfillRequest const& req)
-            -> federation::BackfillResult {
+        runtime.federation.backfill_provider =
+            [rt](federation::BackfillRequest const& req) -> federation::BackfillResult {
             auto const& store = rt->database.persistent_store;
             auto pdus = std::vector<std::string>{};
             for (auto const& requested_id : req.event_ids)
@@ -1071,8 +1074,7 @@ namespace
             return {true, 200U, {}, std::move(pdus)};
         };
 
-        runtime.federation.profile_query_provider =
-            [rt](std::string_view user_id) -> federation::FederationProfile {
+        runtime.federation.profile_query_provider = [rt](std::string_view user_id) -> federation::FederationProfile {
             auto const profile = database::find_profile(rt->database.persistent_store, user_id);
             if (!profile.has_value())
             {
@@ -1106,8 +1108,8 @@ namespace
             return federation::build_state_ids_response(rt->database.persistent_store, room_id);
         };
 
-        runtime.federation.missing_events_query_provider =
-            [rt](std::string_view room_id, std::string_view body) -> std::string {
+        runtime.federation.missing_events_query_provider = [rt](std::string_view room_id,
+                                                                std::string_view body) -> std::string {
             return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body);
         };
 
@@ -1115,10 +1117,9 @@ namespace
         {
             runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(
                 runtime.database.persistent_store, *outbound, *discovery, timeout, [] {
-                    return static_cast<std::uint64_t>(
-                        std::chrono::duration_cast<std::chrono::milliseconds>(
-                            std::chrono::system_clock::now().time_since_epoch())
-                            .count());
+                    return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                          std::chrono::system_clock::now().time_since_epoch())
+                                                          .count());
                 });
             std::ignore = ensure_runtime_server_signing_key(runtime);
             auto dispatch_config = federation::DispatchWorkerConfig{};
@@ -1126,11 +1127,11 @@ namespace
             dispatch_config.key_id = "ed25519:auto";
             dispatch_config.secret_key =
                 std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
-                             runtime.database.signing_secret_key.size()};
+                            runtime.database.signing_secret_key.size()};
             auto* discovery_ptr = discovery;
             auto const discovery_timeout = timeout > 0U ? timeout : 30U;
-            auto resolver = [discovery_ptr, discovery_timeout](std::string_view server_name)
-                -> std::optional<federation::ServerDiscoveryResult> {
+            auto resolver = [discovery_ptr, discovery_timeout](
+                                std::string_view server_name) -> std::optional<federation::ServerDiscoveryResult> {
                 auto result = federation::discover_server(server_name, *discovery_ptr, discovery_timeout);
                 if (!result.discovery_allowed)
                 {
@@ -1139,12 +1140,13 @@ namespace
                 return result;
             };
             auto clock = []() -> std::uint64_t {
-                return static_cast<std::uint64_t>(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch())
-                        .count());
+                return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                      std::chrono::system_clock::now().time_since_epoch())
+                                                      .count());
             };
-            auto sleep_fn = [](std::chrono::milliseconds ms) { std::this_thread::sleep_for(ms); };
+            auto sleep_fn = [](std::chrono::milliseconds ms) {
+                std::this_thread::sleep_for(ms);
+            };
             if (!runtime.dispatch_worker)
             {
                 runtime.dispatch_worker = std::make_unique<federation::DispatchWorker>(

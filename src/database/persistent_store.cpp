@@ -3,6 +3,7 @@
 #include "merovingian/database/persistent_store.hpp"
 
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -104,6 +105,28 @@ namespace
         return std::ranges::any_of(store.memberships, [&membership](PersistentMembership const& existing) {
             return existing.room_id == membership.room_id && existing.user_id == membership.user_id;
         });
+    }
+
+    [[nodiscard]] auto serialize_invite_state_events_json(std::vector<std::string> const& event_json)
+        -> std::optional<std::string>
+    {
+        auto events = canonicaljson::Array{};
+        events.reserve(event_json.size());
+        for (auto const& entry_json : event_json)
+        {
+            auto const parsed = canonicaljson::parse_lossless(entry_json);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                return std::nullopt;
+            }
+            events.push_back(std::move(parsed.value));
+        }
+        auto serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(events)});
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return std::nullopt;
+        }
+        return serialized.output;
     }
 
     [[nodiscard]] auto event_exists(PersistentStore const& store, std::string_view event_id) -> bool
@@ -238,6 +261,14 @@ namespace
         if (!token_is_hash(token.token_hash))
         {
             return {false, "refresh token is not stored as a hash"};
+        }
+    }
+    for (auto const& invite : store.invites)
+    {
+        if (invite.room_id.empty() || invite.user_id.empty() || invite.sender_user_id.empty() ||
+            invite.event_id.empty() || invite.signed_event_json.empty())
+        {
+            return {false, "invite metadata is incomplete"};
         }
     }
     for (auto const& media : store.local_media)
@@ -815,49 +846,122 @@ namespace
     return MembershipStoreResult::stored;
 }
 
-[[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id,
-                                     std::string_view user_id, std::string_view new_membership) -> bool
+[[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
+                                     std::string_view new_membership) -> bool
 {
     auto const it = std::ranges::find_if(store.memberships, [&](PersistentMembership const& m) {
         return m.room_id == room_id && m.user_id == user_id;
     });
     if (it == store.memberships.end())
     {
-        log_diagnostic("membership.update.rejected",
-                       {
-                           {"room_id", std::string{room_id}, false},
-                           {"user_id", std::string{user_id}, false},
-                           {"reason",  "membership not found", false}
+        log_diagnostic("membership.update.rejected", {
+                                                         {"room_id", std::string{room_id},   false},
+                                                         {"user_id", std::string{user_id},   false},
+                                                         {"reason",  "membership not found", false}
         });
         return false;
     }
     if (!record_and_persist(
-            store,
-            record_statement(
-                "update_membership",
-                "UPDATE membership SET membership = $3 WHERE room_id = $1 AND user_id = $2",
-                {
-                    {std::string{room_id},       false},
-                    {std::string{user_id},       false},
-                    {std::string{new_membership}, false}
-                })))
+            store, record_statement("update_membership",
+                                    "UPDATE membership SET membership = $3 WHERE room_id = $1 AND user_id = $2",
+                                    {
+                                        {std::string{room_id},        false},
+                                        {std::string{user_id},        false},
+                                        {std::string{new_membership}, false}
+    })))
     {
-        log_diagnostic("membership.update.rejected",
-                       {
-                           {"room_id", std::string{room_id},       false},
-                           {"user_id", std::string{user_id},       false},
-                           {"reason",  "persistence backend rejected update", false}
+        log_diagnostic("membership.update.rejected", {
+                                                         {"room_id", std::string{room_id},                  false},
+                                                         {"user_id", std::string{user_id},                  false},
+                                                         {"reason",  "persistence backend rejected update", false}
         });
         return false;
     }
     it->membership = std::string{new_membership};
-    log_diagnostic("membership.updated",
-                   {
-                       {"room_id",    std::string{room_id},       false},
-                       {"user_id",    std::string{user_id},       false},
-                       {"membership", std::string{new_membership}, false}
+    log_diagnostic("membership.updated", {
+                                             {"room_id",    std::string{room_id},        false},
+                                             {"user_id",    std::string{user_id},        false},
+                                             {"membership", std::string{new_membership}, false}
     });
     return true;
+}
+
+[[nodiscard]] auto upsert_invite(PersistentStore& store, PersistentInvite invite) -> bool
+{
+    auto const invite_state_json = serialize_invite_state_events_json(invite.invite_state_events_json);
+    if (!invite_state_json.has_value())
+    {
+        log_diagnostic("invite.rejected", {
+                                              {"room_id", invite.room_id,                      false},
+                                              {"user_id", invite.user_id,                      false},
+                                              {"reason",  "invite state serialization failed", false}
+        });
+        return false;
+    }
+
+    auto const existing = std::ranges::find_if(store.invites, [&](PersistentInvite const& current) {
+        return current.room_id == invite.room_id && current.user_id == invite.user_id;
+    });
+
+    if (existing == store.invites.end())
+    {
+        if (!record_and_persist(
+                store, record_statement("insert_invite", "INSERT INTO invites VALUES ($1, $2, $3, $4, $5, $6, $7)",
+                                        {public_value(invite.room_id), public_value(invite.user_id),
+                                         public_value(invite.sender_user_id), public_value(invite.event_id),
+                                         sensitive_value(invite.signed_event_json), sensitive_value(*invite_state_json),
+                                         public_value(std::to_string(invite.stream_ordering))})))
+        {
+            log_diagnostic("invite.rejected", {
+                                                  {"room_id", invite.room_id,                        false},
+                                                  {"user_id", invite.user_id,                        false},
+                                                  {"reason",  "persistence backend rejected insert", false}
+            });
+            return false;
+        }
+        log_diagnostic("invite.persisted", {
+                                               {"room_id",         invite.room_id,                         false},
+                                               {"user_id",         invite.user_id,                         false},
+                                               {"event_id",        invite.event_id,                        false},
+                                               {"stream_ordering", std::to_string(invite.stream_ordering), false}
+        });
+        store.invites.push_back(std::move(invite));
+        return true;
+    }
+
+    if (!record_and_persist(
+            store, record_statement("update_invite",
+                                    "UPDATE invites SET sender_user_id = $3, event_id = $4, signed_event_json = $5, "
+                                    "invite_state_json = $6, stream_ordering = $7 WHERE room_id = $1 AND user_id = $2",
+                                    {public_value(invite.room_id), public_value(invite.user_id),
+                                     public_value(invite.sender_user_id), public_value(invite.event_id),
+                                     sensitive_value(invite.signed_event_json), sensitive_value(*invite_state_json),
+                                     public_value(std::to_string(invite.stream_ordering))})))
+    {
+        log_diagnostic("invite.rejected", {
+                                              {"room_id", invite.room_id,                        false},
+                                              {"user_id", invite.user_id,                        false},
+                                              {"reason",  "persistence backend rejected update", false}
+        });
+        return false;
+    }
+
+    *existing = std::move(invite);
+    log_diagnostic("invite.updated", {
+                                         {"room_id",  existing->room_id,  false},
+                                         {"user_id",  existing->user_id,  false},
+                                         {"event_id", existing->event_id, false}
+    });
+    return true;
+}
+
+[[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
+    -> std::optional<PersistentInvite>
+{
+    auto const it = std::ranges::find_if(store.invites, [&](PersistentInvite const& invite) {
+        return invite.room_id == room_id && invite.user_id == user_id;
+    });
+    return it == store.invites.end() ? std::nullopt : std::optional<PersistentInvite>{*it};
 }
 
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,

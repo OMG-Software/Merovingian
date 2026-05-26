@@ -424,11 +424,22 @@ a non-production environment.
   workers — `native_handle()` followed by reset closed the fd before the
   worker could read. Added `SocketHandle::release()` to transfer ownership
   without premature close.
+- Fix (0.4.13): Inbound federation invites now persist stripped invite-state
+  metadata and replay it through `rooms.invite.*.invite_state.events` in
+  `/sync`, so Element can render direct-message invites initiated from a
+  Synapse homeserver. The durable invite metadata now lives in the initial
+  schema shape rather than a follow-on migration step.
+- Fix (0.4.13): `README.md` now starts with an explicit active-development /
+  not-ready warning, explains Merovingian's security-first design goals, and
+  links directly to deployment/runtime and development onboarding docs.
 - Fix (0.4.11): Server startup now logs `Starting merovingian-server <version>` before
   configuration loading, so operators can identify the running binary version
   from startup logs. Normal help/startup surfaces no longer describe the
   server as a bootstrap server; bootstrap wording is reserved for the explicit
   admin bootstrap path.
+- Chore (0.4.12): Bump project, binary, and packaging metadata to `0.4.12` so
+  the next merge to `main` emits a fresh `push` event for the rolling `latest`
+  package workflow under the repository's pull-request-only branch rules.
 - Fix (0.4.11): Low-severity console and file logs now flush every 1 second or
   every 100 messages, whichever comes first, so quiet debug sessions no longer
   wait for a high-severity line or a large backlog before output appears.

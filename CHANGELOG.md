@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.13
+
+- Rewrote `README.md` so it now opens with an explicit active-development /
+  not-ready warning, explains Merovingian's security-first design goals, and
+  links directly to deployment/runtime and development onboarding docs.
+- Persisted stripped state from inbound federation invites and exposed it via
+  `rooms.invite.*.invite_state.events` in `/sync`, so DM invites initiated from
+  Synapse carry the room metadata Element expects.
+- Added durable invite-state storage to the initial schema, plus regression
+  coverage for the invite-sync path and schema bootstrap chain.
+
+## 0.4.12
+
+- Bumped project, executable, and package metadata versions to `0.4.12` so a
+  fresh PR merge to `main` can publish new rolling `latest` artifacts.
+
 ## 0.4.11
 
 - Signed Matrix events over the full canonical event payload instead of a
