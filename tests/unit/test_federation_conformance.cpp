@@ -170,6 +170,10 @@ SCENARIO("send_join persists membership and returns auth chain and state",
             {
                 REQUIRE(response.status == 200U);
                 REQUIRE(*accept_invoked);
+                REQUIRE(response.body.find("\"room_version\"") != std::string::npos);
+                REQUIRE(response.body.find("\"origin\"") != std::string::npos);
+                REQUIRE(response.body.find("\"auth_chain\"") != std::string::npos);
+                REQUIRE(response.body.find("\"state\"") != std::string::npos);
             }
         }
     }

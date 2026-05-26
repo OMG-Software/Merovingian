@@ -12,7 +12,9 @@ merovingian-server --debug --log-file /var/log/merovingian/debug.log --config /e
 ```
 
 This starts the server with console debug output and a durable diagnostic log
-file for join-failure triage.
+file for join-failure triage. Low-severity log batches now flush every 1 second
+or every 100 messages, whichever comes first, so a quiet debug session does not
+wait indefinitely for a severity bump or a large burst of traffic.
 
 ## Join Failure Diagnostics
 
