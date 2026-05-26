@@ -10,6 +10,9 @@
   wake `/sync` so clients can see and accept the invite.
 - Added outbound invite delivery for `POST /_matrix/client/v3/createRoom`
   `invite` entries that target remote Matrix users.
+- Fixed outbound `createRoom` invite dispatch to assign a federation
+  transaction id before queueing, so the dispatch worker accepts the invite
+  transaction for delivery.
 - Fixed join-after-invite membership transitions so successful local or remote
   joins update existing durable invite rows to `join`.
 - Fixed remote-room joins to persist the remote room and hydrate joined members

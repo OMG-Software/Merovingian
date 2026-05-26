@@ -2646,6 +2646,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 auto transaction = federation::make_outbound_invite(
                     invitee_server, rt.homeserver.config.server().server_name, room_id, *invite_event_id, "12",
                     *invite_json, {});
+                transaction.transaction_id = std::to_string(rt.homeserver.database.next_session_id++);
                 std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
             }
         }

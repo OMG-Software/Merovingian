@@ -434,7 +434,7 @@ a non-production environment.
   wakes `/sync` so the invite is visible to the client.
 - Fix (0.4.10): `createRoom` ignored remote users in the `invite` array.
   Remote invitees now get a signed membership invite and an outbound federation
-  invite transaction.
+  invite transaction with a queue transaction id accepted by `DispatchWorker`.
 - Fix (0.4.10): Remote-room joins only added the local user to the runtime
   room. The `send_join` state response now hydrates joined remote members and
   persists the remote room so post-join messages have federation destinations.
