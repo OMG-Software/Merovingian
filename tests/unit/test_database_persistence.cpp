@@ -951,9 +951,13 @@ SCENARIO("Server signing key secret survives a database restart",
         auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
         REQUIRE(opened.ok);
 
+        // The secret is stored as unpadded standard base64 text so that null bytes embedded
+        // in raw Ed25519 key material do not truncate the value when read back via C string APIs.
+        // This string decodes to binary data whose first three bytes are 0x00 0x01 0x02.
+        auto constexpr stored_secret = std::string_view{"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"};
         auto const key = merovingian::database::PersistentServerSigningKey{
             "pong.example.org", "ed25519:auto", "public-key-base64", 32503680000000ULL,
-            "secret-key-raw-bytes-64-chars-long-padding-to-make-it-realistic-x"};
+            std::string{stored_secret}};
         auto const stored_ok = merovingian::database::store_server_signing_key(opened.store, key);
 
         WHEN("the database is reopened to simulate a server restart")
@@ -963,12 +967,12 @@ SCENARIO("Server signing key secret survives a database restart",
             auto const found = merovingian::database::find_server_signing_key(reopened.store, "pong.example.org",
                                                                               "ed25519:auto");
 
-            THEN("the public key and its secret are both hydrated from disk")
+            THEN("the public key and its base64-encoded secret are both hydrated from disk without truncation")
             {
                 REQUIRE(stored_ok);
                 REQUIRE(found.has_value());
                 REQUIRE(found->public_key == "public-key-base64");
-                REQUIRE(found->secret_key == "secret-key-raw-bytes-64-chars-long-padding-to-make-it-realistic-x");
+                REQUIRE(found->secret_key == stored_secret);
             }
         }
 
@@ -985,8 +989,10 @@ SCENARIO("store_server_signing_key preserves an existing secret when upserted wi
         REQUIRE(opened.ok);
         auto& store = opened.store;
 
+        // Secret is stored as base64 text, matching what room_service stores via ensure_runtime_server_signing_key.
+        auto constexpr original_secret = std::string_view{"c2VjcmV0LWtleS1pbi1iYXNlNjQ"};
         auto const initial_ok = merovingian::database::store_server_signing_key(
-            store, {"example.org", "ed25519:auto", "pub-v1", 32503680000000ULL, "my-secret"});
+            store, {"example.org", "ed25519:auto", "pub-v1", 32503680000000ULL, std::string{original_secret}});
         REQUIRE(initial_ok);
 
         WHEN("the same key is upserted with a new public key but no secret")
@@ -996,12 +1002,12 @@ SCENARIO("store_server_signing_key preserves an existing secret when upserted wi
             auto const found =
                 merovingian::database::find_server_signing_key(store, "example.org", "ed25519:auto");
 
-            THEN("the public key is updated and the existing secret is preserved")
+            THEN("the public key is updated and the existing base64 secret is preserved")
             {
                 REQUIRE(ok);
                 REQUIRE(found.has_value());
                 REQUIRE(found->public_key == "pub-v2");
-                REQUIRE(found->secret_key == "my-secret");
+                REQUIRE(found->secret_key == original_secret);
             }
         }
     }
