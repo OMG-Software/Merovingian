@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.12
+
+- Bumped project, executable, and package metadata versions to `0.4.12` so a
+  fresh PR merge to `main` can publish new rolling `latest` artifacts.
+
 ## 0.4.11
 
 - Signed Matrix events over the full canonical event payload instead of a

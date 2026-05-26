@@ -429,6 +429,9 @@ a non-production environment.
   from startup logs. Normal help/startup surfaces no longer describe the
   server as a bootstrap server; bootstrap wording is reserved for the explicit
   admin bootstrap path.
+- Chore (0.4.12): Bump project, binary, and packaging metadata to `0.4.12` so
+  the next merge to `main` emits a fresh `push` event for the rolling `latest`
+  package workflow under the repository's pull-request-only branch rules.
 - Fix (0.4.11): Low-severity console and file logs now flush every 1 second or
   every 100 messages, whichever comes first, so quiet debug sessions no longer
   wait for a high-severity line or a large backlog before output appears.

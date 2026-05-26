@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.11
+Version:        0.4.12
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.12-1
+- Bump project and packaging metadata to 0.4.12 for a fresh main latest build
+
 * Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.11-1
 - Log the merovingian-server version during startup
 
