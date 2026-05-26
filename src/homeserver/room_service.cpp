@@ -311,6 +311,14 @@ namespace
         return depth + 1U;
     }
 
+    auto append_unique_member(std::vector<std::string>& members, std::string_view user_id) -> void
+    {
+        if (!std::ranges::any_of(members, [&](std::string const& member) { return member == user_id; }))
+        {
+            members.emplace_back(user_id);
+        }
+    }
+
     [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
         -> canonicaljson::Value
     {
@@ -887,6 +895,7 @@ namespace
         // Persist the room locally with the joined user as a member.
         // State events from the remote response are persisted to the
         // database so the room has enough state for auth checks.
+        auto joined_members = std::vector<std::string>{*user_id};
         auto const state_arr_member =
             std::ranges::find_if(*send_obj, [](canonicaljson::ObjectMember const& m) { return m.key == "state"; });
         if (state_arr_member != send_obj->end())
@@ -909,6 +918,11 @@ namespace
                             pe.json = serialized.output;
                             pe.signatures = parsed.event.signatures;
                             std::ignore = database::store_event(runtime.database.persistent_store, std::move(pe));
+                            if (parsed.event.event_type == "m.room.member" && !parsed.event.state_key.empty() &&
+                                events::extract_content_membership(state_entry) == "join")
+                            {
+                                append_unique_member(joined_members, parsed.event.state_key);
+                            }
                         }
                     }
                 }
@@ -942,6 +956,21 @@ namespace
                 }
             }
         }
+        auto const room_known = std::ranges::any_of(
+            runtime.database.persistent_store.rooms, [&](database::PersistentRoom const& persistent_room) {
+                return persistent_room.room_id == room_id;
+            });
+        if (!room_known &&
+            !database::store_room(runtime.database.persistent_store, {std::string{room_id}, *user_id}))
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                 false},
+                                                     {"room_id", std::string{room_id},     false},
+                                                     {"status",  "500",                    false},
+                                                     {"reason",  "room persistence failed", false}
+            });
+            return make_operation_result(false, {}, "room persistence failed", 500U);
+        }
         // Create the local room record and persist the membership.
         auto const membership_result =
             database::store_membership(runtime.database.persistent_store, {std::string{room_id}, *user_id});
@@ -955,7 +984,33 @@ namespace
             });
             return make_operation_result(false, {}, "membership persistence failed", 500U);
         }
-        runtime.database.rooms.push_back({std::string{room_id}, *user_id, {*user_id}, {}});
+        if (membership_result == database::MembershipStoreResult::already_exists &&
+            !database::update_membership(runtime.database.persistent_store, room_id, *user_id, "join"))
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                   false},
+                                                     {"room_id", std::string{room_id},       false},
+                                                     {"status",  "500",                      false},
+                                                     {"reason",  "membership update failed", false}
+            });
+            return make_operation_result(false, {}, "membership update failed", 500U);
+        }
+        for (auto const& joined_member : joined_members)
+        {
+            if (joined_member == *user_id)
+            {
+                continue;
+            }
+            auto const result = database::store_membership(
+                runtime.database.persistent_store,
+                {std::string{room_id}, joined_member, "join", runtime.database.next_stream_ordering++});
+            if (result == database::MembershipStoreResult::already_exists)
+            {
+                std::ignore = database::update_membership(
+                    runtime.database.persistent_store, room_id, joined_member, "join");
+            }
+        }
+        runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members), {}});
         append_local_audit(runtime.database, observability::AuditCategory::admin, "room.joined_remote", *user_id,
                            room_id, "joined via federation");
         log_diagnostic("room.join.accepted_remote", {
@@ -990,6 +1045,17 @@ namespace
             return make_operation_result(false, {}, "membership persistence failed", 500U);
         }
         // Both stored and already_exists: membership is valid — sync the in-memory state.
+        if (result == database::MembershipStoreResult::already_exists &&
+            !database::update_membership(runtime.database.persistent_store, room_id, *user_id, "join"))
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                   false},
+                                                     {"room_id", std::string{room_id},       false},
+                                                     {"status",  "500",                      false},
+                                                     {"reason",  "membership update failed", false}
+            });
+            return make_operation_result(false, {}, "membership update failed", 500U);
+        }
         room->members.push_back(*user_id);
         if (result == database::MembershipStoreResult::stored)
         {

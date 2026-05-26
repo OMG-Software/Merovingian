@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.9
+Version:        0.4.10
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.10-1
+- Persist inbound federation join membership for remote event delivery
+- Sign and persist inbound federation invites for client sync
+- Send outbound federation invites for remote createRoom invitees
+
 * Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.9-1
 - Add live Synapse federation integration tests against matrix.ping.me.uk
 

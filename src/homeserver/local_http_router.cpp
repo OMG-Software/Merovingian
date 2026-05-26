@@ -1,9 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/core/query_params.hpp"
+#include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/key_query.hpp"
@@ -11,6 +15,7 @@
 #include "merovingian/homeserver/vertical_slice.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
 #include <array>
@@ -22,7 +27,10 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
+
+#include <sodium.h>
 
 namespace merovingian::homeserver
 {
@@ -50,9 +58,198 @@ namespace
         return response(result.status, result.ok ? result.value : result.reason);
     }
 
+    class RuntimeSigningKeyStore final : public crypto::SigningKeyStore
+    {
+    public:
+        RuntimeSigningKeyStore(std::string server_name, database::PersistentServerSigningKey key)
+            : server_name_{std::move(server_name)}
+            , key_{std::move(key)}
+        {
+        }
+
+        [[nodiscard]] auto active_key_for_server(std::string_view server_name)
+            -> crypto::SigningKeyLookupResult override
+        {
+            if (server_name != server_name_)
+            {
+                return {{}, "signing key not found"};
+            }
+            auto public_key = events::matrix_bytes_from_base64(key_.public_key);
+            return {
+                crypto::SigningKeyRecord{server_name_, key_.key_id, crypto::Ed25519PublicKey{std::move(public_key)}, true},
+                {}
+            };
+        }
+
+    private:
+        std::string server_name_{};
+        database::PersistentServerSigningKey key_{};
+    };
+
+    class RuntimeEd25519Provider final : public crypto::Ed25519Provider
+    {
+    public:
+        explicit RuntimeEd25519Provider(std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key)
+            : secret_key_{std::move(secret_key)}
+        {
+        }
+
+        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/, std::string_view message)
+            -> crypto::SignatureResult override
+        {
+            auto signature = std::string(crypto_sign_BYTES, '\0');
+            if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
+                                     reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                                     secret_key_.data()) != 0)
+            {
+                return {{}, "Ed25519 signing failed"};
+            }
+            return {crypto::Ed25519Signature{std::move(signature)}, {}};
+        }
+
+        [[nodiscard]] auto verify(crypto::Ed25519PublicKey const& public_key, std::string_view message,
+                                  crypto::Ed25519Signature const& signature) -> crypto::VerificationResult override
+        {
+            if (!crypto::ed25519_public_key_shape_is_valid(public_key) ||
+                !crypto::ed25519_signature_shape_is_valid(signature))
+            {
+                return {false, "invalid Ed25519 material"};
+            }
+            auto const ok =
+                crypto_sign_verify_detached(reinterpret_cast<unsigned char const*>(signature.bytes.data()),
+                                            reinterpret_cast<unsigned char const*>(message.data()), message.size(),
+                                            reinterpret_cast<unsigned char const*>(public_key.bytes.data())) == 0;
+            return {ok, ok ? std::string{} : std::string{"signature verification failed"}};
+        }
+
+    private:
+        std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key_{};
+    };
+
     [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
     {
         return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
+
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto content_membership(canonicaljson::Object const& event) noexcept -> std::string const*
+    {
+        auto const* content_value = object_member(event, "content");
+        auto const* content =
+            content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
+        return content == nullptr ? nullptr : string_member(*content, "membership");
+    }
+
+    [[nodiscard]] auto server_name_from_user_id(std::string_view user_id) -> std::string_view
+    {
+        auto const colon = user_id.rfind(':');
+        return colon == std::string_view::npos ? std::string_view{} : user_id.substr(colon + 1U);
+    }
+
+    [[nodiscard]] auto local_user_exists(LocalDatabase const& database, std::string_view user_id) noexcept -> bool
+    {
+        return std::ranges::any_of(database.users, [&](LocalUser const& user) {
+            return user.user_id == user_id;
+        });
+    }
+
+    [[nodiscard]] auto upsert_membership(database::PersistentStore& store, std::string_view room_id,
+                                         std::string_view user_id, std::string_view membership,
+                                         std::uint64_t stream_ordering) -> bool
+    {
+        auto const result = database::store_membership(
+            store,
+            {std::string{room_id}, std::string{user_id}, std::string{membership}, stream_ordering});
+        if (result == database::MembershipStoreResult::stored)
+        {
+            return true;
+        }
+        if (result == database::MembershipStoreResult::already_exists)
+        {
+            return database::update_membership(store, room_id, user_id, membership);
+        }
+        return false;
+    }
+
+    auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
+                                  std::string_view membership) -> void
+    {
+        auto room = std::ranges::find_if(database.rooms, [&](LocalRoom const& current) {
+            return current.room_id == room_id;
+        });
+        if (room == database.rooms.end())
+        {
+            return;
+        }
+        auto const member = std::ranges::find_if(room->members, [&](std::string const& member_id) {
+            return member_id == user_id;
+        });
+        if (membership == "join" && member == room->members.end())
+        {
+            room->members.emplace_back(user_id);
+        }
+        else if (membership == "leave" && member != room->members.end())
+        {
+            room->members.erase(member);
+        }
+    }
+
+    [[nodiscard]] auto membership_for_endpoint(federation::FederationEndpoint endpoint) -> std::string_view
+    {
+        switch (endpoint)
+        {
+        case federation::FederationEndpoint::send_join:
+            return "join";
+        case federation::FederationEndpoint::send_leave:
+            return "leave";
+        case federation::FederationEndpoint::send_knock:
+            return "knock";
+        default:
+            return {};
+        }
+    }
+
+    [[nodiscard]] auto sign_invite_event(HomeserverRuntime& runtime, canonicaljson::Value const& event_value,
+                                         std::string_view room_version) -> std::optional<std::string>
+    {
+        auto key = ensure_runtime_server_signing_key(runtime);
+        if (!key.has_value() || runtime.database.signing_secret_key.size() != crypto_sign_SECRETKEYBYTES)
+        {
+            return std::nullopt;
+        }
+        auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        std::copy(runtime.database.signing_secret_key.begin(), runtime.database.signing_secret_key.end(),
+                  secret_key.begin());
+        auto const* policy = rooms::find_room_version_policy(room_version.empty() ? "12" : room_version);
+        if (policy == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto key_store = RuntimeSigningKeyStore{runtime.config.server().server_name, *key};
+        auto provider = RuntimeEd25519Provider{std::move(secret_key)};
+        auto signed_event =
+            events::sign_event_for_server(event_value, *policy, key_store, provider, runtime.config.server().server_name);
+        return signed_event.error.empty() ? std::optional<std::string>{std::move(signed_event.event_json)}
+                                          : std::nullopt;
     }
 
     [[nodiscard]] auto split_pipe_2(std::string_view body) -> std::optional<std::array<std::string_view, 2U>>
@@ -744,6 +941,7 @@ namespace
             event.json = envelope.json;
             event.depth = envelope.depth;
             event.stream_ordering = rt->database.next_stream_ordering++;
+            auto const event_stream_ordering = event.stream_ordering;
             auto state = std::optional<database::PersistentStateEvent>{};
             if (envelope.state_key.has_value())
             {
@@ -753,6 +951,24 @@ namespace
             if (!database::store_event_with_state(store, std::move(event), state))
             {
                 return {false, 500U, "event persistence failed", {}, {}};
+            }
+            auto membership_changed = false;
+            if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
+            {
+                auto const membership = membership_for_endpoint(endpoint);
+                if (!membership.empty())
+                {
+                    if (!upsert_membership(store, room_id, *envelope.state_key, membership, event_stream_ordering))
+                    {
+                        return {false, 500U, "membership persistence failed", {}, {}};
+                    }
+                    apply_runtime_membership(rt->database, room_id, *envelope.state_key, membership);
+                    membership_changed = true;
+                }
+            }
+            if (membership_changed)
+            {
+                rt->database.persistent_store.next_sync_stream_id += 1U;
             }
             if (rt->sync_notifier != nullptr)
             {
@@ -788,12 +1004,49 @@ namespace
             return {true, 200U, {}, std::move(auth_chain), std::move(state_events)};
         };
 
-        // Sign the invite event with the local server key. The signing path will be
-        // fully wired once the signing service is plumbed through the vertical slice.
-        // For now the invite JSON is echoed back unsigned which satisfies v1 invites.
-        runtime.federation.invite_handler = [](federation::InviteRequest const& invite)
+        runtime.federation.invite_handler = [rt](federation::InviteRequest const& invite)
             -> federation::InviteAcceptResult {
-            return {true, 200U, {}, invite.invite_event_json};
+            auto const parsed = canonicaljson::parse_lossless(invite.invite_event_json);
+            auto const* event = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (parsed.error != canonicaljson::ParseError::none || event == nullptr)
+            {
+                return {false, 400U, "malformed invite event", {}};
+            }
+            auto const* target_user = string_member(*event, "state_key");
+            auto const* sender = string_member(*event, "sender");
+            auto const* event_room_id = string_member(*event, "room_id");
+            auto const* event_type = string_member(*event, "type");
+            auto const* membership = content_membership(*event);
+            if (target_user == nullptr || target_user->empty() || sender == nullptr || sender->empty() ||
+                event_room_id == nullptr || *event_room_id != invite.room_id ||
+                event_type == nullptr || *event_type != "m.room.member" ||
+                membership == nullptr || *membership != "invite")
+            {
+                return {false, 400U, "invite event must be an m.room.member invite", {}};
+            }
+            if (server_name_from_user_id(*target_user) != rt->config.server().server_name ||
+                !local_user_exists(rt->database, *target_user))
+            {
+                return {false, 404U, "invited local user not found", {}};
+            }
+            auto signed_event = sign_invite_event(*rt, parsed.value, invite.room_version);
+            if (!signed_event.has_value())
+            {
+                return {false, 500U, "invite signing failed", {}};
+            }
+            auto const stream_ordering = rt->database.next_stream_ordering++;
+            if (!upsert_membership(rt->database.persistent_store, invite.room_id, *target_user, "invite",
+                                   stream_ordering))
+            {
+                return {false, 500U, "invite membership persistence failed", {}};
+            }
+            rt->database.persistent_store.next_sync_stream_id += 1U;
+            if (rt->sync_notifier != nullptr)
+            {
+                rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
+                                           rt->database.persistent_store.next_sync_stream_id);
+            }
+            return {true, 200U, {}, std::move(*signed_event)};
         };
 
         runtime.federation.backfill_provider = [rt](federation::BackfillRequest const& req)
@@ -897,6 +1150,7 @@ namespace
                 runtime.dispatch_worker = std::make_unique<federation::DispatchWorker>(
                     std::move(dispatch_config), *outbound, std::move(resolver), std::move(clock), std::move(sleep_fn),
                     &runtime.database.persistent_store);
+                std::ignore = runtime.dispatch_worker->replay_pending();
                 runtime.dispatch_worker->start();
             }
         }

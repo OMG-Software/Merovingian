@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.10
+
+- Fixed inbound federation `send_join` state handling so accepted remote joins
+  update both durable membership rows and the runtime room member list. Local
+  messages in shared rooms are now queued for the remote member's homeserver.
+- Fixed inbound federation invites to validate the target local user, sign the
+  invite event with the local server key, persist the invite membership, and
+  wake `/sync` so clients can see and accept the invite.
+- Added outbound invite delivery for `POST /_matrix/client/v3/createRoom`
+  `invite` entries that target remote Matrix users.
+- Fixed outbound `createRoom` invite dispatch to assign a federation
+  transaction id before queueing, so the dispatch worker accepts the invite
+  transaction for delivery.
+- Fixed release packaging helper scripts to build `0.4.10` artifacts after
+  the branch version bump.
+- Fixed join-after-invite membership transitions so successful local or remote
+  joins update existing durable invite rows to `join`.
+- Fixed remote-room joins to persist the remote room and hydrate joined members
+  from the `send_join` state response, so messages sent after accepting a
+  Synapse invite have remote destinations to deliver to.
+- Bumped project, executable, and package metadata versions to `0.4.10`.
+
 ## 0.4.9
 
 - Added live Synapse federation integration tests against matrix.ping.me.uk
