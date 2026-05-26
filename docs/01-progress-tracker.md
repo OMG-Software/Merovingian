@@ -432,6 +432,10 @@ a non-production environment.
 - Fix (0.4.13): `README.md` now starts with an explicit active-development /
   not-ready warning, explains Merovingian's security-first design goals, and
   links directly to deployment/runtime and development onboarding docs.
+- Fix (0.4.13): Outbound federation membership requests now percent-encode
+  Matrix room, user, and event IDs in the signed request target, so Synapse no
+  longer rejects remote invites with `401 Unauthorized` because of URI/signature
+  mismatches.
 - Fix (0.4.11): Server startup now logs `Starting merovingian-server <version>` before
   configuration loading, so operators can identify the running binary version
   from startup logs. Normal help/startup surfaces no longer describe the
