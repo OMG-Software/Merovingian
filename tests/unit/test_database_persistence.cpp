@@ -941,6 +941,72 @@ SCENARIO("Persistent store includes event depth in event statements", "[database
     }
 }
 
+SCENARIO("Server signing key secret survives a database restart",
+         "[database][persistence][signing-key][restart]")
+{
+    GIVEN("a SQLite persistent store with a server signing key that includes a stored secret")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+        auto opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+        REQUIRE(opened.ok);
+
+        auto const key = merovingian::database::PersistentServerSigningKey{
+            "pong.example.org", "ed25519:auto", "public-key-base64", 32503680000000ULL,
+            "secret-key-raw-bytes-64-chars-long-padding-to-make-it-realistic-x"};
+        auto const stored_ok = merovingian::database::store_server_signing_key(opened.store, key);
+
+        WHEN("the database is reopened to simulate a server restart")
+        {
+            auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(reopened.ok);
+            auto const found = merovingian::database::find_server_signing_key(reopened.store, "pong.example.org",
+                                                                              "ed25519:auto");
+
+            THEN("the public key and its secret are both hydrated from disk")
+            {
+                REQUIRE(stored_ok);
+                REQUIRE(found.has_value());
+                REQUIRE(found->public_key == "public-key-base64");
+                REQUIRE(found->secret_key == "secret-key-raw-bytes-64-chars-long-padding-to-make-it-realistic-x");
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
+    }
+}
+
+SCENARIO("store_server_signing_key preserves an existing secret when upserted with an empty secret",
+         "[database][persistence][signing-key]")
+{
+    GIVEN("an in-memory store with a signing key that has a stored secret")
+    {
+        auto opened = merovingian::database::open_persistent_store();
+        REQUIRE(opened.ok);
+        auto& store = opened.store;
+
+        auto const initial_ok = merovingian::database::store_server_signing_key(
+            store, {"example.org", "ed25519:auto", "pub-v1", 32503680000000ULL, "my-secret"});
+        REQUIRE(initial_ok);
+
+        WHEN("the same key is upserted with a new public key but no secret")
+        {
+            auto const ok = merovingian::database::store_server_signing_key(
+                store, {"example.org", "ed25519:auto", "pub-v2", 32503680000000ULL, {}});
+            auto const found =
+                merovingian::database::find_server_signing_key(store, "example.org", "ed25519:auto");
+
+            THEN("the public key is updated and the existing secret is preserved")
+            {
+                REQUIRE(ok);
+                REQUIRE(found.has_value());
+                REQUIRE(found->public_key == "pub-v2");
+                REQUIRE(found->secret_key == "my-secret");
+            }
+        }
+    }
+}
+
 SCENARIO("Server signing keys are looked up by server identity and key ID", "[database][persistence][signing-key]")
 {
     GIVEN("an opened persistent store with signing keys for different servers")

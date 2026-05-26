@@ -25,7 +25,7 @@ namespace
                               "refresh_tokens",          "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL"  },
         SchemaTableDefinition{"server_signing_keys",
                               "server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, "
-                              "valid_until_ts TEXT NOT NULL, PRIMARY KEY (server_name, key_id)"                                                                },
+                              "valid_until_ts TEXT NOT NULL, secret_key TEXT, PRIMARY KEY (server_name, key_id)"                                              },
         SchemaTableDefinition{"rooms",                   "room_id TEXT PRIMARY KEY, creator_user_id TEXT NOT NULL"                                             },
         SchemaTableDefinition{"room_versions",           "room_id TEXT PRIMARY KEY, version TEXT NOT NULL"                                                     },
         SchemaTableDefinition{

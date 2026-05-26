@@ -60,6 +60,7 @@ struct PersistentServerSigningKey final
     std::string key_id{};
     std::string public_key{};
     std::uint64_t valid_until_ts{0U};
+    std::string secret_key{}; // raw bytes; non-empty only for this server's own key
 };
 
 struct PersistentFederationDestination final

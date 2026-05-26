@@ -392,17 +392,17 @@ namespace
 
         auto server_signing_keys =
             query_rows(connection, "postgresql_load_server_signing_keys",
-                       "SELECT server_name, key_id, public_key, valid_until_ts FROM server_signing_keys ORDER BY "
-                       "server_name, key_id");
+                       "SELECT server_name, key_id, public_key, valid_until_ts, secret_key FROM server_signing_keys "
+                       "ORDER BY server_name, key_id");
         if (!server_signing_keys.ok)
         {
             return false;
         }
         for (auto const& row : server_signing_keys.rows)
         {
-            if (row.size() >= 4U)
+            if (row.size() >= 5U)
             {
-                store.server_signing_keys.push_back({row[0], row[1], row[2], parse_u64(row[3])});
+                store.server_signing_keys.push_back({row[0], row[1], row[2], parse_u64(row[3]), row[4]});
             }
         }
 
