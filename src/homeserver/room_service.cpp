@@ -583,6 +583,16 @@ namespace
         return make_operation_result(false, {}, "server signing secret unavailable", 500U);
     }
 
+    // Publish a rolling valid_until_ts of now + 7 days. A far-future sentinel (year 2999) is
+    // problematic because federation peers cache the key permanently and will never re-fetch if
+    // the key changes — for example after a migration bug that rotated the key on every restart.
+    // Seven days gives peers a window to notice the new key without hammering our endpoint.
+    auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
+    auto const now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    auto const rolling_valid_until_ts = now_ms + seven_days_ms;
+
     auto verify_key = canonicaljson::Object{};
     verify_key.push_back(canonicaljson::make_member("key", canonicaljson::Value{key->public_key}));
     auto verify_keys = canonicaljson::Object{};
@@ -592,7 +602,7 @@ namespace
     response.push_back(canonicaljson::make_member("old_verify_keys", canonicaljson::Value{canonicaljson::Object{}}));
     response.push_back(canonicaljson::make_member("server_name", canonicaljson::Value{key->server_name}));
     response.push_back(canonicaljson::make_member(
-        "valid_until_ts", canonicaljson::Value{static_cast<std::int64_t>(key->valid_until_ts)}));
+        "valid_until_ts", canonicaljson::Value{static_cast<std::int64_t>(rolling_valid_until_ts)}));
     response.push_back(canonicaljson::make_member("verify_keys", canonicaljson::Value{std::move(verify_keys)}));
 
     auto payload = canonicaljson::serialize_canonical(canonicaljson::Value{response});
