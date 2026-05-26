@@ -534,8 +534,9 @@ namespace
     auto existing = database::find_server_signing_key(runtime.database.persistent_store, server_name, key_id);
     if (existing.has_value() && !existing->secret_key.empty())
     {
-        runtime.database.signing_secret_key = std::vector<unsigned char>(existing->secret_key.begin(),
-                                                                         existing->secret_key.end());
+        // secret_key is stored as Matrix base64 — decode back to raw bytes before putting into memory.
+        auto const raw_secret = events::matrix_bytes_from_base64(existing->secret_key);
+        runtime.database.signing_secret_key = std::vector<unsigned char>(raw_secret.begin(), raw_secret.end());
         return existing;
     }
 
@@ -551,7 +552,10 @@ namespace
         events::matrix_base64_from_bytes(
             std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
         32503680000000ULL,
-        std::string{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()},
+        // Base64-encode the secret so it can be stored as printable text — raw Ed25519 secret bytes
+        // frequently contain null bytes, which would truncate the value when read back via C string APIs.
+        events::matrix_base64_from_bytes(
+            std::string_view{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()}),
     };
     if (!database::store_server_signing_key(runtime.database.persistent_store, key))
     {

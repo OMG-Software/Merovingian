@@ -106,8 +106,9 @@ separate operator decision once this branch is approved._
   connection/result boundary, PostgreSQL schema bootstrap/pending-migration
   hydration/write-through path, migration file loading, offline migrator
   scaffold, database role separation, durable trust-and-safety rows, policy
-  rules, account data, federation queues, media blob rows, and
-  restart-survival integration coverage exist.
+  rules, account data, federation queues, media blob rows,
+  restart-survival integration coverage, and base64-safe Ed25519 signing key
+  secret storage (prevents null-byte truncation on SQLite/PostgreSQL reload) exist.
 - Observability and audit: structured logging, redaction-aware debug
   diagnostics across HTTP dispatch, client-server auth/routing, room joins,
   room events, event authorization, persistence, federation decision paths,

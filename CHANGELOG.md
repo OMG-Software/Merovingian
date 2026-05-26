@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.17
+
+- Fix null-byte truncation of the Ed25519 signing key secret on database reload.
+  The secret is now stored as unpadded standard base64 text instead of raw bytes.
+  Raw Ed25519 secret keys (64 bytes) frequently contain embedded null bytes; the
+  previous approach used `sqlite3_column_text` / libpq's null-terminated string
+  APIs to load the value, silently truncating the key and causing
+  `make_federation_signature` to return an empty signature string, which Synapse
+  rejected with `401 BadSignatureError` on every outbound `make_join` request.
+
 ## 0.4.16
 
 - Persist the server Ed25519 signing key secret across restarts. Previously
