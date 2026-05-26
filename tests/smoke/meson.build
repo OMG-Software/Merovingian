@@ -11,7 +11,9 @@ test(
   smoke_test,
   args: [
     '-c',
-    server_executable + ' --help 2>&1 | grep -q "Usage:"',
+    server_executable + ' --help 2>&1 | grep -q "The Merovingian Matrix homeserver" && '
+      + server_executable + ' --help 2>&1 | grep -q "Usage:" && '
+      + server_executable + ' --help 2>&1 | grep -vq "bootstrap server"',
   ],
 )
 
@@ -151,6 +153,15 @@ test(
 )
 
 test(
+  'server-startup-version-log-smoke-test',
+  smoke_test,
+  args: [
+    '-c',
+    server_executable + ' --dry-run 2>&1 | grep -q "Starting merovingian-server ' + meson.project_version() + '"',
+  ],
+)
+
+test(
   'server-config-validation-smoke-test',
   smoke_test,
   args: [
@@ -201,7 +212,7 @@ test(
       + secure_example_config
       + server_executable
       + ' --check-config "$example_config"'
-      + ' 2>&1 | grep -vq "Starting The Merovingian bootstrap server"',
+      + ' 2>&1 | grep -vq "Starting merovingian-server"',
   ],
 )
 

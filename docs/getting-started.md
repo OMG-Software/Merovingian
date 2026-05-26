@@ -86,8 +86,12 @@ merovingian-server --config /etc/merovingian/merovingian.conf
 
 The server listens on the ports defined by `listeners.client.bind` (default
 `127.0.0.1:8008`) and `listeners.federation.bind` (default
-`127.0.0.1:8009`). Put a reverse proxy (nginx, Apache, Caddy) in front to
-handle public TLS.
+`127.0.0.1:8009`). Running Merovingian behind a reverse proxy (nginx, Apache,
+Caddy) is the preferred way to deploy it; let the proxy handle public TLS and
+keep Merovingian on loopback listeners behind it. If the proxy exposes
+federation on `443` via
+`/.well-known/matrix/server`, route `/_matrix/client/` to `8008` and route
+`/_matrix/federation/` plus `/_matrix/key/` to `8009`.
 
 Confirm it is reachable:
 
@@ -191,6 +195,10 @@ sudo tee /var/www/html/.well-known/matrix/client <<'EOF'
 {"m.homeserver":{"base_url":"https://matrix.example.org"}}
 EOF
 ```
+
+If you also publish `/.well-known/matrix/server`, ensure it points to a public
+listener that routes federation and key requests to the federation loopback
+listener rather than the client listener.
 
 ## Troubleshooting
 

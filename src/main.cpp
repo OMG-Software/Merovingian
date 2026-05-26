@@ -36,7 +36,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.4.10"};
+constexpr auto version = std::string_view{"0.4.11"};
 
 struct BootstrapConfigResult final
 {
@@ -403,7 +403,7 @@ struct ParsedArgs final
 
 auto print_help() -> void
 {
-    std::cout << "The Merovingian bootstrap server\n"
+    std::cout << "The Merovingian Matrix homeserver\n"
               << "\n"
               << "Usage:\n"
               << "  merovingian-server [--dry-run]\n"
@@ -822,7 +822,7 @@ auto main(int argc, char const* const* argv) -> int
     }
 
     configure_logging(args);
-    LOG_INFO("Starting The Merovingian bootstrap server");
+    LOG_INFO("Starting merovingian-server " + std::string{version});
 
     auto const result = build_config_from_positional(args.positional);
     if (!result.parsed.findings.empty())
