@@ -56,6 +56,19 @@ public:
     }
 };
 
+auto install_unusable_persisted_signing_key(merovingian::homeserver::HomeserverRuntime& runtime) -> void
+{
+    auto const server_name = runtime.config.server().server_name;
+    runtime.database.persistent_store.server_signing_keys.push_back({
+        server_name,
+        "ed25519:auto",
+        "public-key-base64",
+        32503680000000ULL,
+        "not-base64",
+    });
+    runtime.database.signing_secret_key.clear();
+}
+
 } // namespace
 
 SCENARIO("Homeserver runtime starts from validated config with listeners database and hardening",
@@ -405,13 +418,13 @@ SCENARIO("Joining a room succeeds when user is already a member in the persisten
 SCENARIO("Remote join fails closed when the runtime signing key is not initialized",
          "[homeserver][vertical][rooms][federation]")
 {
-    GIVEN("a logged-in user attempting to join a remote room without an initialized signing key")
+    GIVEN("a logged-in user attempting to join a remote room with an unusable persisted signing key")
     {
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         runtime.discovery_network = std::make_unique<StaticDiscoveryNetwork>();
-        runtime.database.signing_secret_key.clear();
+        install_unusable_persisted_signing_key(runtime);
 
         auto const user = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST",
@@ -426,7 +439,7 @@ SCENARIO("Remote join fails closed when the runtime signing key is not initializ
         WHEN("the user attempts the remote join")
         {
             auto const join = merovingian::homeserver::handle_local_http_request(
-                runtime, {"POST", "/_matrix/client/v3/join/!room:remote.example.org", login.body, "{}"});
+                runtime, {"POST", "/_matrix/client/v3/rooms/!room:remote.example.org/join", login.body, "{}"});
 
             THEN("the join is rejected before any outbound membership request is signed")
             {
@@ -445,16 +458,7 @@ SCENARIO("Federation callbacks refuse to start the dispatch worker with an unusa
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const server_name = runtime.config.server().server_name;
-
-        runtime.database.persistent_store.server_signing_keys.push_back({
-            server_name,
-            "ed25519:auto",
-            "public-key-base64",
-            32503680000000ULL,
-            "not-base64",
-        });
-        runtime.database.signing_secret_key.clear();
+        install_unusable_persisted_signing_key(runtime);
         REQUIRE(runtime.dispatch_worker == nullptr);
 
         WHEN("federation callbacks are wired")
