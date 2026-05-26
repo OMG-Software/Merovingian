@@ -285,7 +285,10 @@ namespace
     [[nodiscard]] auto fail(OutboundError error, std::string detail) -> OutboundResult
     {
         log_diagnostic("request.failed",
-                       {{"error", std::string{outbound_error_name(error)}, false}, {"detail", detail, false}});
+                       {
+                           {"error",  std::string{outbound_error_name(error)}, false},
+                           {"detail", detail,                                  false}
+        });
         return OutboundResult{false, OutboundResponse{}, error, std::move(detail)};
     }
 
@@ -478,6 +481,7 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
             CURLE_OK ||
         curl_easy_setopt(handle, CURLOPT_TIMEOUT, static_cast<long>(request.total_timeout_seconds)) != CURLE_OK ||
         curl_easy_setopt(handle, CURLOPT_URL, request.url.c_str()) != CURLE_OK ||
+        curl_easy_setopt(handle, CURLOPT_PATH_AS_IS, 1L) != CURLE_OK ||
         curl_easy_setopt(handle, CURLOPT_CUSTOMREQUEST, request.method.c_str()) != CURLE_OK)
     {
         return fail(OutboundError::network_error, "failed to configure curl request");
@@ -603,10 +607,11 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
     // redirect_rejected failure.
     if (mapped == OutboundError::none && response.status >= 300U && response.status < 400U)
     {
-        log_diagnostic("request.redirect_rejected",
-                       {{"url", request.url, false},
-                        {"method", request.method, false},
-                        {"http_status", std::to_string(response.status), false}});
+        log_diagnostic("request.redirect_rejected", {
+                                                        {"url",         request.url,                     false},
+                                                        {"method",      request.method,                  false},
+                                                        {"http_status", std::to_string(response.status), false}
+        });
         return OutboundResult{
             false,
             std::move(response),
@@ -617,10 +622,11 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
 
     if (mapped != OutboundError::none)
     {
-        log_diagnostic("request.error",
-                       {{"url", request.url, false},
-                        {"method", request.method, false},
-                        {"error", std::string{outbound_error_name(mapped)}, false}});
+        log_diagnostic("request.error", {
+                                            {"url",    request.url,                              false},
+                                            {"method", request.method,                           false},
+                                            {"error",  std::string{outbound_error_name(mapped)}, false}
+        });
         return OutboundResult{
             false,
             std::move(response),
@@ -629,10 +635,11 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
         };
     }
 
-    log_diagnostic("request.success",
-                   {{"url", request.url, false},
-                    {"method", request.method, false},
-                    {"http_status", std::to_string(response.status), false}});
+    log_diagnostic("request.success", {
+                                          {"url",         request.url,                     false},
+                                          {"method",      request.method,                  false},
+                                          {"http_status", std::to_string(response.status), false}
+    });
     return OutboundResult{true, std::move(response), OutboundError::none, std::string{}};
 }
 

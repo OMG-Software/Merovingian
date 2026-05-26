@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "local_services.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/local_smoke_flow.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 
 #include <algorithm>
 #include <fstream>
@@ -31,7 +33,7 @@ namespace
 
 } // namespace
 
-auto run_local_vertical_slice(config::Config const& config) -> OperationResult
+auto run_local_smoke_flow(config::Config const& config) -> OperationResult
 {
     auto started = start_runtime(config);
     if (!started.started)

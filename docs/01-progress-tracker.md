@@ -93,6 +93,16 @@ separate operator decision once this branch is approved._
   rejection, outbound transaction types, exponential backoff,
   circuit-breaker policy, `OutboundClient`, `perform_outbound_transaction`,
   and per-platform TLS outbound integration coverage exist.
+- Federation request-signing interop: synchronous outbound membership calls now
+  fail closed when the runtime signing key is not already initialized,
+  dispatch-worker startup rejects unusable persisted signing secrets instead of
+  masking them with a fallback `key_id`, `OutboundClient` preserves raw encoded
+  request targets with `CURLOPT_PATH_AS_IS`, and TLS integration coverage
+  captures the exact `make_join` request line to guard against signature drift.
+- Homeserver public headers: the old `vertical_slice.hpp` umbrella has been
+  retired in favor of implementation-matched headers for runtime, auth, room,
+  media, local HTTP routing, and the local smoke-flow helper. The split removes
+  accidental transitive declarations and makes include intent explicit.
 - Media repository foundation: authenticated local upload/download, MIME
   policy, quarantine/release/remove, LibSodium digest, metrics, audit,
   metadata/blob persistence, sandbox/AV/decoder/decompression processing

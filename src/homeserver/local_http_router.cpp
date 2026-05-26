@@ -12,7 +12,10 @@
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/key_query.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -1121,10 +1124,17 @@ namespace
                                                           std::chrono::system_clock::now().time_since_epoch())
                                                           .count());
                 });
-            std::ignore = ensure_runtime_server_signing_key(runtime);
+            auto key = ensure_runtime_server_signing_key(runtime);
+            if (!key.has_value() || runtime.database.signing_secret_key.size() != crypto_sign_SECRETKEYBYTES)
+            {
+                log_diagnostic("dispatch.start.rejected", {
+                                                              {"reason", "server signing key unavailable", false}
+                });
+                return;
+            }
             auto dispatch_config = federation::DispatchWorkerConfig{};
             dispatch_config.origin = runtime.config.server().server_name;
-            dispatch_config.key_id = "ed25519:auto";
+            dispatch_config.key_id = key->key_id;
             dispatch_config.secret_key =
                 std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
                             runtime.database.signing_secret_key.size()};

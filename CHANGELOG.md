@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.18
+
+- Make synchronous outbound federation membership requests fail closed when the
+  runtime signing key is not already initialized, instead of performing hidden
+  signing-key setup inside the generic outbound helper.
+- Refuse to start the federation dispatch worker when the persisted signing key
+  cannot be hydrated into a valid Ed25519 secret, instead of masking the fault
+  with a fallback `key_id`.
+- Set `CURLOPT_PATH_AS_IS` for outbound HTTPS requests and add integration
+  coverage that captures the raw TLS request line. This protects
+  signature-sensitive federation requests such as `make_join` from path
+  normalization drifting the on-wire URI away from the URI that was signed.
+- Split the old `vertical_slice.hpp` umbrella into implementation-matched
+  homeserver headers (`runtime`, `auth_service`, `room_service`,
+  `media_service`, `local_http_router`) and rename the old demo helper to
+  `local_smoke_flow` so the interface names match what the code actually does.
+
 ## 0.4.17
 
 - Fix null-byte truncation of the Ed25519 signing key secret on database reload.

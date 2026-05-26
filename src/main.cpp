@@ -7,6 +7,7 @@
 #include "merovingian/config/reload_policy.hpp"
 #include "merovingian/database/runtime_database.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/tls.hpp"
@@ -36,7 +37,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.4.17"};
+constexpr auto version = std::string_view{"0.4.18"};
 
 struct BootstrapConfigResult final
 {

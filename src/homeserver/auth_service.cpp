@@ -3,7 +3,7 @@
 #include "local_services.hpp"
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/session.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"

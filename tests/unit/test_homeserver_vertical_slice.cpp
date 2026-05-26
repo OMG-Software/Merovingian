@@ -2,7 +2,13 @@
 
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/database/persistent_store.hpp"
+#include "merovingian/federation/server_discovery.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -24,6 +30,47 @@ namespace
         merovingian::config::DatabaseConfig{},
         security,
     };
+}
+
+class StaticDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
+{
+public:
+    [[nodiscard]] auto fetch_well_known(std::string_view /*server_name*/, std::uint32_t /*timeout_seconds*/)
+        -> merovingian::federation::WellKnownServerResult override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_srv(std::string_view /*service_name*/)
+        -> std::vector<merovingian::federation::SrvRecord> override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t port)
+        -> merovingian::federation::ResolvedAddressSet override
+    {
+        auto result = merovingian::federation::ResolvedAddressSet{};
+        result.ok = true;
+        if (host == "remote.example.org" && port == 8448U)
+        {
+            result.addresses = {"203.0.113.10"};
+        }
+        return result;
+    }
+};
+
+auto install_unusable_persisted_signing_key(merovingian::homeserver::HomeserverRuntime& runtime) -> void
+{
+    auto const server_name = runtime.config.server().server_name;
+    runtime.database.persistent_store.server_signing_keys.push_back({
+        server_name,
+        "ed25519:auto",
+        "public-key-base64",
+        32503680000000ULL,
+        "not-base64",
+    });
+    runtime.database.signing_secret_key.clear();
 }
 
 } // namespace
@@ -351,10 +398,10 @@ SCENARIO("Joining a room succeeds when user is already a member in the persisten
         // but the in-memory room member list is empty, as can happen after a restart
         // when hydration is incomplete or when a prior join left the DB record but
         // failed to update the in-memory list.
-        auto const room_it = std::ranges::find_if(runtime.database.rooms,
-                                                  [&room](merovingian::homeserver::LocalRoom const& r) {
-                                                      return r.room_id == room.body;
-                                                  });
+        auto const room_it =
+            std::ranges::find_if(runtime.database.rooms, [&room](merovingian::homeserver::LocalRoom const& r) {
+                return r.room_id == room.body;
+            });
         REQUIRE(room_it != runtime.database.rooms.end());
         room_it->members.clear();
 
@@ -367,6 +414,64 @@ SCENARIO("Joining a room succeeds when user is already a member in the persisten
             {
                 REQUIRE(join.status == 200U);
                 REQUIRE(join.body == room.body);
+            }
+        }
+    }
+}
+
+SCENARIO("Remote join fails closed when the runtime signing key is not initialized",
+         "[homeserver][vertical][rooms][federation]")
+{
+    GIVEN("a logged-in user attempting to join a remote room with an unusable persisted signing key")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.discovery_network = std::make_unique<StaticDiscoveryNetwork>();
+        install_unusable_persisted_signing_key(runtime);
+
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+        REQUIRE(user.status == 200U);
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+        REQUIRE(login.status == 200U);
+
+        WHEN("the user attempts the remote join")
+        {
+            auto const join = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/!room:remote.example.org/join", login.body, "{}"});
+
+            THEN("the join is rejected before any outbound membership request is signed")
+            {
+                REQUIRE(join.status == 502U);
+                REQUIRE(join.body == "make_join failed: server signing key not initialized");
+            }
+        }
+    }
+}
+
+SCENARIO("Federation callbacks refuse to start the dispatch worker with an unusable signing key",
+         "[homeserver][vertical][federation][dispatch]")
+{
+    GIVEN("a runtime whose persisted signing secret cannot hydrate into Ed25519 key bytes")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        install_unusable_persisted_signing_key(runtime);
+        REQUIRE(runtime.dispatch_worker == nullptr);
+
+        WHEN("federation callbacks are wired")
+        {
+            merovingian::homeserver::wire_federation_callbacks(runtime);
+
+            THEN("dispatch worker startup fails closed instead of using a fallback key id")
+            {
+                REQUIRE(runtime.dispatch_worker == nullptr);
             }
         }
     }

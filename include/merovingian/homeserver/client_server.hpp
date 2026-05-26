@@ -3,7 +3,8 @@
 
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/dispatch_result.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
 #include <cstddef>
