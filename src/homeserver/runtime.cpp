@@ -4,7 +4,7 @@
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/observability/logger.hpp"

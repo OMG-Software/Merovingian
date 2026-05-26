@@ -2,7 +2,7 @@
 
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/local_smoke_flow.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -25,16 +25,16 @@ namespace
 
 } // namespace
 
-SCENARIO("Integrated homeserver vertical slice boots and exercises local auth room audit and logout",
+SCENARIO("Integrated local homeserver smoke flow boots and exercises auth room audit and logout",
          "[homeserver][vertical][integration]")
 {
     GIVEN("local homeserver config with registration enabled")
     {
         auto const config = registration_enabled_config();
 
-        WHEN("the local vertical slice is run")
+        WHEN("the local smoke flow is run")
         {
-            auto const result = merovingian::homeserver::run_local_vertical_slice(config);
+            auto const result = merovingian::homeserver::run_local_smoke_flow(config);
 
             THEN("the product path completes through runtime database auth rooms state audit and logout")
             {
@@ -47,7 +47,7 @@ SCENARIO("Integrated homeserver vertical slice boots and exercises local auth ro
     }
 }
 
-SCENARIO("Integrated homeserver vertical slice rejects invalid runtime config before serving",
+SCENARIO("Integrated local homeserver smoke flow rejects invalid runtime config before serving",
          "[homeserver][vertical][integration]")
 {
     GIVEN("an invalid listener config")
@@ -61,9 +61,9 @@ SCENARIO("Integrated homeserver vertical slice rejects invalid runtime config be
             merovingian::config::SecurityConfig{},
         };
 
-        WHEN("the local vertical slice is run")
+        WHEN("the local smoke flow is run")
         {
-            auto const result = merovingian::homeserver::run_local_vertical_slice(config);
+            auto const result = merovingian::homeserver::run_local_smoke_flow(config);
 
             THEN("startup fails closed before any local product operation")
             {

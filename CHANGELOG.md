@@ -12,6 +12,10 @@
   coverage that captures the raw TLS request line. This protects
   signature-sensitive federation requests such as `make_join` from path
   normalization drifting the on-wire URI away from the URI that was signed.
+- Split the old `vertical_slice.hpp` umbrella into implementation-matched
+  homeserver headers (`runtime`, `auth_service`, `room_service`,
+  `media_service`, `local_http_router`) and rename the old demo helper to
+  `local_smoke_flow` so the interface names match what the code actually does.
 
 ## 0.4.17
 

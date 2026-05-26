@@ -4,7 +4,11 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/server_discovery.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>

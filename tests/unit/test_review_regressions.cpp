@@ -6,7 +6,11 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 

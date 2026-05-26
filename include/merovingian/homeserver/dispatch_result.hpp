@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
 
 #include <chrono>
 #include <cstdint>

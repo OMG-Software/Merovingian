@@ -7,7 +7,9 @@
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/room_service.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include "federation_signing_test_support.hpp"

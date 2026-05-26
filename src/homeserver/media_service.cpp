@@ -2,7 +2,8 @@
 
 #include "local_services.hpp"
 #include "merovingian/database/persistent_store.hpp"
-#include "merovingian/homeserver/vertical_slice.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"

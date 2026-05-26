@@ -2,6 +2,7 @@
 
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
