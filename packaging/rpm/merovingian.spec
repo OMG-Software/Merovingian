@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.10
+Version:        0.4.11
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.11-1
+- Log the merovingian-server version during startup
+
 * Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.10-1
 - Persist inbound federation join membership for remote event delivery
 - Sign and persist inbound federation invites for client sync

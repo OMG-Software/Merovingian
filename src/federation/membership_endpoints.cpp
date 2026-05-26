@@ -5,6 +5,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -32,8 +33,8 @@ namespace
         {
             return std::nullopt;
         }
-        auto first = std::string{suffix.substr(0U, slash)};
-        auto second = std::string{suffix.substr(slash + 1U)};
+        auto first = core::percent_decode_path_component(suffix.substr(0U, slash));
+        auto second = core::percent_decode_path_component(suffix.substr(slash + 1U));
         if (second.find('/') != std::string::npos)
         {
             return std::nullopt;

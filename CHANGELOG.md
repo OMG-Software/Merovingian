@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.11
+
+- Logged `Starting merovingian-server <version>` during normal startup so operators can
+  identify the running binary version from startup logs, and removed the
+  misleading "bootstrap server" wording from normal help/startup surfaces.
+- Fixed federation membership path parsing to percent-decode invite room and
+  event IDs before validation, so Synapse v2 federation invites no longer fail
+  on encoded path segments.
+- Documented reverse-proxy deployment as the preferred operating model, and
+  updated Apache httpd and nginx examples to match that recommendation.
+- Updated Apache httpd and nginx reverse-proxy examples to split client traffic
+  from federation/key traffic on `443`, and to show the matching
+  `/.well-known/matrix/server` delegation.
+- Bumped project, executable, and package metadata versions to `0.4.11`.
+
 ## 0.4.10
 
 - Fixed inbound federation `send_join` state handling so accepted remote joins

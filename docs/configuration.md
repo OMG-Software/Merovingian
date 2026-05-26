@@ -156,8 +156,10 @@ file.
 
 ## Reverse proxy examples
 
-The recommended deployment shape is TLS at the reverse proxy and loopback
-cleartext from the proxy to Merovingian:
+Running Merovingian behind a reverse proxy is the preferred deployment model.
+Terminate public TLS at nginx, Apache httpd, Caddy, or another proxy, and keep
+Merovingian bound to loopback cleartext behind it. The recommended deployment
+shape is:
 
 ```text
 listeners.client.bind=127.0.0.1:8008
@@ -180,21 +182,36 @@ own that static discovery response:
 Replace `matrix.example.org` with your `server.public_baseurl` value throughout
 the examples below.
 
-**Apache** serves this from a static file — create it once before reloading:
+If you publish `/.well-known/matrix/server` and delegate federation to
+`matrix.example.org:443`, the proxy on `443` MUST split routes by path:
+
+- `/_matrix/client/` -> `127.0.0.1:8008`
+- `/_matrix/federation/` -> `127.0.0.1:8009`
+- `/_matrix/key/` -> `127.0.0.1:8009`
+
+Forwarding every `/_matrix/` request on `443` to the client listener will break
+federation authentication because remote homeservers will hit the client-server
+access-token gate instead of the federation router.
+
+**Apache** serves these discovery files from static files — create them once
+before reloading:
 
 ```sh
 mkdir -p /var/www/merovingian/.well-known/matrix
 printf '{"m.homeserver":{"base_url":"https://matrix.example.org"}}' \
     > /var/www/merovingian/.well-known/matrix/client
+printf '{"m.server":"matrix.example.org:443"}' \
+    > /var/www/merovingian/.well-known/matrix/server
 ```
 
-**nginx** returns the response inline from the config; no file is needed.
+**nginx** returns the responses inline from the config; no files are needed.
 
 ### Apache httpd
 
 This example assumes `mod_ssl`, `mod_headers`, `mod_proxy`,
 `mod_proxy_http`, and `mod_rewrite` are enabled. Apache owns public ports `443`
-and `8448`; Merovingian listens only on loopback ports `8008` and `8009`.
+and `8448`; Merovingian listens only on loopback ports `8008` and `8009`. The
+`443` vhost handles both client and delegated federation traffic by path.
 
 ```apache
 Listen 8448
@@ -226,10 +243,15 @@ Listen 8448
     # Exclude /.well-known/ from proxying so the Alias below is reached.
     # Without this, Apache forwards /.well-known/ requests to Merovingian.
     ProxyPass        "/.well-known/" "!"
-    ProxyPass        "/_matrix/" "http://127.0.0.1:8008/_matrix/"
-    ProxyPassReverse "/_matrix/" "http://127.0.0.1:8008/_matrix/"
+    ProxyPass        "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
+    ProxyPassReverse "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
+    ProxyPass        "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
+    ProxyPassReverse "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
+    ProxyPass        "/_matrix/client/" "http://127.0.0.1:8008/_matrix/client/"
+    ProxyPassReverse "/_matrix/client/" "http://127.0.0.1:8008/_matrix/client/"
 
     Alias "/.well-known/matrix/client" "/var/www/merovingian/.well-known/matrix/client"
+    Alias "/.well-known/matrix/server" "/var/www/merovingian/.well-known/matrix/server"
 
     <Directory "/var/www/merovingian/.well-known/matrix">
         Require all granted
@@ -241,11 +263,25 @@ Listen 8448
         Require all denied
     </Location>
 
-    <Location "/_matrix/">
+    <Location "/_matrix/client/">
+        Require all granted
+    </Location>
+
+    <Location "/_matrix/federation/">
+        Require all granted
+    </Location>
+
+    <Location "/_matrix/key/">
         Require all granted
     </Location>
 
     <Location "/.well-known/matrix/client">
+        Require all granted
+        ForceType application/json
+        Header always set Access-Control-Allow-Origin "*"
+    </Location>
+
+    <Location "/.well-known/matrix/server">
         Require all granted
         ForceType application/json
         Header always set Access-Control-Allow-Origin "*"
@@ -265,14 +301,20 @@ Listen 8448
     ProxyPreserveHost On
     RequestHeader set X-Forwarded-Proto "https"
 
-    ProxyPass        "/_matrix/" "http://127.0.0.1:8009/_matrix/"
-    ProxyPassReverse "/_matrix/" "http://127.0.0.1:8009/_matrix/"
+    ProxyPass        "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
+    ProxyPassReverse "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
+    ProxyPass        "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
+    ProxyPassReverse "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
 
     <Location "/">
         Require all denied
     </Location>
 
-    <Location "/_matrix/">
+    <Location "/_matrix/federation/">
+        Require all granted
+    </Location>
+
+    <Location "/_matrix/key/">
         Require all granted
     </Location>
 </VirtualHost>
@@ -280,8 +322,9 @@ Listen 8448
 
 ### nginx
 
-This example terminates TLS in nginx, serves the client discovery JSON directly,
-and proxies Matrix traffic to Merovingian's loopback listeners.
+This example terminates TLS in nginx, serves the discovery JSON directly,
+and proxies Matrix traffic to Merovingian's loopback listeners. The `443`
+server block handles both client and delegated federation traffic by path.
 
 ```nginx
 server {
@@ -311,7 +354,27 @@ server {
         return 200 '{"m.homeserver":{"base_url":"https://matrix.example.org"}}';
     }
 
-    location /_matrix/ {
+    location = /.well-known/matrix/server {
+        default_type application/json;
+        add_header Access-Control-Allow-Origin "*" always;
+        return 200 '{"m.server":"matrix.example.org:443"}';
+    }
+
+    location /_matrix/federation/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /_matrix/key/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /_matrix/client/ {
         proxy_pass http://127.0.0.1:8008;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
@@ -331,7 +394,14 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/matrix.example.org/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
 
-    location /_matrix/ {
+    location /_matrix/federation/ {
+        proxy_pass http://127.0.0.1:8009;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    location /_matrix/key/ {
         proxy_pass http://127.0.0.1:8009;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;

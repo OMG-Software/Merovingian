@@ -175,8 +175,8 @@ SCENARIO("Invite path parser splits room/event suffixes for v1 and v2 invite rou
                 REQUIRE(invite_v1->room_id == "!room:example.org");
                 REQUIRE(invite_v1->subject == "$event:example.org");
                 REQUIRE(invite_url_encoded.has_value());
-                REQUIRE(invite_url_encoded->room_id == "%21room%3Aexample.org");
-                REQUIRE(invite_url_encoded->subject == "%24event%3Aexample.org");
+                REQUIRE(invite_url_encoded->room_id == "!room:example.org");
+                REQUIRE(invite_url_encoded->subject == "$event:example.org");
                 REQUIRE_FALSE(malformed.has_value());
                 REQUIRE_FALSE(empty_event.has_value());
             }

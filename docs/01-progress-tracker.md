@@ -424,6 +424,20 @@ a non-production environment.
   workers — `native_handle()` followed by reset closed the fd before the
   worker could read. Added `SocketHandle::release()` to transfer ownership
   without premature close.
+- Fix (0.4.11): Server startup now logs `Starting merovingian-server <version>` before
+  configuration loading, so operators can identify the running binary version
+  from startup logs. Normal help/startup surfaces no longer describe the
+  server as a bootstrap server; bootstrap wording is reserved for the explicit
+  admin bootstrap path.
+- Fix (0.4.11): Federation membership path parsing now percent-decodes encoded
+  room and event IDs before invite validation, so Synapse federation invites
+  no longer compare decoded event JSON against encoded path segments.
+- Fix (0.4.11): Apache httpd and nginx deployment examples now split
+  `/_matrix/client/` from `/_matrix/federation/` and `/_matrix/key/` on `443`,
+  matching `/.well-known/matrix/server` delegation to the federation listener.
+- Fix (0.4.11): Configuration and getting-started guidance now state clearly
+  that running Merovingian behind a reverse proxy is the preferred deployment
+  model for public TLS and routing.
 - Fix (0.4.10): Inbound federation `send_join` accepted the event but did not
   update durable membership or the runtime room member list. Accepted remote
   joins now become real room members so later local messages are dispatched to
