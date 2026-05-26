@@ -98,6 +98,17 @@ struct PersistentMembership final
     std::uint64_t stream_ordering{0U};
 };
 
+struct PersistentInvite final
+{
+    std::string room_id{};
+    std::string user_id{};
+    std::string sender_user_id{};
+    std::string event_id{};
+    std::string signed_event_json{};
+    std::vector<std::string> invite_state_events_json{};
+    std::uint64_t stream_ordering{0U};
+};
+
 struct PersistentEvent final
 {
     std::string event_id{};
@@ -336,6 +347,7 @@ struct PersistentStore final
     std::vector<PersistentFederationTransaction> federation_transactions{};
     std::vector<PersistentRoom> rooms{};
     std::vector<PersistentMembership> memberships{};
+    std::vector<PersistentInvite> invites{};
     std::vector<PersistentEvent> events{};
     std::vector<PersistentStateEvent> state{};
     std::vector<PersistentEventEdge> event_edges{};
@@ -381,8 +393,8 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto commit_persistent_transaction(PersistentStore& store,
                                                  std::vector<PreparedStatement> const& statements) -> bool;
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
-[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id,
-                                        std::string_view new_hash) -> bool;
+[[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
+    -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
@@ -416,8 +428,11 @@ enum class MembershipStoreResult
 
 [[nodiscard]] auto store_room(PersistentStore& store, PersistentRoom room) -> bool;
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
-[[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id,
-                                     std::string_view user_id, std::string_view new_membership) -> bool;
+[[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
+                                     std::string_view new_membership) -> bool;
+[[nodiscard]] auto upsert_invite(PersistentStore& store, PersistentInvite invite) -> bool;
+[[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
+    -> std::optional<PersistentInvite>;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,
                                               PersistentMembership membership) -> bool;
 [[nodiscard]] auto store_event(PersistentStore& store, PersistentEvent event) -> bool;

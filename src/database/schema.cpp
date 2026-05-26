@@ -50,7 +50,9 @@ namespace
                               "stream_ordering TEXT NOT NULL DEFAULT '0', PRIMARY KEY (room_id, user_id)"                                                      },
         SchemaTableDefinition{"invites",
                               "room_id TEXT NOT NULL, user_id TEXT NOT NULL, sender_user_id TEXT NOT NULL, "
-                              "event_id TEXT NOT NULL DEFAULT '', stream_ordering TEXT NOT NULL DEFAULT '0', "
+                              "event_id TEXT NOT NULL DEFAULT '', signed_event_json TEXT NOT NULL DEFAULT '', "
+                              "invite_state_json TEXT NOT NULL DEFAULT '[]', stream_ordering TEXT NOT NULL "
+                              "DEFAULT '0', "
                               "PRIMARY KEY (room_id, user_id)"                                                                                                 },
         SchemaTableDefinition{"account_data",
                               "user_id TEXT NOT NULL, event_type TEXT NOT NULL, json TEXT NOT NULL, stream_id TEXT "
@@ -117,9 +119,8 @@ namespace
                               "user_id TEXT PRIMARY KEY, stream_id TEXT NOT NULL DEFAULT '0', presence TEXT NOT NULL "
                               "DEFAULT 'offline', status_msg TEXT NOT NULL DEFAULT '', last_active_ago TEXT NOT NULL "
                               "DEFAULT '0', currently_active TEXT NOT NULL DEFAULT 'false'"                                                                    },
-        SchemaTableDefinition{"profiles",
-                              "user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', "
-                              "avatar_url TEXT NOT NULL DEFAULT ''"                                                                                             },
+        SchemaTableDefinition{"profiles",                "user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', "
+                                          "avatar_url TEXT NOT NULL DEFAULT ''"                                       },
     };
 
 } // namespace

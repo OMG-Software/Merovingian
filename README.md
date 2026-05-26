@@ -1,141 +1,73 @@
 # The Merovingian
 
-[![Build](https://github.com/James-Chapman/The-Merovingian/actions/workflows/ci.yml/badge.svg)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/James-Chapman/The-Merovingian/graph/badge.svg)](https://codecov.io/gh/James-Chapman/The-Merovingian)
-[![CodeQL](https://github.com/James-Chapman/The-Merovingian/actions/workflows/codeql.yml/badge.svg)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/codeql.yml)
-[![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/James-Chapman/The-Merovingian/security/code-scanning)
-[![Static analysis](https://github.com/James-Chapman/The-Merovingian/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/static-analysis.yml)
-[![Sanitizers](https://github.com/James-Chapman/The-Merovingian/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/sanitizers.yml)
-[![FreeBSD](https://github.com/James-Chapman/The-Merovingian/actions/workflows/bsd.yml/badge.svg)](https://github.com/James-Chapman/The-Merovingian/actions/workflows/bsd.yml)
+[![Build](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml)
+[![Coverage](https://codecov.io/gh/OMG-Software/Merovingian/graph/badge.svg)](https://codecov.io/gh/OMG-Software/Merovingian)
+[![CodeQL](https://github.com/OMG-Software/Merovingian/actions/workflows/codeql.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/codeql.yml)
+[![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/OMG-Software/Merovingian/security/code-scanning)
+[![Static analysis](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml)
+[![Sanitizers](https://github.com/OMG-Software/Merovingian/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/sanitizers.yml)
+[![FreeBSD](https://github.com/OMG-Software/Merovingian/actions/workflows/bsd.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/bsd.yml)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![C++26](https://img.shields.io/badge/C%2B%2B-26-blue.svg)]()
 [![Meson](https://img.shields.io/badge/build-Meson-blue.svg)]()
 
-Security-first Matrix homeserver written in modern C++26.
+**Merovingian is still in active development and is not ready for real-world use yet. Do not deploy it as a production Matrix homeserver.**
 
-## Goals
+Merovingian is a Matrix homeserver written in modern C++26 with a security-first design. The project goal is not just to speak Matrix, but to do it with a narrow attack surface, fail-closed behavior, strong operational visibility, and explicit security boundaries around federation, storage, media, and administration.
 
-- encrypted-by-default room policy
-- hardened federation
-- secure-by-default deployment
-- protocol correctness
-- high scalability without bypassing checks
-- auditable operation
+## What Merovingian is
 
-## Engineering rules
+Merovingian is building toward a full Matrix homeserver that treats security as a primary product requirement rather than a later hardening pass. That means:
 
-- RAII everywhere
-- references preferred over pointers
-- no raw owning pointers
-- no naked allocation
-- no custom cryptography
-- security before performance
-- all tests use Given/When/Then structure
+- secure defaults instead of convenience defaults
+- explicit trust boundaries around client, federation, admin, and media paths
+- fail-closed validation for configuration, input parsing, and remote traffic
+- auditable runtime behavior with structured, redaction-aware diagnostics
+- modern C++ RAII-heavy implementation with memory ownership kept narrow and explicit
 
-## Build
+## Secure by design
 
-Set up a Linux or BSD development environment:
+Merovingian is intentionally shaped around defensive engineering choices:
 
-```bash
+- reverse-proxy-first deployment model, with loopback listeners by default
+- encrypted-by-default room policy and hardened federation behavior
+- bounded parsers and prepared-statement-only persistence paths
+- redaction-aware logs so secrets, tokens, and event content do not spill into diagnostics
+- security review, static analysis, sanitizers, and packaging gates wired into CI
+
+The current capability and readiness ledger lives in [docs/01-progress-tracker.md](C:/dev/Merovingian/docs/01-progress-tracker.md). That document is the authoritative source for what is implemented, what is still partial, and what remains blocked before production use.
+
+## Deploying And Running
+
+If you want to evaluate or stand up Merovingian locally, start here:
+
+- [docs/getting-started.md](C:/dev/Merovingian/docs/getting-started.md) for the end-to-end first run, admin bootstrap, and client connection flow
+- [docs/configuration.md](C:/dev/Merovingian/docs/configuration.md) for listener, reverse-proxy, registration, federation, and runtime configuration details
+- [config/merovingian.conf.example](C:/dev/Merovingian/config/merovingian.conf.example) for the annotated example config
+- [docs/database-persistence.md](C:/dev/Merovingian/docs/database-persistence.md) for SQLite/PostgreSQL persistence behavior and schema notes
+
+Merovingian is designed to sit behind a reverse proxy such as nginx, Apache httpd, or Caddy. The proxy should own public TLS, while Merovingian stays bound to loopback listeners behind it.
+
+## Getting Started With Development
+
+If you want to build or contribute to the project, start here:
+
+- [docs/dev-environment.md](C:/dev/Merovingian/docs/dev-environment.md) for Linux, BSD, and WSL development setup
+- [docs/testing-standards.md](C:/dev/Merovingian/docs/testing-standards.md) for the project’s Given/When/Then testing rules
+- [security/coding-rules.md](C:/dev/Merovingian/security/coding-rules.md) for implementation constraints and secure coding expectations
+- [docs/release-process.md](C:/dev/Merovingian/docs/release-process.md) for build, test, and release evidence expectations
+
+Typical local setup starts with:
+
+```sh
 sh scripts/setup-dev-env.sh
-```
-
-Preview the setup commands without changing the host:
-
-```bash
-sh scripts/setup-dev-env.sh --dry-run
-```
-
-Build manually after dependencies are installed:
-
-```bash
-meson setup build
+meson setup build --wrap-mode=forcefallback
 meson compile -C build
 meson test -C build
 ```
 
-Or use the checked wrapper for a Clang 22 build:
+That gives you a local build and test loop. For platform-specific wrappers and WSL usage, use the development guide above instead of treating this as the full setup contract.
 
-```bash
-sh scripts/build-linux.sh
-```
+## Project Status
 
-From Windows PowerShell with WSL:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\build-wsl.ps1 -Distro Ubuntu-24.04
-```
-
-## Run
-
-Show usage:
-
-```bash
-./build/src/merovingian-server --help
-```
-
-Show version:
-
-```bash
-./build/src/merovingian-server --version
-```
-
-Use compiled secure defaults (binds the client listener on `127.0.0.1:8008`):
-
-```bash
-./build/src/merovingian-server
-```
-
-Use the checked-in Phase 1 starter config:
-
-```bash
-./build/src/merovingian-server --config config/merovingian.conf.example
-```
-
-Validate the config and print the startup summary without binding any listener:
-
-```bash
-./build/src/merovingian-server --dry-run
-./build/src/merovingian-server --dry-run --config config/merovingian.conf.example
-```
-
-Configuration is validated before startup continues. Parser or validation findings cause startup to fail closed. TLS listeners (`tls=true`) are refused at startup until the crypto stack is in place. Send `SIGINT` (Ctrl-C) or `SIGTERM` for graceful shutdown.
-
-## Configuration
-
-See:
-
-- `config/merovingian.conf.example`
-- `docs/configuration.md`
-- `docs/media-repository.md`
-- `docs/01-progress-tracker.md`
-- `docs/security-review-checklist.md`
-
-## Developer environment
-
-See:
-
-- `docs/dev-environment.md`
-
-## Project status
-
-See:
-
-- `docs/01-progress-tracker.md`
-
-## Test standards
-
-See:
-
-- `docs/testing-standards.md`
-- `security/coding-rules.md`
-
-## Status
-
-Prototype homeserver with packaging and release-readiness gates in progress.
-The bootstrap binary now opens TCP listeners and serves HTTP/1.1 requests
-through the local router. TLS, local persistence, and the supported local
-Matrix slices are runtime-wired; full Matrix conformance, outbound federation,
-hardening, and release gates remain pending.
-Do not deploy as a production Matrix homeserver until
-`docs/01-progress-tracker.md` has no blocking gates.
+Merovingian is beyond a toy prototype, but it is still an in-development homeserver with incomplete production gates. Federation, persistence, packaging, and security controls are actively being built out and corrected. The project should be treated as test-only until the blocking items in [docs/01-progress-tracker.md](C:/dev/Merovingian/docs/01-progress-tracker.md) are closed.
