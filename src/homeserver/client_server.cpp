@@ -43,6 +43,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <map>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -898,18 +899,34 @@ namespace
         });
     }
 
-    [[nodiscard]] auto state_event_json(database::PersistentStore const& store, std::string_view room_id,
-                                        std::string_view event_type, std::string_view state_key = {})
-        -> std::optional<std::string>
+    // Keyed by (room_id, event_type, state_key) → event_id. Built once per request
+    // so all state lookups within the same response are O(log n) rather than O(n).
+    using StateIndex =
+        std::map<std::tuple<std::string_view, std::string_view, std::string_view>, std::string_view>;
+
+    [[nodiscard]] auto build_state_index(database::PersistentStore const& store) -> StateIndex
     {
-        auto const state = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& current) {
-            return current.room_id == room_id && current.event_type == event_type && current.state_key == state_key;
-        });
-        if (state == store.state.end())
+        auto index = StateIndex{};
+        for (auto const& entry : store.state)
+        {
+            // Views into store.state strings — safe for the lifetime of the store reference.
+            index.emplace(std::make_tuple(std::string_view{entry.room_id}, std::string_view{entry.event_type},
+                                          std::string_view{entry.state_key}),
+                          std::string_view{entry.event_id});
+        }
+        return index;
+    }
+
+    [[nodiscard]] auto state_event_json(database::PersistentStore const& store, StateIndex const& index,
+                                        std::string_view room_id, std::string_view event_type,
+                                        std::string_view state_key = {}) -> std::optional<std::string>
+    {
+        auto const it = index.find(std::make_tuple(room_id, event_type, state_key));
+        if (it == index.end())
         {
             return std::nullopt;
         }
-        return event_json_for_id(store, state->event_id);
+        return event_json_for_id(store, std::string{it->second});
     }
 
     [[nodiscard]] auto event_content_string(std::string_view event_json, std::string_view key)
@@ -936,11 +953,12 @@ namespace
         return value == nullptr ? std::nullopt : std::optional<std::string>{*value};
     }
 
-    [[nodiscard]] auto room_state_string(database::PersistentStore const& store, std::string_view room_id,
-                                         std::string_view event_type, std::string_view content_key,
+    [[nodiscard]] auto room_state_string(database::PersistentStore const& store, StateIndex const& index,
+                                         std::string_view room_id, std::string_view event_type,
+                                         std::string_view content_key,
                                          std::string_view state_key = {}) -> std::optional<std::string>
     {
-        auto const event_json = state_event_json(store, room_id, event_type, state_key);
+        auto const event_json = state_event_json(store, index, room_id, event_type, state_key);
         if (!event_json.has_value())
         {
             return std::nullopt;
@@ -967,9 +985,11 @@ namespace
     {
         auto chunk = canonicaljson::Array{};
         auto const& store = rt.homeserver.database.persistent_store;
+        // Build the index once for the whole response — all per-room state lookups below are O(log n).
+        auto const index = build_state_index(store);
         for (auto const& room : rt.homeserver.database.rooms)
         {
-            auto const join_rule = room_state_string(store, room.room_id, "m.room.join_rules", "join_rule");
+            auto const join_rule = room_state_string(store, index, room.room_id, "m.room.join_rules", "join_rule");
             if (!join_rule.has_value() || *join_rule != "public")
             {
                 continue;
@@ -982,28 +1002,31 @@ namespace
             room_entry.push_back(json_member("join_rule", json_str(*join_rule)));
 
             auto const history_visibility =
-                room_state_string(store, room.room_id, "m.room.history_visibility", "history_visibility");
+                room_state_string(store, index, room.room_id, "m.room.history_visibility", "history_visibility");
             room_entry.push_back(json_member("world_readable", json_bool(history_visibility.has_value() &&
                                                                          *history_visibility == "world_readable")));
 
-            auto const guest_access = room_state_string(store, room.room_id, "m.room.guest_access", "guest_access");
+            auto const guest_access =
+                room_state_string(store, index, room.room_id, "m.room.guest_access", "guest_access");
             room_entry.push_back(
                 json_member("guest_can_join", json_bool(guest_access.has_value() && *guest_access == "can_join")));
 
-            if (auto const name = room_state_string(store, room.room_id, "m.room.name", "name"); name.has_value())
+            if (auto const name = room_state_string(store, index, room.room_id, "m.room.name", "name");
+                name.has_value())
             {
                 room_entry.push_back(json_member("name", json_str(*name)));
             }
-            if (auto const topic = room_state_string(store, room.room_id, "m.room.topic", "topic"); topic.has_value())
+            if (auto const topic = room_state_string(store, index, room.room_id, "m.room.topic", "topic");
+                topic.has_value())
             {
                 room_entry.push_back(json_member("topic", json_str(*topic)));
             }
-            if (auto const alias = room_state_string(store, room.room_id, "m.room.canonical_alias", "alias");
+            if (auto const alias = room_state_string(store, index, room.room_id, "m.room.canonical_alias", "alias");
                 alias.has_value())
             {
                 room_entry.push_back(json_member("canonical_alias", json_str(*alias)));
             }
-            if (auto const avatar = room_state_string(store, room.room_id, "m.room.avatar", "url"); avatar.has_value())
+            if (auto const avatar = room_state_string(store, index, room.room_id, "m.room.avatar", "url"); avatar.has_value())
             {
                 room_entry.push_back(json_member("avatar_url", json_str(*avatar)));
             }
