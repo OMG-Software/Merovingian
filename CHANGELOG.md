@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.19
+
+- Add runtime diagnostic logging to `make_federation_signature`: logs the
+  embedded public key (derived from the Ed25519 secret key bytes 32–63) and
+  the signing payload size on every outbound request, making it possible to
+  correlate the signing key against the published `/_matrix/key/v2/server` key
+  without stopping the server.
+- Log `signature.key_size_invalid` and `signature.payload_build_failed` events
+  when signing is skipped due to a bad key or JSON serialisation failure.
+- Log key lifecycle events (`signing_key.loaded`, `signing_key.generating`,
+  `signing_key.generated`) in `ensure_runtime_server_signing_key` so operators
+  can confirm whether a stable persisted key is being reused or a fresh key is
+  being generated on each restart.
+- Include `response_body` in the `transaction.failed` structured log field so
+  error responses from remote federation peers are captured for diagnosis.
+
 ## 0.4.18
 
 - Make synchronous outbound federation membership requests fail closed when the

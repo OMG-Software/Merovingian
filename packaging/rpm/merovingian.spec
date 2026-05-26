@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.18
+Version:        0.4.19
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.19-1
+- Add runtime diagnostic logging to federation signing pipeline to surface signing-key mismatches and payload build failures
+- Log key lifecycle events (loaded vs generated) in ensure_runtime_server_signing_key for ops visibility
+
 * Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.18-1
 - Fail closed when outbound federation membership signing is not initialized
 - Reject unusable persisted signing secrets when starting federation dispatch
