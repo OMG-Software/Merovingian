@@ -437,7 +437,11 @@ namespace
         // historically used a [status, body] tuple; we always emit the v2 shape
         // which the v1 path tolerates because clients ignore unknown wrappers.
         auto response = canonicaljson::Object{};
-        response.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{std::string{"12"}}));
+        // Echo the room's actual version from the acceptor; fall back to "12" only
+        // if the acceptor did not populate it (e.g. in legacy test stubs).
+        auto const resp_room_version =
+            acceptance.room_version.empty() ? std::string{"12"} : acceptance.room_version;
+        response.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{resp_room_version}));
         if (route.endpoint == FederationEndpoint::send_join)
         {
             response.push_back(

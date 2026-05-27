@@ -670,7 +670,13 @@ struct ListenerBinding final
     -> merovingian::homeserver::HttpServeStats
 {
     auto stats = merovingian::homeserver::HttpServeStats{};
-    auto pool = merovingian::net::ThreadPool{4U};
+    // Main pool handles all non-sync request types. Keep this modest so that
+    // threads aren't wasted — sync long-polls are offloaded to sync_pool below.
+    auto pool = merovingian::net::ThreadPool{8U};
+    // Dedicated pool for /sync long-polls. Each waiting sync client occupies one
+    // thread here rather than in the main pool, so regular requests (join, send,
+    // login, federation) are always serviced without delay.
+    auto sync_pool = merovingian::net::ThreadPool{32U};
     auto threads = std::vector<std::thread>{};
     threads.reserve(bindings.size());
 
@@ -679,18 +685,18 @@ struct ListenerBinding final
         // Explicit init-capture binds `target` to bindings[i] directly rather
         // than to the per-iteration alias `binding`, which would dangle once
         // the loop advances.
-        threads.emplace_back([&runtime, &shutdown, &stats, &pool, &target = binding]() {
+        threads.emplace_back([&runtime, &shutdown, &stats, &pool, &sync_pool, &target = binding]() {
             auto const mode = target.role == merovingian::net::ListenerRole::client
                                   ? merovingian::homeserver::HttpDispatchMode::client_server
                                   : merovingian::homeserver::HttpDispatchMode::federation;
             if (target.tls_context.has_value())
             {
                 merovingian::homeserver::serve_tls_http(*target.tls_context, target.acceptor, runtime, shutdown, stats,
-                                                        mode, pool);
+                                                        mode, pool, &sync_pool);
             }
             else
             {
-                merovingian::homeserver::serve_http(target.acceptor, runtime, shutdown, stats, mode, pool);
+                merovingian::homeserver::serve_http(target.acceptor, runtime, shutdown, stats, mode, pool, &sync_pool);
             }
         });
     }
@@ -711,6 +717,9 @@ struct ListenerBinding final
     }
 
     pool.request_stop();
+    // Drain the sync pool after the main pool stops so no new long-polls can be
+    // submitted, but in-flight waits finish before the runtime is torn down.
+    sync_pool.request_stop();
 
     for (auto& worker : threads)
     {

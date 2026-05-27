@@ -129,6 +129,21 @@ separate operator decision once this branch is approved._
   `old_verify_keys` from all non-active signing keys in the persistent store,
   with `expired_ts` capped at `now` to prevent future-dated entries from
   superseded keys that carried the year-2999 sentinel.
+- Sync long-poll decoupled from main request pool (0.4.26): A dedicated
+  32-thread `sync_pool` is created alongside the 8-thread main pool. When a
+  `/sync` long-poll needs to wait, `serve_stream` hands the plain-HTTP fd to
+  `sync_pool` immediately and returns, freeing the main pool thread. All other
+  requests (login, join, send, federation) are always serviced without delay.
+  Each async wait is capped at 5 s so server shutdown completes promptly.
+  `dispatch_local_http_request()` retains its blocking API for test
+  compatibility. TLS connections fall back to the previous blocking path.
+- Inbound `make_join` room-version negotiation (0.4.26): the
+  `membership_template_provider` now reads the actual room version from the
+  `m.room.create` state event and validates it against the joining server's
+  `?ver=` query params. Incompatible versions return
+  `M_INCOMPATIBLE_ROOM_VERSION` (HTTP 400). The `membership_acceptor` populates
+  `room_version` in `MembershipAcceptResult`, and `handle_send_membership`
+  echoes it in the `send_join` response body instead of hardcoding "12".
 - Inbound PDU signing payload fix (0.4.26): `make_event_signing_payload` now
   strips `event_id` from the verification payload when the room version uses
   reference-hash event IDs (all room versions 4+, i.e. every version we

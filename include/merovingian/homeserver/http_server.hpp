@@ -61,25 +61,34 @@ enum class HttpDispatchMode
                                                HttpDispatchMode mode) -> LocalHttpResponse;
 
 // Read one HTTP/1.1 request from the connected socket, dispatch it through
-// the selected runtime router, and write a single response. Closes the
-// connection after the response is sent. Client listeners should use
-// `client_server`; federation listeners should use `federation`; internal
-// compatibility paths can use `local_router`.
+// the selected runtime router, and write a single response. When sync_pool is
+// provided and the request is a long-polling /sync that needs to wait, the fd
+// is handed off to sync_pool (the main thread is freed immediately) and this
+// function returns true. In all other cases it returns false and the caller
+// closes the fd normally.
 //
 // The acceptor's fd is taken by value (already-accepted client socket).
-auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
-                               HttpDispatchMode dispatch_mode) -> void;
+[[nodiscard]] auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
+                                             HttpDispatchMode dispatch_mode,
+                                             net::ThreadPool* sync_pool = nullptr) -> bool;
 
 // Block until `shutdown` fires, accepting connections from `acceptor` and
 // submitting them to `pool` for dispatch. Returns when either the shutdown
 // signal fires or the acceptor becomes invalid.
+//
+// When sync_pool is supplied, long-polling /sync connections are offloaded to
+// it, keeping the main pool free for regular requests. Passing nullptr falls
+// back to the original behaviour (sync waits block the main pool thread).
 auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::ShutdownSignal& shutdown,
-                HttpServeStats& stats, HttpDispatchMode dispatch_mode, net::ThreadPool& pool) -> void;
+                HttpServeStats& stats, HttpDispatchMode dispatch_mode, net::ThreadPool& pool,
+                net::ThreadPool* sync_pool = nullptr) -> void;
 
 // TLS variant of `serve_http`. The accepted socket is upgraded through the
-// supplied OpenSSL-backed context in the worker thread.
+// supplied OpenSSL-backed context in the worker thread. sync_pool is accepted
+// for API symmetry; TLS async offload is not yet implemented (sync waits use
+// the main pool thread).
 auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
                     net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode,
-                    net::ThreadPool& pool) -> void;
+                    net::ThreadPool& pool, net::ThreadPool* sync_pool = nullptr) -> void;
 
 } // namespace merovingian::homeserver
