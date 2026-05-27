@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.25
+
+- Fix remote join (make_join → send_join) failing with Synapse error "Malformed
+  'hashes': `<class 'NoneType'>`": compute and attach the `hashes.sha256`
+  content hash to the join event before signing it. The Matrix spec requires
+  every PDU to carry this field; the remote-join code path was signing without
+  hashing, producing an event Synapse (and any other spec-conformant server)
+  must reject.
+
 ## 0.4.24
 
 - Added the missing `<algorithm>` include to

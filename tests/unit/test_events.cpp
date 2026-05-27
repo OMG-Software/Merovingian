@@ -394,6 +394,86 @@ SCENARIO("Event redaction uses room-version-specific top-level keys", "[events][
     }
 }
 
+SCENARIO("Join event prepared for send_join must carry a content hash", "[events][signing][federation]")
+{
+    // Regression: join_room's remote-join path was signing the event without
+    // first calling make_content_hash and attaching the result as hashes.sha256.
+    // Synapse rejected the resulting send_join body with:
+    //   SynapseError: 400 - Malformed 'hashes': <class 'NoneType'>
+    // The Matrix spec (room versions >= 2) requires every PDU to carry a
+    // canonical-JSON SHA-256 content hash before any signature is attached.
+    GIVEN("a make_join response event template that lacks a hashes field")
+    {
+        // Minimal m.room.member join event as returned by a remote server's
+        // make_join response — no hashes, no signatures yet.
+        auto const template_json = std::string{
+            R"({"auth_events":[],"content":{"membership":"join"},"depth":5,)"
+            R"("origin_server_ts":1748300000000,"prev_events":[],"room_id":"!room:remote.example.com",)"
+            R"("sender":"@user:local.example.com","state_key":"@user:local.example.com",)"
+            R"("type":"m.room.member"})"};
+
+        auto const parsed = merovingian::canonicaljson::parse_lossless(template_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+        REQUIRE(obj != nullptr);
+
+        WHEN("the content hash is computed and embedded before signing")
+        {
+            // Step 1: compute SHA-256 content hash.
+            auto const content_hash = merovingian::events::make_content_hash(parsed.value);
+            REQUIRE(content_hash.error.empty());
+            REQUIRE_FALSE(content_hash.sha256.empty());
+
+            // Step 2: attach hashes field to the event object.
+            auto event_with_hash = *obj;
+            auto hashes_obj = merovingian::canonicaljson::Object{};
+            hashes_obj.push_back(merovingian::canonicaljson::make_member(
+                "sha256", merovingian::canonicaljson::Value{content_hash.sha256}));
+            event_with_hash.push_back(merovingian::canonicaljson::make_member(
+                "hashes", merovingian::canonicaljson::Value{std::move(hashes_obj)}));
+            auto hashed_event = merovingian::canonicaljson::Value{std::move(event_with_hash)};
+
+            // Step 3: sign.
+            auto const* policy = merovingian::rooms::find_room_version_policy("10");
+            REQUIRE(policy != nullptr);
+            auto key_store = FixedSigningKeyStore{merovingian::crypto::SigningKeyRecord{
+                "local.example.com", "ed25519:auto",
+                merovingian::crypto::Ed25519PublicKey{std::string(32U, '\x01')}, true}};
+            auto provider = CapturingEd25519Provider{};
+            auto const signed_result = merovingian::events::sign_event_for_server(
+                hashed_event, *policy, key_store, provider, "local.example.com");
+
+            THEN("the signed event JSON carries hashes.sha256 — accepted by send_join peers")
+            {
+                REQUIRE(signed_result.error.empty());
+                // hashes.sha256 must be present: Synapse rejects events without it.
+                REQUIRE(signed_result.event_json.find(R"("hashes":{"sha256":)") != std::string::npos);
+            }
+        }
+
+        WHEN("the event is signed WITHOUT computing the content hash first")
+        {
+            // This reproduces the pre-fix bug: the old code passed event_to_sign
+            // directly to sign_event_for_server without attaching hashes.
+            auto const* policy = merovingian::rooms::find_room_version_policy("10");
+            REQUIRE(policy != nullptr);
+            auto key_store = FixedSigningKeyStore{merovingian::crypto::SigningKeyRecord{
+                "local.example.com", "ed25519:auto",
+                merovingian::crypto::Ed25519PublicKey{std::string(32U, '\x01')}, true}};
+            auto provider = CapturingEd25519Provider{};
+            auto const signed_result = merovingian::events::sign_event_for_server(
+                parsed.value, *policy, key_store, provider, "local.example.com");
+
+            THEN("hashes.sha256 is absent — documents the Synapse rejection this fix prevents")
+            {
+                REQUIRE(signed_result.error.empty());
+                // Without the fix this was the event sent to send_join — no hashes field.
+                REQUIRE(signed_result.event_json.find(R"("hashes":{"sha256":)") == std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Room version registry exposes stable modern room versions", "[rooms]")
 {
     GIVEN("known and unsupported room-version IDs")
