@@ -111,6 +111,23 @@ separate operator decision once this branch is approved._
   `old_verify_keys` from all non-active signing keys in the persistent store,
   with `expired_ts` capped at `now` to prevent future-dated entries from
   superseded keys that carried the year-2999 sentinel.
+- Key server lock-free fast path: `/_matrix/key/v2/server` is now served
+  without acquiring the runtime mutex. The signed response is
+  pre-computed during `start_runtime` and cached in an atomic
+  `shared_ptr<string>` field (`LocalDatabase::key_server_cache`). Subsequent
+  requests load the cached pointer atomically and return immediately, ensuring
+  Synapse's `ServerKeyFetcher` receives the response well within its
+  cancellation window even when a concurrent `make_join` or other long-running
+  outbound call holds the mutex for tens of seconds.
+- Runtime-scoped request locking: the listener-owned `runtime_lock` has been
+  removed. Request synchronization now lives in `HomeserverRuntime::mutex`,
+  `SyncNotifier` is attached during `start_client_server`, and the remote join
+  path snapshots signing material, releases the mutex for discovery,
+  `make_join`, and `send_join`, then reacquires it only for persistence. This
+  stops unrelated client requests from serializing behind outbound federation
+  I/O. `HomeserverRuntime` now carries explicit move operations so the runtime
+  remains movable after introducing the mutex, keeping `start_client_server()`
+  and the build matrix green.
 - Homeserver public headers: the old `vertical_slice.hpp` umbrella has been
   retired in favor of implementation-matched headers for runtime, auth, room,
   media, local HTTP routing, and the local smoke-flow helper. The split removes
@@ -694,7 +711,7 @@ adapters.
 | Profile query | `GET /_matrix/federation/v1/query/profile` (inbound) | `partial` | A signed inbound `query/profile` request is dispatched through the `profile_query_provider` runtime hook, which reads the local user's `displayname`/`avatar_url` from the persistent store. The optional `field` parameter restricts the response; unknown users return 404 `M_NOT_FOUND`; an unwired hook returns 501. BDD callback coverage in `test_federation_runtime_callbacks.cpp`. Needs `query/directory` and the remaining federation query endpoints, plus conformance fixtures. |
 | E2EE key queries | `POST /_matrix/federation/v1/user/keys/query`, `POST /_matrix/federation/v1/user/keys/claim`, `GET /_matrix/federation/v1/user/devices/{userId}` (inbound) | `partial` | Signed inbound E2EE key requests are dispatched through the `device_keys_query_provider`, `one_time_keys_claim_provider`, and `user_devices_provider` runtime hooks. The `key_query` module builds the canonical-JSON responses from the device-key, one-time-key, and cross-signing-key stores; `user/keys/claim` consumes the claimed one-time keys. Unwired hooks return 501. Unit coverage in `test_federation_key_query.cpp` and dispatch coverage in `test_federation_runtime_callbacks.cpp`. Needs device-list stream semantics and conformance fixtures. |
 | Event-graph queries | `GET /_matrix/federation/v1/event/{eventId}`, `GET /_matrix/federation/v1/state/{roomId}`, `GET /_matrix/federation/v1/state_ids/{roomId}`, `POST /_matrix/federation/v1/get_missing_events/{roomId}` (inbound) | `partial` | Signed inbound event-graph queries are dispatched through the `event_query_provider`, `state_query_provider`, `state_ids_query_provider`, and `missing_events_query_provider` runtime hooks. The `event_query` module looks up single PDUs by ID and reads the persistent state/event tables for state and missing-event responses. `get_missing_events` filters by `min_depth` and caps by `limit`. Unwired hooks return 501. Unit coverage in `test_federation_event_query.cpp`. Needs historical state-at-event reconstruction and an `auth_chain` walk; conformance fixtures. |
-| Key publication | `GET /_matrix/key/v2/server` (inbound) | `partial` | The federation-only router answers unauthenticated key fetches with the persisted runtime Ed25519 verify key, `valid_until_ts`, empty `old_verify_keys`, and a canonical self-signature verified by integration coverage. Needs key rotation, multiple active/old keys, and Matrix federation conformance fixtures. |
+| Key publication | `GET /_matrix/key/v2/server` (inbound) | `partial` | The federation-only router answers unauthenticated key fetches with the persisted runtime Ed25519 verify key, `valid_until_ts`, populated `old_verify_keys` (all superseded keys with `expired_ts` capped at `now`), and a canonical self-signature. Response is pre-computed at startup and served lock-free from an atomic cache so Synapse's `ServerKeyFetcher` is never blocked by concurrent outbound calls. Needs key rotation, Matrix federation conformance fixtures. |
 | Federation queues | Outbound federation and retry/backoff | `partial` | `OutboundClient` is wired through `perform_outbound_transaction` with retry-state mutation via `apply_outbound_result`, circuit-breaker short-circuit via `destination_should_retry`, and a `DispatchWorker` that retries discovery and delivery failures without dropping circuit-open transactions. Pending transactions persist to `federation_transactions`, destination retry state persists to `federation_destinations`, and production startup calls bounded worker replay before starting delivery. Needs live federation delivery coverage. |
 
 ### Server administration and operations
@@ -714,7 +731,17 @@ adapters.
 - `GET /_matrix/key/v2/server` returns a canonical Matrix server-key object
   backed by the runtime Ed25519 signing key persisted in the local store.
 - The key response includes `server_name`, `valid_until_ts`, `verify_keys`,
-  empty `old_verify_keys`, and a self-signature under `signatures`.
+  `old_verify_keys` (all superseded keys with `expired_ts` capped at `now`),
+  and a self-signature under `signatures`.
+- The response is pre-computed during `start_runtime` and served lock-free
+  from an atomic cache (`LocalDatabase::key_server_cache`), preventing
+  Synapse's `ServerKeyFetcher` from timing out when a concurrent outbound
+  request (e.g. `make_join`) holds the runtime mutex.
+- HTTP listener dispatch no longer owns a separate process-wide lock. Client
+  and local requests synchronize through `HomeserverRuntime::mutex`, and the
+  remote join path releases that mutex before federation discovery and
+  outbound membership calls so unrelated requests can continue while the join
+  is waiting on the network.
 - Server discovery now uses an injectable network boundary for behavior tests
   and a system implementation for well-known fetches, DNS SRV lookup, and
   A/AAAA resolution.

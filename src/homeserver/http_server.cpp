@@ -335,8 +335,8 @@ namespace
         std::ignore = send_all(stream, response);
     }
 
-    auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, std::mutex& runtime_lock,
-                      HttpServeStats& stats, HttpDispatchMode dispatch_mode) -> void
+    auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, HttpServeStats& stats,
+                      HttpDispatchMode dispatch_mode) -> void
     {
         auto const limits = http::RequestLimits{};
         auto const head_cap = header_size_cap(limits);
@@ -414,7 +414,7 @@ namespace
                            {"has_access_token", local_request.access_token.empty() ? "false" : "true",      false}
         });
 
-        auto const response = dispatch_local_http_request(runtime, local_request, dispatch_mode, runtime_lock);
+        auto const response = dispatch_local_http_request(runtime, local_request, dispatch_mode);
         ++stats.completed_requests;
 
         log_diagnostic("request.completed",
@@ -430,10 +430,27 @@ namespace
 
 } // namespace
 
-auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
-                                  HttpDispatchMode mode, std::mutex& runtime_lock) -> LocalHttpResponse
+auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode)
+    -> LocalHttpResponse
 {
-    auto guard = std::unique_lock<std::mutex>{runtime_lock};
+    // Serve /_matrix/key/v2/server lock-free from the atomic cache.
+    // Synapse's ServerKeyFetcher uses a short timeout (~20 s) and cancels if our
+    // response arrives late. A concurrent make_join can hold the runtime mutex for
+    // the full duration of an outbound HTTP round-trip, blocking this endpoint.
+    // The cache is pre-warmed during start_runtime and atomically refreshed on
+    // every mutex-protected key-server refresh, so it is always available.
+    if (mode == HttpDispatchMode::federation && request.method == "GET" && request.target == "/_matrix/key/v2/server")
+    {
+        auto& cache = runtime.homeserver.database.key_server_cache;
+        if (cache)
+        {
+            if (auto cached = cache->load())
+            {
+                return {200U, *cached};
+            }
+        }
+    }
+
     auto result = DispatchResult{};
 
     switch (mode)
@@ -451,30 +468,23 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
 
     if (result.status == DispatchResult::Status::needs_wait)
     {
-        // Obtain the notifier under the lock to avoid a data race with
-        // other threads that also lazily create it.
-        auto& notifier = ensure_sync_notifier(runtime);
-        guard.unlock();
+        auto* notifier = runtime.sync_notifier.get();
+        if (notifier == nullptr)
+        {
+            return {503U, matrix_error("M_UNKNOWN", "sync notifier unavailable")};
+        }
         try
         {
-            std::ignore = notifier.wait_for_change(result.wait.since_stream_ordering,
-                                                   result.wait.since_sync_stream_id,
-                                                   result.wait.timeout);
+            std::ignore = notifier->wait_for_change(result.wait.since_stream_ordering, result.wait.since_sync_stream_id,
+                                                    result.wait.timeout);
         }
         catch (...)
         {
             // wait_for_change threw (e.g. std::system_error); fall through
             // to re-dispatch with can_wait=false, which returns immediately.
-            log_diagnostic("sync.wait_failed", {{"reason", "exception", false}});
-        }
-        try
-        {
-            guard.lock();
-        }
-        catch (...)
-        {
-            // If we cannot re-acquire the lock, return 503.
-            return {503U, matrix_error("M_UNKNOWN", "service temporarily unavailable")};
+            log_diagnostic("sync.wait_failed", {
+                                                   {"reason", "exception", false}
+            });
         }
         result = handle_client_server_request(runtime, request, false);
     }
@@ -482,16 +492,15 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
     return result.response;
 }
 
-auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, std::mutex& runtime_lock,
-                               HttpServeStats& stats, HttpDispatchMode dispatch_mode) -> void
+auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
+                               HttpDispatchMode dispatch_mode) -> void
 {
     auto stream = PlainConnectionStream{client_fd};
-    serve_stream(stream, runtime, runtime_lock, stats, dispatch_mode);
+    serve_stream(stream, runtime, stats, dispatch_mode);
 }
 
-auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::mutex& runtime_lock,
-                net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode,
-                net::ThreadPool& pool) -> void
+auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::ShutdownSignal& shutdown,
+                HttpServeStats& stats, HttpDispatchMode dispatch_mode, net::ThreadPool& pool) -> void
 {
     while (!shutdown.fired() && acceptor.valid() && pool.running())
     {
@@ -547,10 +556,10 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::m
         // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
         auto fd = client.release();
-        auto submitted = pool.submit([&runtime, &runtime_lock, &stats, dispatch_mode, fd] {
+        auto submitted = pool.submit([&runtime, &stats, dispatch_mode, fd] {
             auto guard = core::SocketHandle{fd};
             ++stats.accepted_connections;
-            serve_one_http_connection(fd, runtime, runtime_lock, stats, dispatch_mode);
+            serve_one_http_connection(fd, runtime, stats, dispatch_mode);
             std::ignore = ::shutdown(fd, SHUT_RDWR);
             // ~SocketHandle closes fd on both normal and exceptional exit.
         });
@@ -564,8 +573,8 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, std::m
 }
 
 auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
-                    std::mutex& runtime_lock, net::ShutdownSignal& shutdown, HttpServeStats& stats,
-                    HttpDispatchMode dispatch_mode, net::ThreadPool& pool) -> void
+                    net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode,
+                    net::ThreadPool& pool) -> void
 {
     while (!shutdown.fired() && acceptor.valid() && pool.running())
     {
@@ -603,7 +612,7 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
             if (errno == EMFILE || errno == ENFILE || errno == ENOBUFS || errno == ENOMEM)
             {
                 log_diagnostic("tls.connection.accept_retry", {
-                                                                   {"errno", std::to_string(errno), false}
+                                                                  {"errno", std::to_string(errno), false}
                 });
                 ::usleep(100000);
                 continue;
@@ -619,11 +628,10 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
         // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
         auto fd = client.release();
-        auto submitted = pool.submit([&tls_context, &runtime, &runtime_lock, &stats, dispatch_mode, fd] {
+        auto submitted = pool.submit([&tls_context, &runtime, &stats, dispatch_mode, fd] {
             auto guard = core::SocketHandle{fd};
             ++stats.accepted_connections;
-            auto accepted_tls =
-                accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
+            auto accepted_tls = accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
             if (!accepted_tls.ok())
             {
                 ++stats.rejected_requests;
@@ -635,7 +643,7 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                 // ~SocketHandle closes fd on both normal and exceptional exit.
             }
             auto stream = TlsConnectionStream{*accepted_tls.connection};
-            serve_stream(stream, runtime, runtime_lock, stats, dispatch_mode);
+            serve_stream(stream, runtime, stats, dispatch_mode);
             std::ignore = ::shutdown(fd, SHUT_RDWR);
             // ~SocketHandle closes fd.
         });

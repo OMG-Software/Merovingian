@@ -5,8 +5,10 @@
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
-#include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -15,16 +17,24 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <chrono>
+#include <condition_variable>
 #include <filesystem>
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <sqlite3.h>
 
 namespace
 {
+
+static_assert(std::is_move_constructible_v<merovingian::homeserver::HomeserverRuntime>);
+static_assert(std::is_move_assignable_v<merovingian::homeserver::HomeserverRuntime>);
+static_assert(std::is_move_constructible_v<merovingian::homeserver::ClientServerRuntime>);
+static_assert(std::is_move_assignable_v<merovingian::homeserver::ClientServerRuntime>);
 
 class TestSqliteConnection final
 {
@@ -95,6 +105,64 @@ private:
     return std::filesystem::temp_directory_path() /
            ("merovingian-review-" + suffix + "-" + std::to_string(now) + ".sqlite3");
 }
+
+[[nodiscard]] auto extract_json_string(std::string const& body, std::string_view key) -> std::string
+{
+    auto const marker = std::string{"\""} + std::string{key} + "\":\"";
+    auto const start = body.find(marker);
+    REQUIRE(start != std::string::npos);
+    auto const value_start = start + marker.size();
+    auto const value_end = body.find('"', value_start);
+    REQUIRE(value_end != std::string::npos);
+    return body.substr(value_start, value_end - value_start);
+}
+
+class BlockingDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
+{
+public:
+    explicit BlockingDiscoveryNetwork(std::chrono::milliseconds delay)
+        : delay_{delay}
+    {
+    }
+
+    [[nodiscard]] auto fetch_well_known(std::string_view, std::uint32_t)
+        -> merovingian::federation::WellKnownServerResult override
+    {
+        {
+            auto lock = std::scoped_lock<std::mutex>{mutex_};
+            started_ = true;
+        }
+        started_cv_.notify_all();
+        std::this_thread::sleep_for(delay_);
+        return {false, false, {}, "not configured"};
+    }
+
+    [[nodiscard]] auto lookup_srv(std::string_view) -> std::vector<merovingian::federation::SrvRecord> override
+    {
+        return {};
+    }
+
+    [[nodiscard]] auto lookup_addresses(std::string_view, std::uint16_t)
+        -> merovingian::federation::ResolvedAddressSet override
+    {
+        return {false, {}, "address lookup blocked for regression test"};
+    }
+
+    auto wait_until_started() -> void
+    {
+        auto lock = std::unique_lock<std::mutex>{mutex_};
+        auto const started = started_cv_.wait_for(lock, std::chrono::seconds{2}, [this] {
+            return started_;
+        });
+        REQUIRE(started);
+    }
+
+private:
+    std::chrono::milliseconds delay_{};
+    std::mutex mutex_{};
+    std::condition_variable started_cv_{};
+    bool started_{false};
+};
 
 } // namespace
 
@@ -192,23 +260,21 @@ SCENARIO("Federation dispatch exposes only federation routes", "[homeserver][sec
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto runtime_lock = std::mutex{};
-
         WHEN("admin, client, and federation key routes are requested")
         {
             auto const admin = merovingian::homeserver::dispatch_local_http_request(
                 runtime, {"GET", "/_merovingian/admin/health", {}, {}},
-                merovingian::homeserver::HttpDispatchMode::federation, runtime_lock);
+                merovingian::homeserver::HttpDispatchMode::federation);
             auto const client_register = merovingian::homeserver::dispatch_local_http_request(
                 runtime,
                 {"POST",
                  "/_matrix/client/v3/register",
                  {},
                  merovingian::tests::registration_pipe("alice", "CorrectHorse7!")},
-                merovingian::homeserver::HttpDispatchMode::federation, runtime_lock);
+                merovingian::homeserver::HttpDispatchMode::federation);
             auto const keys = merovingian::homeserver::dispatch_local_http_request(
                 runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
-                merovingian::homeserver::HttpDispatchMode::federation, runtime_lock);
+                merovingian::homeserver::HttpDispatchMode::federation);
 
             THEN("non-federation surfaces are hidden and federation keys remain reachable")
             {
@@ -244,6 +310,63 @@ SCENARIO("Federation auth failures do not surface as client-style 401s", "[homes
                 // access token and turns into an automatic logout.
                 REQUIRE(response.status == 502U);
                 REQUIRE(response.body == "malformed federation authorization");
+            }
+        }
+    }
+}
+
+SCENARIO("A blocking remote join does not serialize unrelated client requests",
+         "[homeserver][locking][review][regression]")
+{
+    GIVEN("a started client-server runtime with a remote join blocked in discovery")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const register_response = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(register_response.response.status == 200U);
+        auto const login_response = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login_response.response.status == 200U);
+        auto const access_token = extract_json_string(login_response.response.body, "access_token");
+
+        auto discovery = std::make_unique<BlockingDiscoveryNetwork>(std::chrono::milliseconds{250});
+        auto* discovery_ptr = discovery.get();
+        runtime.homeserver.discovery_network = std::move(discovery);
+
+        auto join_response = merovingian::homeserver::LocalHttpResponse{};
+        auto join_thread = std::thread{[&] {
+            join_response = merovingian::homeserver::dispatch_local_http_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/!blocked:remote.example.org/join", access_token, {}},
+                merovingian::homeserver::HttpDispatchMode::client_server);
+        }};
+
+        discovery_ptr->wait_until_started();
+
+        WHEN("another client request arrives while discovery is still blocked")
+        {
+            auto const before = std::chrono::steady_clock::now();
+            auto const versions = merovingian::homeserver::dispatch_local_http_request(
+                runtime, {"GET", "/_matrix/client/versions", {}, {}},
+                merovingian::homeserver::HttpDispatchMode::client_server);
+            auto const elapsed = std::chrono::steady_clock::now() - before;
+
+            join_thread.join();
+
+            THEN("the unrelated request completes without waiting for the remote join to finish")
+            {
+                REQUIRE(versions.status == 200U);
+                REQUIRE(elapsed < std::chrono::milliseconds{150});
+                REQUIRE(join_response.status == 502U);
+                REQUIRE(join_response.body.find("make_join failed") != std::string::npos);
             }
         }
     }

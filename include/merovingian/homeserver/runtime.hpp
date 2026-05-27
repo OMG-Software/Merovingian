@@ -15,13 +15,45 @@
 
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace merovingian::homeserver
 {
+
+// Thread-safe cache for the signed /_matrix/key/v2/server response.
+// Uses its own mutex so the response can be served without holding the
+// global runtime mutex — Synapse's ServerKeyFetcher times out (~20 s)
+// if a concurrent make_join round-trip holds the lock for too long.
+// Wrapped in unique_ptr by callers so containing structs stay moveable.
+struct KeyServerCache final
+{
+    // Returns the cached response, or nullopt if the cache is empty.
+    [[nodiscard]] auto load() const -> std::optional<std::string>
+    {
+        auto const lk = std::lock_guard{mutex_};
+        if (value_.empty())
+        {
+            return std::nullopt;
+        }
+        return value_;
+    }
+
+    // Atomically replaces the cached response.
+    auto store(std::string value) -> void
+    {
+        auto const lk = std::lock_guard{mutex_};
+        value_ = std::move(value);
+    }
+
+private:
+    mutable std::mutex mutex_{};
+    std::string value_{};
+};
 
 struct LocalUser final
 {
@@ -62,6 +94,11 @@ struct LocalDatabase final
     std::vector<observability::AuditLogEvent> audit_events{};
     database::PersistentStore persistent_store{};
     std::vector<unsigned char> signing_secret_key{};
+    // Cache of the signed /_matrix/key/v2/server response, protected by its own
+    // internal mutex so the federation key endpoint can be served without acquiring
+    // the global runtime mutex. Wrapped in unique_ptr so LocalDatabase remains
+    // move-constructible (std::mutex is not moveable).
+    std::unique_ptr<KeyServerCache> key_server_cache{std::make_unique<KeyServerCache>()};
     std::uint64_t next_stream_ordering{1U};
 };
 
@@ -83,6 +120,12 @@ struct InboundReceipt final
 
 struct HomeserverRuntime final
 {
+    HomeserverRuntime() = default;
+    HomeserverRuntime(HomeserverRuntime const& other) = delete;
+    auto operator=(HomeserverRuntime const& other) -> HomeserverRuntime& = delete;
+    HomeserverRuntime(HomeserverRuntime&& other) noexcept;
+    auto operator=(HomeserverRuntime&& other) noexcept -> HomeserverRuntime&;
+
     config::Config config{};
     net::RuntimeListeners listeners{};
     LocalDatabase database{};
@@ -96,6 +139,10 @@ struct HomeserverRuntime final
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};
+    // Guards mutable runtime state when requests are handled concurrently.
+    // Handlers must release it before outbound network I/O so unrelated
+    // requests can continue while a federation round-trip is in flight.
+    mutable std::recursive_mutex mutex{};
 };
 
 struct RuntimeStartResult final

@@ -37,7 +37,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.4.21"};
+constexpr auto version = std::string_view{"0.4.23"};
 
 struct BootstrapConfigResult final
 {
@@ -669,7 +669,6 @@ struct ListenerBinding final
                                         merovingian::net::ShutdownSignal& shutdown)
     -> merovingian::homeserver::HttpServeStats
 {
-    auto runtime_lock = std::mutex{};
     auto stats = merovingian::homeserver::HttpServeStats{};
     auto pool = merovingian::net::ThreadPool{4U};
     auto threads = std::vector<std::thread>{};
@@ -680,18 +679,18 @@ struct ListenerBinding final
         // Explicit init-capture binds `target` to bindings[i] directly rather
         // than to the per-iteration alias `binding`, which would dangle once
         // the loop advances.
-        threads.emplace_back([&runtime, &runtime_lock, &shutdown, &stats, &pool, &target = binding]() {
+        threads.emplace_back([&runtime, &shutdown, &stats, &pool, &target = binding]() {
             auto const mode = target.role == merovingian::net::ListenerRole::client
                                   ? merovingian::homeserver::HttpDispatchMode::client_server
                                   : merovingian::homeserver::HttpDispatchMode::federation;
             if (target.tls_context.has_value())
             {
-                merovingian::homeserver::serve_tls_http(*target.tls_context, target.acceptor, runtime, runtime_lock,
-                                                        shutdown, stats, mode, pool);
+                merovingian::homeserver::serve_tls_http(*target.tls_context, target.acceptor, runtime, shutdown, stats,
+                                                        mode, pool);
             }
             else
             {
-                merovingian::homeserver::serve_http(target.acceptor, runtime, runtime_lock, shutdown, stats, mode, pool);
+                merovingian::homeserver::serve_http(target.acceptor, runtime, shutdown, stats, mode, pool);
             }
         });
     }

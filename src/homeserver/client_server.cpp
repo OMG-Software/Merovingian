@@ -39,11 +39,11 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <map>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -901,8 +901,7 @@ namespace
 
     // Keyed by (room_id, event_type, state_key) → event_id. Built once per request
     // so all state lookups within the same response are O(log n) rather than O(n).
-    using StateIndex =
-        std::map<std::tuple<std::string_view, std::string_view, std::string_view>, std::string_view>;
+    using StateIndex = std::map<std::tuple<std::string_view, std::string_view, std::string_view>, std::string_view>;
 
     [[nodiscard]] auto build_state_index(database::PersistentStore const& store) -> StateIndex
     {
@@ -955,8 +954,8 @@ namespace
 
     [[nodiscard]] auto room_state_string(database::PersistentStore const& store, StateIndex const& index,
                                          std::string_view room_id, std::string_view event_type,
-                                         std::string_view content_key,
-                                         std::string_view state_key = {}) -> std::optional<std::string>
+                                         std::string_view content_key, std::string_view state_key = {})
+        -> std::optional<std::string>
     {
         auto const event_json = state_event_json(store, index, room_id, event_type, state_key);
         if (!event_json.has_value())
@@ -1026,7 +1025,8 @@ namespace
             {
                 room_entry.push_back(json_member("canonical_alias", json_str(*alias)));
             }
-            if (auto const avatar = room_state_string(store, index, room.room_id, "m.room.avatar", "url"); avatar.has_value())
+            if (auto const avatar = room_state_string(store, index, room.room_id, "m.room.avatar", "url");
+                avatar.has_value())
             {
                 room_entry.push_back(json_member("avatar_url", json_str(*avatar)));
             }
@@ -2223,13 +2223,20 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
     }
     auto rt = ClientServerRuntime{};
     rt.homeserver = std::move(started.runtime);
-    rt.homeserver.sync_notifier = nullptr;
+    rt.sync_notifier = std::make_unique<sync::SyncNotifier>();
+    rt.homeserver.sync_notifier = rt.sync_notifier.get();
+    rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                              rt.homeserver.database.persistent_store.next_sync_stream_id);
     rt.devices.reserve(rt.homeserver.database.persistent_store.devices.size());
     for (auto const& device : rt.homeserver.database.persistent_store.devices)
     {
         rt.devices.push_back({device.user_id, device.device_id, device.display_name});
     }
-    return {true, {}, std::move(rt)};
+
+    auto result = ClientServerStartResult{};
+    result.started = true;
+    result.runtime = std::move(rt);
+    return result;
 }
 
 auto matrix_error(std::string_view errcode, std::string_view message) -> std::string
@@ -2325,6 +2332,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         });
         return dispatch_err(413U, "M_TOO_LARGE", "request body too large");
     }
+    auto guard = std::unique_lock<std::recursive_mutex>{rt.homeserver.mutex};
     if (!allow(rt, req))
     {
         log_diagnostic("request.rejected", {
@@ -2335,6 +2343,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         });
         return dispatch_err(429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
     }
+    auto call_local = [&](LocalHttpRequest const& inner) {
+        guard.unlock();
+        auto response = handle_local_http_request(rt.homeserver, inner);
+        guard.lock();
+        return response;
+    };
 
     // CORS preflight: browsers send OPTIONS before any cross-origin POST/PUT/DELETE.
     // Must return 200 before the access-token gate; the reverse proxy (Apache/nginx)
@@ -2468,7 +2482,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout")
     {
-        auto const r = handle_local_http_request(rt.homeserver, req);
+        auto const r = call_local(req);
         // actor is not yet resolved here (pre-auth gate); log token presence only
         log_diagnostic(r.status == 200U ? "account.logout.accepted" : "account.logout.rejected",
                        {
@@ -2491,7 +2505,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     auto constexpr media_download_prefix = std::string_view{"/_matrix/media/v3/download/"};
     if (req.method == "GET" && starts_with(req.target, media_download_prefix))
     {
-        auto const r = handle_local_http_request(rt.homeserver, req);
+        auto const r = call_local(req);
         return r.status == 200U ? dispatch_resp(200U, r.body)
                                 : dispatch_err(r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
     }
@@ -2686,7 +2700,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (req.method == "POST" && req.target == "/_matrix/media/v3/upload")
     {
-        auto const r = handle_local_http_request(rt.homeserver, req);
+        auto const r = call_local(req);
         return r.status == 200U
                    ? dispatch_resp(200U, media_upload_response_json(r.body))
                    : dispatch_err(r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_BAD_REQUEST", r.body);
@@ -2780,7 +2794,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const history_vis = (preset_val != nullptr && *preset_val == "public_chat") ? "world_readable" : "shared";
 
         // Create the room record (returns the raw room_id string on success).
-        auto const create_r = handle_local_http_request(rt.homeserver, req);
+        auto const create_r = call_local(req);
         if (create_r.status != 200U)
         {
             log_diagnostic("room.create.rejected", {
@@ -2806,7 +2820,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             inner.method = "POST";
             inner.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
             inner.body = std::move(*ev);
-            auto const sent = handle_local_http_request(rt.homeserver, inner);
+            auto const sent = call_local(inner);
             return sent.status == 200U && !sent.body.empty() ? std::optional<std::string>{sent.body} : std::nullopt;
         };
 
@@ -2952,7 +2966,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 rewritten.method = "POST";
                 rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
                 rewritten.body = *event_body;
-                auto const result = wrap(handle_local_http_request(rt.homeserver, rewritten), "event_id");
+                auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.send_event.accepted" : "room.send_event.rejected",
                                {
                                    {"actor",      *user,                                                   false},
@@ -2987,7 +3001,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 rewritten.method = "POST";
                 rewritten.target = "/_matrix/client/v3/rooms/" + path->room_id + "/send";
                 rewritten.body = *event_body;
-                auto const result = wrap(handle_local_http_request(rt.homeserver, rewritten), "event_id");
+                auto const result = wrap(call_local(rewritten), "event_id");
                 log_diagnostic(result.status == 200U ? "room.state_event.accepted" : "room.state_event.rejected",
                                {
                                    {"actor",      *user,                                                   false},
@@ -3009,7 +3023,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                {"room_id", room_id,                                          false},
                                {"target",  observability::sanitized_http_target(req.target), false}
             });
-            auto const result = wrap(handle_local_http_request(rt.homeserver, req), "room_id");
+            auto const result = wrap(call_local(req), "room_id");
             log_diagnostic(result.status == 200U ? "room.join.accepted" : "room.join.rejected",
                            {
                                {"actor",   *user,                                                   false},
@@ -3027,7 +3041,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                            {"actor",   *user,   false},
                                                            {"room_id", room_id, false}
             });
-            auto const result = wrap(handle_local_http_request(rt.homeserver, req), "event_id");
+            auto const result = wrap(call_local(req), "event_id");
             log_diagnostic(result.status == 200U ? "room.send_event.accepted" : "room.send_event.rejected",
                            {
                                {"actor",   *user,                                                   false},
@@ -3042,7 +3056,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             // Matrix spec: GET /rooms/{roomId}/state returns the array directly.
             auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - state_s.size()));
-            auto result = handle_local_http_request(rt.homeserver, req);
+            auto result = call_local(req);
             log_diagnostic(result.status == 200U ? "room.state.response" : "room.state.rejected",
                            {
                                {"actor",   *user,                         false},
@@ -3373,7 +3387,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                            {"target",           observability::sanitized_http_target(req.target),       false},
                            {"rewritten_target", observability::sanitized_http_target(rewritten.target), false}
         });
-        auto const result = wrap(handle_local_http_request(rt.homeserver, rewritten), "room_id");
+        auto const result = wrap(call_local(rewritten), "room_id");
         log_diagnostic(result.status == 200U ? "room.join_by_id.accepted" : "room.join_by_id.rejected",
                        {
                            {"actor",            *user,                                                   false},
@@ -3620,6 +3634,7 @@ auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&
 
 auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentToDeviceMessage message) -> bool
 {
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.homeserver.mutex};
     auto const stored =
         database::enqueue_to_device_message(runtime.homeserver.database.persistent_store, std::move(message));
     if (stored)
@@ -3631,6 +3646,7 @@ auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentTo
 
 auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change) -> bool
 {
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.homeserver.mutex};
     auto const stored =
         database::record_device_list_change(runtime.homeserver.database.persistent_store, std::move(change));
     if (stored)
@@ -3642,6 +3658,7 @@ auto record_device_list_change(ClientServerRuntime& runtime, database::Persisten
 
 auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool
 {
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.homeserver.mutex};
     auto const stored = database::upsert_presence(runtime.homeserver.database.persistent_store, std::move(state));
     if (stored)
     {
@@ -3652,6 +3669,7 @@ auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence sta
 
 auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool
 {
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.homeserver.mutex};
     // store_account_data advances next_sync_stream_id before persisting,
     // so the ensure_sync_notifier publish below wakes any long-poll
     // /sync waiter that was parked at a since_token below the new row.

@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/homeserver/room_service.hpp"
+
 #include "local_services.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -16,7 +18,6 @@
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
-#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -97,11 +98,13 @@ namespace
 
     // Perform a single synchronous outbound federation call. Returns the raw
     // response body on success (HTTP 2xx), or an error description on failure.
-    [[nodiscard]] auto perform_sync_outbound_call(HomeserverRuntime& runtime,
+    [[nodiscard]] auto perform_sync_outbound_call(http::OutboundClient* outbound_client,
+                                                  federation::ServerDiscoveryNetwork* discovery_network,
                                                   federation::OutboundTransaction const& transaction,
+                                                  std::string_view key_id, std::string_view secret_key,
                                                   std::string_view diagnostic_event) -> std::pair<bool, std::string>
     {
-        if (runtime.outbound_client == nullptr || runtime.discovery_network == nullptr)
+        if (outbound_client == nullptr || discovery_network == nullptr)
         {
             log_diagnostic(diagnostic_event, {
                                                  {"reason", "federation infrastructure not available", false}
@@ -110,7 +113,7 @@ namespace
         }
         auto const discovery_timeout = std::uint32_t{30U};
         auto const resolution =
-            federation::discover_server(transaction.destination, *runtime.discovery_network, discovery_timeout);
+            federation::discover_server(transaction.destination, *discovery_network, discovery_timeout);
         if (!resolution.discovery_allowed)
         {
             log_diagnostic(diagnostic_event, {
@@ -122,15 +125,7 @@ namespace
         // Load (or generate) the server signing key so we can read its actual key_id.
         // Outbound federation requests must reference the exact key_id that was published
         // to key servers — never a hardcoded sentinel like "ed25519:auto".
-        auto const signing_key = ensure_runtime_server_signing_key(runtime);
-        if (!signing_key.has_value())
-        {
-            log_diagnostic(diagnostic_event, {
-                                                 {"reason", "server signing key not initialized", false}
-            });
-            return {false, "server signing key not initialized"};
-        }
-        if (runtime.database.signing_secret_key.size() != crypto_sign_SECRETKEYBYTES)
+        if (secret_key.size() != crypto_sign_SECRETKEYBYTES)
         {
             log_diagnostic(diagnostic_event, {
                                                  {"reason", "server signing key not initialized", false}
@@ -142,16 +137,14 @@ namespace
         call.resolved_host = resolution.resolved_host;
         call.resolved_port = resolution.resolved_port;
         call.pinned_addresses = resolution.pinned_addresses;
-        call.key_id = signing_key->key_id;
-        call.secret_key = std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
-                                      runtime.database.signing_secret_key.size()};
+        call.key_id = std::string{key_id};
+        call.secret_key = std::string{secret_key};
         auto destination = federation::FederationDestination{};
         destination.server_name = transaction.destination;
         auto const now_ts = static_cast<std::uint64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
                 .count());
-        auto const result =
-            federation::perform_outbound_transaction(*runtime.outbound_client, call, destination, now_ts);
+        auto const result = federation::perform_outbound_transaction(*outbound_client, call, destination, now_ts);
         if (!result.sent || result.http_status < 200U || result.http_status >= 300U)
         {
             log_diagnostic(diagnostic_event, {
@@ -554,10 +547,9 @@ namespace
     // with a far-future valid_until_ts will never re-fetch it, causing BadSignatureError
     // on every outbound request. Ignoring "ed25519:auto" forces generation of a new
     // key whose key_id is unknown to any stale notary cache.
-    auto const it = std::ranges::find_if(
-        all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
-            return k.server_name == server_name && k.key_id != "ed25519:auto" && !k.secret_key.empty();
-        });
+    auto const it = std::ranges::find_if(all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
+        return k.server_name == server_name && k.key_id != "ed25519:auto" && !k.secret_key.empty();
+    });
 
     if (it != all_keys.end())
     {
@@ -568,31 +560,35 @@ namespace
         if (raw_secret.size() != crypto_sign_SECRETKEYBYTES)
         {
             log_diagnostic("signing_key.rejected",
-                           {{"server_name",  std::string{server_name},               false},
-                            {"key_id",       it->key_id,                             false},
-                            {"reason",       "secret_size_invalid",                  false},
-                            {"secret_size",  std::to_string(raw_secret.size()),      false},
-                            {"expected",     std::to_string(crypto_sign_SECRETKEYBYTES), false}});
+                           {
+                               {"server_name", std::string{server_name},                   false},
+                               {"key_id",      it->key_id,                                 false},
+                               {"reason",      "secret_size_invalid",                      false},
+                               {"secret_size", std::to_string(raw_secret.size()),          false},
+                               {"expected",    std::to_string(crypto_sign_SECRETKEYBYTES), false}
+            });
             return std::nullopt;
         }
         runtime.database.signing_secret_key = std::vector<unsigned char>(raw_secret.begin(), raw_secret.end());
-        log_diagnostic("signing_key.loaded",
-                       {{"server_name", std::string{server_name},            false},
-                        {"key_id",      it->key_id,                          false},
-                        {"public_key",  it->public_key,                      false},
-                        {"secret_size", std::to_string(raw_secret.size()),   false}});
+        log_diagnostic("signing_key.loaded", {
+                                                 {"server_name", std::string{server_name},          false},
+                                                 {"key_id",      it->key_id,                        false},
+                                                 {"public_key",  it->public_key,                    false},
+                                                 {"secret_size", std::to_string(raw_secret.size()), false}
+        });
         return *it;
     }
 
     // No usable derived-format key found. Log whether a legacy entry exists (for ops
     // visibility) then generate a fresh Ed25519 keypair with a derived key_id.
-    auto const has_legacy = std::ranges::any_of(
-        all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
+    auto const has_legacy =
+        std::ranges::any_of(all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
             return k.server_name == server_name && k.key_id == "ed25519:auto";
         });
-    log_diagnostic("signing_key.generating",
-                   {{"server_name",    std::string{server_name},              false},
-                    {"has_legacy_key", has_legacy ? "true" : "false",         false}});
+    log_diagnostic("signing_key.generating", {
+                                                 {"server_name",    std::string{server_name},      false},
+                                                 {"has_legacy_key", has_legacy ? "true" : "false", false}
+    });
 
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
@@ -618,8 +614,7 @@ namespace
     // re-fetch the key rather than caching it indefinitely.
     auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
     auto const now_ms = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
             .count());
 
     auto key = database::PersistentServerSigningKey{
@@ -634,10 +629,11 @@ namespace
         events::matrix_base64_from_bytes(
             std::string_view{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()}),
     };
-    log_diagnostic("signing_key.generated",
-                   {{"server_name", std::string{server_name}, false},
-                    {"key_id",      key_id,                   false},
-                    {"public_key",  key.public_key,           false}});
+    log_diagnostic("signing_key.generated", {
+                                                {"server_name", std::string{server_name}, false},
+                                                {"key_id",      key_id,                   false},
+                                                {"public_key",  key.public_key,           false}
+    });
     if (!database::store_server_signing_key(runtime.database.persistent_store, key))
     {
         return std::nullopt;
@@ -682,8 +678,7 @@ namespace
     auto old_verify_keys_obj = canonicaljson::Object{};
     for (auto const& old_key : runtime.database.persistent_store.server_signing_keys)
     {
-        if (old_key.server_name != key->server_name || old_key.key_id == key->key_id ||
-            old_key.public_key.empty())
+        if (old_key.server_name != key->server_name || old_key.key_id == key->key_id || old_key.public_key.empty())
         {
             continue;
         }
@@ -731,6 +726,14 @@ namespace
     {
         return make_operation_result(false, {}, canonicaljson::canonical_json_error_name(signed_response.error), 500U);
     }
+
+    // Atomically update the lock-free cache so dispatch_local_http_request can
+    // serve subsequent key server requests without acquiring the runtime mutex.
+    if (runtime.database.key_server_cache)
+    {
+        runtime.database.key_server_cache->store(signed_response.output);
+    }
+
     return make_operation_result(true, std::move(signed_response.output));
 }
 
@@ -796,6 +799,7 @@ namespace
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult
 {
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
     log_diagnostic("room.join.started", {
                                             {"room_id",          std::string{room_id},                    false},
                                             {"has_access_token", access_token.empty() ? "false" : "true", false}
@@ -828,8 +832,19 @@ namespace
         // Remote room: attempt make_join → sign → send_join via the
         // remote homeserver that originated the room.
         wire_federation_callbacks(runtime);
+        auto* outbound_client = runtime.outbound_client.get();
+        auto* discovery_network = runtime.discovery_network.get();
         auto const our_server = runtime.config.server().server_name;
         auto const supported_versions = std::vector<std::string>{"12"};
+        // Best-effort: load the key_id from the persistent store. If the key cannot be
+        // hydrated (wrong size, bad base64) ensure_runtime_server_signing_key returns
+        // nullopt and signing_secret_key stays empty. perform_sync_outbound_call validates
+        // the secret size and returns {false, "server signing key not initialized"}, which
+        // join_room surfaces as 502 — the correct status for an upstream federation failure.
+        auto const signing_key = ensure_runtime_server_signing_key(runtime);
+        auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+        auto const secret_key = std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
+                                            runtime.database.signing_secret_key.size()};
         auto make_join_tx =
             federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, remote_server,
                                                       our_server, room_id, *user_id, supported_versions);
@@ -838,8 +853,10 @@ namespace
                                                          {"room_id",       std::string{room_id},       false},
                                                          {"remote_server", std::string{remote_server}, false}
         });
+        guard.unlock();
         auto const [make_ok, make_body] =
-            perform_sync_outbound_call(runtime, make_join_tx, "room.join.remote.make_join_failed");
+            perform_sync_outbound_call(outbound_client, discovery_network, make_join_tx, key_id, secret_key,
+                                       "room.join.remote.make_join_failed");
         if (!make_ok)
         {
             log_diagnostic("room.join.rejected", {
@@ -905,23 +922,14 @@ namespace
         }
         auto event_to_sign = canonicaljson::Value{event_object};
         // Sign the event with our server's signing key.
-        auto key = ensure_runtime_server_signing_key(runtime);
-        if (!key.has_value())
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                         false},
-                                                     {"room_id", std::string{room_id},             false},
-                                                     {"status",  "500",                            false},
-                                                     {"reason",  "server signing key unavailable", false}
-            });
-            return make_operation_result(false, {}, "server signing key unavailable", 500U);
-        }
-        auto key_store = RuntimeSigningKeyStore{our_server, *key};
+        // signing_key is guaranteed non-empty here: perform_sync_outbound_call
+        // validates secret_key size before executing make_join, so a failed key
+        // means make_ok was false and we returned 502 above.
+        auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
         auto secret_key_array = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        if (runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES)
+        if (secret_key.size() == crypto_sign_SECRETKEYBYTES)
         {
-            std::copy(runtime.database.signing_secret_key.begin(), runtime.database.signing_secret_key.end(),
-                      secret_key_array.begin());
+            std::copy(secret_key.begin(), secret_key.end(), secret_key_array.begin());
         }
         auto provider = RuntimeEd25519Provider{std::move(secret_key_array)};
         auto const* policy = rooms::find_room_version_policy("12");
@@ -972,7 +980,8 @@ namespace
                                                          {"event_id",      event_id_result.event_id,   false}
         });
         auto const [send_ok, send_body] =
-            perform_sync_outbound_call(runtime, send_join_tx, "room.join.remote.send_join_failed");
+            perform_sync_outbound_call(outbound_client, discovery_network, send_join_tx, key_id, secret_key,
+                                       "room.join.remote.send_join_failed");
         if (!send_ok)
         {
             log_diagnostic("room.join.rejected", {
@@ -1007,6 +1016,7 @@ namespace
             });
             return make_operation_result(false, {}, "malformed send_join response", 502U);
         }
+        guard.lock();
         // Persist the room locally with the joined user as a member.
         // State events from the remote response are persisted to the
         // database so the room has enough state for auth checks.
