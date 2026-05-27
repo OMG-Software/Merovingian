@@ -715,10 +715,11 @@ SCENARIO("Client-server runtime signs sent events and persists their DAG metadat
                 REQUIRE(message_event_id.find(":") == std::string::npos);
                 REQUIRE(store.server_signing_keys.size() == 1U);
                 // create_room emits 4 initial state events (create, member,
-                // power_levels, join_rules); the client-server handler then
-                // adds join_rules (preset override) and history_visibility = 6
-                // from createRoom, plus the member state and message sent here.
-                REQUIRE(store.events.size() == 8U);
+                // power_levels, join_rules); the client-server handler adds
+                // history_visibility (join_rules is skipped for the default
+                // "invite" preset) = 5 from createRoom, plus the member state
+                // and message sent in this scenario = 7.
+                REQUIRE(store.events.size() == 7U);
                 REQUIRE(store.events.back().json.find("\"hashes\"") != std::string::npos);
                 REQUIRE(store.events.back().json.find("\"signatures\"") != std::string::npos);
                 REQUIRE(store.event_signatures.size() == store.events.size());
