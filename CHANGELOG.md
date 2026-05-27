@@ -12,6 +12,9 @@
   `send_join`, while snapshotting the signing key material first and
   reacquiring the mutex only for room persistence. This prevents unrelated
   client requests from blocking behind outbound federation I/O.
+- Restore explicit move construction/assignment for `HomeserverRuntime` after
+  adding the runtime mutex, so `start_client_server()` can still assemble the
+  client runtime without breaking every CI build matrix.
 
 ## 0.4.22
 

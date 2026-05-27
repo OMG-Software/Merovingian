@@ -125,7 +125,9 @@ separate operator decision once this branch is approved._
   path snapshots signing material, releases the mutex for discovery,
   `make_join`, and `send_join`, then reacquires it only for persistence. This
   stops unrelated client requests from serializing behind outbound federation
-  I/O.
+  I/O. `HomeserverRuntime` now carries explicit move operations so the runtime
+  remains movable after introducing the mutex, keeping `start_client_server()`
+  and the build matrix green.
 - Homeserver public headers: the old `vertical_slice.hpp` umbrella has been
   retired in favor of implementation-matched headers for runtime, auth, room,
   media, local HTTP routing, and the local smoke-flow helper. The split removes

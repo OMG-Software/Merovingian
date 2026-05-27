@@ -2232,7 +2232,11 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
     {
         rt.devices.push_back({device.user_id, device.device_id, device.display_name});
     }
-    return {true, {}, std::move(rt)};
+
+    auto result = ClientServerStartResult{};
+    result.started = true;
+    result.runtime = std::move(rt);
+    return result;
 }
 
 auto matrix_error(std::string_view errcode, std::string_view message) -> std::string
