@@ -130,7 +130,12 @@ separate operator decision once this branch is approved._
   `--log-file <path>` startup controls, health snapshots, safe metrics
   summaries, redaction helpers, durable audit events, admin
   health/metrics/audit runtime endpoints, and client-server audit persistence
-  exist.
+  exist.  Federation signing-pipeline diagnostics (`signature.signing` with
+  embedded public key, `signature.key_size_invalid`, `signature.payload_build_failed`)
+  and signing-key lifecycle events (`signing_key.loaded`, `signing_key.generating`,
+  `signing_key.generated`) surface key-mismatch and regeneration faults at
+  runtime without requiring a server restart.  `transaction.failed` log events
+  now capture the remote peer's response body for federation error diagnosis.
 - Trust and safety: registration/account/invite/federation/media/report policy
   engine, runtime client event reporting, admin safety report listing/review,
   durable policy audit rows, and durable admin action rows exist.

@@ -832,13 +832,38 @@ auto make_federation_signature(std::string_view origin, std::string_view destina
 {
     if (!sodium_is_ready() || secret_key.size() != crypto_sign_SECRETKEYBYTES)
     {
+        // Key size mismatch means no signature can be produced. Log so operators
+        // can detect misconfiguration without needing a debugger attached.
+        log_diagnostic("signature.key_size_invalid",
+                       {{"expected",  std::to_string(crypto_sign_SECRETKEYBYTES), false},
+                        {"actual",    std::to_string(secret_key.size()),           false},
+                        {"origin",    std::string{origin},                         false},
+                        {"target",    std::string{target},                         false}});
         return {};
     }
     auto const payload = federation_request_payload(origin, destination, method, target, body);
     if (!payload.has_value())
     {
+        // Body could not be parsed as canonical JSON — signature will be empty.
+        log_diagnostic("signature.payload_build_failed",
+                       {{"origin",      std::string{origin},           false},
+                        {"destination", std::string{destination},      false},
+                        {"method",      std::string{method},           false},
+                        {"target",      std::string{target},           false},
+                        {"body_bytes",  std::to_string(body.size()),   false}});
         return {};
     }
+    // libsodium Ed25519 secret keys are [seed(32) | public_key(32)]. Derive and
+    // log the embedded public key so operators can compare it against the value
+    // published at /_matrix/key/v2/server to catch signing/publishing key mismatches.
+    auto const embedded_pk = events::matrix_base64_from_bytes(secret_key.substr(32U));
+    log_diagnostic("signature.signing",
+                   {{"origin",        std::string{origin},                false},
+                    {"destination",   std::string{destination},           false},
+                    {"method",        std::string{method},                false},
+                    {"target",        std::string{target},                false},
+                    {"embedded_pk",   embedded_pk,                        false},
+                    {"payload_bytes", std::to_string(payload->size()),   false}});
     auto signature = std::string(crypto_sign_BYTES, '\0');
     if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
                              reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),

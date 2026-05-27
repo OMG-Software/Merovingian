@@ -181,12 +181,13 @@ auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall con
     else
     {
         log_diagnostic("transaction.failed",
-                       {{"destination", call.transaction.destination,              false},
-                        {"method",      call.transaction.method,                   false},
-                        {"target",      call.transaction.target,                   false},
-                        {"http_status", std::to_string(result.http_status),        false},
-                        {"error",       result.error,                              false},
-                        {"failures",    std::to_string(destination.consecutive_failures), false}});
+                       {{"destination",    call.transaction.destination,                   false},
+                        {"method",         call.transaction.method,                        false},
+                        {"target",         call.transaction.target,                        false},
+                        {"http_status",    std::to_string(result.http_status),             false},
+                        {"error",          result.error,                                   false},
+                        {"response_body",  result.response_body,                           false},
+                        {"failures",       std::to_string(destination.consecutive_failures), false}});
     }
 
     return result;
