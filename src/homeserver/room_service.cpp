@@ -922,7 +922,10 @@ namespace
         }
         auto event_to_sign = canonicaljson::Value{event_object};
         // Sign the event with our server's signing key.
-        auto key_store = RuntimeSigningKeyStore{our_server, signing_key_copy};
+        // signing_key is guaranteed non-empty here: perform_sync_outbound_call
+        // validates secret_key size before executing make_join, so a failed key
+        // means make_ok was false and we returned 502 above.
+        auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
         auto secret_key_array = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
         if (secret_key.size() == crypto_sign_SECRETKEYBYTES)
         {
@@ -977,8 +980,8 @@ namespace
                                                          {"event_id",      event_id_result.event_id,   false}
         });
         auto const [send_ok, send_body] =
-            perform_sync_outbound_call(outbound_client, discovery_network, send_join_tx, signing_key_copy.key_id,
-                                       secret_key, "room.join.remote.send_join_failed");
+            perform_sync_outbound_call(outbound_client, discovery_network, send_join_tx, key_id, secret_key,
+                                       "room.join.remote.send_join_failed");
         if (!send_ok)
         {
             log_diagnostic("room.join.rejected", {
