@@ -7,6 +7,7 @@
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/media_service.hpp"
@@ -22,12 +23,18 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <type_traits>
 #include <vector>
 
 #include <sqlite3.h>
 
 namespace
 {
+
+static_assert(std::is_move_constructible_v<merovingian::homeserver::HomeserverRuntime>);
+static_assert(std::is_move_assignable_v<merovingian::homeserver::HomeserverRuntime>);
+static_assert(std::is_move_constructible_v<merovingian::homeserver::ClientServerRuntime>);
+static_assert(std::is_move_assignable_v<merovingian::homeserver::ClientServerRuntime>);
 
 class TestSqliteConnection final
 {
