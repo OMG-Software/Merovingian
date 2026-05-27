@@ -1,7 +1,27 @@
 # Changelog
 
-## 0.4.23
+## 0.4.24
 
+- Added the missing `<algorithm>` include to
+  `tests/unit/test_review_regressions.cpp` so the new
+  `std::ranges::find_if` regression coverage builds on FreeBSD libc++ as
+  well as Linux. Linux had been passing only because another header
+  happened to provide the declaration transitively.
+- Make `POST /_matrix/client/v3/createRoom` conform to the Matrix v1.18
+  preset and event-order rules. Room creation now derives the preset from
+  `visibility`, honours requested `room_version`, merges
+  `creation_content` and `power_level_content_override`, applies
+  `initial_state`, emits `m.room.guest_access`, propagates `is_direct`
+  into invite membership events, and implements the full
+  `trusted_private_chat` extras including `additional_creators`,
+  invitee power level 100, and a v12-safe `m.room.tombstone` power level.
+- Register `room_alias_name` in a durable room-alias table, emit
+  `m.room.canonical_alias`, expose `GET` and `PUT`
+  `/_matrix/client/v3/directory/room/{roomAlias}`, and reject duplicate
+  aliases with `M_ROOM_IN_USE`.
+- Use the created room's actual version in outbound federation invite
+  transactions instead of hardcoding version 12, so remote invitees see
+  the correct auth rules for the room they are being invited to.
 - Remove the listener-owned `runtime_lock` from HTTP dispatch and move
   request synchronization into `HomeserverRuntime::mutex`, so listeners no
   longer serialize every request through one process-wide lock.
@@ -15,6 +35,21 @@
 - Restore explicit move construction/assignment for `HomeserverRuntime` after
   adding the runtime mutex, so `start_client_server()` can still assemble the
   client runtime without breaking every CI build matrix.
+- Advertise room versions 10, 11, and 12 in outbound `make_join` requests so
+  federation joins succeed against rooms that use versions older than 12.
+  Use the `room_version` field from the `make_join` response to select the
+  correct event-auth and redaction policy when signing the join event.
+- Generate the four required initial Matrix room state events (`m.room.create`,
+  `m.room.member` for the creator, `m.room.power_levels`, `m.room.join_rules`)
+  during `create_room` so that `send_join` returns a non-empty auth chain and
+  Synapse no longer rejects remote joins with "No create event in state".
+- Derive the room version policy for event composition from the room's
+  `m.room.create` event instead of hardcoding version 12, so events in older
+  rooms use the correct signing and auth rules.
+- Remove the duplicate `m.room.create`, `m.room.member`, and `m.room.power_levels`
+  `send_state` calls from the client-server `createRoom` handler; those events
+  are now owned by the lower-level `create_room` function. The handler still
+  sends `m.room.join_rules` (for preset override) and `m.room.history_visibility`.
 
 ## 0.4.22
 

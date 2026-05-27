@@ -342,14 +342,13 @@ namespace
                              store.refresh_tokens.push_back({column_text(row, 0), column_text(row, 1),
                                                              column_text(row, 2), text_is_true(column_text(row, 3))});
                          }) &&
-               load_rows(
-                   connection,
-                   "SELECT server_name, key_id, public_key, valid_until_ts, secret_key FROM server_signing_keys",
-                   [&store](sqlite3_stmt& row) {
-                       store.server_signing_keys.push_back({column_text(row, 0), column_text(row, 1),
-                                                            column_text(row, 2), parse_u64(column_text(row, 3)),
-                                                            column_text(row, 4)});
-                   }) &&
+               load_rows(connection,
+                         "SELECT server_name, key_id, public_key, valid_until_ts, secret_key FROM server_signing_keys",
+                         [&store](sqlite3_stmt& row) {
+                             store.server_signing_keys.push_back({column_text(row, 0), column_text(row, 1),
+                                                                  column_text(row, 2), parse_u64(column_text(row, 3)),
+                                                                  column_text(row, 4)});
+                         }) &&
                load_rows(connection,
                          "SELECT server_name, state, retry_after_ts, last_success_ts, consecutive_failures FROM "
                          "federation_destinations",
@@ -555,6 +554,10 @@ namespace
                load_rows(connection, "SELECT user_id, displayname, avatar_url FROM profiles",
                          [&store](sqlite3_stmt& row) {
                              store.profiles.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
+                         }) &&
+               load_rows(connection, "SELECT room_alias, room_id FROM room_aliases ORDER BY room_alias",
+                         [&store](sqlite3_stmt& row) {
+                             store.room_aliases.push_back({column_text(row, 0), column_text(row, 1)});
                          });
     }
 

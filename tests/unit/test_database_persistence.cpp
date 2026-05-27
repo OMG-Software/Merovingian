@@ -828,6 +828,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             auto const tables = merovingian::database::initial_schema_tables();
             auto const users_definition = merovingian::database::schema_table_definition("users");
             auto const current_state_definition = merovingian::database::schema_table_definition("current_state");
+            auto const room_aliases_definition = merovingian::database::schema_table_definition("room_aliases");
             auto const users_sql = users_definition.has_value()
                                        ? merovingian::database::create_table_sql(users_definition.value())
                                        : std::string{};
@@ -838,14 +839,16 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
 
             THEN("required Matrix storage areas have table-specific definitions")
             {
-                // 43 = the 37 baseline tables plus four sync-surface tables
+                // 44 = the 37 baseline tables plus four sync-surface tables,
                 // plus durable media blob storage plus the user profiles table
+                // plus the durable room-alias registry
                 // (room_account_data, to_device_messages, device_list_changes,
                 // presence_state) folded into the initial schema.
-                REQUIRE(tables.size() == 43U);
+                REQUIRE(tables.size() == 44U);
                 REQUIRE(merovingian::database::current_schema_version() == 1U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
+                REQUIRE(room_aliases_definition.has_value());
                 REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);
                 REQUIRE(current_state_columns.find("PRIMARY KEY (room_id, event_type, state_key)") !=
                         std::string_view::npos);
@@ -941,8 +944,7 @@ SCENARIO("Persistent store includes event depth in event statements", "[database
     }
 }
 
-SCENARIO("Server signing key secret survives a database restart",
-         "[database][persistence][signing-key][restart]")
+SCENARIO("Server signing key secret survives a database restart", "[database][persistence][signing-key][restart]")
 {
     GIVEN("a SQLite persistent store with a server signing key that includes a stored secret")
     {
@@ -956,16 +958,15 @@ SCENARIO("Server signing key secret survives a database restart",
         // This string decodes to binary data whose first three bytes are 0x00 0x01 0x02.
         auto constexpr stored_secret = std::string_view{"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"};
         auto const key = merovingian::database::PersistentServerSigningKey{
-            "pong.example.org", "ed25519:auto", "public-key-base64", 32503680000000ULL,
-            std::string{stored_secret}};
+            "pong.example.org", "ed25519:auto", "public-key-base64", 32503680000000ULL, std::string{stored_secret}};
         auto const stored_ok = merovingian::database::store_server_signing_key(opened.store, key);
 
         WHEN("the database is reopened to simulate a server restart")
         {
             auto reopened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
             REQUIRE(reopened.ok);
-            auto const found = merovingian::database::find_server_signing_key(reopened.store, "pong.example.org",
-                                                                              "ed25519:auto");
+            auto const found =
+                merovingian::database::find_server_signing_key(reopened.store, "pong.example.org", "ed25519:auto");
 
             THEN("the public key and its base64-encoded secret are both hydrated from disk without truncation")
             {
@@ -999,8 +1000,7 @@ SCENARIO("store_server_signing_key preserves an existing secret when upserted wi
         {
             auto const ok = merovingian::database::store_server_signing_key(
                 store, {"example.org", "ed25519:auto", "pub-v2", 32503680000000ULL, {}});
-            auto const found =
-                merovingian::database::find_server_signing_key(store, "example.org", "ed25519:auto");
+            auto const found = merovingian::database::find_server_signing_key(store, "example.org", "ed25519:auto");
 
             THEN("the public key is updated and the existing base64 secret is preserved")
             {

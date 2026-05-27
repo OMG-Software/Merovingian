@@ -332,6 +332,12 @@ struct PersistentProfile final
     std::string avatar_url{};
 };
 
+struct PersistentRoomAlias final
+{
+    std::string room_alias{};
+    std::string room_id{};
+};
+
 struct PersistentStore final
 {
     bool open{false};
@@ -373,6 +379,7 @@ struct PersistentStore final
     std::vector<PersistentPresence> presence_states{};
     std::vector<PersistentFilter> filters{};
     std::vector<PersistentProfile> profiles{};
+    std::vector<PersistentRoomAlias> room_aliases{};
     std::vector<PreparedStatement> prepared_statements{};
     // Monotonic stream id used by /sync surfaces (to_device, device_list
     // changes, presence). Incremented before each new row is persisted so
@@ -440,6 +447,9 @@ enum class MembershipStoreResult
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
                                           std::optional<PersistentStateEvent> state) -> bool;
+[[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool;
+[[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
+    -> std::optional<PersistentRoomAlias>;
 [[nodiscard]] auto store_device_key(PersistentStore& store, PersistentDeviceKey key) -> bool;
 [[nodiscard]] auto find_device_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
     -> std::optional<PersistentDeviceKey>;

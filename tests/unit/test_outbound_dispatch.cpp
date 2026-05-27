@@ -2,6 +2,7 @@
 
 #include "../support/registration_token.hpp"
 #include "federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -41,7 +42,8 @@ namespace
     };
 }
 
-[[nodiscard]] auto make_dispatch_worker(merovingian::http::OutboundClient& client)
+[[nodiscard]] auto make_dispatch_worker(merovingian::http::OutboundClient& client,
+                                        merovingian::database::PersistentStore* persistent_store = nullptr)
     -> std::unique_ptr<merovingian::federation::DispatchWorker>
 {
     auto config = merovingian::federation::DispatchWorkerConfig{};
@@ -66,8 +68,8 @@ namespace
     };
     auto sleep_fn = [](std::chrono::milliseconds) {
     };
-    return std::make_unique<merovingian::federation::DispatchWorker>(std::move(config), client, std::move(resolver),
-                                                                     std::move(clock), std::move(sleep_fn), nullptr);
+    return std::make_unique<merovingian::federation::DispatchWorker>(
+        std::move(config), client, std::move(resolver), std::move(clock), std::move(sleep_fn), persistent_store);
 }
 
 [[nodiscard]] auto login_token(std::string const& body) -> std::string
@@ -109,6 +111,16 @@ namespace
     return room != database.rooms.end() && std::ranges::any_of(room->members, [&](std::string const& member) {
                return member == user_id;
            });
+}
+
+[[nodiscard]] auto first_invite_transaction_body(merovingian::database::PersistentStore const& store) -> std::string
+{
+    auto const transaction = std::ranges::find_if(
+        store.federation_transactions, [](merovingian::database::PersistentFederationTransaction const& current) {
+            return current.target.find("/_matrix/federation/v2/invite/") != std::string::npos;
+        });
+    REQUIRE(transaction != store.federation_transactions.end());
+    return transaction->body;
 }
 
 } // namespace
@@ -500,7 +512,7 @@ SCENARIO("createRoom invites remote Matrix users through outbound federation",
         auto const token = login_token(login.response.body);
 
         auto client = merovingian::http::OutboundClient{};
-        auto worker = make_dispatch_worker(client);
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
         homeserver.dispatch_worker.reset(worker.get());
         std::ignore = worker.release();
         auto const summary_before = homeserver.dispatch_worker->summary();
@@ -517,6 +529,65 @@ SCENARIO("createRoom invites remote Matrix users through outbound federation",
                 REQUIRE(has_membership(homeserver.database.persistent_store, id, "@bob:remote.example.org", "invite"));
                 auto const summary_after = homeserver.dispatch_worker->summary();
                 REQUIRE(summary_after.enqueued > summary_before.enqueued);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("createRoom outbound invites carry the created room's version",
+         "[homeserver][federation][create-room][invite][room-version]")
+{
+    GIVEN("a local user creating a room with a remote invitee and a requested room version")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        WHEN("createRoom targets room version 11")
+        {
+            auto const room = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token,
+                          R"({"invite":["@bob:remote.example.org"],"room_version":"11"})"});
+
+            THEN("the queued outbound invite body advertises that same room version")
+            {
+                REQUIRE(room.response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(
+                    first_invite_transaction_body(homeserver.database.persistent_store));
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const room_version = std::ranges::find_if(*root, [](auto const& member) {
+                    return member.key == "room_version";
+                });
+                REQUIRE(room_version != root->end());
+                auto const* version_text = std::get_if<std::string>(&room_version->value->storage());
+                REQUIRE(version_text != nullptr);
+                REQUIRE(*version_text == "11");
             }
         }
 

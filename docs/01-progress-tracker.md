@@ -77,6 +77,24 @@ separate operator decision once this branch is approved._
   room policy, decoded Matrix room path components for browser-encoded join,
   send, and state routes, local `publicRooms` directory listing for
   `public_chat` rooms, and restart-survival coverage.
+- Room initial state for federation: `create_room` now generates and persists
+  the four required Matrix room state events (`m.room.create`, `m.room.member`
+  for the creator, `m.room.power_levels`, `m.room.join_rules`) so that
+  `send_join` can return a non-empty auth chain. Synapse previously rejected
+  remote joins to locally-hosted rooms with "No create event in state"; this is
+  now fixed. The room version policy for event composition is derived from the
+  stored `m.room.create` event rather than hardcoded to version 12.
+- `createRoom` Matrix v1.18 conformance: `POST /_matrix/client/v3/createRoom`
+  now emits the spec-ordered initial state chain, derives presets from
+  `visibility`, persists `m.room.guest_access`, honours `room_version`,
+  `creation_content`, `power_level_content_override`, `initial_state`,
+  `room_alias_name`, and `is_direct`, and exposes client room-directory alias
+  lookup/registration routes. Outbound federation invites now advertise the
+  created room's actual version instead of a hardcoded value.
+- FreeBSD portability regression: the `createRoom` follow-up review coverage
+  now includes its required standard-library header (`<algorithm>`) so
+  `std::ranges::find_if` builds cleanly on libc++-based FreeBSD CI instead of
+  relying on Linux-only transitive includes.
 - Sync foundation: stream tokens, initial sync, incremental event diffing via
   `since`, Matrix-shaped sync responses with event bodies, invite/leave room
   categories, and top-level `presence`, `account_data`, `to_device`,

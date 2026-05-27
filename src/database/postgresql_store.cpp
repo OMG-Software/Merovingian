@@ -876,6 +876,20 @@ namespace
                 store.filters.push_back({row[0], row[1], row[2]});
             }
         }
+
+        auto room_aliases = query_rows(connection, "postgresql_load_room_aliases",
+                                       "SELECT room_alias, room_id FROM room_aliases ORDER BY room_alias");
+        if (!room_aliases.ok)
+        {
+            return false;
+        }
+        for (auto const& row : room_aliases.rows)
+        {
+            if (row.size() >= 2U)
+            {
+                store.room_aliases.push_back({row[0], row[1]});
+            }
+        }
         return true;
     }
 
