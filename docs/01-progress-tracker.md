@@ -91,6 +91,10 @@ separate operator decision once this branch is approved._
   `room_alias_name`, and `is_direct`, and exposes client room-directory alias
   lookup/registration routes. Outbound federation invites now advertise the
   created room's actual version instead of a hardcoded value.
+- FreeBSD portability regression: the `createRoom` follow-up review coverage
+  now includes its required standard-library header (`<algorithm>`) so
+  `std::ranges::find_if` builds cleanly on libc++-based FreeBSD CI instead of
+  relying on Linux-only transitive includes.
 - Sync foundation: stream tokens, initial sync, incremental event diffing via
   `since`, Matrix-shaped sync responses with event bodies, invite/leave room
   categories, and top-level `presence`, `account_data`, `to_device`,

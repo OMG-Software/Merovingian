@@ -2,6 +2,11 @@
 
 ## 0.4.24
 
+- Added the missing `<algorithm>` include to
+  `tests/unit/test_review_regressions.cpp` so the new
+  `std::ranges::find_if` regression coverage builds on FreeBSD libc++ as
+  well as Linux. Linux had been passing only because another header
+  happened to provide the declaration transitively.
 - Make `POST /_matrix/client/v3/createRoom` conform to the Matrix v1.18
   preset and event-order rules. Room creation now derives the preset from
   `visibility`, honours requested `room_version`, merges
