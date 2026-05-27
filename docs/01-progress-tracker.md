@@ -107,7 +107,10 @@ separate operator decision once this branch is approved._
   absent; dispatch-worker startup rejects unusable secrets; `OutboundClient`
   preserves raw encoded request targets with `CURLOPT_PATH_AS_IS`; TLS
   integration coverage captures the exact `make_join` request line to guard
-  against signature drift.
+  against signature drift. `/_matrix/key/v2/server` now populates
+  `old_verify_keys` from all non-active signing keys in the persistent store,
+  with `expired_ts` capped at `now` to prevent future-dated entries from
+  superseded keys that carried the year-2999 sentinel.
 - Homeserver public headers: the old `vertical_slice.hpp` umbrella has been
   retired in favor of implementation-matched headers for runtime, auth, room,
   media, local HTTP routing, and the local smoke-flow helper. The split removes

@@ -17,6 +17,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -303,6 +304,71 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
                             reinterpret_cast<unsigned char const*>(payload.output.data()), payload.output.size(),
                             reinterpret_cast<unsigned char const*>(public_key_bytes.data())) == 0);
                 REQUIRE(response.body.find("secret") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys",
+         "[integration][federation][keys]")
+{
+    GIVEN("a started runtime that also has a superseded legacy signing key in the store")
+    {
+        auto started = merovingian::homeserver::start_runtime(federation_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        // Inject a pre-existing legacy key (mimics the ed25519:auto entry left behind after
+        // the key-id migration). Its valid_until_ts is far in the future (the old year-2999
+        // sentinel) — the implementation must cap expired_ts at now so it is never future-dated.
+        auto const legacy_public_key = std::string{"bGVnYWN5cHVibGlja2V5"}; // base64("legacypublickey")
+        runtime.database.persistent_store.server_signing_keys.push_back({
+            "example.org",
+            "ed25519:auto",
+            legacy_public_key,
+            32503680000000ULL, // year-2999 sentinel — must be capped when published
+            "",                // no secret; old keys are verification-only
+        });
+
+        WHEN("a remote homeserver fetches GET /_matrix/key/v2/server")
+        {
+            auto const response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_matrix/key/v2/server", {}, {}});
+
+            THEN("old_verify_keys contains the superseded key with an expired_ts that is not in the future")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(object != nullptr);
+
+                auto const* old_verify_keys = object_member_as_object(*object, "old_verify_keys");
+                REQUIRE(old_verify_keys != nullptr);
+                // Exactly one superseded key: the legacy ed25519:auto entry.
+                REQUIRE(old_verify_keys->size() == 1U);
+
+                auto const* old_entry = object_member_as_object(*old_verify_keys, "ed25519:auto");
+                REQUIRE(old_entry != nullptr);
+
+                auto const* old_key_str = string_member(*old_entry, "key");
+                auto const* expired_ts  = integer_member(*old_entry, "expired_ts");
+                REQUIRE(old_key_str != nullptr);
+                REQUIRE(*old_key_str == legacy_public_key);
+                REQUIRE(expired_ts != nullptr);
+                // expired_ts must be a positive timestamp capped at now — never future-dated.
+                REQUIRE(*expired_ts > 0);
+                auto const now_approx = static_cast<std::int64_t>(
+                    std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::system_clock::now().time_since_epoch())
+                        .count());
+                REQUIRE(*expired_ts <= now_approx);
+
+                // The active verify_keys must still be present and distinct from old_verify_keys.
+                auto const* verify_keys = object_member_as_object(*object, "verify_keys");
+                REQUIRE(verify_keys != nullptr);
+                REQUIRE(verify_keys->size() == 1U);
+                REQUIRE(verify_keys->front().key != "ed25519:auto");
             }
         }
     }
