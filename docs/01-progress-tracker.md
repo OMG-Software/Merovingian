@@ -129,6 +129,18 @@ separate operator decision once this branch is approved._
   `old_verify_keys` from all non-active signing keys in the persistent store,
   with `expired_ts` capped at `now` to prevent future-dated entries from
   superseded keys that carried the year-2999 sentinel.
+- Inbound PDU signing payload fix (0.4.26): `make_event_signing_payload` now
+  strips `event_id` from the verification payload when the room version uses
+  reference-hash event IDs (all room versions 4+, i.e. every version we
+  support). Synapse includes `event_id` in outbound PDUs as a receiver hint,
+  but its signing payload never contained the field. This caused
+  `crypto_sign_verify_detached` to fail for every inbound encrypted-message
+  PDU, making Merovingian return 403 and triggering Synapse's 600-second
+  backoff on the federation link.
+- Remote join content hash (0.4.25): the `make_join` → `send_join` remote
+  join path now computes and attaches `hashes.sha256` before signing the join
+  event, fixing Synapse rejection with "Malformed 'hashes': `<class
+  'NoneType'>`".
 - Key server lock-free fast path: `/_matrix/key/v2/server` is now served
   without acquiring the runtime mutex. The signed response is
   pre-computed during `start_runtime` and cached in an atomic

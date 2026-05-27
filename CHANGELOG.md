@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.26
+
+- Fix inbound PDU signature verification failure (Synapse returns 403 on every
+  encrypted message): `make_event_signing_payload` now strips `event_id` from
+  the signing payload when the room version uses reference-hash event IDs (all
+  room versions 4+). Synapse includes `event_id` in outbound PDUs as a
+  convenience hint, but its signing payload never contained the field. Our
+  verification payload was therefore different from what Synapse signed, causing
+  `crypto_sign_verify_detached` to fail for every inbound PDU.
+
 ## 0.4.25
 
 - Fix remote join (make_join → send_join) failing with Synapse error "Malformed

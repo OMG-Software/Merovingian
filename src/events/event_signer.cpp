@@ -60,6 +60,27 @@ namespace
         return stripped;
     }
 
+    // Like clone_without_unsigned_and_signatures but also strips event_id.
+    // Room versions 4+ derive event_id from the content hash — it is never part
+    // of the canonical event body. Federation senders (e.g. Synapse) commonly
+    // attach event_id to outbound PDUs as a receiver convenience, but the
+    // signing payload they computed when creating the event did NOT include it.
+    // We must strip it before verification so our payload matches theirs.
+    [[nodiscard]] auto clone_without_unsigned_signatures_and_event_id(canonicaljson::Object const& object)
+        -> canonicaljson::Object
+    {
+        auto stripped = canonicaljson::Object{};
+        stripped.reserve(object.size());
+        for (auto const& member : object)
+        {
+            if (member.key != "unsigned" && member.key != "signatures" && member.key != "event_id")
+            {
+                stripped.push_back(canonicaljson::make_member(member.key, *member.value));
+            }
+        }
+        return stripped;
+    }
+
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
         static auto const ready = sodium_init() >= 0;
@@ -216,10 +237,30 @@ auto make_event_signing_payload(canonicaljson::Value const& event) -> canonicalj
     return canonicaljson::serialize_canonical(canonicaljson::Value{clone_without_unsigned_and_signatures(*object)});
 }
 
-auto make_event_signing_payload(canonicaljson::Value const& event, [[maybe_unused]] rooms::RoomVersionPolicy const& policy)
+auto make_event_signing_payload(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
     -> canonicaljson::SerializeResult
 {
-    return make_event_signing_payload(event);
+    auto const* object = std::get_if<canonicaljson::Object>(&event.storage());
+    if (object == nullptr)
+    {
+        return {{}, canonicaljson::CanonicalJsonError::invalid_string};
+    }
+
+    // For room versions that use reference-hash event IDs (room v4+), event_id is
+    // not part of the canonical event body — it is derived from the content hash.
+    // Federation senders (Synapse included) often attach event_id to outbound PDUs
+    // as a convenience, but their signing payload never contained it. Strip it here
+    // so our verification payload is byte-identical to what the sender signed.
+    if (policy.event_id_format == rooms::EventIdFormat::reference_hash)
+    {
+        return canonicaljson::serialize_canonical(
+            canonicaljson::Value{clone_without_unsigned_signatures_and_event_id(*object)});
+    }
+
+    // Legacy room versions (1–3) include event_id in the event body itself, so it
+    // is part of the signing payload and must not be removed.
+    return canonicaljson::serialize_canonical(
+        canonicaljson::Value{clone_without_unsigned_and_signatures(*object)});
 }
 
 auto attach_event_signature(canonicaljson::Value const& event, SigningKeyId const& key_id, std::string_view signature)
