@@ -13,9 +13,12 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <sodium.h>
+
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace
 {
@@ -63,9 +66,12 @@ public:
 auto install_unusable_persisted_signing_key(merovingian::homeserver::HomeserverRuntime& runtime) -> void
 {
     auto const server_name = runtime.config.server().server_name;
+    // Use a derived-format key_id (not "ed25519:auto") so the key is matched by the
+    // current lookup logic. The secret is intentionally not valid base64, so decoding
+    // produces fewer than crypto_sign_SECRETKEYBYTES bytes and the system fails closed.
     runtime.database.persistent_store.server_signing_keys.push_back({
         server_name,
-        "ed25519:auto",
+        "ed25519:deadbeef",
         "public-key-base64",
         32503680000000ULL,
         "not-base64",
@@ -472,6 +478,75 @@ SCENARIO("Federation callbacks refuse to start the dispatch worker with an unusa
             THEN("dispatch worker startup fails closed instead of using a fallback key id")
             {
                 REQUIRE(runtime.dispatch_worker == nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("ensure_runtime_server_signing_key generates a derived key_id, never the legacy sentinel",
+         "[homeserver][vertical][signing]")
+{
+    GIVEN("a fresh runtime with no signing key in the store")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(runtime.database.persistent_store.server_signing_keys.empty());
+
+        WHEN("the signing key is ensured")
+        {
+            auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("a key is generated with a derived key_id that is not the legacy sentinel")
+            {
+                REQUIRE(key.has_value());
+                REQUIRE(key->key_id.starts_with("ed25519:"));
+                REQUIRE(key->key_id != "ed25519:auto");
+                // Derived ID is "ed25519:" + 8 lowercase hex chars from the public key.
+                REQUIRE(key->key_id.size() == std::string_view{"ed25519:"}.size() + 8U);
+                // The key is persisted to the store.
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.front().key_id == key->key_id);
+                // The runtime secret key is populated and has the correct Ed25519 size.
+                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+            }
+        }
+    }
+}
+
+SCENARIO("ensure_runtime_server_signing_key migrates a legacy ed25519:auto key by generating a fresh one",
+         "[homeserver][vertical][signing]")
+{
+    GIVEN("a runtime whose store contains only a legacy ed25519:auto signing key")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const server_name = runtime.config.server().server_name;
+        // Inject a well-formed legacy key — the secret is valid base64 but the key_id is
+        // "ed25519:auto", which notary servers (e.g. matrix.org) may have cached with a
+        // far-future valid_until_ts, making it impossible to rotate via normal expiry.
+        runtime.database.persistent_store.server_signing_keys.push_back({
+            server_name,
+            "ed25519:auto",
+            "cHVibGlja2V5", // base64("pubkey") — syntactically valid but not real Ed25519
+            32503680000000ULL,
+            "c2VjcmV0a2V5", // base64("secretkey") — valid base64, wrong size
+        });
+
+        WHEN("the signing key is ensured")
+        {
+            auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("a fresh key with a derived key_id is generated, bypassing the stale notary cache")
+            {
+                REQUIRE(key.has_value());
+                REQUIRE(key->key_id != "ed25519:auto");
+                REQUIRE(key->key_id.starts_with("ed25519:"));
+                REQUIRE(key->key_id.size() == std::string_view{"ed25519:"}.size() + 8U);
+                // Two keys now in the store: the old legacy entry plus the newly generated one.
+                REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 2U);
+                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
             }
         }
     }

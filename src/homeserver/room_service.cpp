@@ -119,6 +119,17 @@ namespace
             });
             return {false, "server discovery failed"};
         }
+        // Load (or generate) the server signing key so we can read its actual key_id.
+        // Outbound federation requests must reference the exact key_id that was published
+        // to key servers — never a hardcoded sentinel like "ed25519:auto".
+        auto const signing_key = ensure_runtime_server_signing_key(runtime);
+        if (!signing_key.has_value())
+        {
+            log_diagnostic(diagnostic_event, {
+                                                 {"reason", "server signing key not initialized", false}
+            });
+            return {false, "server signing key not initialized"};
+        }
         if (runtime.database.signing_secret_key.size() != crypto_sign_SECRETKEYBYTES)
         {
             log_diagnostic(diagnostic_event, {
@@ -131,7 +142,7 @@ namespace
         call.resolved_host = resolution.resolved_host;
         call.resolved_port = resolution.resolved_port;
         call.pinned_addresses = resolution.pinned_addresses;
-        call.key_id = "ed25519:auto";
+        call.key_id = signing_key->key_id;
         call.secret_key = std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
                                       runtime.database.signing_secret_key.size()};
         auto destination = federation::FederationDestination{};
@@ -534,52 +545,98 @@ namespace
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>
 {
-    auto constexpr key_id = std::string_view{"ed25519:auto"};
     auto const& server_name = runtime.config.server().server_name;
+    auto const& all_keys = runtime.database.persistent_store.server_signing_keys;
 
-    auto existing = database::find_server_signing_key(runtime.database.persistent_store, server_name, key_id);
-    if (existing.has_value() && !existing->secret_key.empty())
+    // Find any signing key for this server that uses a derived key_id (not the legacy
+    // "ed25519:auto" sentinel). The sentinel was used before key-ids were derived from
+    // the public key bytes; federation notary servers (e.g. matrix.org) that cached it
+    // with a far-future valid_until_ts will never re-fetch it, causing BadSignatureError
+    // on every outbound request. Ignoring "ed25519:auto" forces generation of a new
+    // key whose key_id is unknown to any stale notary cache.
+    auto const it = std::ranges::find_if(
+        all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
+            return k.server_name == server_name && k.key_id != "ed25519:auto" && !k.secret_key.empty();
+        });
+
+    if (it != all_keys.end())
     {
-        // secret_key is stored as Matrix base64 — decode back to raw bytes before putting into memory.
-        auto const raw_secret = events::matrix_bytes_from_base64(existing->secret_key);
+        // Decode the stored base64 secret and validate its size before trusting it.
+        // Fail closed if the secret cannot hydrate into a full Ed25519 secret key —
+        // attempting to sign with wrong-length material produces corrupt signatures.
+        auto const raw_secret = events::matrix_bytes_from_base64(it->secret_key);
+        if (raw_secret.size() != crypto_sign_SECRETKEYBYTES)
+        {
+            log_diagnostic("signing_key.rejected",
+                           {{"server_name",  std::string{server_name},               false},
+                            {"key_id",       it->key_id,                             false},
+                            {"reason",       "secret_size_invalid",                  false},
+                            {"secret_size",  std::to_string(raw_secret.size()),      false},
+                            {"expected",     std::to_string(crypto_sign_SECRETKEYBYTES), false}});
+            return std::nullopt;
+        }
         runtime.database.signing_secret_key = std::vector<unsigned char>(raw_secret.begin(), raw_secret.end());
-        // Log the public key being loaded so operators can cross-check it against every
-        // outbound signature.signing log event (which also logs embedded_pk from the secret key).
         log_diagnostic("signing_key.loaded",
-                       {{"server_name", std::string{server_name},                    false},
-                        {"key_id",      std::string{key_id},                         false},
-                        {"public_key",  existing->public_key,                        false},
-                        {"secret_size", std::to_string(raw_secret.size()),           false}});
-        return existing;
+                       {{"server_name", std::string{server_name},            false},
+                        {"key_id",      it->key_id,                          false},
+                        {"public_key",  it->public_key,                      false},
+                        {"secret_size", std::to_string(raw_secret.size()),   false}});
+        return *it;
     }
 
-    // No usable key found in the persistent store — generate a fresh Ed25519 keypair.
-    // This should only happen on the very first startup for a given server name.
+    // No usable derived-format key found. Log whether a legacy entry exists (for ops
+    // visibility) then generate a fresh Ed25519 keypair with a derived key_id.
+    auto const has_legacy = std::ranges::any_of(
+        all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
+            return k.server_name == server_name && k.key_id == "ed25519:auto";
+        });
     log_diagnostic("signing_key.generating",
-                   {{"server_name",        std::string{server_name},                          false},
-                    {"store_has_entry",     existing.has_value() ? "true" : "false",           false},
-                    {"entry_secret_empty",  (existing.has_value() && existing->secret_key.empty())
-                                               ? "true" : "false",                            false}});
+                   {{"server_name",    std::string{server_name},              false},
+                    {"has_legacy_key", has_legacy ? "true" : "false",         false}});
+
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
     if (!generate_random_signing_keypair(public_key, secret_key))
     {
         return std::nullopt;
     }
+
+    // Derive the key_id from the first four bytes of the public key as lowercase hex.
+    // This ties the ID to the key material so that each new key gets a unique ID;
+    // stale notary-cache entries for old IDs become irrelevant after key rotation.
+    static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
+    auto key_version = std::string{};
+    key_version.reserve(8U);
+    for (auto i = 0U; i < 4U; ++i)
+    {
+        key_version += hex_digits[(public_key[i] >> 4U) & 0x0fU];
+        key_version += hex_digits[public_key[i] & 0x0fU];
+    }
+    auto const key_id = "ed25519:" + key_version;
+
+    // Publish now + 7 days as valid_until_ts so federation peers periodically
+    // re-fetch the key rather than caching it indefinitely.
+    auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
+    auto const now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+
     auto key = database::PersistentServerSigningKey{
         std::string{server_name},
-        std::string{key_id},
+        key_id,
         events::matrix_base64_from_bytes(
             std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
-        32503680000000ULL,
-        // Base64-encode the secret so it can be stored as printable text — raw Ed25519 secret bytes
-        // frequently contain null bytes, which would truncate the value when read back via C string APIs.
+        now_ms + seven_days_ms,
+        // Base64-encode the secret so it can be stored as printable text — raw Ed25519
+        // secret bytes frequently contain null bytes, which would truncate the value when
+        // read back via C string APIs.
         events::matrix_base64_from_bytes(
             std::string_view{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()}),
     };
     log_diagnostic("signing_key.generated",
                    {{"server_name", std::string{server_name}, false},
-                    {"key_id",      std::string{key_id},      false},
+                    {"key_id",      key_id,                   false},
                     {"public_key",  key.public_key,           false}});
     if (!database::store_server_signing_key(runtime.database.persistent_store, key))
     {

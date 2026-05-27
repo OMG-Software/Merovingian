@@ -1,7 +1,47 @@
 # Changelog
 
+## 0.4.20
+
+- Derive the server Ed25519 signing key_id from the first four bytes of the
+  public key as lowercase hex (e.g. `ed25519:a1b2c3d4`) instead of the legacy
+  `ed25519:auto` sentinel. This bypasses stale notary-server caches (e.g.
+  matrix.org) that had `ed25519:auto` cached with a far-future `valid_until_ts`,
+  which caused `BadSignatureError` on every outbound federation request.
+- Ignore legacy `ed25519:auto` keys in the persistent store: treat them as
+  missing and generate a fresh keypair with a derived key_id on first use.
+- Set `valid_until_ts` on newly generated signing keys to `now + 7 days` (was
+  year-2999 sentinel) so federation peers periodically re-fetch rather than
+  caching indefinitely.
+- Use the runtime signing key's actual key_id in every outbound X-Matrix header
+  (`perform_sync_outbound_call`) instead of the hardcoded `"ed25519:auto"`.
+- Add runtime diagnostic logging to `make_federation_signature`: logs the
+  embedded public key (derived from the Ed25519 secret key bytes 32–63) and
+  the signing payload size on every outbound request, making it possible to
+  correlate the signing key against the published `/_matrix/key/v2/server` key
+  without stopping the server.
+- Log `signature.key_size_invalid` and `signature.payload_build_failed` events
+  when signing is skipped due to a bad key or JSON serialisation failure.
+- Log key lifecycle events (`signing_key.loaded`, `signing_key.generating`,
+  `signing_key.generated`) in `ensure_runtime_server_signing_key` so operators
+  can confirm whether a stable persisted key is being reused or a fresh key is
+  being generated on each restart.
+- Include `response_body` in the `transaction.failed` structured log field so
+  error responses from remote federation peers are captured for diagnosis.
+
 ## 0.4.19
 
+- Derive the server Ed25519 signing key_id from the first four bytes of the
+  public key as lowercase hex (e.g. `ed25519:a1b2c3d4`) instead of the legacy
+  `ed25519:auto` sentinel. This bypasses stale notary-server caches (e.g.
+  matrix.org) that had `ed25519:auto` cached with a far-future `valid_until_ts`,
+  which caused `BadSignatureError` on every outbound federation request.
+- Ignore legacy `ed25519:auto` keys in the persistent store: treat them as
+  missing and generate a fresh keypair with a derived key_id on first use.
+- Set `valid_until_ts` on newly generated signing keys to `now + 7 days` (was
+  year-2999 sentinel) so federation peers periodically re-fetch rather than
+  caching indefinitely.
+- Use the runtime signing key's actual key_id in every outbound X-Matrix header
+  (`perform_sync_outbound_call`) instead of the hardcoded `"ed25519:auto"`.
 - Add runtime diagnostic logging to `make_federation_signature`: logs the
   embedded public key (derived from the Ed25519 secret key bytes 32–63) and
   the signing payload size on every outbound request, making it possible to
