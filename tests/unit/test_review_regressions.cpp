@@ -689,9 +689,14 @@ SCENARIO("Persisted local event ids are unique across rooms", "[homeserver][room
                 REQUIRE(first_event.ok);
                 REQUIRE(second_event.ok);
                 REQUIRE(first_event.value != second_event.value);
-                REQUIRE(runtime.database.persistent_store.events.size() == 2U);
-                REQUIRE(runtime.database.persistent_store.events[0].event_id !=
-                        runtime.database.persistent_store.events[1].event_id);
+                // Each room now generates 4 initial state events on creation
+                // (create, member, power_levels, join_rules).  Two rooms produce
+                // 8 initial events plus the two message events sent above = 10.
+                REQUIRE(runtime.database.persistent_store.events.size() == 10U);
+                // The last two events are the sent message events; confirm their
+                // IDs are distinct (the core non-collision invariant).
+                auto const& all_evts = runtime.database.persistent_store.events;
+                REQUIRE(all_evts[all_evts.size() - 2U].event_id != all_evts.back().event_id);
             }
         }
     }
@@ -718,11 +723,19 @@ SCENARIO("Sending a state event mirrors current state", "[homeserver][rooms][rev
             THEN("the event is persisted and materialized as current state")
             {
                 REQUIRE(event.ok);
-                REQUIRE(runtime.database.persistent_store.events.size() == 1U);
-                REQUIRE(runtime.database.persistent_store.state.size() == 1U);
-                REQUIRE(runtime.database.persistent_store.state.front().event_type == "m.room.topic");
-                REQUIRE(runtime.database.persistent_store.state.front().state_key.empty());
-                REQUIRE(runtime.database.persistent_store.state.front().event_id == event.value);
+                // create_room now generates 4 initial state events; the topic
+                // event sent above is the fifth.
+                REQUIRE(runtime.database.persistent_store.events.size() == 5U);
+                // State table has one entry per (event_type, state_key) pair:
+                // create, member, power_levels, join_rules from creation + topic.
+                REQUIRE(runtime.database.persistent_store.state.size() == 5U);
+                // Verify the topic entry was materialised with the correct event id.
+                auto const& state_entries = runtime.database.persistent_store.state;
+                auto const topic_it = std::ranges::find_if(state_entries, [](auto const& s) {
+                    return s.event_type == "m.room.topic" && s.state_key.empty();
+                });
+                REQUIRE(topic_it != state_entries.end());
+                REQUIRE(topic_it->event_id == event.value);
             }
         }
     }

@@ -19,6 +19,17 @@
   federation joins succeed against rooms that use versions older than 12.
   Use the `room_version` field from the `make_join` response to select the
   correct event-auth and redaction policy when signing the join event.
+- Generate the four required initial Matrix room state events (`m.room.create`,
+  `m.room.member` for the creator, `m.room.power_levels`, `m.room.join_rules`)
+  during `create_room` so that `send_join` returns a non-empty auth chain and
+  Synapse no longer rejects remote joins with "No create event in state".
+- Derive the room version policy for event composition from the room's
+  `m.room.create` event instead of hardcoding version 12, so events in older
+  rooms use the correct signing and auth rules.
+- Remove the duplicate `m.room.create`, `m.room.member`, and `m.room.power_levels`
+  `send_state` calls from the client-server `createRoom` handler; those events
+  are now owned by the lower-level `create_room` function. The handler still
+  sends `m.room.join_rules` (for preset override) and `m.room.history_visibility`.
 
 ## 0.4.22
 

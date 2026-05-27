@@ -373,9 +373,13 @@ SCENARIO("Homeserver local room route flow creates joins sends and fetches state
                 REQUIRE(join.status == 200U);
                 REQUIRE(event.status == 200U);
                 REQUIRE(state.status == 200U);
-                // fetch_room_state returns the room's state events as a JSON
-                // array; the legacy local-router flow emits no state events.
-                REQUIRE(state.body == "[]");
+                // create_room now emits the four initial Matrix state events so
+                // federation peers can verify the room's auth chain; the state
+                // endpoint returns them as a JSON array.
+                REQUIRE(state.body.find("\"m.room.create\"") != std::string::npos);
+                REQUIRE(state.body.find("\"m.room.member\"") != std::string::npos);
+                REQUIRE(state.body.find("\"m.room.power_levels\"") != std::string::npos);
+                REQUIRE(state.body.find("\"m.room.join_rules\"") != std::string::npos);
             }
         }
     }
@@ -458,6 +462,73 @@ SCENARIO("Remote join fails closed when the runtime signing key is not initializ
             {
                 REQUIRE(join.status == 502U);
                 REQUIRE(join.body == "make_join failed: server signing key not initialized");
+            }
+        }
+    }
+}
+
+SCENARIO("create_room generates the four initial Matrix room state events required for federation",
+         "[homeserver][vertical][rooms][federation]")
+{
+    GIVEN("a started runtime with an authenticated user")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::register_local_user(runtime, "alice", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        WHEN("the user creates a room")
+        {
+            auto const result = merovingian::homeserver::create_room(runtime, login.value);
+            auto const room_id = result.value;
+
+            THEN("the operation succeeds")
+            {
+                REQUIRE(result.ok);
+            }
+
+            AND_THEN("the persistent state contains an m.room.create event for the room")
+            {
+                REQUIRE(result.ok);
+                auto const& state = runtime.database.persistent_store.state;
+                auto const has_create = std::any_of(state.begin(), state.end(), [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.create" && s.state_key.empty();
+                });
+                REQUIRE(has_create);
+            }
+
+            AND_THEN("the persistent state contains an m.room.member event for the creator")
+            {
+                REQUIRE(result.ok);
+                auto const& state = runtime.database.persistent_store.state;
+                auto const has_member = std::any_of(state.begin(), state.end(), [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == user.value;
+                });
+                REQUIRE(has_member);
+            }
+
+            AND_THEN("the persistent state contains an m.room.power_levels event for the room")
+            {
+                REQUIRE(result.ok);
+                auto const& state = runtime.database.persistent_store.state;
+                auto const has_pl = std::any_of(state.begin(), state.end(), [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.power_levels" && s.state_key.empty();
+                });
+                REQUIRE(has_pl);
+            }
+
+            AND_THEN("the persistent state contains an m.room.join_rules event for the room")
+            {
+                REQUIRE(result.ok);
+                auto const& state = runtime.database.persistent_store.state;
+                auto const has_jr = std::any_of(state.begin(), state.end(), [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.join_rules" && s.state_key.empty();
+                });
+                REQUIRE(has_jr);
             }
         }
     }

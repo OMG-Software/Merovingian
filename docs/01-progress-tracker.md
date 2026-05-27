@@ -77,6 +77,13 @@ separate operator decision once this branch is approved._
   room policy, decoded Matrix room path components for browser-encoded join,
   send, and state routes, local `publicRooms` directory listing for
   `public_chat` rooms, and restart-survival coverage.
+- Room initial state for federation: `create_room` now generates and persists
+  the four required Matrix room state events (`m.room.create`, `m.room.member`
+  for the creator, `m.room.power_levels`, `m.room.join_rules`) so that
+  `send_join` can return a non-empty auth chain. Synapse previously rejected
+  remote joins to locally-hosted rooms with "No create event in state"; this is
+  now fixed. The room version policy for event composition is derived from the
+  stored `m.room.create` event rather than hardcoded to version 12.
 - Sync foundation: stream tokens, initial sync, incremental event diffing via
   `since`, Matrix-shaped sync responses with event bodies, invite/leave room
   categories, and top-level `presence`, `account_data`, `to_device`,

@@ -382,6 +382,43 @@ namespace
         return result;
     }
 
+    // Returns the room_version string from the room's m.room.create event, or "10"
+    // as a safe fallback for rooms that pre-date initial-state generation.
+    [[nodiscard]] auto room_version_for_room(database::PersistentStore const& store, std::string_view room_id)
+        -> std::string
+    {
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
+            {
+                continue;
+            }
+            auto const evt = find_event_json(store, state.event_id);
+            auto const* obj = std::get_if<canonicaljson::Object>(&evt.storage());
+            if (obj == nullptr)
+            {
+                break;
+            }
+            auto const* content_val = object_member(*obj, "content");
+            if (content_val == nullptr)
+            {
+                break;
+            }
+            auto const* content_obj = std::get_if<canonicaljson::Object>(&content_val->storage());
+            if (content_obj == nullptr)
+            {
+                break;
+            }
+            auto const* rv = string_member(*content_obj, "room_version");
+            if (rv != nullptr && !rv->empty())
+            {
+                return *rv;
+            }
+            break;
+        }
+        return "10"; // Stable default — the oldest version Merovingian advertises.
+    }
+
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                             std::string_view sender, std::string_view client_event_json)
         -> std::optional<ComposedEvent>
@@ -405,6 +442,9 @@ namespace
 
         auto const* type = string_member(*input, "type");
         auto const event_type = type == nullptr ? std::string{"m.room.message"} : *type;
+        // Derive the room version from the stored m.room.create event so the correct
+        // signing policy (event-id format, auth rules) is used for every event in the room.
+        auto const room_version = room_version_for_room(runtime.database.persistent_store, room_id);
         auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
         auto const auth_events = auth_events_for_room(runtime.database.persistent_store, room_id);
         auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
@@ -443,7 +483,7 @@ namespace
         hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
         event.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
         auto hash_event = canonicaljson::Value{event};
-        auto const* policy = rooms::find_room_version_policy("12");
+        auto const* policy = rooms::find_room_version_policy(room_version);
         if (policy == nullptr)
         {
             return std::nullopt;
@@ -494,7 +534,7 @@ namespace
         auto signed_event_value = canonicaljson::parse_lossless(signed_event.event_json);
         if (signed_event_value.error == canonicaljson::ParseError::none)
         {
-            auto const* auth_policy = rooms::find_room_version_policy("12");
+            auto const* auth_policy = rooms::find_room_version_policy(room_version);
             if (auth_policy != nullptr)
             {
                 auto auth_map = build_auth_event_map(runtime.database.persistent_store, room_id, sender,
@@ -531,6 +571,35 @@ namespace
             event_type,
             state_key,
         };
+    }
+
+    // Composes, signs, and persists a single room state event.  Used by create_room to
+    // emit the initial chain (create → member → power_levels → join_rules) so the room's
+    // current_state is populated before any federation peer calls send_join.
+    // Each event must be stored before the next is generated: auth_events_for_room and
+    // previous_events_for_room both read the persistent state to build the correct chain.
+    [[nodiscard]] auto emit_initial_state_event(HomeserverRuntime& runtime, std::string_view room_id,
+                                                std::string_view sender, std::string const& event_json) -> bool
+    {
+        auto const composed = compose_signed_event(runtime, room_id, sender, event_json);
+        if (!composed.has_value())
+        {
+            // compose_signed_event already emitted a diagnostic.
+            return false;
+        }
+        auto const stream_ordering = runtime.database.next_stream_ordering++;
+        auto state = std::optional<database::PersistentStateEvent>{};
+        if (composed->state_key.has_value())
+        {
+            state = database::PersistentStateEvent{std::string{room_id}, composed->event_type,
+                                                   *composed->state_key, composed->event_id};
+        }
+        return database::store_event_with_state(runtime.database.persistent_store,
+                                                {composed->event_id, std::string{room_id}, std::string{sender},
+                                                 composed->json, composed->depth, stream_ordering,
+                                                 composed->prev_event_ids, composed->auth_event_ids,
+                                                 composed->signatures},
+                                                std::move(state));
     }
 
 } // namespace
@@ -779,6 +848,36 @@ namespace
         return make_operation_result(false, {}, "room persistence failed", 500U);
     }
     runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}});
+
+    // Emit the four initial Matrix state events required for a valid room auth chain.
+    // Without these, federation peers (e.g. Synapse) reject send_join with
+    // "No create event in state". Events must be stored in sequence because each call
+    // reads the persistent state to compute auth_events and prev_events for the next.
+    auto const create_json = R"({"type":"m.room.create","state_key":"","content":{"creator":")" + *user_id +
+                             R"(","room_version":"10"}})";
+    auto const member_json =
+        R"({"type":"m.room.member","state_key":")" + *user_id + R"(","content":{"membership":"join"}})";
+    auto const pl_json =
+        R"({"type":"m.room.power_levels","state_key":"","content":{"ban":50,"events":{},"events_default":0,"invite":50,"kick":50,"redact":50,"state_default":50,"users":{")" +
+        *user_id + R"(":100},"users_default":0}})";
+    auto const jr_json =
+        std::string{R"({"type":"m.room.join_rules","state_key":"","content":{"join_rule":"invite"}})"};
+
+    if (!emit_initial_state_event(runtime, room_id, *user_id, create_json) ||
+        !emit_initial_state_event(runtime, room_id, *user_id, member_json) ||
+        !emit_initial_state_event(runtime, room_id, *user_id, pl_json) ||
+        !emit_initial_state_event(runtime, room_id, *user_id, jr_json))
+    {
+        log_diagnostic("room.create.rejected",
+                       {
+                           {"actor",   *user_id,                                     false},
+                           {"room_id", room_id,                                      false},
+                           {"status",  "500",                                        false},
+                           {"reason",  "initial room state event generation failed", false}
+        });
+        return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+    }
+
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.created", *user_id, room_id,
                        "created");
     log_diagnostic("room.create.accepted", {
