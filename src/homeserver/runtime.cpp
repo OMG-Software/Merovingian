@@ -78,6 +78,46 @@ namespace
 
 } // namespace
 
+HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
+    : config(std::move(other.config))
+    , listeners(std::move(other.listeners))
+    , database(std::move(other.database))
+    , federation(std::move(other.federation))
+    , media_repository(std::move(other.media_repository))
+    , hardening(std::move(other.hardening))
+    , started(other.started)
+    , outbound_client(std::move(other.outbound_client))
+    , discovery_network(std::move(other.discovery_network))
+    , dispatch_worker(std::move(other.dispatch_worker))
+    , sync_notifier(std::exchange(other.sync_notifier, nullptr))
+    , typing_users(std::move(other.typing_users))
+    , receipts(std::move(other.receipts))
+{
+}
+
+auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> HomeserverRuntime&
+{
+    if (this == &other)
+    {
+        return *this;
+    }
+
+    config = std::move(other.config);
+    listeners = std::move(other.listeners);
+    database = std::move(other.database);
+    federation = std::move(other.federation);
+    media_repository = std::move(other.media_repository);
+    hardening = std::move(other.hardening);
+    started = other.started;
+    outbound_client = std::move(other.outbound_client);
+    discovery_network = std::move(other.discovery_network);
+    dispatch_worker = std::move(other.dispatch_worker);
+    sync_notifier = std::exchange(other.sync_notifier, nullptr);
+    typing_users = std::move(other.typing_users);
+    receipts = std::move(other.receipts);
+    return *this;
+}
+
 auto bootstrap_local_database(config::Config const& config) -> LocalDatabase
 {
     return bootstrap_local_database(config, {});
