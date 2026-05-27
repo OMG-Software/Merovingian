@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.19
+Version:        0.4.20
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.20-1
+- Derive Ed25519 signing key_id from public key bytes to bypass stale notary caches (BadSignatureError fix)
+- Ignore legacy ed25519:auto keys and generate fresh derived-format keypair on startup
+- Set valid_until_ts to now+7d on new keys; use actual key_id in outbound X-Matrix headers
+
 * Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.19-1
 - Derive Ed25519 signing key_id from public key bytes (ed25519:<8 hex chars>) to bypass stale notary caches
 - Ignore legacy ed25519:auto keys on startup and generate a fresh derived-format keypair instead
