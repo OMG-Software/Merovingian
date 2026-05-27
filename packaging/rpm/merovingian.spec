@@ -91,6 +91,7 @@ fi
 %changelog
 * Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.23-1
 - Move request serialization into the runtime and release the mutex before remote join discovery/make_join/send_join so unrelated requests no longer block behind federation I/O
+- Advertise room versions 10, 11, and 12 in make_join; use the room_version from the response to select the correct signing policy
 
 * Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.22-1
 - Serve /_matrix/key/v2/server lock-free from atomic cache to prevent Synapse ServerKeyFetcher timeout under concurrent make_join lock contention

@@ -9,6 +9,7 @@
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -458,6 +459,23 @@ SCENARIO("Remote join fails closed when the runtime signing key is not initializ
                 REQUIRE(join.status == 502U);
                 REQUIRE(join.body == "make_join failed: server signing key not initialized");
             }
+        }
+    }
+}
+
+SCENARIO("join_room advertises room versions 10 11 and 12 all of which have registered policies",
+         "[homeserver][vertical][rooms][federation]")
+{
+    GIVEN("the room version policy registry")
+    {
+        // If any advertised version lacks a policy, a successful make_join for that
+        // room version would be immediately followed by a 500 "room version policy missing"
+        // error when Merovingian tries to sign the join event.
+        THEN("every version Merovingian advertises to the remote server has a registered policy")
+        {
+            REQUIRE(merovingian::rooms::find_room_version_policy("10") != nullptr);
+            REQUIRE(merovingian::rooms::find_room_version_policy("11") != nullptr);
+            REQUIRE(merovingian::rooms::find_room_version_policy("12") != nullptr);
         }
     }
 }

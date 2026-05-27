@@ -835,7 +835,7 @@ namespace
         auto* outbound_client = runtime.outbound_client.get();
         auto* discovery_network = runtime.discovery_network.get();
         auto const our_server = runtime.config.server().server_name;
-        auto const supported_versions = std::vector<std::string>{"12"};
+        auto const supported_versions = std::vector<std::string>{"10", "11", "12"};
         // Best-effort: load the key_id from the persistent store. If the key cannot be
         // hydrated (wrong size, bad base64) ensure_runtime_server_signing_key returns
         // nullopt and signing_secret_key stays empty. perform_sync_outbound_call validates
@@ -880,6 +880,14 @@ namespace
             });
             return make_operation_result(false, {}, "malformed make_join response", 502U);
         }
+        // Extract the room_version from the make_join response so we use the
+        // correct event-auth and redaction policy when signing the join event.
+        // Fall back to "12" if the field is absent (shouldn't happen per spec).
+        auto const* room_version_str = string_member(*make_obj, "room_version");
+        auto const room_version = (room_version_str != nullptr && !room_version_str->empty())
+                                      ? *room_version_str
+                                      : std::string{"12"};
+
         // Extract the "event" member (an object, not a string) from the
         // make_join response.
         auto const* event_member_value = object_member(*make_obj, "event");
@@ -932,7 +940,7 @@ namespace
             std::copy(secret_key.begin(), secret_key.end(), secret_key_array.begin());
         }
         auto provider = RuntimeEd25519Provider{std::move(secret_key_array)};
-        auto const* policy = rooms::find_room_version_policy("12");
+        auto const* policy = rooms::find_room_version_policy(room_version);
         if (policy == nullptr)
         {
             log_diagnostic("room.join.rejected", {

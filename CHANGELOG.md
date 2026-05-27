@@ -15,6 +15,10 @@
 - Restore explicit move construction/assignment for `HomeserverRuntime` after
   adding the runtime mutex, so `start_client_server()` can still assemble the
   client runtime without breaking every CI build matrix.
+- Advertise room versions 10, 11, and 12 in outbound `make_join` requests so
+  federation joins succeed against rooms that use versions older than 12.
+  Use the `room_version` field from the `make_join` response to select the
+  correct event-auth and redaction policy when signing the join event.
 
 ## 0.4.22
 
