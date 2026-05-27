@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.4.26
+
+- Break the dependency between long-polling `/sync` connections and regular
+  request processing. Previously the HTTP server ran all connections through a
+  single 4-thread pool; a sync client waiting up to 30 s blocked one of those
+  threads, leaving only 3 for everything else and making login, join, send, and
+  federation feel sluggish. Fix: extract a non-blocking `route_request()` helper
+  and give `serve_stream()` a `sync_pool*` parameter. When a `/sync` long-poll
+  needs to wait, the main-pool thread hands the fd to the dedicated sync pool
+  immediately and returns — the main pool is always free for real requests. The
+  sync pool is 32 threads; the main pool grows to 8. Each async wait is capped
+  at 5 s so server shutdown is bounded. TLS connections fall back to the
+  existing blocking path pending TLS-session transfer support. The public
+  `dispatch_local_http_request()` API retains its original blocking behaviour
+  for backward compatibility with tests.
+- Implement inbound `make_join` room-version negotiation. Previously the
+  `membership_template_provider` ignored the remote server's `?ver=` query
+  params and hardcoded `room_version = "12"`. Now it reads the actual room
+  version from the `m.room.create` state event and checks whether the joining
+  server advertises support for it. If not, it returns
+  `M_INCOMPATIBLE_ROOM_VERSION` (HTTP 400) with the room's version in the body
+  so the remote can inform its user. The `membership_acceptor` also populates
+  `room_version` in the result, and `handle_send_membership` echoes it in the
+  `send_join` response instead of hardcoding "12".
+- Default new room version to 12 (the latest stable) across `CreateRoomOptions`,
+  the `POST /_matrix/client/v3/createRoom` fallback, and the
+  `GET /_matrix/client/v3/capabilities` `m.room_versions` advertisement. The
+  capabilities response now also lists versions 10, 11, and 12 as `stable`
+  rather than advertising only 10.
+- Fix inbound PDU signature verification failure (Synapse returns 403 on every
+  encrypted message): `make_event_signing_payload` now strips `event_id` from
+  the signing payload when the room version uses reference-hash event IDs (all
+  room versions 4+). Synapse includes `event_id` in outbound PDUs as a
+  convenience hint, but its signing payload never contained the field. Our
+  verification payload was therefore different from what Synapse signed, causing
+  `crypto_sign_verify_detached` to fail for every inbound PDU.
+
 ## 0.4.25
 
 - Fix remote join (make_join → send_join) failing with Synapse error "Malformed

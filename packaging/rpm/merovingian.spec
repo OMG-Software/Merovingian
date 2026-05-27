@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.25
+Version:        0.4.26
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.26-1
+- Strip event_id from inbound PDU signing payload for room versions using reference-hash event IDs, fixing Synapse signature verification failure
+
 * Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.25-1
 - Compute and attach content hash (hashes.sha256) before signing the join event in the remote join path, fixing Synapse send_join rejection with "Malformed hashes"
 

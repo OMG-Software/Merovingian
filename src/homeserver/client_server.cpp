@@ -2658,8 +2658,13 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                           json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
                           json_member("m.room_versions",
                                       json_obj({
-                                          json_member("default", json_str("10")),
-                                          json_member("available", json_obj({json_member("10", json_str("stable"))})),
+                                          json_member("default", json_str("12")),
+                                          json_member("available",
+                                                      json_obj({
+                                                          json_member("10", json_str("stable")),
+                                                          json_member("11", json_str("stable")),
+                                                          json_member("12", json_str("stable")),
+                                                      })),
                                       })),
                       }))})));
     }
@@ -2843,7 +2848,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const invitees = string_array_member(body, "invite");
         auto const* room_version_value = string_member(body, "room_version");
         auto const room_version =
-            room_version_value != nullptr && !room_version_value->empty() ? *room_version_value : std::string{"10"};
+            room_version_value != nullptr && !room_version_value->empty() ? *room_version_value : std::string{"12"};
         if (rooms::find_room_version_policy(room_version) == nullptr)
         {
             return dispatch_err(400U, "M_UNSUPPORTED_ROOM_VERSION", "unsupported room version");

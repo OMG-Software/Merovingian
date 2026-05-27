@@ -645,6 +645,72 @@ SCENARIO("createRoom applies Matrix v1.18 preset and room-creation options",
     }
 }
 
+SCENARIO("createRoom defaults to room version 12 when the client omits room_version",
+         "[homeserver][client-server][create-room][room-version]")
+{
+    GIVEN("a started runtime with a logged-in creator")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client creates a room without specifying room_version")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+
+            THEN("the m.room.create state event carries room_version 12")
+            {
+                // The capabilities endpoint advertises 12 as the default.
+                // createRoom must use the same default so clients get the latest
+                // version even when they rely on server defaults.
+                auto const create = content_for_state(
+                    runtime.homeserver.database.persistent_store, created_room_id, "m.room.create");
+                auto const* rv = string_member(create, "room_version");
+                REQUIRE(rv != nullptr);
+                REQUIRE(*rv == "12");
+            }
+        }
+
+        WHEN("the client explicitly requests room version 10")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_version":"10"})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+
+            THEN("the m.room.create event uses the requested version 10")
+            {
+                // Clients can still request older versions — the default change
+                // must not override an explicit room_version in the request body.
+                auto const create = content_for_state(
+                    runtime.homeserver.database.persistent_store, created_room_id, "m.room.create");
+                auto const* rv = string_member(create, "room_version");
+                REQUIRE(rv != nullptr);
+                REQUIRE(*rv == "10");
+            }
+        }
+    }
+}
+
 SCENARIO("createRoom registers canonical aliases and directory lookups",
          "[homeserver][client-server][create-room][aliases]")
 {
@@ -1686,6 +1752,20 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
             {
                 REQUIRE(response.response.status == 200U);
                 REQUIRE(response.response.body.find("capabilities") != std::string::npos);
+            }
+
+            THEN("m.room_versions advertises 12 as the default version")
+            {
+                // Clients use this to know which version to request when creating rooms.
+                // The default must be the latest stable version the server supports.
+                REQUIRE(response.response.body.find(R"("default":"12")") != std::string::npos);
+            }
+
+            THEN("m.room_versions lists 10 11 and 12 as stable")
+            {
+                REQUIRE(response.response.body.find(R"("10":"stable")") != std::string::npos);
+                REQUIRE(response.response.body.find(R"("11":"stable")") != std::string::npos);
+                REQUIRE(response.response.body.find(R"("12":"stable")") != std::string::npos);
             }
         }
 

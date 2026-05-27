@@ -15,7 +15,7 @@ namespace merovingian::homeserver
 
 struct CreateRoomOptions final
 {
-    std::string room_version{"10"};
+    std::string room_version{"12"};
     canonicaljson::Object creation_content{};
     canonicaljson::Object power_level_content_override{};
     std::vector<canonicaljson::Value> initial_state{};

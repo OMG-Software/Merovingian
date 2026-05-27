@@ -37,7 +37,7 @@ struct MembershipEventTemplate final
     std::string room_id{};
     std::string user_id{};
     std::string membership{};        // "join" | "leave" | "knock"
-    std::string room_version{};      // currently fixed to "12"
+    std::string room_version{};      // actual room version read from m.room.create
     std::vector<std::string> prev_events{};
     std::vector<std::string> auth_events{};
     std::int64_t depth{0};
@@ -64,6 +64,9 @@ struct MembershipAcceptResult final
     // hydrate the room locally. Empty for send_leave and send_knock.
     std::vector<std::string> auth_chain_json{};
     std::vector<std::string> state_json{};
+    // Room version string echoed in the send_join/send_leave response body.
+    // Read from m.room.create; empty means the caller should use a safe default.
+    std::string room_version{};
 };
 
 // Hook signature for accepting a signed membership event. The implementation

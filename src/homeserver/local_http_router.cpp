@@ -177,6 +177,51 @@ namespace
         });
     }
 
+    // Returns the room_version string from the room's m.room.create state event,
+    // falling back to "10" for rooms that pre-date version tracking.
+    [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store,
+                                               std::string_view room_id) -> std::string
+    {
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
+            {
+                continue;
+            }
+            for (auto const& evt : store.events)
+            {
+                if (evt.event_id != state.event_id)
+                {
+                    continue;
+                }
+                auto const parsed = canonicaljson::parse_lossless(evt.json);
+                auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                if (obj == nullptr)
+                {
+                    break;
+                }
+                auto const* content = object_member(*obj, "content");
+                if (content == nullptr)
+                {
+                    break;
+                }
+                auto const* content_obj = std::get_if<canonicaljson::Object>(&content->storage());
+                if (content_obj == nullptr)
+                {
+                    break;
+                }
+                auto const* rv = string_member(*content_obj, "room_version");
+                if (rv != nullptr && !rv->empty())
+                {
+                    return *rv;
+                }
+                break;
+            }
+            break;
+        }
+        return "10"; // Oldest advertised version; safe fallback for legacy rooms.
+    }
+
     [[nodiscard]] auto upsert_membership(database::PersistentStore& store, std::string_view room_id,
                                          std::string_view user_id, std::string_view membership,
                                          std::uint64_t stream_ordering) -> bool
@@ -884,7 +929,7 @@ namespace
 
         runtime.federation.membership_template_provider = [rt](federation::FederationEndpoint endpoint,
                                                                std::string_view room_id, std::string_view user_id,
-                                                               std::vector<std::string> const& /*supported_versions*/)
+                                                               std::vector<std::string> const& supported_versions)
             -> std::optional<federation::MembershipEventTemplate> {
             auto const& store = rt->database.persistent_store;
             auto const room_it = std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
@@ -894,10 +939,34 @@ namespace
             {
                 return std::nullopt;
             }
+            auto const room_version = room_version_from_store(store, room_id);
+
+            // If the joining server advertised which versions it supports, verify
+            // the room's actual version is among them. Fall back to lower versions
+            // only if the remote explicitly supports them; we never downgrade a room.
+            if (!supported_versions.empty() &&
+                std::ranges::find(supported_versions, room_version) == supported_versions.end())
+            {
+                // Signal M_INCOMPATIBLE_ROOM_VERSION so the remote can inform its user.
+                auto err = canonicaljson::Object{};
+                err.push_back(canonicaljson::make_member(
+                    "errcode", canonicaljson::Value{std::string{"M_INCOMPATIBLE_ROOM_VERSION"}}));
+                err.push_back(canonicaljson::make_member(
+                    "error",
+                    canonicaljson::Value{
+                        std::string{"Your homeserver does not support the features required to join this room"}}));
+                err.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{room_version}));
+                auto tmpl = federation::MembershipEventTemplate{};
+                tmpl.room_version = room_version;
+                tmpl.reason =
+                    canonicaljson::serialize_canonical(canonicaljson::Value{std::move(err)}).output;
+                return tmpl;
+            }
+
             auto tmpl = federation::MembershipEventTemplate{};
             tmpl.room_id = std::string{room_id};
             tmpl.user_id = std::string{user_id};
-            tmpl.room_version = "12";
+            tmpl.room_version = room_version;
             if (endpoint == federation::FederationEndpoint::make_join)
             {
                 tmpl.membership = "join";
@@ -1003,7 +1072,8 @@ namespace
                     }
                 }
             }
-            return {true, 200U, {}, std::move(auth_chain), std::move(state_events)};
+            return {true, 200U, {}, std::move(auth_chain), std::move(state_events),
+                    room_version_from_store(store, room_id)};
         };
 
         runtime.federation.invite_handler =

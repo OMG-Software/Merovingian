@@ -14,6 +14,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <array>
 #include <memory>
 #include <optional>
@@ -444,6 +445,146 @@ SCENARIO("Membership acceptor is invoked for send_join",
                 REQUIRE(response.status == 200U);
                 REQUIRE(*acceptor_invoked);
                 REQUIRE(*captured_event_id == "$ev1:example.org");
+            }
+        }
+    }
+}
+
+SCENARIO("make_join version negotiation rejects incompatible room versions",
+         "[federation][callbacks][membership][version-negotiation]")
+{
+    GIVEN("a runtime with a v12 room and a template provider that negotiates versions")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"version-negotiation-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        // Simulate a server hosting a v12 room. If the remote does not support
+        // v12, the provider signals M_INCOMPATIBLE_ROOM_VERSION via tmpl.reason.
+        runtime.membership_template_provider =
+            [](merovingian::federation::FederationEndpoint, std::string_view room_id,
+               std::string_view user_id,
+               std::vector<std::string> const& supported_versions)
+            -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            auto const room_version = std::string{"12"};
+            if (!supported_versions.empty() &&
+                std::ranges::find(supported_versions, room_version) == supported_versions.end())
+            {
+                auto tmpl = merovingian::federation::MembershipEventTemplate{};
+                tmpl.room_version = room_version;
+                tmpl.reason =
+                    R"({"errcode":"M_INCOMPATIBLE_ROOM_VERSION","error":"Your homeserver does not support the features required to join this room","room_version":"12"})";
+                return tmpl;
+            }
+            auto tmpl = merovingian::federation::MembershipEventTemplate{};
+            tmpl.room_id = std::string{room_id};
+            tmpl.user_id = std::string{user_id};
+            tmpl.membership = "join";
+            tmpl.room_version = room_version;
+            tmpl.content_json = R"({"membership":"join"})";
+            return tmpl;
+        };
+
+        WHEN("make_join is called with only ver=10 (remote does not support v12)")
+        {
+            auto const target = std::string{
+                "/_matrix/federation/v1/make_join/!room:example.org/@alice:matrix.example.org?ver=10"};
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime, signed_get_request(origin, key_id, token, target));
+
+            THEN("the response is 400 with M_INCOMPATIBLE_ROOM_VERSION in the body")
+            {
+                REQUIRE(response.status == 400U);
+                REQUIRE(response.body.find("M_INCOMPATIBLE_ROOM_VERSION") != std::string::npos);
+            }
+        }
+
+        WHEN("make_join is called with ver=10 and ver=12 (remote supports v12)")
+        {
+            auto const target = std::string{
+                "/_matrix/federation/v1/make_join/!room:example.org/@alice:matrix.example.org?ver=10&ver=12"};
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime, signed_get_request(origin, key_id, token, target));
+
+            THEN("the response is 200 with room_version 12 in the template")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find(R"("room_version":"12")") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("send_join response carries the room_version from the membership acceptor",
+         "[federation][callbacks][membership][version-negotiation]")
+{
+    GIVEN("a runtime where the membership acceptor reports room_version 11")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"send-join-version-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        runtime.membership_acceptor =
+            [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+               merovingian::federation::InboundPduEnvelope const&)
+            -> merovingian::federation::MembershipAcceptResult {
+            auto result = merovingian::federation::MembershipAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            result.room_version = "11";
+            return result;
+        };
+
+        WHEN("the send_join request is handled")
+        {
+            auto const join_event_json = signed_json_pdu(origin, key_id, token);
+            auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/$ev1:example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put_request(origin, key_id, token, target, join_event_json));
+
+            THEN("the response body carries room_version 11, not the hardcoded default")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find(R"("room_version":"11")") != std::string::npos);
+                REQUIRE(response.body.find(R"("room_version":"12")") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a runtime where the membership acceptor omits room_version")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"send-join-default-version-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        runtime.membership_acceptor =
+            [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+               merovingian::federation::InboundPduEnvelope const&)
+            -> merovingian::federation::MembershipAcceptResult {
+            auto result = merovingian::federation::MembershipAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            // room_version intentionally left empty to exercise the fallback path
+            return result;
+        };
+
+        WHEN("the send_join request is handled")
+        {
+            auto const join_event_json = signed_json_pdu(origin, key_id, token);
+            auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/$ev2:example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put_request(origin, key_id, token, target, join_event_json));
+
+            THEN("the response body falls back to room_version 12")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find(R"("room_version":"12")") != std::string::npos);
             }
         }
     }

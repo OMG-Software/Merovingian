@@ -205,6 +205,105 @@ SCENARIO("Event signing payload removes unsigned metadata but keeps event conten
     }
 }
 
+// Regression: Synapse (and some other federation senders) include event_id in
+// outbound PDUs as a convenience hint for the receiver, even though for room
+// versions 4+ the event_id is derived from the content hash and is NOT part of
+// the canonical event body. The signing payload Synapse computed when creating
+// the event therefore does NOT contain event_id. If we include event_id when
+// building our verification payload, crypto_sign_verify_detached fails.
+//
+// Fix: make_event_signing_payload(event, policy) strips event_id whenever
+// policy.event_id_format == EventIdFormat::reference_hash (all room versions 4+).
+SCENARIO("Signing payload for room v4+ PDUs strips event_id included by federation senders",
+         "[events][signing][federation]")
+{
+    // A real m.room.encrypted PDU body as Synapse would send it in a transaction:
+    // event_id is present as a convenience field (signed content did NOT include it).
+    auto const pdu_with_event_id = std::string{
+        R"({"auth_events":["$aaa","$bbb"],"content":{"algorithm":"m.megolm.v1.aes-sha2",)"
+        R"("ciphertext":"DEADBEEF","device_id":"DEVICE1","sender_key":"senderkey123",)"
+        R"("session_id":"session456"},"depth":10,"event_id":"$abcdef1234567890:matrix.ping.me.uk",)"
+        R"("hashes":{"sha256":"contenthashbase64"},"origin_server_ts":1748300000000,)"
+        R"("prev_events":["$ccc"],"room_id":"!room:matrix.ping.me.uk",)"
+        R"("sender":"@alice:matrix.ping.me.uk","type":"m.room.encrypted"})"};
+
+    // The same PDU without event_id — what was actually signed by Synapse.
+    auto const pdu_without_event_id = std::string{
+        R"({"auth_events":["$aaa","$bbb"],"content":{"algorithm":"m.megolm.v1.aes-sha2",)"
+        R"("ciphertext":"DEADBEEF","device_id":"DEVICE1","sender_key":"senderkey123",)"
+        R"("session_id":"session456"},"depth":10,)"
+        R"("hashes":{"sha256":"contenthashbase64"},"origin_server_ts":1748300000000,)"
+        R"("prev_events":["$ccc"],"room_id":"!room:matrix.ping.me.uk",)"
+        R"("sender":"@alice:matrix.ping.me.uk","type":"m.room.encrypted"})"};
+
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+    // Confirm the policy uses reference-hash event IDs (room v4+).
+    REQUIRE(policy->event_id_format == merovingian::rooms::EventIdFormat::reference_hash);
+
+    GIVEN("a PDU that includes event_id as a federation hint")
+    {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pdu_with_event_id);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the signing payload is built with a room-v12 policy")
+        {
+            auto const payload = merovingian::events::make_event_signing_payload(parsed.value, *policy);
+
+            THEN("event_id is absent from the payload")
+            {
+                REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(payload.output.find("event_id") == std::string::npos);
+            }
+
+            THEN("all canonical event fields are still present")
+            {
+                REQUIRE(payload.output.find("m.room.encrypted") != std::string::npos);
+                REQUIRE(payload.output.find("contenthashbase64") != std::string::npos);
+                REQUIRE(payload.output.find("1748300000000") != std::string::npos);
+                REQUIRE(payload.output.find("@alice:matrix.ping.me.uk") != std::string::npos);
+            }
+
+            THEN("unsigned and signatures remain absent from the payload")
+            {
+                REQUIRE(payload.output.find("unsigned") == std::string::npos);
+                REQUIRE(payload.output.find("signatures") == std::string::npos);
+            }
+
+            THEN("the payload matches what would be produced from a PDU that never had event_id")
+            {
+                auto const parsed_no_id = merovingian::canonicaljson::parse_lossless(pdu_without_event_id);
+                REQUIRE(parsed_no_id.error == merovingian::canonicaljson::ParseError::none);
+                auto const payload_no_id =
+                    merovingian::events::make_event_signing_payload(parsed_no_id.value, *policy);
+                REQUIRE(payload_no_id.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                // The canonical signing payloads must be byte-identical.
+                // This is what allows crypto_sign_verify_detached to succeed:
+                // Synapse signed the no-event_id form; we must verify against the same form.
+                REQUIRE(payload.output == payload_no_id.output);
+            }
+        }
+    }
+
+    GIVEN("a PDU that does not include event_id (spec-compliant sender)")
+    {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pdu_without_event_id);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the signing payload is built with a room-v12 policy")
+        {
+            auto const payload = merovingian::events::make_event_signing_payload(parsed.value, *policy);
+
+            THEN("the payload is unchanged — stripping is idempotent")
+            {
+                REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(payload.output.find("event_id") == std::string::npos);
+                REQUIRE(payload.output.find("m.room.encrypted") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Event signature scaffold attaches and detects signatures", "[events][signing]")
 {
     GIVEN("an unsigned event and signing key ID")

@@ -9,8 +9,10 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -335,8 +337,46 @@ namespace
         std::ignore = send_all(stream, response);
     }
 
-    auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, HttpServeStats& stats,
-                      HttpDispatchMode dispatch_mode) -> void
+    // Routes a request without ever blocking. The caller is responsible for
+    // handling DispatchResult::Status::needs_wait (long-poll sync).
+    [[nodiscard]] auto route_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
+                                     HttpDispatchMode mode) -> DispatchResult
+    {
+        // Fast path: the key-server endpoint is served from a lock-free atomic
+        // cache so concurrent federation makes-join cannot delay it.
+        if (mode == HttpDispatchMode::federation && request.method == "GET" &&
+            request.target == "/_matrix/key/v2/server")
+        {
+            auto& cache = runtime.homeserver.database.key_server_cache;
+            if (cache)
+            {
+                if (auto cached = cache->load())
+                {
+                    return {DispatchResult::Status::complete, {200U, *cached}, {}};
+                }
+            }
+        }
+        auto result = DispatchResult{};
+        switch (mode)
+        {
+        case HttpDispatchMode::client_server:
+            result = handle_client_server_request(runtime, request);
+            break;
+        case HttpDispatchMode::federation:
+            result.response = handle_federation_http_request(runtime.homeserver, request);
+            break;
+        case HttpDispatchMode::local_router:
+            result.response = handle_local_http_request(runtime.homeserver, request);
+            break;
+        }
+        return result;
+    }
+
+    // Returns true when the fd has been transferred to sync_pool (caller must
+    // NOT shut down or close it). Returns false in all other cases — the caller
+    // retains ownership of the fd.
+    [[nodiscard]] auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, HttpServeStats& stats,
+                                    HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool) -> bool
     {
         auto const limits = http::RequestLimits{};
         auto const head_cap = header_size_cap(limits);
@@ -364,7 +404,7 @@ namespace
                 });
                 write_error_response(stream, 408U, "request head incomplete or timed out");
             }
-            return;
+            return false;
         }
 
         auto const parse = http::parse_request_head(std::string_view{buffer.data(), head_end});
@@ -379,7 +419,7 @@ namespace
                                {"reason", http::request_error_name(parse.error),                   false}
             });
             write_error_response(stream, http::request_error_status(parse.error), reason);
-            return;
+            return false;
         }
 
         auto body_tail = std::string{buffer.substr(head_end)};
@@ -401,7 +441,7 @@ namespace
                                    {"reason",              "request body incomplete or timed out",                     false}
                 });
                 write_error_response(stream, 408U, "request body incomplete or timed out");
-                return;
+                return false;
             }
         }
 
@@ -414,18 +454,85 @@ namespace
                            {"has_access_token", local_request.access_token.empty() ? "false" : "true",      false}
         });
 
-        auto const response = dispatch_local_http_request(runtime, local_request, dispatch_mode);
-        ++stats.completed_requests;
+        auto result = route_request(runtime, local_request, dispatch_mode);
 
+        if (result.status == DispatchResult::Status::needs_wait)
+        {
+            auto* notifier = runtime.sync_notifier.get();
+            if (notifier == nullptr)
+            {
+                write_error_response(stream, 503U, matrix_error("M_UNKNOWN", "sync notifier unavailable"));
+                return false;
+            }
+
+            if (sync_pool != nullptr)
+            {
+                // Hand off to the dedicated sync pool. The current main-pool thread
+                // is freed immediately. The sync pool thread owns the fd exclusively
+                // from this point and must close it when done.
+                //
+                // Cap the wait so that server shutdown (sync_pool.request_stop()) is
+                // bounded — at most this many ms after the last event. Clients re-poll
+                // immediately after an empty 200, so the cap is invisible to them.
+                constexpr auto max_async_wait = std::chrono::milliseconds{5000U};
+                auto const fd = stream.fd();
+                auto wait = result.wait;
+                wait.timeout = std::min(wait.timeout, max_async_wait);
+                auto submitted = sync_pool->submit(
+                    [fd, &runtime, &stats, request_copy = local_request, wait, notifier]() mutable {
+                        try
+                        {
+                            std::ignore = notifier->wait_for_change(wait.since_stream_ordering,
+                                                                     wait.since_sync_stream_id,
+                                                                     wait.timeout);
+                        }
+                        catch (...) {}
+                        auto const final_result = handle_client_server_request(runtime, request_copy, false);
+                        ++stats.completed_requests;
+                        log_diagnostic("request.completed",
+                                       {{"method",         request_copy.method,                                       false},
+                                        {"target",         observability::sanitized_http_target(request_copy.target), false},
+                                        {"status",         std::to_string(final_result.response.status),              false},
+                                        {"response_bytes", std::to_string(final_result.response.body.size()),          false}});
+                        auto const formatted =
+                            format_response(final_result.response.status, final_result.response.body);
+                        std::ignore = ::send(fd, formatted.data(), formatted.size(), MSG_NOSIGNAL);
+                        std::ignore = ::shutdown(fd, SHUT_RDWR);
+                        ::close(fd);
+                    });
+                if (submitted)
+                {
+                    return true; // fd is now owned by the sync pool thread
+                }
+                // Sync pool is stopping; fall through to synchronous wait.
+            }
+
+            // No sync_pool supplied (tests, TLS, or pool shutting down): block
+            // this thread until new events arrive or the timeout expires.
+            try
+            {
+                std::ignore = notifier->wait_for_change(result.wait.since_stream_ordering,
+                                                         result.wait.since_sync_stream_id,
+                                                         result.wait.timeout);
+            }
+            catch (...)
+            {
+                log_diagnostic("sync.wait_failed", {{"reason", "exception", false}});
+            }
+            result = handle_client_server_request(runtime, local_request, false);
+        }
+
+        ++stats.completed_requests;
         log_diagnostic("request.completed",
                        {
                            {"method",         local_request.method,                                       false},
                            {"target",         observability::sanitized_http_target(local_request.target), false},
-                           {"status",         std::to_string(response.status),                            false},
-                           {"response_bytes", std::to_string(response.body.size()),                       false}
+                           {"status",         std::to_string(result.response.status),                     false},
+                           {"response_bytes", std::to_string(result.response.body.size()),                false}
         });
-        auto const formatted = format_response(response.status, response.body);
+        auto const formatted = format_response(result.response.status, result.response.body);
         std::ignore = send_all(stream, formatted);
+        return false;
     }
 
 } // namespace
@@ -433,38 +540,10 @@ namespace
 auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request, HttpDispatchMode mode)
     -> LocalHttpResponse
 {
-    // Serve /_matrix/key/v2/server lock-free from the atomic cache.
-    // Synapse's ServerKeyFetcher uses a short timeout (~20 s) and cancels if our
-    // response arrives late. A concurrent make_join can hold the runtime mutex for
-    // the full duration of an outbound HTTP round-trip, blocking this endpoint.
-    // The cache is pre-warmed during start_runtime and atomically refreshed on
-    // every mutex-protected key-server refresh, so it is always available.
-    if (mode == HttpDispatchMode::federation && request.method == "GET" && request.target == "/_matrix/key/v2/server")
-    {
-        auto& cache = runtime.homeserver.database.key_server_cache;
-        if (cache)
-        {
-            if (auto cached = cache->load())
-            {
-                return {200U, *cached};
-            }
-        }
-    }
-
-    auto result = DispatchResult{};
-
-    switch (mode)
-    {
-    case HttpDispatchMode::client_server:
-        result = handle_client_server_request(runtime, request);
-        break;
-    case HttpDispatchMode::federation:
-        result.response = handle_federation_http_request(runtime.homeserver, request);
-        break;
-    case HttpDispatchMode::local_router:
-        result.response = handle_local_http_request(runtime.homeserver, request);
-        break;
-    }
+    // This public API preserves its original blocking behaviour for backward
+    // compatibility (tests, one-off callers). The server's hot path uses
+    // route_request() + serve_stream() with a dedicated sync_pool instead.
+    auto result = route_request(runtime, request, mode);
 
     if (result.status == DispatchResult::Status::needs_wait)
     {
@@ -480,11 +559,7 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
         }
         catch (...)
         {
-            // wait_for_change threw (e.g. std::system_error); fall through
-            // to re-dispatch with can_wait=false, which returns immediately.
-            log_diagnostic("sync.wait_failed", {
-                                                   {"reason", "exception", false}
-            });
+            log_diagnostic("sync.wait_failed", {{"reason", "exception", false}});
         }
         result = handle_client_server_request(runtime, request, false);
     }
@@ -493,14 +568,15 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
 }
 
 auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
-                               HttpDispatchMode dispatch_mode) -> void
+                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool) -> bool
 {
     auto stream = PlainConnectionStream{client_fd};
-    serve_stream(stream, runtime, stats, dispatch_mode);
+    return serve_stream(stream, runtime, stats, dispatch_mode, sync_pool);
 }
 
 auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::ShutdownSignal& shutdown,
-                HttpServeStats& stats, HttpDispatchMode dispatch_mode, net::ThreadPool& pool) -> void
+                HttpServeStats& stats, HttpDispatchMode dispatch_mode, net::ThreadPool& pool,
+                net::ThreadPool* sync_pool) -> void
 {
     while (!shutdown.fired() && acceptor.valid() && pool.running())
     {
@@ -556,12 +632,20 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
         // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
         auto fd = client.release();
-        auto submitted = pool.submit([&runtime, &stats, dispatch_mode, fd] {
+        auto submitted = pool.submit([&runtime, &stats, dispatch_mode, sync_pool, fd] {
             auto guard = core::SocketHandle{fd};
             ++stats.accepted_connections;
-            serve_one_http_connection(fd, runtime, stats, dispatch_mode);
-            std::ignore = ::shutdown(fd, SHUT_RDWR);
-            // ~SocketHandle closes fd on both normal and exceptional exit.
+            auto const handed_off = serve_one_http_connection(fd, runtime, stats, dispatch_mode, sync_pool);
+            if (handed_off)
+            {
+                // The sync pool thread owns the fd; do NOT shut it down here.
+                std::ignore = guard.release();
+            }
+            else
+            {
+                std::ignore = ::shutdown(fd, SHUT_RDWR);
+                // ~SocketHandle closes fd on both normal and exceptional exit.
+            }
         });
         if (!submitted)
         {
@@ -574,7 +658,7 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
 
 auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
                     net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode,
-                    net::ThreadPool& pool) -> void
+                    net::ThreadPool& pool, net::ThreadPool* /*sync_pool*/) -> void
 {
     while (!shutdown.fired() && acceptor.valid() && pool.running())
     {
@@ -643,7 +727,9 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                 // ~SocketHandle closes fd on both normal and exceptional exit.
             }
             auto stream = TlsConnectionStream{*accepted_tls.connection};
-            serve_stream(stream, runtime, stats, dispatch_mode);
+            // TLS async offload is not yet implemented; sync waits block the
+            // pool thread (nullptr sync_pool = fall back to synchronous wait).
+            std::ignore = serve_stream(stream, runtime, stats, dispatch_mode, nullptr);
             std::ignore = ::shutdown(fd, SHUT_RDWR);
             // ~SocketHandle closes fd.
         });
