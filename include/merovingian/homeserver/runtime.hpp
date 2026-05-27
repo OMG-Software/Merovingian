@@ -13,6 +13,7 @@
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <optional>
@@ -62,6 +63,12 @@ struct LocalDatabase final
     std::vector<observability::AuditLogEvent> audit_events{};
     database::PersistentStore persistent_store{};
     std::vector<unsigned char> signing_secret_key{};
+    // Atomically-updatable cache of the signed /_matrix/key/v2/server response.
+    // Served lock-free so Synapse's ServerKeyFetcher is not blocked by long-running
+    // outbound requests (e.g. make_join) that hold the global runtime lock.
+    // Wrapped in unique_ptr so LocalDatabase remains move-constructible.
+    std::unique_ptr<std::atomic<std::shared_ptr<std::string>>> key_server_cache{
+        std::make_unique<std::atomic<std::shared_ptr<std::string>>>()};
     std::uint64_t next_stream_ordering{1U};
 };
 

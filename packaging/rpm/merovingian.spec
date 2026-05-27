@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.21
+Version:        0.4.22
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.22-1
+- Serve /_matrix/key/v2/server lock-free from atomic cache to prevent Synapse ServerKeyFetcher timeout under concurrent make_join lock contention
+
 * Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.21-1
 - Populate old_verify_keys in /_matrix/key/v2/server with superseded signing keys
 

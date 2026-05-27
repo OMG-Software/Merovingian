@@ -4,6 +4,7 @@
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/media/runtime_media.hpp"
@@ -244,6 +245,18 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver",
                        "startup");
     runtime.started = true;
+
+    // Pre-warm the key server response cache before the HTTP server starts accepting
+    // connections. This ensures /_matrix/key/v2/server is served lock-free from the
+    // very first request, even if make_join or another outbound operation arrives
+    // concurrently on a different connection and holds the global runtime lock.
+    auto const key_warm = publish_server_signing_keys(runtime);
+    if (!key_warm.ok)
+    {
+        log_diagnostic("start.key_server_cache_warn",
+                       {{"reason", key_warm.reason.empty() ? "key unavailable" : key_warm.reason, false}});
+    }
+
     return {true, {}, std::move(runtime)};
 }
 

@@ -66,9 +66,11 @@ public:
 auto install_unusable_persisted_signing_key(merovingian::homeserver::HomeserverRuntime& runtime) -> void
 {
     auto const server_name = runtime.config.server().server_name;
-    // Use a derived-format key_id (not "ed25519:auto") so the key is matched by the
-    // current lookup logic. The secret is intentionally not valid base64, so decoding
-    // produces fewer than crypto_sign_SECRETKEYBYTES bytes and the system fails closed.
+    // Replace all existing keys (including any generated during startup pre-warm) with a
+    // single unusable entry. Using a derived-format key_id (not "ed25519:auto") keeps the
+    // lookup logic's selector happy, but the secret is intentionally not valid base64 so
+    // decoding produces fewer than crypto_sign_SECRETKEYBYTES bytes → system fails closed.
+    runtime.database.persistent_store.server_signing_keys.clear();
     runtime.database.persistent_store.server_signing_keys.push_back({
         server_name,
         "ed25519:deadbeef",
@@ -486,25 +488,28 @@ SCENARIO("Federation callbacks refuse to start the dispatch worker with an unusa
 SCENARIO("ensure_runtime_server_signing_key generates a derived key_id, never the legacy sentinel",
          "[homeserver][vertical][signing]")
 {
-    GIVEN("a fresh runtime with no signing key in the store")
+    // start_runtime pre-warms the key server cache by calling ensure_runtime_server_signing_key
+    // at startup, so by the time this test body runs the store already has exactly one key.
+    GIVEN("a started runtime whose signing key was initialised during startup")
     {
         auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        REQUIRE(runtime.database.persistent_store.server_signing_keys.empty());
+        // Exactly one key was generated during the startup cache pre-warm.
+        REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
 
-        WHEN("the signing key is ensured")
+        WHEN("ensure_runtime_server_signing_key is called again (idempotent)")
         {
             auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
 
-            THEN("a key is generated with a derived key_id that is not the legacy sentinel")
+            THEN("the existing key is returned with a derived key_id that is not the legacy sentinel")
             {
                 REQUIRE(key.has_value());
                 REQUIRE(key->key_id.starts_with("ed25519:"));
                 REQUIRE(key->key_id != "ed25519:auto");
                 // Derived ID is "ed25519:" + 8 lowercase hex chars from the public key.
                 REQUIRE(key->key_id.size() == std::string_view{"ed25519:"}.size() + 8U);
-                // The key is persisted to the store.
+                // Still one key — ensure is idempotent.
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.front().key_id == key->key_id);
                 // The runtime secret key is populated and has the correct Ed25519 size.
@@ -642,6 +647,34 @@ SCENARIO("Homeserver event send uses wall-clock origin_server_ts", "[homeserver]
                 auto const depth = stored.back().depth;
                 REQUIRE(depth >= 1U);
             }
+        }
+    }
+}
+
+SCENARIO("start_runtime pre-warms the key server response cache",
+         "[homeserver][vertical][signing][federation]")
+{
+    GIVEN("a freshly started runtime")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        THEN("the key server cache is populated with a valid signed response")
+        {
+            // The cache must be non-null (unique_ptr was default-constructed in LocalDatabase).
+            REQUIRE(runtime.database.key_server_cache != nullptr);
+
+            // The atomic must hold a non-null shared_ptr to the pre-warmed response.
+            auto const cached = runtime.database.key_server_cache->load();
+            REQUIRE(cached != nullptr);
+            REQUIRE_FALSE(cached->empty());
+
+            // The cached body must be well-formed key server JSON.
+            REQUIRE(cached->find("\"server_name\"") != std::string::npos);
+            REQUIRE(cached->find("\"verify_keys\"") != std::string::npos);
+            REQUIRE(cached->find("\"valid_until_ts\"") != std::string::npos);
+            REQUIRE(cached->find("\"signatures\"") != std::string::npos);
         }
     }
 }

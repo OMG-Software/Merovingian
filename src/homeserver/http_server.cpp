@@ -433,6 +433,25 @@ namespace
 auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
                                   HttpDispatchMode mode, std::mutex& runtime_lock) -> LocalHttpResponse
 {
+    // Serve /_matrix/key/v2/server lock-free from the atomic cache.
+    // Synapse's ServerKeyFetcher uses a short timeout (~20 s) and cancels if our
+    // response arrives late. A concurrent make_join can hold the runtime lock for
+    // the full duration of an outbound HTTP round-trip, blocking this endpoint.
+    // The cache is pre-warmed during start_runtime and atomically refreshed on
+    // every lock-based key-server request, so it is always available.
+    if (mode == HttpDispatchMode::federation &&
+        request.method == "GET" && request.target == "/_matrix/key/v2/server")
+    {
+        auto& cache = runtime.homeserver.database.key_server_cache;
+        if (cache)
+        {
+            if (auto cached = cache->load())
+            {
+                return {200U, *cached};
+            }
+        }
+    }
+
     auto guard = std::unique_lock<std::mutex>{runtime_lock};
     auto result = DispatchResult{};
 

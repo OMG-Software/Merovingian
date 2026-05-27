@@ -731,6 +731,15 @@ namespace
     {
         return make_operation_result(false, {}, canonicaljson::canonical_json_error_name(signed_response.error), 500U);
     }
+
+    // Atomically update the lock-free cache so dispatch_local_http_request can
+    // serve subsequent key server requests without acquiring the runtime lock.
+    if (runtime.database.key_server_cache)
+    {
+        runtime.database.key_server_cache->store(
+            std::make_shared<std::string>(signed_response.output));
+    }
+
     return make_operation_result(true, std::move(signed_response.output));
 }
 
