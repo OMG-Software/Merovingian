@@ -673,8 +673,32 @@ namespace
     auto verify_keys = canonicaljson::Object{};
     verify_keys.push_back(canonicaljson::make_member(key->key_id, canonicaljson::Value{std::move(verify_key)}));
 
+    // Build old_verify_keys from every stored signing key for this server that is not
+    // the currently active key. Per the Matrix spec each entry is:
+    //   "<key_id>": { "expired_ts": <ms>, "key": "<base64 public key>" }
+    // expired_ts is capped at now_ms so that superseded keys with a far-future
+    // valid_until_ts (e.g. the legacy year-2999 sentinel) are never published with
+    // a future expiry, which would cause peers to treat them as still valid.
+    auto old_verify_keys_obj = canonicaljson::Object{};
+    for (auto const& old_key : runtime.database.persistent_store.server_signing_keys)
+    {
+        if (old_key.server_name != key->server_name || old_key.key_id == key->key_id ||
+            old_key.public_key.empty())
+        {
+            continue;
+        }
+        auto const expired_ts = std::min(old_key.valid_until_ts, now_ms);
+        auto old_entry = canonicaljson::Object{};
+        old_entry.push_back(
+            canonicaljson::make_member("expired_ts", canonicaljson::Value{static_cast<std::int64_t>(expired_ts)}));
+        old_entry.push_back(canonicaljson::make_member("key", canonicaljson::Value{old_key.public_key}));
+        old_verify_keys_obj.push_back(
+            canonicaljson::make_member(old_key.key_id, canonicaljson::Value{std::move(old_entry)}));
+    }
+
     auto response = canonicaljson::Object{};
-    response.push_back(canonicaljson::make_member("old_verify_keys", canonicaljson::Value{canonicaljson::Object{}}));
+    response.push_back(
+        canonicaljson::make_member("old_verify_keys", canonicaljson::Value{std::move(old_verify_keys_obj)}));
     response.push_back(canonicaljson::make_member("server_name", canonicaljson::Value{key->server_name}));
     response.push_back(canonicaljson::make_member(
         "valid_until_ts", canonicaljson::Value{static_cast<std::int64_t>(rolling_valid_until_ts)}));

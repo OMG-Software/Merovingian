@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.21
+
+- Populate `old_verify_keys` in `/_matrix/key/v2/server` with any signing keys
+  stored in the persistent store that are not the currently active key. Per the
+  Matrix spec this allows remote servers to verify historical events signed with
+  superseded keys (e.g. the legacy `ed25519:auto` key left behind after the
+  key-id migration). `expired_ts` is capped at `now` so that keys stored with
+  the old year-2999 sentinel are never published with a future expiry.
+
 ## 0.4.20
 
 - Derive the server Ed25519 signing key_id from the first four bytes of the
