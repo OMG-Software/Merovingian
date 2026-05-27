@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.24
+Version:        0.4.25
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.25-1
+- Compute and attach content hash (hashes.sha256) before signing the join event in the remote join path, fixing Synapse send_join rejection with "Malformed hashes"
+
 * Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.24-1
 - Bring createRoom in line with Matrix v1.18, including preset-derived state,
   room aliases, and correct outbound invite room versions

@@ -1279,6 +1279,25 @@ namespace
         {
             event_object.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
         }
+        // Compute and attach the content hash (hashes.sha256) before signing.
+        // The Matrix spec requires every PDU to carry this field (room versions >= 2).
+        // Without it, Synapse rejects send_join with:
+        //   SynapseError: 400 - Malformed 'hashes': <class 'NoneType'>
+        auto const content_hash = events::make_content_hash(canonicaljson::Value{event_object});
+        if (!content_hash.error.empty())
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,             false},
+                                                     {"room_id", std::string{room_id}, false},
+                                                     {"status",  "500",                false},
+                                                     {"reason",  content_hash.error,   false}
+            });
+            return make_operation_result(false, {}, "join event content hash failed", 500U);
+        }
+        auto hashes_obj = canonicaljson::Object{};
+        hashes_obj.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
+        event_object.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes_obj)}));
+
         auto event_to_sign = canonicaljson::Value{event_object};
         // Sign the event with our server's signing key.
         // signing_key is guaranteed non-empty here: perform_sync_outbound_call
