@@ -269,7 +269,15 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
                 REQUIRE(verify_keys != nullptr);
                 REQUIRE(signatures != nullptr);
 
-                auto const* key_object = object_member_as_object(*verify_keys, "ed25519:auto");
+                // The key_id is now derived from the public key bytes ("ed25519:" + 8 hex
+                // chars) rather than the legacy sentinel "ed25519:auto". Discover it
+                // dynamically from the verify_keys map — there must be exactly one entry.
+                REQUIRE(verify_keys->size() == 1U);
+                auto const& published_key_id = verify_keys->front().key;
+                REQUIRE(published_key_id.starts_with("ed25519:"));
+                REQUIRE(published_key_id != "ed25519:auto");
+
+                auto const* key_object = object_member_as_object(*verify_keys, published_key_id);
                 REQUIRE(key_object != nullptr);
                 auto const* public_key = string_member(*key_object, "key");
                 REQUIRE(public_key != nullptr);
@@ -279,7 +287,8 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
 
                 auto const* server_signatures = object_member_as_object(*signatures, "example.org");
                 REQUIRE(server_signatures != nullptr);
-                auto const* encoded_signature = string_member(*server_signatures, "ed25519:auto");
+                // Signature is published under the same derived key_id.
+                auto const* encoded_signature = string_member(*server_signatures, published_key_id);
                 REQUIRE(encoded_signature != nullptr);
 
                 auto const payload = merovingian::canonicaljson::serialize_canonical(

@@ -90,6 +90,10 @@ fi
 
 %changelog
 * Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.19-1
+- Derive Ed25519 signing key_id from public key bytes (ed25519:<8 hex chars>) to bypass stale notary caches
+- Ignore legacy ed25519:auto keys on startup and generate a fresh derived-format keypair instead
+- Set valid_until_ts to now+7d on new keys so federation peers re-fetch periodically
+- Use the actual stored key_id in every outbound X-Matrix header
 - Add runtime diagnostic logging to federation signing pipeline to surface signing-key mismatches and payload build failures
 - Log key lifecycle events (loaded vs generated) in ensure_runtime_server_signing_key for ops visibility
 

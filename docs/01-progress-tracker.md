@@ -94,12 +94,20 @@ separate operator decision once this branch is approved._
   rejection, outbound transaction types, exponential backoff,
   circuit-breaker policy, `OutboundClient`, `perform_outbound_transaction`,
   and per-platform TLS outbound integration coverage exist.
-- Federation request-signing interop: synchronous outbound membership calls now
-  fail closed when the runtime signing key is not already initialized,
-  dispatch-worker startup rejects unusable persisted signing secrets instead of
-  masking them with a fallback `key_id`, `OutboundClient` preserves raw encoded
-  request targets with `CURLOPT_PATH_AS_IS`, and TLS integration coverage
-  captures the exact `make_join` request line to guard against signature drift.
+- Federation request-signing interop: the server Ed25519 signing key_id is now
+  derived from the first four public-key bytes as lowercase hex
+  (`ed25519:a1b2c3d4` form) instead of the legacy `ed25519:auto` sentinel.
+  Legacy `ed25519:auto` entries in the persistent store are ignored and a fresh
+  keypair with a derived key_id is generated in their place, bypassing stale
+  notary-server (e.g. matrix.org) caches that had the old sentinel locked in
+  with a far-future `valid_until_ts`. Newly generated keys use `now + 7 days`
+  as `valid_until_ts` so peers re-fetch periodically. Every outbound X-Matrix
+  header now carries the actual stored key_id rather than a hardcoded string.
+  Synchronous outbound membership calls fail closed when the signing key is
+  absent; dispatch-worker startup rejects unusable secrets; `OutboundClient`
+  preserves raw encoded request targets with `CURLOPT_PATH_AS_IS`; TLS
+  integration coverage captures the exact `make_join` request line to guard
+  against signature drift.
 - Homeserver public headers: the old `vertical_slice.hpp` umbrella has been
   retired in favor of implementation-matched headers for runtime, auth, room,
   media, local HTTP routing, and the local smoke-flow helper. The split removes
