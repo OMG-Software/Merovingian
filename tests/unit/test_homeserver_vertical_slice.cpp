@@ -662,12 +662,12 @@ SCENARIO("start_runtime pre-warms the key server response cache",
 
         THEN("the key server cache is populated with a valid signed response")
         {
-            // The cache must be non-null (unique_ptr was default-constructed in LocalDatabase).
+            // The cache unique_ptr is default-constructed in LocalDatabase.
             REQUIRE(runtime.database.key_server_cache != nullptr);
 
-            // The atomic must hold a non-null shared_ptr to the pre-warmed response.
+            // load() returns an optional — must be populated by the startup pre-warm.
             auto const cached = runtime.database.key_server_cache->load();
-            REQUIRE(cached != nullptr);
+            REQUIRE(cached.has_value());
             REQUIRE_FALSE(cached->empty());
 
             // The cached body must be well-formed key server JSON.
