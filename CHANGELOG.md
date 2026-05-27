@@ -2,6 +2,11 @@
 
 ## 0.4.26
 
+- Default new room version to 12 (the latest stable) across `CreateRoomOptions`,
+  the `POST /_matrix/client/v3/createRoom` fallback, and the
+  `GET /_matrix/client/v3/capabilities` `m.room_versions` advertisement. The
+  capabilities response now also lists versions 10, 11, and 12 as `stable`
+  rather than advertising only 10.
 - Fix inbound PDU signature verification failure (Synapse returns 403 on every
   encrypted message): `make_event_signing_payload` now strips `event_id` from
   the signing payload when the room version uses reference-hash event IDs (all
