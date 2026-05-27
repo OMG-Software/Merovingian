@@ -731,7 +731,7 @@ namespace
     // serve subsequent key server requests without acquiring the runtime mutex.
     if (runtime.database.key_server_cache)
     {
-        runtime.database.key_server_cache->store(std::make_shared<std::string>(signed_response.output));
+        runtime.database.key_server_cache->store(signed_response.output);
     }
 
     return make_operation_result(true, std::move(signed_response.output));
@@ -836,30 +836,15 @@ namespace
         auto* discovery_network = runtime.discovery_network.get();
         auto const our_server = runtime.config.server().server_name;
         auto const supported_versions = std::vector<std::string>{"12"};
+        // Best-effort: load the key_id from the persistent store. If the key cannot be
+        // hydrated (wrong size, bad base64) ensure_runtime_server_signing_key returns
+        // nullopt and signing_secret_key stays empty. perform_sync_outbound_call validates
+        // the secret size and returns {false, "server signing key not initialized"}, which
+        // join_room surfaces as 502 — the correct status for an upstream federation failure.
         auto const signing_key = ensure_runtime_server_signing_key(runtime);
-        if (!signing_key.has_value())
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                         false},
-                                                     {"room_id", std::string{room_id},             false},
-                                                     {"status",  "500",                            false},
-                                                     {"reason",  "server signing key unavailable", false}
-            });
-            return make_operation_result(false, {}, "server signing key unavailable", 500U);
-        }
-        auto const signing_key_copy = *signing_key;
+        auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
         auto const secret_key = std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
                                             runtime.database.signing_secret_key.size()};
-        if (secret_key.size() != crypto_sign_SECRETKEYBYTES)
-        {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                         false},
-                                                     {"room_id", std::string{room_id},             false},
-                                                     {"status",  "500",                            false},
-                                                     {"reason",  "server signing key unavailable", false}
-            });
-            return make_operation_result(false, {}, "server signing key unavailable", 500U);
-        }
         auto make_join_tx =
             federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, remote_server,
                                                       our_server, room_id, *user_id, supported_versions);
@@ -870,8 +855,8 @@ namespace
         });
         guard.unlock();
         auto const [make_ok, make_body] =
-            perform_sync_outbound_call(outbound_client, discovery_network, make_join_tx, signing_key_copy.key_id,
-                                       secret_key, "room.join.remote.make_join_failed");
+            perform_sync_outbound_call(outbound_client, discovery_network, make_join_tx, key_id, secret_key,
+                                       "room.join.remote.make_join_failed");
         if (!make_ok)
         {
             log_diagnostic("room.join.rejected", {
