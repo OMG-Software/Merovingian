@@ -20,6 +20,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -91,6 +92,12 @@ struct InboundReceipt final
 
 struct HomeserverRuntime final
 {
+    HomeserverRuntime() = default;
+    HomeserverRuntime(HomeserverRuntime const& other) = delete;
+    auto operator=(HomeserverRuntime const& other) -> HomeserverRuntime& = delete;
+    HomeserverRuntime(HomeserverRuntime&& other) noexcept;
+    auto operator=(HomeserverRuntime&& other) noexcept -> HomeserverRuntime&;
+
     config::Config config{};
     net::RuntimeListeners listeners{};
     LocalDatabase database{};
