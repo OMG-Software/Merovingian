@@ -100,6 +100,13 @@ namespace
         });
     }
 
+    [[nodiscard]] auto room_alias_exists(PersistentStore const& store, std::string_view room_alias) -> bool
+    {
+        return std::ranges::any_of(store.room_aliases, [room_alias](PersistentRoomAlias const& existing) {
+            return existing.room_alias == room_alias;
+        });
+    }
+
     [[nodiscard]] auto membership_exists(PersistentStore const& store, PersistentMembership const& membership) -> bool
     {
         return std::ranges::any_of(store.memberships, [&membership](PersistentMembership const& existing) {
@@ -666,14 +673,13 @@ namespace
         return false;
     }
     if (!record_and_persist(
-            store,
-            record_statement(
-                "upsert_server_signing_key",
-                "INSERT INTO server_signing_keys VALUES ($1, $2, $3, $4, $5) ON CONFLICT (server_name, key_id) "
-                "DO UPDATE SET public_key = $3, valid_until_ts = $4, "
-                "secret_key = CASE WHEN $5 = '' THEN server_signing_keys.secret_key ELSE $5 END",
-                {public_value(key.server_name), public_value(key.key_id), public_value(key.public_key),
-                 public_value(std::to_string(key.valid_until_ts)), public_value(key.secret_key)})))
+            store, record_statement(
+                       "upsert_server_signing_key",
+                       "INSERT INTO server_signing_keys VALUES ($1, $2, $3, $4, $5) ON CONFLICT (server_name, key_id) "
+                       "DO UPDATE SET public_key = $3, valid_until_ts = $4, "
+                       "secret_key = CASE WHEN $5 = '' THEN server_signing_keys.secret_key ELSE $5 END",
+                       {public_value(key.server_name), public_value(key.key_id), public_value(key.public_key),
+                        public_value(std::to_string(key.valid_until_ts)), public_value(key.secret_key)})))
     {
         return false;
     }
@@ -1784,6 +1790,32 @@ namespace
     }
     store.presence_states.push_back(std::move(state));
     return true;
+}
+
+[[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool
+{
+    if (alias.room_alias.empty() || alias.room_id.empty() || room_alias_exists(store, alias.room_alias) ||
+        !room_exists(store, alias.room_id))
+    {
+        return false;
+    }
+    auto const statement = record_statement("insert_room_alias", "INSERT INTO room_aliases VALUES ($1, $2)",
+                                            {public_value(alias.room_alias), public_value(alias.room_id)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    store.room_aliases.push_back(std::move(alias));
+    return true;
+}
+
+[[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
+    -> std::optional<PersistentRoomAlias>
+{
+    auto const it = std::ranges::find_if(store.room_aliases, [room_alias](PersistentRoomAlias const& alias) {
+        return alias.room_alias == room_alias;
+    });
+    return it == store.room_aliases.end() ? std::nullopt : std::optional<PersistentRoomAlias>{*it};
 }
 
 auto restore_sync_stream_id(PersistentStore& store) -> void

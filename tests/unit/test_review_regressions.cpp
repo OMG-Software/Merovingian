@@ -676,6 +676,7 @@ SCENARIO("Persisted local event ids are unique across rooms", "[homeserver][room
         auto const second_room = merovingian::homeserver::create_room(runtime, login.value);
         REQUIRE(first_room.ok);
         REQUIRE(second_room.ok);
+        auto const initial_event_count = runtime.database.persistent_store.events.size();
 
         WHEN("one event is sent to each room")
         {
@@ -689,10 +690,7 @@ SCENARIO("Persisted local event ids are unique across rooms", "[homeserver][room
                 REQUIRE(first_event.ok);
                 REQUIRE(second_event.ok);
                 REQUIRE(first_event.value != second_event.value);
-                // Each room now generates 4 initial state events on creation
-                // (create, member, power_levels, join_rules).  Two rooms produce
-                // 8 initial events plus the two message events sent above = 10.
-                REQUIRE(runtime.database.persistent_store.events.size() == 10U);
+                REQUIRE(runtime.database.persistent_store.events.size() == initial_event_count + 2U);
                 // The last two events are the sent message events; confirm their
                 // IDs are distinct (the core non-collision invariant).
                 auto const& all_evts = runtime.database.persistent_store.events;
@@ -714,6 +712,8 @@ SCENARIO("Sending a state event mirrors current state", "[homeserver][rooms][rev
         auto const login = merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
         auto const room = merovingian::homeserver::create_room(runtime, login.value);
         REQUIRE(room.ok);
+        auto const initial_event_count = runtime.database.persistent_store.events.size();
+        auto const initial_state_count = runtime.database.persistent_store.state.size();
 
         WHEN("a room state event is sent")
         {
@@ -723,12 +723,8 @@ SCENARIO("Sending a state event mirrors current state", "[homeserver][rooms][rev
             THEN("the event is persisted and materialized as current state")
             {
                 REQUIRE(event.ok);
-                // create_room now generates 4 initial state events; the topic
-                // event sent above is the fifth.
-                REQUIRE(runtime.database.persistent_store.events.size() == 5U);
-                // State table has one entry per (event_type, state_key) pair:
-                // create, member, power_levels, join_rules from creation + topic.
-                REQUIRE(runtime.database.persistent_store.state.size() == 5U);
+                REQUIRE(runtime.database.persistent_store.events.size() == initial_event_count + 1U);
+                REQUIRE(runtime.database.persistent_store.state.size() == initial_state_count + 1U);
                 // Verify the topic entry was materialised with the correct event id.
                 auto const& state_entries = runtime.database.persistent_store.state;
                 auto const topic_it = std::ranges::find_if(state_entries, [](auto const& s) {

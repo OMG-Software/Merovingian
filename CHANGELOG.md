@@ -2,6 +2,21 @@
 
 ## 0.4.23
 
+- Make `POST /_matrix/client/v3/createRoom` conform to the Matrix v1.18
+  preset and event-order rules. Room creation now derives the preset from
+  `visibility`, honours requested `room_version`, merges
+  `creation_content` and `power_level_content_override`, applies
+  `initial_state`, emits `m.room.guest_access`, propagates `is_direct`
+  into invite membership events, and implements the full
+  `trusted_private_chat` extras including `additional_creators`,
+  invitee power level 100, and a v12-safe `m.room.tombstone` power level.
+- Register `room_alias_name` in a durable room-alias table, emit
+  `m.room.canonical_alias`, expose `GET` and `PUT`
+  `/_matrix/client/v3/directory/room/{roomAlias}`, and reject duplicate
+  aliases with `M_ROOM_IN_USE`.
+- Use the created room's actual version in outbound federation invite
+  transactions instead of hardcoding version 12, so remote invitees see
+  the correct auth rules for the room they are being invited to.
 - Remove the listener-owned `runtime_lock` from HTTP dispatch and move
   request synchronization into `HomeserverRuntime::mutex`, so listeners no
   longer serialize every request through one process-wide lock.

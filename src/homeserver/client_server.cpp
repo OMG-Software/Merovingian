@@ -26,6 +26,7 @@
 #include "merovingian/http/request.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
@@ -429,23 +430,6 @@ namespace
         }
         append_event_json(invite->signed_event_json);
         return result;
-    }
-
-    [[nodiscard]] auto upsert_membership(database::PersistentStore& store, std::string_view room_id,
-                                         std::string_view user_id, std::string_view membership,
-                                         std::uint64_t stream_ordering) -> bool
-    {
-        auto const result = database::store_membership(
-            store, {std::string{room_id}, std::string{user_id}, std::string{membership}, stream_ordering});
-        if (result == database::MembershipStoreResult::stored)
-        {
-            return true;
-        }
-        if (result == database::MembershipStoreResult::already_exists)
-        {
-            return database::update_membership(store, room_id, user_id, membership);
-        }
-        return false;
     }
 
     [[nodiscard]] auto ascii_equal_case_insensitive(std::string_view left, std::string_view right) noexcept -> bool
@@ -2392,6 +2376,23 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     {
         return dispatch_resp(200U, public_rooms_json(rt));
     }
+    auto constexpr directory_room_prefix = std::string_view{"/_matrix/client/v3/directory/room/"};
+    if (req.method == "GET" && starts_with(request_path, directory_room_prefix))
+    {
+        auto const encoded_alias = request_path.substr(directory_room_prefix.size());
+        auto const room_alias = core::percent_decode_path_component(encoded_alias);
+        auto const found = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+        if (!found.has_value())
+        {
+            return dispatch_err(404U, "M_NOT_FOUND", "room alias not found");
+        }
+        auto servers = canonicaljson::Array{};
+        servers.push_back(json_str(rt.homeserver.config.server().server_name));
+        return dispatch_resp(200U, json_serialize(json_obj({
+                                       json_member("room_id", json_str(found->room_id)),
+                                       json_member("servers", json_arr(std::move(servers))),
+                                   })));
+    }
 
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register")
     {
@@ -2589,6 +2590,42 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         });
         return dispatch_resp(200U, json_serialize(json_obj({json_member("user_id", json_str(*user))})));
     }
+    if (req.method == "PUT" && starts_with(request_path, directory_room_prefix))
+    {
+        auto const body = parsed_json_object(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(400U, "M_BAD_JSON", "directory body must be a JSON object");
+        }
+        auto const* room_id = string_member(*body, "room_id");
+        if (room_id == nullptr || room_id->empty())
+        {
+            return dispatch_err(400U, "M_BAD_JSON", "room_id is required");
+        }
+        auto const room = std::ranges::find_if(rt.homeserver.database.rooms, [room_id](LocalRoom const& current) {
+            return current.room_id == *room_id;
+        });
+        if (room == rt.homeserver.database.rooms.end())
+        {
+            return dispatch_err(404U, "M_NOT_FOUND", "room not found");
+        }
+        if (!joined(*room, *user))
+        {
+            return dispatch_err(403U, "M_FORBIDDEN", "user is not a member of this room");
+        }
+        auto const room_alias = core::percent_decode_path_component(request_path.substr(directory_room_prefix.size()));
+        auto const existing = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
+        if (existing.has_value())
+        {
+            return existing->room_id == *room_id ? dispatch_resp(200U, "{}")
+                                                 : dispatch_err(409U, "M_ROOM_IN_USE", "room alias already in use");
+        }
+        if (!database::store_room_alias(rt.homeserver.database.persistent_store, {room_alias, *room_id}))
+        {
+            return dispatch_err(500U, "M_UNKNOWN", "failed to persist room alias");
+        }
+        return dispatch_resp(200U, "{}");
+    }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/password")
     {
         auto const object = parsed_json_object(req.body);
@@ -2782,101 +2819,107 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/createRoom")
     {
-        // Parse optional body parameters.
-        auto const body_parsed = canonicaljson::parse_lossless(req.body);
-        auto const* body_obj = std::get_if<canonicaljson::Object>(&body_parsed.value.storage());
-        auto const* name_val = body_obj != nullptr ? string_member(*body_obj, "name") : nullptr;
-        auto const* topic_val = body_obj != nullptr ? string_member(*body_obj, "topic") : nullptr;
-        auto const* preset_val = body_obj != nullptr ? string_member(*body_obj, "preset") : nullptr;
-        auto const invitees =
-            body_obj != nullptr ? string_array_member(*body_obj, "invite") : std::vector<std::string>{};
-        auto const join_rule = (preset_val != nullptr && *preset_val == "public_chat") ? "public" : "invite";
-        auto const history_vis = (preset_val != nullptr && *preset_val == "public_chat") ? "world_readable" : "shared";
-
-        // Create the room record (returns the raw room_id string on success).
-        auto const create_r = call_local(req);
-        if (create_r.status != 200U)
+        auto const body_object = req.body.empty() ? std::optional<canonicaljson::Object>{canonicaljson::Object{}}
+                                                  : parsed_json_object(req.body);
+        if (!body_object.has_value())
         {
-            log_diagnostic("room.create.rejected", {
-                                                       {"actor",  *user,                           false},
-                                                       {"status", std::to_string(create_r.status), false},
-                                                       {"reason", create_r.body,                   false}
-            });
-            return dispatch_err(create_r.status, error_code_for_status(create_r.status), create_r.body);
+            return dispatch_err(400U, "M_BAD_JSON", "createRoom body must be a JSON object");
         }
-        auto const room_id = create_r.body;
 
-        // Send one initial state event via the internal send path. The
-        // optional state_key defaults to "" for room-scoped state events;
-        // m.room.member must be keyed by the joining user's MXID.
-        auto const send_state = [&](std::string_view event_type, std::string_view content_json,
-                                    std::string_view state_key = std::string_view{}) -> std::optional<std::string> {
-            auto ev = event_body_from_content(event_type, content_json, std::string{state_key});
-            if (!ev.has_value())
+        auto const& body = *body_object;
+        auto const* preset_value = string_member(body, "preset");
+        auto const* visibility_value = string_member(body, "visibility");
+        auto const effective_preset = [&]() -> std::string {
+            if (preset_value != nullptr && !preset_value->empty())
             {
-                return std::nullopt;
+                return *preset_value;
             }
-            auto inner = req;
-            inner.method = "POST";
-            inner.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
-            inner.body = std::move(*ev);
-            auto const sent = call_local(inner);
-            return sent.status == 200U && !sent.body.empty() ? std::optional<std::string>{sent.body} : std::nullopt;
-        };
+            if (visibility_value != nullptr && *visibility_value == "public")
+            {
+                return "public_chat";
+            }
+            return "private_chat";
+        }();
+        auto const invitees = string_array_member(body, "invite");
+        auto const* room_version_value = string_member(body, "room_version");
+        auto const room_version =
+            room_version_value != nullptr && !room_version_value->empty() ? *room_version_value : std::string{"10"};
+        if (rooms::find_room_version_policy(room_version) == nullptr)
+        {
+            return dispatch_err(400U, "M_UNSUPPORTED_ROOM_VERSION", "unsupported room version");
+        }
+        auto const* room_alias_name = string_member(body, "room_alias_name");
+        if (room_alias_name != nullptr && !room_alias_name->empty())
+        {
+            auto const alias = "#" + *room_alias_name + ":" + rt.homeserver.config.server().server_name;
+            if (database::find_room_alias(rt.homeserver.database.persistent_store, alias).has_value())
+            {
+                return dispatch_err(400U, "M_ROOM_IN_USE", "room alias already in use");
+            }
+        }
 
-        // m.room.create, m.room.member (creator join), m.room.power_levels, and
-        // m.room.join_rules ("invite") are generated by create_room so that the
-        // room has a valid auth chain for federation even when accessed via the
-        // homeserver-only path. The client-server handler only overrides
-        // join_rules when the preset requests a non-default value (e.g. "public"
-        // for public_chat); the common "invite" case is already covered.
-        // history_visibility is not emitted by create_room and is always sent.
-        if (std::string_view{join_rule} != "invite")
+        auto options = CreateRoomOptions{};
+        options.room_version = room_version;
+        options.preset = effective_preset;
+        options.invitees = invitees;
+        options.trusted_invitees = effective_preset == "trusted_private_chat" ? invitees : std::vector<std::string>{};
+        options.name = string_member(body, "name") != nullptr ? *string_member(body, "name") : std::string{};
+        options.topic = string_member(body, "topic") != nullptr ? *string_member(body, "topic") : std::string{};
+        options.room_alias_name = room_alias_name != nullptr ? *room_alias_name : std::string{};
+        options.is_direct = boolean_member(body, "is_direct") != nullptr && *boolean_member(body, "is_direct");
+        if (auto const* creation_content = object_member_as_object(body, "creation_content");
+            creation_content != nullptr)
         {
-            send_state("m.room.join_rules", json_serialize(json_obj({json_member("join_rule", json_str(join_rule))})));
+            options.creation_content = *creation_content;
         }
-        send_state("m.room.history_visibility",
-                   json_serialize(json_obj({json_member("history_visibility", json_str(history_vis))})));
-        if (name_val != nullptr)
+        if (auto const* power_override = object_member_as_object(body, "power_level_content_override");
+            power_override != nullptr)
         {
-            send_state("m.room.name", json_serialize(json_obj({json_member("name", json_str(*name_val))})));
+            options.power_level_content_override = *power_override;
         }
-        if (topic_val != nullptr)
+        if (auto const* initial_state = object_member(body, "initial_state"); initial_state != nullptr)
         {
-            send_state("m.room.topic", json_serialize(json_obj({json_member("topic", json_str(*topic_val))})));
+            if (auto const* array = std::get_if<canonicaljson::Array>(&initial_state->storage()); array != nullptr)
+            {
+                options.initial_state.assign(array->begin(), array->end());
+            }
         }
+
+        auto const create_result = create_room(rt.homeserver, req.access_token, options);
+        if (!create_result.ok)
+        {
+            auto errcode = error_code_for_status(create_result.status);
+            if (create_result.status == 400U && create_result.reason == "room alias in use")
+            {
+                errcode = "M_ROOM_IN_USE";
+            }
+            log_diagnostic("room.create.rejected", {
+                                                       {"actor",  *user,                                false},
+                                                       {"status", std::to_string(create_result.status), false},
+                                                       {"reason", create_result.reason,                 false}
+            });
+            return dispatch_err(create_result.status, errcode, create_result.reason);
+        }
+        auto const& room_id = create_result.value;
+
         for (auto const& invitee : invitees)
         {
-            auto const invite_event_id = send_state(
-                "m.room.member", json_serialize(json_obj({json_member("membership", json_str("invite"))})), invitee);
-            if (!invite_event_id.has_value())
-            {
-                log_diagnostic("room.create.invite.rejected",
-                               {
-                                   {"actor",   *user,   false},
-                                   {"room_id", room_id, false},
-                                   {"invitee", invitee, false}
-                });
-                continue;
-            }
-            auto const membership_stream = rt.homeserver.database.next_stream_ordering++;
-            if (!upsert_membership(rt.homeserver.database.persistent_store, room_id, invitee, "invite",
-                                   membership_stream))
-            {
-                log_diagnostic("room.create.invite.rejected",
-                               {
-                                   {"actor",   *user,   false},
-                                   {"room_id", room_id, false},
-                                   {"invitee", invitee, false}
-                });
-                continue;
-            }
             auto const invitee_server = server_name_from_user_id(invitee);
             if (invitee_server.empty() || invitee_server == rt.homeserver.config.server().server_name)
             {
                 continue;
             }
-            auto const invite_json = event_json_for_id(rt.homeserver.database.persistent_store, *invite_event_id);
+            auto const invite_state =
+                std::ranges::find_if(rt.homeserver.database.persistent_store.state,
+                                     [&room_id, &invitee](database::PersistentStateEvent const& state) {
+                                         return state.room_id == room_id && state.event_type == "m.room.member" &&
+                                                state.state_key == invitee;
+                                     });
+            if (invite_state == rt.homeserver.database.persistent_store.state.end())
+            {
+                continue;
+            }
+            auto const invite_json = event_json_for_id(rt.homeserver.database.persistent_store, invite_state->event_id);
             if (!invite_json.has_value())
             {
                 continue;
@@ -2886,18 +2929,9 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             {
                 auto transaction =
                     federation::make_outbound_invite(invitee_server, rt.homeserver.config.server().server_name, room_id,
-                                                     *invite_event_id, "12", *invite_json, {});
+                                                     invite_state->event_id, room_version, *invite_json, {});
                 transaction.transaction_id = std::to_string(rt.homeserver.database.next_session_id++);
                 std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
-            }
-        }
-        if (!invitees.empty())
-        {
-            rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
-            if (rt.homeserver.sync_notifier != nullptr)
-            {
-                rt.homeserver.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
-                                                     rt.homeserver.database.persistent_store.next_sync_stream_id);
             }
         }
         log_diagnostic("room.create.accepted", {

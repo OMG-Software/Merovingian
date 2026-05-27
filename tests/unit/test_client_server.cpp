@@ -1,13 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "../support/registration_token.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <cstdint>
 #include <string>
 
 namespace
@@ -77,6 +81,80 @@ namespace
     auto const value_end = body.find('"', value_begin);
     REQUIRE(value_end != std::string::npos);
     return body.substr(value_begin, value_end - value_begin);
+}
+
+[[nodiscard]] auto object_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
+    -> merovingian::canonicaljson::Value const*
+{
+    for (auto const& member : object)
+    {
+        if (member.key == key)
+        {
+            return member.value.get();
+        }
+    }
+    return nullptr;
+}
+
+[[nodiscard]] auto string_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
+    -> std::string const*
+{
+    auto const* value = object_member(object, key);
+    return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+}
+
+[[nodiscard]] auto bool_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
+    -> bool const*
+{
+    auto const* value = object_member(object, key);
+    return value == nullptr ? nullptr : std::get_if<bool>(&value->storage());
+}
+
+[[nodiscard]] auto int_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
+    -> std::int64_t const*
+{
+    auto const* value = object_member(object, key);
+    return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
+}
+
+[[nodiscard]] auto object_member_as_object(merovingian::canonicaljson::Object const& object, std::string_view key)
+    -> merovingian::canonicaljson::Object const*
+{
+    auto const* value = object_member(object, key);
+    return value == nullptr ? nullptr : std::get_if<merovingian::canonicaljson::Object>(&value->storage());
+}
+
+[[nodiscard]] auto parse_object(std::string const& json) -> merovingian::canonicaljson::Object
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(json);
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    REQUIRE(object != nullptr);
+    return *object;
+}
+
+[[nodiscard]] auto event_json_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
+                                        std::string_view event_type, std::string_view state_key = {}) -> std::string
+{
+    auto const state = std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+        return row.room_id == room_id && row.event_type == event_type && row.state_key == state_key;
+    });
+    REQUIRE(state != store.state.end());
+    auto const event = std::ranges::find_if(store.events, [&](merovingian::database::PersistentEvent const& row) {
+        return row.event_id == state->event_id;
+    });
+    REQUIRE(event != store.events.end());
+    return event->json;
+}
+
+[[nodiscard]] auto content_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
+                                     std::string_view event_type, std::string_view state_key = {})
+    -> merovingian::canonicaljson::Object
+{
+    auto const event = parse_object(event_json_for_state(store, room_id, event_type, state_key));
+    auto const* content = object_member_as_object(event, "content");
+    REQUIRE(content != nullptr);
+    return *content;
 }
 
 } // namespace
@@ -434,7 +512,197 @@ SCENARIO("Client-server publicRooms lists local public-chat rooms instead of ret
                 REQUIRE(response.response.body.find("\"name\":\"Lobby\"") != std::string::npos);
                 REQUIRE(response.response.body.find("\"topic\":\"Open to everyone\"") != std::string::npos);
                 REQUIRE(response.response.body.find("\"join_rule\":\"public\"") != std::string::npos);
-                REQUIRE(response.response.body.find("\"world_readable\":true") != std::string::npos);
+                REQUIRE(response.response.body.find("\"world_readable\":false") != std::string::npos);
+                REQUIRE(response.response.body.find("\"guest_can_join\":false") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("createRoom applies Matrix v1.18 preset and room-creation options",
+         "[homeserver][client-server][create-room][conformance]")
+{
+    GIVEN("a started runtime with one creator and one local invitee")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client creates a public room without an explicit preset")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"visibility":"public"})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+
+            THEN("visibility derives the public_chat preset semantics")
+            {
+                auto const join_rules = content_for_state(runtime.homeserver.database.persistent_store, created_room_id,
+                                                          "m.room.join_rules");
+                auto const history = content_for_state(runtime.homeserver.database.persistent_store, created_room_id,
+                                                       "m.room.history_visibility");
+                auto const guest = content_for_state(runtime.homeserver.database.persistent_store, created_room_id,
+                                                     "m.room.guest_access");
+                REQUIRE(string_member(join_rules, "join_rule") != nullptr);
+                REQUIRE(*string_member(join_rules, "join_rule") == "public");
+                REQUIRE(string_member(history, "history_visibility") != nullptr);
+                REQUIRE(*string_member(history, "history_visibility") == "shared");
+                REQUIRE(string_member(guest, "guest_access") != nullptr);
+                REQUIRE(*string_member(guest, "guest_access") == "forbidden");
+            }
+        }
+
+        WHEN("the client creates a trusted private room with all spec options")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token,
+                 R"({"creation_content":{"m.federate":false},"initial_state":[{"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}],"invite":["@bob:example.org"],"is_direct":true,"name":"Trusted DM","power_level_content_override":{"events_default":50},"preset":"trusted_private_chat","room_version":"12","topic":"spec topic"})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+
+            THEN("the persisted state matches the requested room version and creation content")
+            {
+                auto const create = content_for_state(store, created_room_id, "m.room.create");
+                REQUIRE(string_member(create, "room_version") != nullptr);
+                REQUIRE(*string_member(create, "room_version") == "12");
+                REQUIRE(bool_member(create, "m.federate") != nullptr);
+                REQUIRE(*bool_member(create, "m.federate") == false);
+                auto const* additional_creators = object_member(create, "additional_creators");
+                REQUIRE(additional_creators != nullptr);
+                auto const* additional_array =
+                    std::get_if<merovingian::canonicaljson::Array>(&additional_creators->storage());
+                REQUIRE(additional_array != nullptr);
+                REQUIRE(additional_array->size() == 1U);
+                auto const* invitee = std::get_if<std::string>(&(*additional_array)[0].storage());
+                REQUIRE(invitee != nullptr);
+                REQUIRE(*invitee == "@bob:example.org");
+            }
+
+            AND_THEN("preset and override events are emitted with the spec values")
+            {
+                auto const guest = content_for_state(store, created_room_id, "m.room.guest_access");
+                auto const history = content_for_state(store, created_room_id, "m.room.history_visibility");
+                auto const power = content_for_state(store, created_room_id, "m.room.power_levels");
+                REQUIRE(string_member(guest, "guest_access") != nullptr);
+                REQUIRE(*string_member(guest, "guest_access") == "can_join");
+                REQUIRE(string_member(history, "history_visibility") != nullptr);
+                REQUIRE(*string_member(history, "history_visibility") == "shared");
+                REQUIRE(int_member(power, "events_default") != nullptr);
+                REQUIRE(*int_member(power, "events_default") == 50);
+                auto const* users = object_member_as_object(power, "users");
+                REQUIRE(users != nullptr);
+                REQUIRE(int_member(*users, "@alice:example.org") != nullptr);
+                REQUIRE(*int_member(*users, "@alice:example.org") == 100);
+                REQUIRE(int_member(*users, "@bob:example.org") != nullptr);
+                REQUIRE(*int_member(*users, "@bob:example.org") == 100);
+                auto const* events = object_member_as_object(power, "events");
+                REQUIRE(events != nullptr);
+                REQUIRE(int_member(*events, "m.room.tombstone") != nullptr);
+                REQUIRE(*int_member(*events, "m.room.tombstone") > 50);
+            }
+
+            AND_THEN("initial_state, name, topic, and direct invites are persisted")
+            {
+                auto const encryption = content_for_state(store, created_room_id, "m.room.encryption");
+                auto const invite = content_for_state(store, created_room_id, "m.room.member", "@bob:example.org");
+                auto const name = content_for_state(store, created_room_id, "m.room.name");
+                auto const topic = content_for_state(store, created_room_id, "m.room.topic");
+                REQUIRE(string_member(encryption, "algorithm") != nullptr);
+                REQUIRE(*string_member(encryption, "algorithm") == "m.megolm.v1.aes-sha2");
+                REQUIRE(string_member(name, "name") != nullptr);
+                REQUIRE(*string_member(name, "name") == "Trusted DM");
+                REQUIRE(string_member(topic, "topic") != nullptr);
+                REQUIRE(*string_member(topic, "topic") == "spec topic");
+                REQUIRE(string_member(invite, "membership") != nullptr);
+                REQUIRE(*string_member(invite, "membership") == "invite");
+                REQUIRE(bool_member(invite, "is_direct") != nullptr);
+                REQUIRE(*bool_member(invite, "is_direct") == true);
+            }
+        }
+    }
+}
+
+SCENARIO("createRoom registers canonical aliases and directory lookups",
+         "[homeserver][client-server][create-room][aliases]")
+{
+    GIVEN("a started runtime with a logged-in creator")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+        auto const alias = std::string{"#spec:example.org"};
+
+        WHEN("the client creates a room with room_alias_name")
+        {
+            auto const created = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_alias_name":"spec"})"});
+            REQUIRE(created.response.status == 200U);
+            auto const created_room_id = room_id(created.response.body);
+
+            THEN("the room gets a canonical alias event and the directory resolves it")
+            {
+                auto const canonical = content_for_state(runtime.homeserver.database.persistent_store, created_room_id,
+                                                         "m.room.canonical_alias");
+                REQUIRE(string_member(canonical, "alias") != nullptr);
+                REQUIRE(*string_member(canonical, "alias") == alias);
+
+                auto const resolved = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/directory/room/%23spec%3Aexample.org", token, {}});
+                REQUIRE(resolved.response.status == 200U);
+                REQUIRE(resolved.response.body.find(created_room_id) != std::string::npos);
+            }
+
+            AND_THEN("the client directory PUT route accepts the existing mapping")
+            {
+                auto const updated = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"PUT", "/_matrix/client/v3/directory/room/%23spec%3Aexample.org", token,
+                              std::string{R"({"room_id":")"} + created_room_id + "\"}"});
+                REQUIRE(updated.response.status == 200U);
+            }
+
+            AND_THEN("reusing the same alias is rejected with M_ROOM_IN_USE")
+            {
+                auto const duplicate = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_alias_name":"spec"})"});
+                REQUIRE(duplicate.response.status == 400U);
+                REQUIRE(duplicate.response.body.find("M_ROOM_IN_USE") != std::string::npos);
             }
         }
     }
@@ -691,6 +959,7 @@ SCENARIO("Client-server runtime signs sent events and persists their DAG metadat
         auto const room = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
         auto const id = room_id(room.response.body);
+        auto const initial_event_count = runtime.homeserver.database.persistent_store.events.size();
 
         WHEN("state and message events are sent through the runtime")
         {
@@ -714,12 +983,7 @@ SCENARIO("Client-server runtime signs sent events and persists their DAG metadat
                 REQUIRE(state_event_id.find(":") == std::string::npos);
                 REQUIRE(message_event_id.find(":") == std::string::npos);
                 REQUIRE(store.server_signing_keys.size() == 1U);
-                // create_room emits 4 initial state events (create, member,
-                // power_levels, join_rules); the client-server handler adds
-                // history_visibility (join_rules is skipped for the default
-                // "invite" preset) = 5 from createRoom, plus the member state
-                // and message sent in this scenario = 7.
-                REQUIRE(store.events.size() == 7U);
+                REQUIRE(store.events.size() == initial_event_count + 2U);
                 REQUIRE(store.events.back().json.find("\"hashes\"") != std::string::npos);
                 REQUIRE(store.events.back().json.find("\"signatures\"") != std::string::npos);
                 REQUIRE(store.event_signatures.size() == store.events.size());

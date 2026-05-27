@@ -25,11 +25,13 @@
 
 #include <algorithm>
 #include <array>
+#include <charconv>
 #include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -256,6 +258,81 @@ namespace
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
+    }
+
+    [[nodiscard]] auto object_copy(canonicaljson::Value const& value) -> canonicaljson::Object
+    {
+        auto const* object = std::get_if<canonicaljson::Object>(&value.storage());
+        return object == nullptr ? canonicaljson::Object{} : *object;
+    }
+
+    auto upsert_object_member(canonicaljson::Object& object, canonicaljson::ObjectMember member) -> void
+    {
+        auto const existing = std::ranges::find_if(object, [&member](canonicaljson::ObjectMember const& current) {
+            return current.key == member.key;
+        });
+        if (existing != object.end())
+        {
+            *existing = std::move(member);
+            return;
+        }
+        object.push_back(std::move(member));
+    }
+
+    auto merge_object_into(canonicaljson::Object& destination, canonicaljson::Object const& source) -> void
+    {
+        for (auto const& member : source)
+        {
+            auto existing = std::ranges::find_if(destination, [&member](canonicaljson::ObjectMember const& current) {
+                return current.key == member.key;
+            });
+            if (existing != destination.end())
+            {
+                auto const* destination_object = std::get_if<canonicaljson::Object>(&existing->value->storage());
+                auto const* source_object = std::get_if<canonicaljson::Object>(&member.value->storage());
+                if (destination_object != nullptr && source_object != nullptr)
+                {
+                    auto merged = *destination_object;
+                    merge_object_into(merged, *source_object);
+                    existing->value = std::make_unique<canonicaljson::Value>(std::move(merged));
+                    continue;
+                }
+                existing->value = std::make_unique<canonicaljson::Value>(*member.value);
+                continue;
+            }
+            destination.push_back(canonicaljson::make_member(member.key, *member.value));
+        }
+    }
+
+    [[nodiscard]] auto serialize_canonical_string(canonicaljson::Value const& value) -> std::optional<std::string>
+    {
+        auto const serialized = canonicaljson::serialize_canonical(value);
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return std::nullopt;
+        }
+        return serialized.output;
+    }
+
+    [[nodiscard]] auto room_version_number(std::string_view room_version) -> int
+    {
+        auto parsed = int{0};
+        auto const [ptr, error] =
+            std::from_chars(room_version.data(), room_version.data() + room_version.size(), parsed);
+        return error == std::errc{} && ptr == room_version.data() + room_version.size() ? parsed : 0;
+    }
+
+    [[nodiscard]] auto full_room_alias(config::ServerConfig const& server, std::string_view room_alias_name)
+        -> std::string
+    {
+        return "#" + std::string{room_alias_name} + ":" + server.server_name;
     }
 
     [[nodiscard]] auto copy_member_or_empty_object(canonicaljson::Object const& object, std::string_view key)
@@ -591,15 +668,14 @@ namespace
         auto state = std::optional<database::PersistentStateEvent>{};
         if (composed->state_key.has_value())
         {
-            state = database::PersistentStateEvent{std::string{room_id}, composed->event_type,
-                                                   *composed->state_key, composed->event_id};
+            state = database::PersistentStateEvent{std::string{room_id}, composed->event_type, *composed->state_key,
+                                                   composed->event_id};
         }
-        return database::store_event_with_state(runtime.database.persistent_store,
-                                                {composed->event_id, std::string{room_id}, std::string{sender},
-                                                 composed->json, composed->depth, stream_ordering,
-                                                 composed->prev_event_ids, composed->auth_event_ids,
-                                                 composed->signatures},
-                                                std::move(state));
+        return database::store_event_with_state(
+            runtime.database.persistent_store,
+            {composed->event_id, std::string{room_id}, std::string{sender}, composed->json, composed->depth,
+             stream_ordering, composed->prev_event_ids, composed->auth_event_ids, composed->signatures},
+            std::move(state));
     }
 
 } // namespace
@@ -808,6 +884,13 @@ namespace
 
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
 {
+    return create_room(runtime, access_token, CreateRoomOptions{});
+}
+
+[[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token,
+                               CreateRoomOptions const& options) -> OperationResult
+{
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
     log_diagnostic("room.create.started", {
                                               {"has_access_token", access_token.empty() ? "false" : "true", false}
     });
@@ -836,6 +919,20 @@ namespace
         return make_operation_result(false, {}, room_decision.reason.code);
     }
 
+    auto const alias = options.room_alias_name.empty()
+                           ? std::string{}
+                           : full_room_alias(runtime.config.server(), options.room_alias_name);
+    if (!alias.empty() && database::find_room_alias(runtime.database.persistent_store, alias).has_value())
+    {
+        log_diagnostic("room.create.rejected", {
+                                                   {"actor",      *user_id,          false},
+                                                   {"room_alias", alias,             false},
+                                                   {"status",     "400",             false},
+                                                   {"reason",     "room alias busy", false}
+        });
+        return make_operation_result(false, {}, "room alias in use", 400U);
+    }
+
     if (!database::store_room_with_membership(runtime.database.persistent_store, {room_id, *user_id},
                                               {room_id, *user_id}))
     {
@@ -849,33 +946,186 @@ namespace
     }
     runtime.database.rooms.push_back({room_id, *user_id, {*user_id}, {}});
 
-    // Emit the four initial Matrix state events required for a valid room auth chain.
-    // Without these, federation peers (e.g. Synapse) reject send_join with
-    // "No create event in state". Events must be stored in sequence because each call
-    // reads the persistent state to compute auth_events and prev_events for the next.
-    auto const create_json = R"({"type":"m.room.create","state_key":"","content":{"creator":")" + *user_id +
-                             R"(","room_version":"10"}})";
-    auto const member_json =
-        R"({"type":"m.room.member","state_key":")" + *user_id + R"(","content":{"membership":"join"}})";
-    auto const pl_json =
-        R"({"type":"m.room.power_levels","state_key":"","content":{"ban":50,"events":{},"events_default":0,"invite":50,"kick":50,"redact":50,"state_default":50,"users":{")" +
-        *user_id + R"(":100},"users_default":0}})";
-    auto const jr_json =
-        std::string{R"({"type":"m.room.join_rules","state_key":"","content":{"join_rule":"invite"}})"};
+    auto emit_state = [&](std::string_view event_type, canonicaljson::Object content,
+                          std::string_view state_key = std::string_view{}) -> bool {
+        auto event = canonicaljson::Object{};
+        event.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{event_type}}));
+        event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{state_key}}));
+        event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+        auto const serialized = serialize_canonical_string(canonicaljson::Value{std::move(event)});
+        return serialized.has_value() && emit_initial_state_event(runtime, room_id, *user_id, *serialized);
+    };
 
-    if (!emit_initial_state_event(runtime, room_id, *user_id, create_json) ||
-        !emit_initial_state_event(runtime, room_id, *user_id, member_json) ||
-        !emit_initial_state_event(runtime, room_id, *user_id, pl_json) ||
-        !emit_initial_state_event(runtime, room_id, *user_id, jr_json))
+    auto create_content = options.creation_content;
+    upsert_object_member(create_content, canonicaljson::make_member("creator", canonicaljson::Value{*user_id}));
+    upsert_object_member(create_content,
+                         canonicaljson::make_member("room_version", canonicaljson::Value{options.room_version}));
+    if (options.preset == "trusted_private_chat" && !options.trusted_invitees.empty())
     {
-        log_diagnostic("room.create.rejected",
-                       {
-                           {"actor",   *user_id,                                     false},
-                           {"room_id", room_id,                                      false},
-                           {"status",  "500",                                        false},
-                           {"reason",  "initial room state event generation failed", false}
+        upsert_object_member(create_content,
+                             canonicaljson::make_member("additional_creators", string_array(options.trusted_invitees)));
+    }
+
+    auto power_levels = canonicaljson::Object{};
+    power_levels.push_back(canonicaljson::make_member("ban", canonicaljson::Value{std::int64_t{50}}));
+    power_levels.push_back(canonicaljson::make_member("events", canonicaljson::Value{canonicaljson::Object{}}));
+    power_levels.push_back(canonicaljson::make_member("events_default", canonicaljson::Value{std::int64_t{0}}));
+    power_levels.push_back(canonicaljson::make_member("invite", canonicaljson::Value{std::int64_t{50}}));
+    power_levels.push_back(canonicaljson::make_member("kick", canonicaljson::Value{std::int64_t{50}}));
+    power_levels.push_back(canonicaljson::make_member("redact", canonicaljson::Value{std::int64_t{50}}));
+    power_levels.push_back(canonicaljson::make_member("state_default", canonicaljson::Value{std::int64_t{50}}));
+    auto power_users = canonicaljson::Object{};
+    power_users.push_back(canonicaljson::make_member(*user_id, canonicaljson::Value{std::int64_t{100}}));
+    if (options.preset == "trusted_private_chat")
+    {
+        for (auto const& invitee : options.trusted_invitees)
+        {
+            upsert_object_member(power_users,
+                                 canonicaljson::make_member(invitee, canonicaljson::Value{std::int64_t{100}}));
+        }
+    }
+    power_levels.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(power_users)}));
+    power_levels.push_back(canonicaljson::make_member("users_default", canonicaljson::Value{std::int64_t{0}}));
+    merge_object_into(power_levels, options.power_level_content_override);
+    if (options.preset == "trusted_private_chat" && room_version_number(options.room_version) >= 12)
+    {
+        auto state_default = std::int64_t{50};
+        if (auto const* configured_state_default = integer_member(power_levels, "state_default");
+            configured_state_default != nullptr)
+        {
+            state_default = *configured_state_default;
+        }
+        auto events_object = object_copy(*object_member(power_levels, "events"));
+        auto const tombstone_level = state_default >= 150 ? state_default + 1 : std::int64_t{150};
+        upsert_object_member(events_object,
+                             canonicaljson::make_member("m.room.tombstone", canonicaljson::Value{tombstone_level}));
+        upsert_object_member(power_levels,
+                             canonicaljson::make_member("events", canonicaljson::Value{std::move(events_object)}));
+    }
+
+    auto join_rules = canonicaljson::Object{};
+    join_rules.push_back(canonicaljson::make_member(
+        "join_rule", canonicaljson::Value{std::string{options.preset == "public_chat" ? "public" : "invite"}}));
+    auto history_visibility = canonicaljson::Object{};
+    history_visibility.push_back(
+        canonicaljson::make_member("history_visibility", canonicaljson::Value{std::string{"shared"}}));
+    auto guest_access = canonicaljson::Object{};
+    guest_access.push_back(canonicaljson::make_member(
+        "guest_access", canonicaljson::Value{std::string{options.preset == "public_chat" ? "forbidden" : "can_join"}}));
+
+    auto creator_member = canonicaljson::Object{};
+    creator_member.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
+
+    if (!emit_state("m.room.create", std::move(create_content)) ||
+        !emit_state("m.room.member", std::move(creator_member), *user_id) ||
+        !emit_state("m.room.power_levels", std::move(power_levels)))
+    {
+        log_diagnostic("room.create.rejected", {
+                                                   {"actor",   *user_id,                                     false},
+                                                   {"room_id", room_id,                                      false},
+                                                   {"status",  "500",                                        false},
+                                                   {"reason",  "initial room state event generation failed", false}
         });
         return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+    }
+
+    if (!alias.empty())
+    {
+        auto canonical_alias = canonicaljson::Object{};
+        canonical_alias.push_back(canonicaljson::make_member("alias", canonicaljson::Value{alias}));
+        if (!emit_state("m.room.canonical_alias", std::move(canonical_alias)) ||
+            !database::store_room_alias(runtime.database.persistent_store, {alias, room_id}))
+        {
+            log_diagnostic("room.create.rejected", {
+                                                       {"actor",      *user_id,                        false},
+                                                       {"room_id",    room_id,                         false},
+                                                       {"room_alias", alias,                           false},
+                                                       {"status",     "500",                           false},
+                                                       {"reason",     "room alias persistence failed", false}
+            });
+            return make_operation_result(false, {}, "room alias persistence failed", 500U);
+        }
+    }
+
+    if (!emit_state("m.room.join_rules", std::move(join_rules)) ||
+        !emit_state("m.room.history_visibility", std::move(history_visibility)) ||
+        !emit_state("m.room.guest_access", std::move(guest_access)))
+    {
+        log_diagnostic("room.create.rejected", {
+                                                   {"actor",   *user_id,                                    false},
+                                                   {"room_id", room_id,                                     false},
+                                                   {"status",  "500",                                       false},
+                                                   {"reason",  "preset room state event generation failed", false}
+        });
+        return make_operation_result(false, {}, "preset room state event generation failed", 500U);
+    }
+
+    for (auto const& item : options.initial_state)
+    {
+        auto const* initial_state = std::get_if<canonicaljson::Object>(&item.storage());
+        if (initial_state == nullptr)
+        {
+            continue;
+        }
+        auto const* event_type = string_member(*initial_state, "type");
+        auto const* content = object_member(*initial_state, "content");
+        if (event_type == nullptr || content == nullptr)
+        {
+            continue;
+        }
+        auto state_key = std::string{};
+        if (auto const* initial_state_key = string_member(*initial_state, "state_key"); initial_state_key != nullptr)
+        {
+            state_key = *initial_state_key;
+        }
+        if (!emit_state(*event_type, object_copy(*content), state_key))
+        {
+            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+        }
+    }
+
+    if (!options.name.empty())
+    {
+        auto name_content = canonicaljson::Object{};
+        name_content.push_back(canonicaljson::make_member("name", canonicaljson::Value{options.name}));
+        if (!emit_state("m.room.name", std::move(name_content)))
+        {
+            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+        }
+    }
+    if (!options.topic.empty())
+    {
+        auto topic_content = canonicaljson::Object{};
+        topic_content.push_back(canonicaljson::make_member("topic", canonicaljson::Value{options.topic}));
+        if (!emit_state("m.room.topic", std::move(topic_content)))
+        {
+            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+        }
+    }
+
+    auto invited_anyone = false;
+    for (auto const& invitee : options.invitees)
+    {
+        auto invite_content = canonicaljson::Object{};
+        invite_content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"invite"}}));
+        if (options.is_direct)
+        {
+            invite_content.push_back(canonicaljson::make_member("is_direct", canonicaljson::Value{true}));
+        }
+        if (!emit_state("m.room.member", std::move(invite_content), invitee))
+        {
+            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+        }
+        auto const membership_stream = runtime.database.next_stream_ordering++;
+        auto const membership_result = database::store_membership(runtime.database.persistent_store,
+                                                                  {room_id, invitee, "invite", membership_stream});
+        if (membership_result == database::MembershipStoreResult::error ||
+            (membership_result == database::MembershipStoreResult::already_exists &&
+             !database::update_membership(runtime.database.persistent_store, room_id, invitee, "invite")))
+        {
+            return make_operation_result(false, {}, "invite membership persistence failed", 500U);
+        }
+        invited_anyone = true;
     }
 
     append_local_audit(runtime.database, observability::AuditCategory::admin, "room.created", *user_id, room_id,
@@ -887,6 +1137,10 @@ namespace
     // Room creation changes membership which is visible in /sync;
     // advance the sync stream counter so the publish wakes clients.
     runtime.database.persistent_store.next_sync_stream_id += 1U;
+    if (invited_anyone)
+    {
+        runtime.database.persistent_store.next_sync_stream_id += 1U;
+    }
     if (runtime.sync_notifier != nullptr)
     {
         runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
@@ -953,9 +1207,8 @@ namespace
                                                          {"remote_server", std::string{remote_server}, false}
         });
         guard.unlock();
-        auto const [make_ok, make_body] =
-            perform_sync_outbound_call(outbound_client, discovery_network, make_join_tx, key_id, secret_key,
-                                       "room.join.remote.make_join_failed");
+        auto const [make_ok, make_body] = perform_sync_outbound_call(
+            outbound_client, discovery_network, make_join_tx, key_id, secret_key, "room.join.remote.make_join_failed");
         if (!make_ok)
         {
             log_diagnostic("room.join.rejected", {
@@ -983,9 +1236,8 @@ namespace
         // correct event-auth and redaction policy when signing the join event.
         // Fall back to "12" if the field is absent (shouldn't happen per spec).
         auto const* room_version_str = string_member(*make_obj, "room_version");
-        auto const room_version = (room_version_str != nullptr && !room_version_str->empty())
-                                      ? *room_version_str
-                                      : std::string{"12"};
+        auto const room_version =
+            (room_version_str != nullptr && !room_version_str->empty()) ? *room_version_str : std::string{"12"};
 
         // Extract the "event" member (an object, not a string) from the
         // make_join response.
@@ -1086,9 +1338,8 @@ namespace
                                                          {"remote_server", std::string{remote_server}, false},
                                                          {"event_id",      event_id_result.event_id,   false}
         });
-        auto const [send_ok, send_body] =
-            perform_sync_outbound_call(outbound_client, discovery_network, send_join_tx, key_id, secret_key,
-                                       "room.join.remote.send_join_failed");
+        auto const [send_ok, send_body] = perform_sync_outbound_call(
+            outbound_client, discovery_network, send_join_tx, key_id, secret_key, "room.join.remote.send_join_failed");
         if (!send_ok)
         {
             log_diagnostic("room.join.rejected", {

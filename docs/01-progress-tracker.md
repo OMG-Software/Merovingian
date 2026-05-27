@@ -84,6 +84,13 @@ separate operator decision once this branch is approved._
   remote joins to locally-hosted rooms with "No create event in state"; this is
   now fixed. The room version policy for event composition is derived from the
   stored `m.room.create` event rather than hardcoded to version 12.
+- `createRoom` Matrix v1.18 conformance: `POST /_matrix/client/v3/createRoom`
+  now emits the spec-ordered initial state chain, derives presets from
+  `visibility`, persists `m.room.guest_access`, honours `room_version`,
+  `creation_content`, `power_level_content_override`, `initial_state`,
+  `room_alias_name`, and `is_direct`, and exposes client room-directory alias
+  lookup/registration routes. Outbound federation invites now advertise the
+  created room's actual version instead of a hardcoded value.
 - Sync foundation: stream tokens, initial sync, incremental event diffing via
   `since`, Matrix-shaped sync responses with event bodies, invite/leave room
   categories, and top-level `presence`, `account_data`, `to_device`,
