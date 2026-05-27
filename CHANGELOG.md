@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.23
+## 0.4.24
 
 - Make `POST /_matrix/client/v3/createRoom` conform to the Matrix v1.18
   preset and event-order rules. Room creation now derives the preset from

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.23
+Version:        0.4.24
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.24-1
+- Bring createRoom in line with Matrix v1.18, including preset-derived state,
+  room aliases, and correct outbound invite room versions
+- Refine runtime locking around remote federation join I/O and serve key
+  publication without serializing unrelated requests
+
 * Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.23-1
 - Move request serialization into the runtime and release the mutex before remote join discovery/make_join/send_join so unrelated requests no longer block behind federation I/O
 - Advertise room versions 10, 11, and 12 in make_join; use the room_version from the response to select the correct signing policy
