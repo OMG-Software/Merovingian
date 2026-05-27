@@ -1,22 +1,22 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/homeserver/runtime.hpp"
+
 #include "local_services.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/room_service.hpp"
-#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/media/runtime_media.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 
-#include <memory>
-
 #include <algorithm>
 #include <cstddef>
 #include <fstream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -183,12 +183,16 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
 {
     if (!config::is_valid(config))
     {
-        log_diagnostic("start.rejected", {{"reason", "configuration is invalid", false}});
+        log_diagnostic("start.rejected", {
+                                             {"reason", "configuration is invalid", false}
+        });
         return {false, "configuration is invalid", {}};
     }
     if (config.database().role != config::DatabaseRole::runtime)
     {
-        log_diagnostic("start.rejected", {{"reason", "runtime requires database.role=runtime", false}});
+        log_diagnostic("start.rejected", {
+                                             {"reason", "runtime requires database.role=runtime", false}
+        });
         return {false, "runtime requires database.role=runtime", {}};
     }
 
@@ -197,11 +201,14 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     runtime.listeners = net::make_runtime_listeners(config);
     if (runtime.listeners.empty())
     {
-        log_diagnostic("start.rejected", {{"reason", "no runtime listeners configured", false}});
+        log_diagnostic("start.rejected", {
+                                             {"reason", "no runtime listeners configured", false}
+        });
         return {false, "no runtime listeners configured", {}};
     }
-    log_diagnostic("start.listeners_ready",
-                   {{"listener_count", std::to_string(runtime.listeners.count()), false}});
+    log_diagnostic("start.listeners_ready", {
+                                                {"listener_count", std::to_string(runtime.listeners.count()), false}
+    });
 
     runtime.database = bootstrap_local_database(config, std::move(existing_state));
     if (!runtime.database.opened || !runtime.database.schema_validated ||
@@ -223,14 +230,18 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
         !database_has_table(runtime.database, "audit_log") || !database_has_table(runtime.database, "admin_actions"))
     {
         log_diagnostic("start.rejected",
-                       {{"opened", runtime.database.opened ? "true" : "false", false},
-                        {"schema_validated", runtime.database.schema_validated ? "true" : "false", false},
-                        {"reason", "database schema validation failed", false}});
+                       {
+                           {"opened",           runtime.database.opened ? "true" : "false",           false},
+                           {"schema_validated", runtime.database.schema_validated ? "true" : "false", false},
+                           {"reason",           "database schema validation failed",                  false}
+        });
         return {false, "database schema validation failed", {}};
     }
     log_diagnostic("start.database_ready",
-                   {{"schema_version", std::to_string(runtime.database.schema_version), false},
-                    {"table_count", std::to_string(runtime.database.tables.size()), false}});
+                   {
+                       {"schema_version", std::to_string(runtime.database.schema_version), false},
+                       {"table_count",    std::to_string(runtime.database.tables.size()),  false}
+    });
 
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
     runtime.outbound_client = std::make_unique<http::OutboundClient>();
@@ -239,9 +250,11 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
     runtime.hardening = platform::run_startup_hardening_self_check();
     log_diagnostic("start.complete",
-                   {{"hardening_checks", std::to_string(runtime.hardening.count()), false},
-                    {"hardening_alpha_ready", runtime.hardening.is_alpha_ready() ? "true" : "false", false},
-                    {"federation_enabled", runtime.federation.config.enabled ? "true" : "false", false}});
+                   {
+                       {"hardening_checks",      std::to_string(runtime.hardening.count()),             false},
+                       {"hardening_alpha_ready", runtime.hardening.is_alpha_ready() ? "true" : "false", false},
+                       {"federation_enabled",    runtime.federation.config.enabled ? "true" : "false",  false}
+    });
     append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver",
                        "startup");
     runtime.started = true;
@@ -249,12 +262,14 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     // Pre-warm the key server response cache before the HTTP server starts accepting
     // connections. This ensures /_matrix/key/v2/server is served lock-free from the
     // very first request, even if make_join or another outbound operation arrives
-    // concurrently on a different connection and holds the global runtime lock.
+    // concurrently on a different connection and holds the runtime mutex.
     auto const key_warm = publish_server_signing_keys(runtime);
     if (!key_warm.ok)
     {
         log_diagnostic("start.key_server_cache_warn",
-                       {{"reason", key_warm.reason.empty() ? "key unavailable" : key_warm.reason, false}});
+                       {
+                           {"reason", key_warm.reason.empty() ? "key unavailable" : key_warm.reason, false}
+        });
     }
 
     return {true, {}, std::move(runtime)};

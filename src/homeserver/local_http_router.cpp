@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/homeserver/local_http_router.hpp"
+
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -13,7 +15,6 @@
 #include "merovingian/federation/key_query.hpp"
 #include "merovingian/federation/remote_key_cache.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/observability/logger.hpp"
@@ -1178,6 +1179,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
 [[nodiscard]] auto handle_local_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse
 {
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
     log_diagnostic("request.received",
                    {
                        {"method",           request.method,                                       false},
@@ -1353,6 +1355,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         log_diagnostic("room.join.dispatch", {
                                                  {"room_id", room_id, false}
         });
+        guard.unlock();
         auto result = join_room(runtime, request.access_token, room_id);
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
                        {
@@ -1403,6 +1406,7 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
 [[nodiscard]] auto handle_federation_http_request(HomeserverRuntime& runtime, LocalHttpRequest const& request)
     -> LocalHttpResponse
 {
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
     if (!runtime.started)
     {
         return response(503U, "runtime not started");

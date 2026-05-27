@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.23
+
+- Remove the listener-owned `runtime_lock` from HTTP dispatch and move
+  request synchronization into `HomeserverRuntime::mutex`, so listeners no
+  longer serialize every request through one process-wide lock.
+- Initialize `SyncNotifier` during `start_client_server` and let
+  `dispatch_local_http_request()` wait on the notifier without taking a
+  separate dispatch lock.
+- Release the runtime mutex before remote join discovery, `make_join`, and
+  `send_join`, while snapshotting the signing key material first and
+  reacquiring the mutex only for room persistence. This prevents unrelated
+  client requests from blocking behind outbound federation I/O.
+
 ## 0.4.22
 
 - Serve `/_matrix/key/v2/server` lock-free to eliminate Synapse's

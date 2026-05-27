@@ -16,6 +16,7 @@
 #include <atomic>
 #include <cstdint>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -65,7 +66,7 @@ struct LocalDatabase final
     std::vector<unsigned char> signing_secret_key{};
     // Atomically-updatable cache of the signed /_matrix/key/v2/server response.
     // Served lock-free so Synapse's ServerKeyFetcher is not blocked by long-running
-    // outbound requests (e.g. make_join) that hold the global runtime lock.
+    // outbound requests (e.g. make_join) that hold the runtime mutex.
     // Wrapped in unique_ptr so LocalDatabase remains move-constructible.
     std::unique_ptr<std::atomic<std::shared_ptr<std::string>>> key_server_cache{
         std::make_unique<std::atomic<std::shared_ptr<std::string>>>()};
@@ -103,6 +104,10 @@ struct HomeserverRuntime final
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};
+    // Guards mutable runtime state when requests are handled concurrently.
+    // Handlers must release it before outbound network I/O so unrelated
+    // requests can continue while a federation round-trip is in flight.
+    mutable std::recursive_mutex mutex{};
 };
 
 struct RuntimeStartResult final

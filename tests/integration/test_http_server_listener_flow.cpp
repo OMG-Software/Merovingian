@@ -5,10 +5,10 @@
 #include "merovingian/core/socket_handle.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
-#include "merovingian/net/thread_pool.hpp"
 #include "merovingian/homeserver/tls.hpp"
 #include "merovingian/net/shutdown_signal.hpp"
 #include "merovingian/net/tcp_acceptor.hpp"
+#include "merovingian/net/thread_pool.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -271,7 +271,6 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
         REQUIRE(port > 0U);
 
         auto shutdown = merovingian::net::ShutdownSignal{};
-        auto runtime_lock = std::mutex{};
         auto stats = merovingian::homeserver::HttpServeStats{};
         auto pool = merovingian::net::ThreadPool{4U};
         auto runtime = std::move(runtime_result.runtime);
@@ -279,7 +278,7 @@ SCENARIO("merovingian-server accepts an HTTP request and returns the router's re
         WHEN("a client sends an HTTP/1.1 request to an unknown route")
         {
             auto server_thread = std::thread{[&]() {
-                merovingian::homeserver::serve_http(acceptor, runtime, runtime_lock, shutdown, stats,
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
                                                     merovingian::homeserver::HttpDispatchMode::local_router, pool);
             }};
 
@@ -326,7 +325,6 @@ SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS 
         REQUIRE(port > 0U);
 
         auto shutdown = merovingian::net::ShutdownSignal{};
-        auto runtime_lock = std::mutex{};
         auto stats = merovingian::homeserver::HttpServeStats{};
         auto pool = merovingian::net::ThreadPool{4U};
         auto runtime = std::move(runtime_result.runtime);
@@ -334,8 +332,7 @@ SCENARIO("merovingian-server accepts Matrix JSON requests over a configured TLS 
         WHEN("a TLS client sends Matrix JSON registration over TCP")
         {
             auto server_thread = std::thread{[&]() {
-                merovingian::homeserver::serve_tls_http(*tls_context.context, acceptor, runtime, runtime_lock, shutdown,
-                                                        stats,
+                merovingian::homeserver::serve_tls_http(*tls_context.context, acceptor, runtime, shutdown, stats,
                                                         merovingian::homeserver::HttpDispatchMode::client_server, pool);
             }};
 
@@ -386,7 +383,6 @@ SCENARIO("merovingian-server routes client listener traffic through the Matrix J
         REQUIRE(port > 0U);
 
         auto shutdown = merovingian::net::ShutdownSignal{};
-        auto runtime_lock = std::mutex{};
         auto stats = merovingian::homeserver::HttpServeStats{};
         auto pool = merovingian::net::ThreadPool{4U};
         auto runtime = std::move(runtime_result.runtime);
@@ -394,7 +390,7 @@ SCENARIO("merovingian-server routes client listener traffic through the Matrix J
         WHEN("a client sends Matrix JSON registration over TCP")
         {
             auto server_thread = std::thread{[&]() {
-                merovingian::homeserver::serve_http(acceptor, runtime, runtime_lock, shutdown, stats,
+                merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
                                                     merovingian::homeserver::HttpDispatchMode::client_server, pool);
             }};
 
@@ -436,14 +432,13 @@ SCENARIO("merovingian-server rejects an oversized request head with a 4xx status
         auto const port = acceptor.bound_port();
 
         auto shutdown = merovingian::net::ShutdownSignal{};
-        auto runtime_lock = std::mutex{};
         auto stats = merovingian::homeserver::HttpServeStats{};
         auto pool = merovingian::net::ThreadPool{4U};
         auto runtime = std::move(runtime_result.runtime);
 
         auto server_thread = std::thread{[&]() {
-            merovingian::homeserver::serve_http(acceptor, runtime, runtime_lock, shutdown, stats,
-                                                    merovingian::homeserver::HttpDispatchMode::client_server, pool);
+            merovingian::homeserver::serve_http(acceptor, runtime, shutdown, stats,
+                                                merovingian::homeserver::HttpDispatchMode::client_server, pool);
         }};
 
         WHEN("a client sends a request with a header that exceeds the configured limit")

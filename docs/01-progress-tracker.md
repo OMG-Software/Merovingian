@@ -112,13 +112,20 @@ separate operator decision once this branch is approved._
   with `expired_ts` capped at `now` to prevent future-dated entries from
   superseded keys that carried the year-2999 sentinel.
 - Key server lock-free fast path: `/_matrix/key/v2/server` is now served
-  without acquiring the global runtime lock. The signed response is
+  without acquiring the runtime mutex. The signed response is
   pre-computed during `start_runtime` and cached in an atomic
   `shared_ptr<string>` field (`LocalDatabase::key_server_cache`). Subsequent
   requests load the cached pointer atomically and return immediately, ensuring
   Synapse's `ServerKeyFetcher` receives the response well within its
   cancellation window even when a concurrent `make_join` or other long-running
-  outbound call holds the lock for tens of seconds.
+  outbound call holds the mutex for tens of seconds.
+- Runtime-scoped request locking: the listener-owned `runtime_lock` has been
+  removed. Request synchronization now lives in `HomeserverRuntime::mutex`,
+  `SyncNotifier` is attached during `start_client_server`, and the remote join
+  path snapshots signing material, releases the mutex for discovery,
+  `make_join`, and `send_join`, then reacquires it only for persistence. This
+  stops unrelated client requests from serializing behind outbound federation
+  I/O.
 - Homeserver public headers: the old `vertical_slice.hpp` umbrella has been
   retired in favor of implementation-matched headers for runtime, auth, room,
   media, local HTTP routing, and the local smoke-flow helper. The split removes
@@ -727,7 +734,12 @@ adapters.
 - The response is pre-computed during `start_runtime` and served lock-free
   from an atomic cache (`LocalDatabase::key_server_cache`), preventing
   Synapse's `ServerKeyFetcher` from timing out when a concurrent outbound
-  request (e.g. `make_join`) holds the global runtime lock.
+  request (e.g. `make_join`) holds the runtime mutex.
+- HTTP listener dispatch no longer owns a separate process-wide lock. Client
+  and local requests synchronize through `HomeserverRuntime::mutex`, and the
+  remote join path releases that mutex before federation discovery and
+  outbound membership calls so unrelated requests can continue while the join
+  is waiting on the network.
 - Server discovery now uses an injectable network boundary for behavior tests
   and a system implementation for well-known fetches, DNS SRV lookup, and
   A/AAAA resolution.

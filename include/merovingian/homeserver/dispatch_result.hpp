@@ -10,7 +10,7 @@ namespace merovingian::homeserver
 {
 
 // Parameters that the /sync handler returns when it needs to wait outside
-// the runtime_lock before building the response.
+// the runtime state mutex before building the response.
 struct SyncWaitParams final
 {
     std::uint64_t since_stream_ordering{0U};
