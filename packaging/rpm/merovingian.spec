@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.34-1
+- Add GET /account/3pid and GET /pushers returning empty arrays for Element settings
+- Fix GET /rooms/{roomId}/members returning empty chunk for locally-joined users
+
 * Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.33-1
 - Add comprehensive Matrix v1.18 Client-Server API conformance test suite (221 scenarios)
 
