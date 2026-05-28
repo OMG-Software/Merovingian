@@ -394,11 +394,9 @@ namespace
         {
             return {false, "make_join event type must be m.room.member"};
         }
-        auto const* origin = string_member(*event_object, "origin");
-        if (origin == nullptr || origin->empty())
-        {
-            return {false, "make_join event origin is required"};
-        }
+        // The origin field was removed from events in room version 4 (hash-based
+        // event IDs replaced server-name-based IDs). Do not require it on the
+        // make_join event template — room versions 10/11/12 omit it.
         if (integer_member(*event_object, "origin_server_ts") == nullptr)
         {
             return {false, "make_join event origin_server_ts is required"};

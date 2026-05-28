@@ -651,7 +651,7 @@ SCENARIO("Remote join fails closed when the runtime signing key is not initializ
 SCENARIO("Remote join rejects malformed make_join templates instead of repairing them",
          "[homeserver][vertical][rooms][federation][make-join]")
 {
-    GIVEN("a make_join response whose event omits required v1.18 fields")
+    GIVEN("a make_join response whose event omits origin_server_ts")
     {
         auto const body = std::string{
             R"({"room_version":"12","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","content":{"membership":"join"}}})"};
@@ -661,18 +661,33 @@ SCENARIO("Remote join rejects malformed make_join templates instead of repairing
             auto const parsed = merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
                                                                                      "@alice:local.example.org", body);
 
-            THEN("validation fails closed because origin and origin_server_ts are required")
+            THEN("validation fails because origin_server_ts is required")
             {
-                auto const mentions_origin = parsed.reason.find("origin") != std::string::npos;
-                auto const mentions_origin_server_ts =
-                    parsed.reason.find("origin_server_ts") != std::string::npos;
                 REQUIRE_FALSE(parsed.ok);
-                REQUIRE((mentions_origin || mentions_origin_server_ts));
+                REQUIRE(parsed.reason.find("origin_server_ts") != std::string::npos);
             }
         }
     }
 
-    GIVEN("a make_join response whose event shape matches the v1.18 template requirements")
+    GIVEN("a make_join response whose event omits the origin field but includes origin_server_ts")
+    {
+        auto const body = std::string{
+            R"({"room_version":"12","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","origin_server_ts":1234,"content":{"membership":"join"}}})"};
+
+        WHEN("the response is validated before signing")
+        {
+            auto const parsed = merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
+                                                                                     "@alice:local.example.org", body);
+
+            THEN("validation succeeds because origin was removed from events in room version 4")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.room_version == "12");
+            }
+        }
+    }
+
+    GIVEN("a make_join response whose event shape includes origin and origin_server_ts")
     {
         auto const body = std::string{
             R"({"room_version":"12","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","origin":"remote.example.org","origin_server_ts":1234,"content":{"membership":"join"}}})"};

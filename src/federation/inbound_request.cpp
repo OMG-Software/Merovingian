@@ -340,7 +340,14 @@ namespace
         event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{tmpl.user_id}));
         event.push_back(canonicaljson::make_member("sender", canonicaljson::Value{tmpl.user_id}));
         event.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{tmpl.room_id}));
-        event.push_back(canonicaljson::make_member("origin", canonicaljson::Value{tmpl.origin}));
+        // The origin field was removed from events in room version 4, which
+        // introduced hash-based event IDs (EventIdFormat::reference_hash).
+        // Room versions 1-3 use server-name-based event IDs and include origin.
+        auto const* policy = rooms::find_room_version_policy(tmpl.room_version);
+        if (policy != nullptr && policy->event_id_format != rooms::EventIdFormat::reference_hash)
+        {
+            event.push_back(canonicaljson::make_member("origin", canonicaljson::Value{tmpl.origin}));
+        }
         event.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{tmpl.origin_server_ts}));
         event.push_back(
             canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(tmpl.depth)}));

@@ -157,12 +157,14 @@ separate operator decision once this branch is approved._
   `M_INCOMPATIBLE_ROOM_VERSION` (HTTP 400). The `membership_acceptor` populates
   `room_version` in `MembershipAcceptResult`, and `handle_send_membership`
   echoes it in the `send_join` response body instead of hardcoding "12".
-- Remote join template validation (0.4.28): outbound remote joins now validate
+- Remote join template validation (0.4.28, updated 0.4.29): outbound remote joins now validate
   `make_join` responses against the Matrix v1.18 handshake requirements before
   signing them. Merovingian rejects a template when `room_id`, `sender`,
-  `state_key`, `type`, `content.membership`, `origin`, or `origin_server_ts`
+  `state_key`, `type`, `content.membership`, or `origin_server_ts`
   do not match the expected shape, instead of silently repairing malformed
-  responses. Inbound `make_join` templates now include `origin` and
+  responses. The `origin` field was removed from events in room version 4
+  (hash-based event IDs replaced server-name-based IDs), so it is no longer
+  required on make_join templates. Inbound `make_join` templates still include
   `origin_server_ts` by default.
 - Restricted join auth bridge (0.4.28): event authorization now accepts the
   `join_authorised_via_users_server` path used by restricted rooms when the
@@ -506,6 +508,17 @@ a non-production environment.
   replaced a test-injected dispatch worker with a new one.
 - Fix (0.4.5): Empty `transaction_id` in outbound membership and EDU transactions
   causing `transaction_is_well_formed` rejection.
+- Fix (0.4.29): `validate_make_join_response` rejected make_join event templates
+  that omitted the `origin` field. The `origin` field was removed from events in
+  room version 4 (hash-based event IDs replaced server-name-based IDs), so
+  Synapse and other homeservers sending templates for room versions 10/11/12
+  omit it. The field is no longer required.
+- Fix (0.4.29): Inbound make_join/make_leave template generation included the
+  `origin` field in the event object for room version 4+, which is incorrect per
+  the Matrix v1.18 spec. `build_make_template_response` now checks
+  `EventIdFormat::reference_hash` and omits `origin` for room versions 4 and
+  later. The conformance test that asserted `origin` was present for room version
+  12 was corrected to assert its absence.
 - Fix (0.4.28): `PUT /_matrix/federation/v1/send/{txnId}` returned HTTP 403 for
   the entire transaction when any single PDU failed signature verification. Per
   the Matrix federation spec, individual PDU failures must be reported inside
