@@ -15,6 +15,12 @@
   `prev_event_ids`, and `auth_event_ids` from the event JSON, creates
   `PersistentStateEvent` entries for state events, and calls
   `store_event_with_state()` instead of `store_event()`.
+- Fix cross-signing key upload (`POST /keys/device_signing/upload`) only storing
+  the `master` key type, losing `self_signing` and `user_signing` keys. The
+  handler now parses the request body and stores each key type individually.
+  The `keys/query` response now includes `master_keys`, `self_signing_keys`,
+  and `user_signing_keys` sections, fixing Element's "Unable to set up keys"
+  error during E2EE cross-signing setup.
 
 ## 0.4.29
 

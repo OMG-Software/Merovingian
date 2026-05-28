@@ -517,6 +517,12 @@ a non-production environment.
   ordering from `next_stream_ordering++`, parses `depth`, `prev_event_ids`, and
   `auth_event_ids` from the event JSON, computes hash-based event IDs for room
   v4+, creates `PersistentStateEvent` entries, and calls `store_event_with_state()`.
+- Fix (0.4.30): Cross-signing key upload (`POST /keys/device_signing/upload`) only
+  stored the `master` key type, discarding `self_signing` and `user_signing` keys.
+  The handler now parses the request body and stores each key type individually.
+  The `keys/query` response now includes `master_keys`, `self_signing_keys`, and
+  `user_signing_keys` sections, fixing Element's "Unable to set up keys" error
+  during E2EE cross-signing setup.
 - Fix (0.4.29): `validate_make_join_response` rejected make_join event templates
   that omitted the `origin` field. The `origin` field was removed from events in
   room version 4 (hash-based event IDs replaced server-name-based IDs), so

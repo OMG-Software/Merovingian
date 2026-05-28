@@ -89,8 +89,8 @@ namespace
         };
     }
 
-    [[nodiscard]] auto dispatch_err(std::uint16_t status, std::string_view errcode, std::string_view error)
-        -> DispatchResult
+    [[nodiscard]] auto dispatch_err(std::uint16_t status, std::string_view errcode,
+                                    std::string_view error) -> DispatchResult
     {
         return DispatchResult{
             DispatchResult::Status::complete, {status, matrix_error(errcode, error)},
@@ -100,8 +100,8 @@ namespace
 
     // Collect the unique remote server names that have members in a room,
     // excluding the local server. Used to federate outbound EDUs and PDUs.
-    [[nodiscard]] auto remote_servers_in_room(HomeserverRuntime const& runtime, LocalRoom const& room)
-        -> std::vector<std::string>
+    [[nodiscard]] auto remote_servers_in_room(HomeserverRuntime const& runtime,
+                                              LocalRoom const& room) -> std::vector<std::string>
     {
         auto const& server_name = runtime.config.server().server_name;
         auto servers = std::vector<std::string>{};
@@ -320,8 +320,8 @@ namespace
         std::string target_id{};
     };
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -333,8 +333,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -354,8 +354,8 @@ namespace
         return std::get_if<bool>(&value->storage());
     }
 
-    [[nodiscard]] auto string_array_member(canonicaljson::Object const& object, std::string_view key)
-        -> std::vector<std::string>
+    [[nodiscard]] auto string_array_member(canonicaljson::Object const& object,
+                                           std::string_view key) -> std::vector<std::string>
     {
         auto const* value = object_member(object, key);
         auto const* array = value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
@@ -380,8 +380,8 @@ namespace
         return colon == std::string_view::npos ? std::string_view{} : user_id.substr(colon + 1U);
     }
 
-    [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store, std::string_view event_id)
-        -> std::optional<std::string>
+    [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store,
+                                         std::string_view event_id) -> std::optional<std::string>
     {
         auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
             return current.event_id == event_id;
@@ -476,8 +476,8 @@ namespace
         return {};
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
+                                               std::string_view key) noexcept -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -512,8 +512,8 @@ namespace
         return serialized.output;
     }
 
-    [[nodiscard]] auto serialized_object_member(canonicaljson::Object const& object, std::string_view key)
-        -> std::optional<std::string>
+    [[nodiscard]] auto serialized_object_member(canonicaljson::Object const& object,
+                                                std::string_view key) -> std::optional<std::string>
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -523,8 +523,8 @@ namespace
         return serialized_value(*value);
     }
 
-    [[nodiscard]] auto object_member_object(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_object(canonicaljson::Object const& object,
+                                            std::string_view key) noexcept -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -611,8 +611,8 @@ namespace
         return "@" + std::string{user} + ":" + std::string{server_name};
     }
 
-    [[nodiscard]] auto parse_login_body(std::string_view body, std::string_view server_name)
-        -> std::optional<MatrixLoginBody>
+    [[nodiscard]] auto parse_login_body(std::string_view body,
+                                        std::string_view server_name) -> std::optional<MatrixLoginBody>
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -834,8 +834,8 @@ namespace
         return true;
     }
 
-    [[nodiscard]] auto find_device(ClientServerRuntime& rt, std::string_view user, std::string_view device)
-        -> ClientDevice*
+    [[nodiscard]] auto find_device(ClientServerRuntime& rt, std::string_view user,
+                                   std::string_view device) -> ClientDevice*
     {
         auto const it = std::ranges::find_if(rt.devices, [user, device](ClientDevice const& d) {
             return d.user_id == user && d.device_id == device;
@@ -912,8 +912,8 @@ namespace
         return event_json_for_id(store, std::string{it->second});
     }
 
-    [[nodiscard]] auto event_content_string(std::string_view event_json, std::string_view key)
-        -> std::optional<std::string>
+    [[nodiscard]] auto event_content_string(std::string_view event_json,
+                                            std::string_view key) -> std::optional<std::string>
     {
         auto parsed = canonicaljson::parse_lossless(event_json);
         if (parsed.error != canonicaljson::ParseError::none)
@@ -938,8 +938,8 @@ namespace
 
     [[nodiscard]] auto room_state_string(database::PersistentStore const& store, StateIndex const& index,
                                          std::string_view room_id, std::string_view event_type,
-                                         std::string_view content_key, std::string_view state_key = {})
-        -> std::optional<std::string>
+                                         std::string_view content_key,
+                                         std::string_view state_key = {}) -> std::optional<std::string>
     {
         auto const event_json = state_event_json(store, index, room_id, event_type, state_key);
         if (!event_json.has_value())
@@ -1081,10 +1081,9 @@ namespace
         return events;
     }
 
-    [[nodiscard]] auto build_device_list_arrays(database::PersistentStore const& store, std::string_view user,
-                                                std::uint64_t since_sync_stream_id,
-                                                std::uint64_t& max_observed_stream_id)
-        -> std::pair<canonicaljson::Array, canonicaljson::Array>
+    [[nodiscard]] auto build_device_list_arrays(
+        database::PersistentStore const& store, std::string_view user, std::uint64_t since_sync_stream_id,
+        std::uint64_t& max_observed_stream_id) -> std::pair<canonicaljson::Array, canonicaljson::Array>
     {
         auto changed = canonicaljson::Array{};
         auto left = canonicaljson::Array{};
@@ -1112,8 +1111,8 @@ namespace
 
     [[nodiscard]] auto build_presence_events(database::PersistentStore const& store,
                                              sync::EventTypeFilter const& filter, std::string_view user,
-                                             std::uint64_t since_sync_stream_id, std::uint64_t& max_observed_stream_id)
-        -> canonicaljson::Array
+                                             std::uint64_t since_sync_stream_id,
+                                             std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
         auto emitted = std::size_t{0U};
@@ -1405,8 +1404,9 @@ namespace
         auto fallback_key_types = build_fallback_key_types(store, user, device_id);
 
         auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, store.next_sync_stream_id);
-        auto const next_token = sync::StreamToken{rt.homeserver.database.next_stream_ordering - 1U,
-                                                  rt.homeserver.database.next_stream_ordering - 1U, advanced_sync_stream_id};
+        auto const next_token =
+            sync::StreamToken{rt.homeserver.database.next_stream_ordering - 1U,
+                              rt.homeserver.database.next_stream_ordering - 1U, advanced_sync_stream_id};
 
         auto const body = json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),
@@ -1654,7 +1654,47 @@ namespace
             }
             users.push_back(json_member(user_request.key, json_obj(std::move(devices))));
         }
-        return resp(200U, json_serialize(json_obj({json_member("device_keys", json_obj(std::move(users)))})));
+        // Collect cross-signing keys per user for the queried users.
+        auto master_keys = canonicaljson::Object{};
+        auto self_signing_keys = canonicaljson::Object{};
+        auto user_signing_keys = canonicaljson::Object{};
+        for (auto const& user_request : *requests)
+        {
+            for (auto const& cskey : store.cross_signing_keys)
+            {
+                if (cskey.user_id != user_request.key)
+                {
+                    continue;
+                }
+                if (cskey.key_type == "master")
+                {
+                    master_keys.push_back(json_member(user_request.key, json_embed_raw(cskey.json)));
+                }
+                else if (cskey.key_type == "self_signing")
+                {
+                    self_signing_keys.push_back(json_member(user_request.key, json_embed_raw(cskey.json)));
+                }
+                else if (cskey.key_type == "user_signing")
+                {
+                    user_signing_keys.push_back(json_member(user_request.key, json_embed_raw(cskey.json)));
+                }
+            }
+        }
+        auto response = canonicaljson::Object{};
+        response.push_back(json_member("device_keys", json_obj(std::move(users))));
+        if (!master_keys.empty())
+        {
+            response.push_back(json_member("master_keys", json_obj(std::move(master_keys))));
+        }
+        if (!self_signing_keys.empty())
+        {
+            response.push_back(json_member("self_signing_keys", json_obj(std::move(self_signing_keys))));
+        }
+        if (!user_signing_keys.empty())
+        {
+            response.push_back(json_member("user_signing_keys", json_obj(std::move(user_signing_keys))));
+        }
+        return resp(200U, json_serialize(json_obj(std::move(response))));
     }
 
     [[nodiscard]] auto handle_key_claim(ClientServerRuntime& rt, std::string_view body) -> LocalHttpResponse
@@ -1853,8 +1893,8 @@ namespace
         return parsed;
     }
 
-    [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id, std::string_view target)
-        -> std::string
+    [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id,
+                                     std::string_view target) -> std::string
     {
         auto const dir = messages_query_value(target, "dir");
         auto const backwards = dir != "f"; // both default and "b" walk backward
@@ -2018,8 +2058,43 @@ namespace
         auto& store = rt.homeserver.database.persistent_store;
         switch (endpoint)
         {
-        case auth::KeyApiEndpoint::upload_cross_signing_keys:
-            return database::store_cross_signing_key(store, {std::string{user}, "master", req.body});
+        case auth::KeyApiEndpoint::upload_cross_signing_keys: {
+            auto const parsed = canonicaljson::parse_lossless(req.body);
+            if (parsed.error != canonicaljson::ParseError::none)
+            {
+                return false;
+            }
+            auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+            if (obj == nullptr)
+            {
+                return false;
+            }
+            auto stored = true;
+            for (auto const& [key_type, key_name] : {
+                     std::pair<std::string_view, std::string_view>{"master_key",       "master"      },
+                     std::pair<std::string_view, std::string_view>{"self_signing_key", "self_signing"},
+                     std::pair<std::string_view, std::string_view>{"user_signing_key", "user_signing"},
+            })
+            {
+                auto const* value = object_member(*obj, key_type);
+                if (value == nullptr)
+                {
+                    continue;
+                }
+                auto const serialized = canonicaljson::serialize_canonical(*value);
+                if (serialized.error != canonicaljson::CanonicalJsonError::none)
+                {
+                    stored = false;
+                    continue;
+                }
+                if (!database::store_cross_signing_key(store,
+                                                       {std::string{user}, std::string{key_name}, serialized.output}))
+                {
+                    stored = false;
+                }
+            }
+            return stored;
+        }
         case auth::KeyApiEndpoint::upload_signatures:
             return database::store_key_signature(
                 store, {std::string{user}, std::string{user}, std::string{device_id}, req.body});
@@ -2154,8 +2229,8 @@ namespace
         return json_serialize(json_obj({json_member("reports", json_arr(std::move(reports)))}));
     }
 
-    [[nodiscard]] auto handle_safety_report(ClientServerRuntime& rt, std::string_view user, LocalHttpRequest const& req)
-        -> LocalHttpResponse
+    [[nodiscard]] auto handle_safety_report(ClientServerRuntime& rt, std::string_view user,
+                                            LocalHttpRequest const& req) -> LocalHttpResponse
     {
         auto const path = report_path_parts(req.target);
         auto const body = parse_safety_report_body(req.body);
@@ -2669,12 +2744,11 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                           json_member("m.room_versions",
                                       json_obj({
                                           json_member("default", json_str("12")),
-                                          json_member("available",
-                                                      json_obj({
-                                                          json_member("10", json_str("stable")),
-                                                          json_member("11", json_str("stable")),
-                                                          json_member("12", json_str("stable")),
-                                                      })),
+                                          json_member("available", json_obj({
+                                                                       json_member("10", json_str("stable")),
+                                                                       json_member("11", json_str("stable")),
+                                                                       json_member("12", json_str("stable")),
+                                                                   })),
                                       })),
                       }))})));
     }
