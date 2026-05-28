@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.4.30
+
+- Fix federation join state events stored with `stream_ordering == 0`, making
+  them invisible to incremental `/sync`. After a user joined a remote room via
+  the make_join/send_join handshake, the state and auth chain events from the
+  send_join response were persisted via `store_event()` with the default
+  `stream_ordering` of `0`. Since incremental sync filters out events where
+  `stream_ordering <= since_ordering`, and `0 <= any_since_ordering` is always
+  true, these events were never returned. Combined with the incremental sync
+  suppression that omits rooms with empty timeline and account data, the
+  joined room was completely absent from the sync response. The fix assigns
+  proper stream ordering from `next_stream_ordering++`, parses `depth`,
+  `prev_event_ids`, and `auth_event_ids` from the event JSON, creates
+  `PersistentStateEvent` entries for state events, and calls
+  `store_event_with_state()` instead of `store_event()`.
+- Fix cross-signing key upload (`POST /keys/device_signing/upload`) only storing
+  the `master` key type, losing `self_signing` and `user_signing` keys. The
+  handler now parses the request body and stores each key type individually.
+  The `keys/query` response now includes `master_keys`, `self_signing_keys`,
+  and `user_signing_keys` sections, fixing Element's "Unable to set up keys"
+  error during E2EE cross-signing setup.
+
 ## 0.4.29
 
 - Fix make_join validation rejecting event templates that omit the `origin` field.

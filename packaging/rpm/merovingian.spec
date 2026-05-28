@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.29
+Version:        0.4.30
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.30-1
+- Fix federation join state events invisible to incremental sync (stream_ordering == 0)
+- Fix cross-signing key upload losing self_signing and user_signing keys
+
 * Thu May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.29-1
 - Fix make_join validation rejecting templates that omit the origin field (removed in room version 4+)
 

@@ -65,8 +65,8 @@ namespace
     return body.substr(value_start, value_end - value_start);
 }
 
-[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object, std::string_view key)
-    -> merovingian::canonicaljson::Value const*
+[[nodiscard]] auto json_member(merovingian::canonicaljson::Object const& object,
+                               std::string_view key) -> merovingian::canonicaljson::Value const*
 {
     for (auto const& member : object)
     {
@@ -108,8 +108,8 @@ namespace
     return {user_id, token};
 }
 
-[[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt, std::string_view user)
-    -> std::string
+[[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt,
+                                       std::string_view user) -> std::string
 {
     auto const it = std::ranges::find_if(rt.devices, [user](merovingian::homeserver::ClientDevice const& d) {
         return d.user_id == user;
@@ -600,6 +600,99 @@ SCENARIO("Incremental sync with can_wait=false emits no room data when nothing c
                 // Spec MUST: rooms.join MUST be empty when no room activity has occurred since since-token.
                 // Do NOT remove/change - stale room data in incremental sync violates Sec. 9.4 delta semantics.
                 REQUIRE(join->empty());
+            }
+        }
+    }
+}
+
+// --- Federation-joined room state events visible to incremental sync -----------
+// Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// If a user joins a remote room via federation (make_join/send_join), the
+// state events from the send_join response MUST be stored with a proper
+// stream_ordering so that incremental sync can surface them. Events stored
+// with stream_ordering == 0 are invisible because the sync filter excludes
+// events where stream_ordering <= since_ordering (and 0 <= any since token).
+SCENARIO("Federation-joined room state events are visible to incremental sync",
+         "[sync][handler][federation][stream-ordering]")
+{
+    GIVEN("Alice with a room joined via federation after an initial sync")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+        auto& store = rt.homeserver.database.persistent_store;
+
+        // Initial sync to establish a since-token baseline.
+        auto const initial =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const initial_body = parse_body(initial.response.body);
+        auto const* initial_root = as_object(initial_body);
+        REQUIRE(initial_root != nullptr);
+        auto const next_batch = std::get<std::string>(json_member(*initial_root, "next_batch")->storage());
+
+        // Simulate the result of a federation join: store the room, membership,
+        // and state events with proper stream_ordering (the pattern that the
+        // fixed join_room code uses via store_event_with_state).
+        auto const room_id = std::string{"!federation:remote.example.org"};
+        REQUIRE(merovingian::database::store_room(store, {room_id, alice_id}));
+        REQUIRE(merovingian::database::store_membership(store, {room_id, alice_id}) !=
+                merovingian::database::MembershipStoreResult::error);
+        rt.homeserver.database.rooms.push_back({room_id, alice_id, std::vector<std::string>{alice_id}, {}});
+
+        auto const stream_ordering = rt.homeserver.database.next_stream_ordering++;
+        auto const state_event = merovingian::database::PersistentEvent{
+            "$event_hash_fed",
+            room_id,
+            alice_id,
+            R"({"type":"m.room.member","room_id":")" + room_id + R"(","sender":")" + alice_id + R"(","state_key":")" +
+                alice_id + R"(","content":{"membership":"join"},"origin_server_ts":1234})",
+            0U,
+            stream_ordering,
+            {},
+            {},
+            {}};
+        auto const state =
+            merovingian::database::PersistentStateEvent{room_id, "m.room.member", alice_id, "$event_hash_fed"};
+        REQUIRE(merovingian::database::store_event_with_state(
+            store, state_event, std::optional<merovingian::database::PersistentStateEvent>{state}));
+
+        // Advance sync stream counter so the notifier wakes clients.
+        store.next_sync_stream_id += 1U;
+        if (rt.homeserver.sync_notifier != nullptr)
+        {
+            rt.homeserver.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                                 store.next_sync_stream_id);
+        }
+
+        WHEN("Alice issues an incremental /sync with the since-token captured before the federation join")
+        {
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", std::string{"/_matrix/client/v3/sync?since="} + next_batch, token, {}});
+
+            THEN("the response includes the federation-joined room in rooms.join with timeline events")
+            {
+                REQUIRE(sync.response.status == 200U);
+                auto const body = parse_body(sync.response.body);
+                auto const* root = as_object(body);
+                REQUIRE(root != nullptr);
+                auto const* rooms = as_object(*json_member(*root, "rooms"));
+                REQUIRE(rooms != nullptr);
+                auto const* join = as_object(*json_member(*rooms, "join"));
+                REQUIRE(join != nullptr);
+                // Spec MUST: rooms with new events since the since-token MUST appear in rooms.join.
+                // Do NOT remove/change - this is the regression guard for the stream_ordering == 0
+                // bug where federation state events were invisible to incremental sync.
+                auto const* room_obj = as_object(*json_member(*join, room_id));
+                REQUIRE(room_obj != nullptr);
+                auto const* timeline = as_object(*json_member(*room_obj, "timeline"));
+                REQUIRE(timeline != nullptr);
+                auto const* events = as_array(*json_member(*timeline, "events"));
+                REQUIRE(events != nullptr);
+                REQUIRE(events->size() >= 1U);
             }
         }
     }

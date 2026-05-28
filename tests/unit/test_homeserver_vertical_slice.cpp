@@ -25,6 +25,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
@@ -56,6 +57,17 @@ namespace
     };
 }
 
+[[nodiscard]] auto extract_token(std::string const& body) -> std::string
+{
+    auto const marker = std::string{"\"access_token\":\""};
+    auto const start = body.find(marker);
+    REQUIRE(start != std::string::npos);
+    auto const value_start = start + marker.size();
+    auto const value_end = body.find('"', value_start);
+    REQUIRE(value_end != std::string::npos);
+    return body.substr(value_start, value_end - value_start);
+}
+
 class StaticDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
 {
 public:
@@ -71,8 +83,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t port)
-        -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view host,
+                                        std::uint16_t port) -> merovingian::federation::ResolvedAddressSet override
     {
         auto result = merovingian::federation::ResolvedAddressSet{};
         result.ok = true;
@@ -1001,6 +1013,82 @@ SCENARIO("start_runtime pre-warms the key server response cache", "[homeserver][
             REQUIRE(cached->find("\"verify_keys\"") != std::string::npos);
             REQUIRE(cached->find("\"valid_until_ts\"") != std::string::npos);
             REQUIRE(cached->find("\"signatures\"") != std::string::npos);
+        }
+    }
+}
+
+SCENARIO("Cross-signing key upload stores and returns all three key types",
+         "[homeserver][vertical][keys][cross-signing]")
+{
+    GIVEN("a logged-in user uploading cross-signing keys")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},)"
+                 R"("password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = extract_token(login.response.body);
+
+        auto const cross_signing_body = std::string{
+            R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"abc"},"signatures":{}},"self_signing_key":{"user_id":"@alice:example.org","usage":["self_signing"],"keys":{"ed25519:SELF":"def"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USER":"ghi"},"signatures":{}}})"};
+
+        WHEN("the user uploads cross-signing keys via device_signing/upload")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token, cross_signing_body});
+            REQUIRE(upload.response.status == 200U);
+
+            THEN("all three key types are stored and returned by keys/query")
+            {
+                auto& store = rt.homeserver.database.persistent_store;
+                auto master_count = std::size_t{0U};
+                auto self_signing_count = std::size_t{0U};
+                auto user_signing_count = std::size_t{0U};
+                for (auto const& cskey : store.cross_signing_keys)
+                {
+                    if (cskey.user_id != "@alice:example.org")
+                    {
+                        continue;
+                    }
+                    if (cskey.key_type == "master")
+                    {
+                        ++master_count;
+                    }
+                    else if (cskey.key_type == "self_signing")
+                    {
+                        ++self_signing_count;
+                    }
+                    else if (cskey.key_type == "user_signing")
+                    {
+                        ++user_signing_count;
+                    }
+                }
+                // Spec MUST: cross-signing key upload MUST persist all three key types.
+                // Do NOT remove - Element's "Unable to set up keys" error is caused
+                // by only storing the master key and losing self_signing/user_signing.
+                REQUIRE(master_count == 1U);
+                REQUIRE(self_signing_count == 1U);
+                REQUIRE(user_signing_count == 1U);
+
+                auto const query_body = std::string{R"({"device_keys":{"@alice:example.org":[]}})"};
+                auto const query = merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/keys/query", token, query_body});
+                REQUIRE(query.response.status == 200U);
+                REQUIRE(query.response.body.find("\"master_keys\"") != std::string::npos);
+                REQUIRE(query.response.body.find("\"self_signing_keys\"") != std::string::npos);
+                REQUIRE(query.response.body.find("\"user_signing_keys\"") != std::string::npos);
+            }
         }
     }
 }
