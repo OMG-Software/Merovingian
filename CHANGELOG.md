@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.34
+
+- Add GET /account/3pid returning `{"threepids":[]}` so Element can load account settings
+- Add GET /pushers returning `{"pushers":[]}` so Element can load notification settings
+- Fix GET /rooms/{roomId}/members returning empty chunk for members without a
+  persisted m.room.member state event — the handler now synthesizes a fallback
+  event from the membership record when no state event is found
+
 ## 0.4.33
 
 - Add comprehensive Matrix v1.18 Client-Server API conformance test suite

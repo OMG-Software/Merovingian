@@ -57,8 +57,7 @@ using namespace merovingian::tests;
 {
     auto const reg = merovingian::homeserver::handle_client_server_request(
         runtime,
-        {"POST", "/_matrix/client/v3/register", {},
-         merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("alice", "CorrectHorse7!")});
     REQUIRE(reg.response.status == 200U);
     auto const login = merovingian::homeserver::handle_client_server_request(
         runtime,
@@ -78,18 +77,20 @@ using namespace merovingian::tests;
 
 // Registers a second user (localpart) and returns their access token.
 [[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& runtime,
-                                       std::string const& localpart) -> std::string
+                                      std::string const& localpart) -> std::string
 {
     REQUIRE(merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/register", {},
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
                           merovingian::tests::registration_json(localpart, "CorrectHorse7!")})
                 .response.status == 200U);
     auto const login = merovingian::homeserver::handle_client_server_request(
-        runtime,
-        {"POST", "/_matrix/client/v3/login", {},
-         std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} +
-             localpart +
-             R"(:example.org"},"password":"CorrectHorse7!","device_id":")" + localpart + R"(_DEV"})"});
+        runtime, {"POST",
+                  "/_matrix/client/v3/login",
+                  {},
+                  std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} + localpart +
+                      R"(:example.org"},"password":"CorrectHorse7!","device_id":")" + localpart + R"(_DEV"})"});
     REQUIRE(login.response.status == 200U);
     auto const body = parse_object(login.response.body);
     auto const* tok = string_member(body, "access_token");
@@ -99,7 +100,7 @@ using namespace merovingian::tests;
 
 // Creates a room for the logged-in user and returns the room_id.
 [[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& runtime,
-                                std::string const& token) -> std::string
+                               std::string const& token) -> std::string
 {
     auto const r = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
@@ -111,16 +112,12 @@ using namespace merovingian::tests;
 }
 
 // Sends a text message and returns the event_id.
-[[nodiscard]] auto send_message(merovingian::homeserver::ClientServerRuntime& runtime,
-                                 std::string const& token,
-                                 std::string const& room_id) -> std::string
+[[nodiscard]] auto send_message(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                                std::string const& room_id) -> std::string
 {
     auto const r = merovingian::homeserver::handle_client_server_request(
-        runtime,
-        {"PUT",
-         "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn1",
-         token,
-         R"({"msgtype":"m.text","body":"hello"})"});
+        runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn1", token,
+                  R"({"msgtype":"m.text","body":"hello"})"});
     REQUIRE(r.response.status == 200U);
     auto const body = parse_object(r.response.body);
     auto const* eid = string_member(body, "event_id");
@@ -184,8 +181,7 @@ SCENARIO("GET /versions returns required spec fields", "[conformance][client-ser
 // by calling /login immediately after /register, but the gap is a spec violation.
 // TODO: extend register_local_user to create a session and return access_token
 //       + device_id, then promote those checks from comments to REQUIRE assertions.
-SCENARIO("POST /register success response contains required spec fields",
-         "[conformance][client-server][register]")
+SCENARIO("POST /register success response contains required spec fields", "[conformance][client-server][register]")
 {
     GIVEN("a running client-server with registration enabled")
     {
@@ -195,9 +191,10 @@ SCENARIO("POST /register success response contains required spec fields",
         WHEN("a valid registration request is submitted")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/register", {},
-                 merovingian::tests::registration_json("bob", "CorrectHorse7!")});
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
+                                  merovingian::tests::registration_json("bob", "CorrectHorse7!")});
 
             THEN("the response is 200 with a fully-qualified user_id")
             {
@@ -226,8 +223,7 @@ SCENARIO("POST /register success response contains required spec fields",
 // MUST return a JSON object with:
 //   flows - array of login flow objects, each with a "type" string field
 //   The array MUST contain at least the m.login.password flow.
-SCENARIO("GET /login returns flows array with at least m.login.password",
-         "[conformance][client-server][login]")
+SCENARIO("GET /login returns flows array with at least m.login.password", "[conformance][client-server][login]")
 {
     GIVEN("a running client-server")
     {
@@ -277,17 +273,17 @@ SCENARIO("GET /login returns flows array with at least m.login.password",
 //   device_id    - non-empty device identifier
 //
 // Note: "home_server" was deprecated in v1.2 and is intentionally not asserted.
-SCENARIO("POST /login success response contains required spec fields",
-         "[conformance][client-server][login]")
+SCENARIO("POST /login success response contains required spec fields", "[conformance][client-server][login]")
 {
     GIVEN("a registered user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("carol", "CorrectHorse7!")})
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("carol", "CorrectHorse7!")})
                     .response.status == 200U);
 
         WHEN("the user logs in with correct credentials")
@@ -397,8 +393,7 @@ SCENARIO("GET /whoami returns required spec fields", "[conformance][client-serve
 //
 // MUST return a JSON object with:
 //   one_time_key_counts - object mapping key algorithm to remaining count
-SCENARIO("POST /keys/upload response contains one_time_key_counts object",
-         "[conformance][client-server][e2ee][keys]")
+SCENARIO("POST /keys/upload response contains one_time_key_counts object", "[conformance][client-server][e2ee][keys]")
 {
     GIVEN("a logged-in device")
     {
@@ -448,8 +443,7 @@ SCENARIO("POST /keys/query response contains device_keys and failures objects",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/keys/query", token,
-                 R"({"device_keys":{"@alice:example.org":[]}})"});
+                {"POST", "/_matrix/client/v3/keys/query", token, R"({"device_keys":{"@alice:example.org":[]}})"});
 
             THEN("the response is 200 with device_keys and failures as objects")
             {
@@ -488,9 +482,8 @@ SCENARIO("POST /keys/claim response contains one_time_keys and failures objects"
         WHEN("the device claims one-time keys")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/claim", token,
-                 R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
+                started.runtime, {"POST", "/_matrix/client/v3/keys/claim", token,
+                                  R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
 
             THEN("the response is 200 with one_time_keys and failures as objects")
             {
@@ -545,8 +538,7 @@ SCENARIO("POST /keys/device_signing/upload returns 200 with a valid JSON object"
 //
 // MUST return a JSON object with:
 //   failures - object mapping user IDs to failed key IDs (may be empty)
-SCENARIO("POST /keys/signatures/upload response contains failures object",
-         "[conformance][client-server][e2ee][keys]")
+SCENARIO("POST /keys/signatures/upload response contains failures object", "[conformance][client-server][e2ee][keys]")
 {
     GIVEN("a logged-in device")
     {
@@ -580,8 +572,7 @@ SCENARIO("POST /keys/signatures/upload response contains failures object",
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keysversion
 //
 // If no backup exists: MUST return 404 with errcode M_NOT_FOUND.
-SCENARIO("GET /room_keys/version returns M_NOT_FOUND when no backup exists",
-         "[conformance][client-server][key-backup]")
+SCENARIO("GET /room_keys/version returns M_NOT_FOUND when no backup exists", "[conformance][client-server][key-backup]")
 {
     GIVEN("a logged-in device with no key backup created")
     {
@@ -616,8 +607,7 @@ SCENARIO("GET /room_keys/version returns M_NOT_FOUND when no backup exists",
 //
 // MUST return a JSON object with:
 //   version - non-empty string identifier for the newly created backup
-SCENARIO("POST /room_keys/version returns a non-empty version string",
-         "[conformance][client-server][key-backup]")
+SCENARIO("POST /room_keys/version returns a non-empty version string", "[conformance][client-server][key-backup]")
 {
     GIVEN("a logged-in device")
     {
@@ -629,9 +619,7 @@ SCENARIO("POST /room_keys/version returns a non-empty version string",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/room_keys/version",
-                 token,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
                  R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"});
 
             THEN("the response is 200 with a non-empty string version field")
@@ -666,13 +654,12 @@ SCENARIO("GET /room_keys/version returns algorithm, auth_data, and version after
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST",
-                     "/_matrix/client/v3/room_keys/version",
-                     token,
-                     R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"})
-                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"})
+                .response.status == 200U);
 
         WHEN("the device retrieves the backup version")
         {
@@ -717,13 +704,12 @@ SCENARIO("DELETE /room_keys/version removes the backup so a subsequent GET retur
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST",
-                     "/_matrix/client/v3/room_keys/version",
-                     token,
-                     R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"})
-                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"})
+                .response.status == 200U);
 
         WHEN("the device deletes the backup version")
         {
@@ -818,8 +804,7 @@ SCENARIO("GET /rooms/{roomId}/members returns chunk array with creator membershi
         WHEN("the user requests the member list")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/members", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/members", token, {}});
 
             THEN("the response is 200 with a non-empty chunk array containing the creator")
             {
@@ -850,12 +835,58 @@ SCENARIO("GET /rooms/{roomId}/members returns chunk array with creator membershi
     }
 }
 
+// --- GET /_matrix/client/v3/rooms/{roomId}/members (after local join) ---------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
+//
+// A second user joining a local room must appear in the /members response.
+// The join path must persist both the membership record AND a corresponding
+// state event (or the handler must synthesize one as a fallback).
+SCENARIO("GET /rooms/{roomId}/members includes joined user after local join",
+         "[conformance][client-server][rooms][members]")
+{
+    GIVEN("a logged-in user who has created a room and a second user who joins it")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token_a = logged_in_token(started.runtime);
+        auto const token_b = register_and_login(started.runtime, "bob");
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", token_a, "{}"});
+        REQUIRE(create.response.status == 200U);
+
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id_ptr = string_member(create_body, "room_id");
+        REQUIRE(room_id_ptr != nullptr);
+        auto const room_id = *room_id_ptr;
+
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", token_b, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        WHEN("the creator requests the member list")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/members", token_a, {}});
+
+            THEN("the response is 200 with a chunk containing both the creator and the joined user")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+                // The creator and the joined user — at least two member events.
+                REQUIRE(chunk->size() >= 2U);
+            }
+        }
+    }
+}
+
 // --- GET /_matrix/client/v3/rooms/{roomId}/members (unknown room) ------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
 //
 // MUST return 404 M_NOT_FOUND for a room that does not exist.
-SCENARIO("GET /rooms/{roomId}/members returns 404 for an unknown room",
-         "[conformance][client-server][rooms][members]")
+SCENARIO("GET /rooms/{roomId}/members returns 404 for an unknown room", "[conformance][client-server][rooms][members]")
 {
     GIVEN("a logged-in user")
     {
@@ -866,8 +897,7 @@ SCENARIO("GET /rooms/{roomId}/members returns 404 for an unknown room",
         WHEN("the user requests members for a non-existent room")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/%21nonexistent%3Aexample.org/members", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/%21nonexistent%3Aexample.org/members", token, {}});
 
             THEN("the response is 404 M_NOT_FOUND")
             {
@@ -888,8 +918,7 @@ SCENARIO("GET /rooms/{roomId}/members returns 404 for an unknown room",
 // All 4xx/5xx responses MUST contain a JSON object with:
 //   errcode - a string error code (e.g. "M_MISSING_TOKEN")
 //   error   - a human-readable string describing the error
-SCENARIO("Unauthenticated requests return 401 with a Matrix error object",
-         "[conformance][client-server][error]")
+SCENARIO("Unauthenticated requests return 401 with a Matrix error object", "[conformance][client-server][error]")
 {
     GIVEN("a running client-server")
     {
@@ -934,8 +963,7 @@ SCENARIO("Unauthenticated requests return 401 with a Matrix error object",
 //   access_token  - new bearer token string
 //   refresh_token - new refresh token for next rotation string
 //   expires_in_ms - positive integer milliseconds until expiry
-SCENARIO("POST /refresh returns a new access_token and refresh_token",
-         "[conformance][client-server][session]")
+SCENARIO("POST /refresh returns a new access_token and refresh_token", "[conformance][client-server][session]")
 {
     GIVEN("a running client-server and a user who logged in with refresh_token support")
     {
@@ -943,27 +971,31 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token",
         REQUIRE(started.started);
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("refreshuser", "CorrectHorse7!")})
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("refreshuser", "CorrectHorse7!")})
                     .response.status == 200U);
 
         auto const login_resp = merovingian::homeserver::handle_client_server_request(
             started.runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@refreshuser:example.org"},"password":"CorrectHorse7!","device_id":"RDEV","refresh_token":true})"});
         REQUIRE(login_resp.response.status == 200U);
         auto const login_body = parse_object(login_resp.response.body);
-        auto const* rt_ptr    = string_member(login_body, "refresh_token");
+        auto const* rt_ptr = string_member(login_body, "refresh_token");
         REQUIRE(rt_ptr != nullptr);
         auto const refresh_tok = *rt_ptr;
 
         WHEN("POST /refresh is called with the refresh token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/refresh", {},
-                 std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"});
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/refresh",
+                                  {},
+                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"});
 
             THEN("the response is 200 with access_token, refresh_token, and expires_in_ms")
             {
@@ -994,8 +1026,7 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token",
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3logoutall
 //
 // MUST return 200 with an empty JSON object.
-SCENARIO("POST /logout/all returns 200 with empty JSON object",
-         "[conformance][client-server][session]")
+SCENARIO("POST /logout/all returns 200 with empty JSON object", "[conformance][client-server][session]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -1258,8 +1289,7 @@ SCENARIO("GET /admin/whois/{userId} returns 404 M_UNRECOGNIZED (implementation g
         WHEN("GET /admin/whois/@alice:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/admin/whois/%40alice%3Aexample.org", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/admin/whois/%40alice%3Aexample.org", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1289,8 +1319,7 @@ SCENARIO("GET /v1/admin/lock/{userId} returns 404 M_UNRECOGNIZED (implementation
         WHEN("GET /_matrix/client/v1/admin/lock/@alice:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1321,8 +1350,7 @@ SCENARIO("PUT /v1/admin/lock/{userId} returns 404 M_UNRECOGNIZED (implementation
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", token,
-                 R"({"locked":true})"});
+                {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", token, R"({"locked":true})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1352,8 +1380,7 @@ SCENARIO("GET /v1/admin/suspend/{userId} returns 404 M_UNRECOGNIZED (implementat
         WHEN("GET /_matrix/client/v1/admin/suspend/@alice:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1384,8 +1411,7 @@ SCENARIO("PUT /v1/admin/suspend/{userId} returns 404 M_UNRECOGNIZED (implementat
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", token,
-                 R"({"suspended":true})"});
+                {"PUT", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", token, R"({"suspended":true})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1408,8 +1434,7 @@ SCENARIO("PUT /v1/admin/suspend/{userId} returns 404 M_UNRECOGNIZED (implementat
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3accountpassword
 //
 // MUST return 200 with an empty JSON object on success.
-SCENARIO("POST /account/password returns 200 with empty JSON object",
-         "[conformance][client-server][account]")
+SCENARIO("POST /account/password returns 200 with empty JSON object", "[conformance][client-server][account]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -1421,8 +1446,7 @@ SCENARIO("POST /account/password returns 200 with empty JSON object",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/account/password", token,
-                 R"({"new_password":"NewHorse7!+Ab"})"});
+                {"POST", "/_matrix/client/v3/account/password", token, R"({"new_password":"NewHorse7!+Ab"})"});
 
             THEN("the response is 200 with a valid JSON object body")
             {
@@ -1450,9 +1474,8 @@ SCENARIO("POST /account/deactivate returns 404 M_UNRECOGNIZED (implementation ga
         WHEN("POST /account/deactivate is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/account/deactivate", token,
-                 R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+                started.runtime, {"POST", "/_matrix/client/v3/account/deactivate", token,
+                                  R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1469,9 +1492,8 @@ SCENARIO("POST /account/deactivate returns 404 M_UNRECOGNIZED (implementation ga
 
 // --- GET /_matrix/client/v3/account/3pid -------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3account3pid
-// IMPLEMENTATION GAP: third-party identifier management not yet implemented.
-SCENARIO("GET /account/3pid returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3account3pid
+SCENARIO("GET /account/3pid returns 200 with empty threepids array", "[conformance][client-server][account]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -1484,14 +1506,12 @@ SCENARIO("GET /account/3pid returns 404 M_UNRECOGNIZED (implementation gap)",
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/account/3pid", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with a threepids array")
             {
-                // IMPLEMENTATION GAP: 3PID management not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* threepids = object_member_as_array(body, "threepids");
+                REQUIRE(threepids != nullptr);
             }
         }
     }
@@ -1500,8 +1520,7 @@ SCENARIO("GET /account/3pid returns 404 M_UNRECOGNIZED (implementation gap)",
 // --- POST /_matrix/client/v3/account/3pid ------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3account3pid
 // IMPLEMENTATION GAP: 3PID association not yet implemented.
-SCENARIO("POST /account/3pid returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
+SCENARIO("POST /account/3pid returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][account]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -1608,9 +1627,8 @@ SCENARIO("POST /account/3pid/delete returns 404 M_UNRECOGNIZED (implementation g
         WHEN("POST /account/3pid/delete is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/account/3pid/delete", token,
-                 R"({"address":"user@example.org","medium":"email"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", token,
+                                  R"({"address":"user@example.org","medium":"email"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1640,9 +1658,8 @@ SCENARIO("POST /account/3pid/email/requestToken returns 404 M_UNRECOGNIZED (impl
         WHEN("POST /account/3pid/email/requestToken is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/account/3pid/email/requestToken", token,
-                 R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
+                started.runtime, {"POST", "/_matrix/client/v3/account/3pid/email/requestToken", token,
+                                  R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1704,9 +1721,8 @@ SCENARIO("POST /account/3pid/unbind returns 404 M_UNRECOGNIZED (implementation g
         WHEN("POST /account/3pid/unbind is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/account/3pid/unbind", token,
-                 R"({"address":"user@example.org","medium":"email"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/account/3pid/unbind", token,
+                                  R"({"address":"user@example.org","medium":"email"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1736,9 +1752,8 @@ SCENARIO("POST /account/password/email/requestToken returns 404 M_UNRECOGNIZED (
         WHEN("POST /account/password/email/requestToken is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/account/password/email/requestToken", token,
-                 R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
+                started.runtime, {"POST", "/_matrix/client/v3/account/password/email/requestToken", token,
+                                  R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1800,8 +1815,7 @@ SCENARIO("GET /register/available returns 404 M_UNRECOGNIZED (implementation gap
         WHEN("GET /register/available?username=alice is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/register/available?username=alice", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/register/available?username=alice", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1832,9 +1846,7 @@ SCENARIO("GET /v1/register/m.login.registration_token/validity returns 404 M_UNR
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET",
-                 "/_matrix/client/v1/register/m.login.registration_token/validity?token=tok",
-                 token, {}});
+                {"GET", "/_matrix/client/v1/register/m.login.registration_token/validity?token=tok", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1864,9 +1876,8 @@ SCENARIO("POST /register/email/requestToken returns 404 M_UNRECOGNIZED (implemen
         WHEN("POST /register/email/requestToken is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/register/email/requestToken", token,
-                 R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
+                started.runtime, {"POST", "/_matrix/client/v3/register/email/requestToken", token,
+                                  R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -1922,8 +1933,7 @@ SCENARIO("POST /register/msisdn/requestToken returns 404 M_UNRECOGNIZED (impleme
 //
 // MUST return:
 //   capabilities - object containing server capability flags
-SCENARIO("GET /capabilities returns the server capabilities object",
-         "[conformance][client-server][capabilities]")
+SCENARIO("GET /capabilities returns the server capabilities object", "[conformance][client-server][capabilities]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -1966,8 +1976,7 @@ SCENARIO("GET /capabilities returns the server capabilities object",
 //
 // MUST return:
 //   devices - array of device objects
-SCENARIO("GET /devices returns the devices array for the authenticated user",
-         "[conformance][client-server][devices]")
+SCENARIO("GET /devices returns the devices array for the authenticated user", "[conformance][client-server][devices]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2032,8 +2041,7 @@ SCENARIO("GET /devices/{deviceId} returns the device object for a known device",
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3devicesdeviceid
 //
 // MUST return 200 with an empty JSON object on success.
-SCENARIO("PUT /devices/{deviceId} returns 200 with empty JSON object",
-         "[conformance][client-server][devices]")
+SCENARIO("PUT /devices/{deviceId} returns 200 with empty JSON object", "[conformance][client-server][devices]")
 {
     GIVEN("a running client-server and a logged-in user with a known device")
     {
@@ -2045,8 +2053,7 @@ SCENARIO("PUT /devices/{deviceId} returns 200 with empty JSON object",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/devices/DEVICE1", token,
-                 R"({"display_name":"My Device"})"});
+                {"PUT", "/_matrix/client/v3/devices/DEVICE1", token, R"({"display_name":"My Device"})"});
 
             THEN("the response is 200 with a valid JSON object body")
             {
@@ -2063,8 +2070,7 @@ SCENARIO("PUT /devices/{deviceId} returns 200 with empty JSON object",
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#delete_matrixclientv3devicesdeviceid
 //
 // MUST return 200 with an empty JSON object on success.
-SCENARIO("DELETE /devices/{deviceId} returns 200 with empty JSON object",
-         "[conformance][client-server][devices]")
+SCENARIO("DELETE /devices/{deviceId} returns 200 with empty JSON object", "[conformance][client-server][devices]")
 {
     GIVEN("a running client-server and a user with two devices")
     {
@@ -2072,30 +2078,35 @@ SCENARIO("DELETE /devices/{deviceId} returns 200 with empty JSON object",
         REQUIRE(started.started);
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("devuser", "CorrectHorse7!")})
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("devuser", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login1 = merovingian::homeserver::handle_client_server_request(
             started.runtime,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@devuser:example.org"},"password":"CorrectHorse7!","device_id":"DEV_A"})"});
         REQUIRE(login1.response.status == 200U);
         auto const body1 = parse_object(login1.response.body);
         auto const* tok1 = string_member(body1, "access_token");
         REQUIRE(tok1 != nullptr);
 
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/login", {},
-                     R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@devuser:example.org"},"password":"CorrectHorse7!","device_id":"DEV_B"})"})
-                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@devuser:example.org"},"password":"CorrectHorse7!","device_id":"DEV_B"})"})
+                .response.status == 200U);
 
         WHEN("DELETE /devices/DEV_B is called from DEV_A's session")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"DELETE", "/_matrix/client/v3/devices/DEV_B", *tok1, {}});
+                started.runtime, {"DELETE", "/_matrix/client/v3/devices/DEV_B", *tok1, {}});
 
             THEN("the response is 200 with a valid JSON object body")
             {
@@ -2123,9 +2134,7 @@ SCENARIO("POST /delete_devices returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("POST /delete_devices is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/delete_devices", token,
-                 R"({"devices":["DEVICE1"]})"});
+                started.runtime, {"POST", "/_matrix/client/v3/delete_devices", token, R"({"devices":["DEVICE1"]})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2147,8 +2156,7 @@ SCENARIO("POST /delete_devices returns 404 M_UNRECOGNIZED (implementation gap)",
 // --- GET /_matrix/client/v3/keys/changes --------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3keyschanges
 // IMPLEMENTATION GAP: device list change tracking endpoint not yet implemented.
-SCENARIO("GET /keys/changes returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][e2ee]")
+SCENARIO("GET /keys/changes returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2159,8 +2167,7 @@ SCENARIO("GET /keys/changes returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("GET /keys/changes is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/keys/changes?from=s1&to=s2", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/keys/changes?from=s1&to=s2", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2187,17 +2194,17 @@ SCENARIO("GET /room_keys/version/{version} returns 404 M_UNRECOGNIZED (implement
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/room_keys/version", token,
-                     R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
-                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
 
         WHEN("GET /room_keys/version/1 is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/room_keys/version/1", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/room_keys/version/1", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2225,11 +2232,12 @@ SCENARIO("PUT /room_keys/version/{version} returns 200 after updating backup met
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/room_keys/version", token,
-                     R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
-                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
 
         WHEN("PUT /room_keys/version/1 is called with updated auth_data")
         {
@@ -2262,17 +2270,17 @@ SCENARIO("DELETE /room_keys/version/{version} returns 200 after deleting a backu
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/room_keys/version", token,
-                     R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
-                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
 
         WHEN("DELETE /room_keys/version/1 is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"DELETE", "/_matrix/client/v3/room_keys/version/1", token, {}});
+                started.runtime, {"DELETE", "/_matrix/client/v3/room_keys/version/1", token, {}});
 
             THEN("the response is 200 with a valid JSON object body")
             {
@@ -2289,8 +2297,7 @@ SCENARIO("DELETE /room_keys/version/{version} returns 200 after deleting a backu
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3room_keyskeysroomidsessionid
 //
 // MUST return 200 on success.
-SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} stores a session key backup",
-         "[conformance][client-server][e2ee]")
+SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} stores a session key backup", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server, a logged-in user, and an existing key backup")
     {
@@ -2298,19 +2305,18 @@ SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} stores a session key backup",
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/room_keys/version", token,
-                     R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
-                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
 
         WHEN("PUT /room_keys/keys/{roomId}/{sessionId} is called with session backup data")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/session1",
-                 token,
+                {"PUT", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/session1", token,
                  R"({"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}})"});
 
             THEN("the response is 200 with a valid JSON object body")
@@ -2337,26 +2343,23 @@ SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} retrieves a backed-up session
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/room_keys/version", token,
-                     R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
-                    .response.status == 200U);
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"PUT",
-                     "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/sessA",
-                     token,
-                     R"({"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}})"})
-                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/sessA", token,
+                 R"({"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}})"})
+                .response.status == 200U);
 
         WHEN("GET /room_keys/keys/{roomId}/{sessionId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/sessA",
-                 token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/sessA", token, {}});
 
             THEN("the response is 200 with a valid JSON object body")
             {
@@ -2382,26 +2385,24 @@ SCENARIO("DELETE /room_keys/keys/{roomId}/{sessionId} removes a backed-up sessio
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/room_keys/version", token,
-                     R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
-                    .response.status == 200U);
-        REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"PUT",
-                     "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/sessD",
-                     token,
-                     R"({"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}})"})
-                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/sessD", token,
+                 R"({"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}})"})
+                .response.status == 200U);
 
         WHEN("DELETE /room_keys/keys/{roomId}/{sessionId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"DELETE",
-                 "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/sessD",
-                 token, {}});
+                {"DELETE", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/sessD", token, {}});
 
             THEN("the response is 200 with a valid JSON object body")
             {
@@ -2417,8 +2418,7 @@ SCENARIO("DELETE /room_keys/keys/{roomId}/{sessionId} removes a backed-up sessio
 // --- GET /_matrix/client/v3/room_keys/keys ------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keyskeys
 // IMPLEMENTATION GAP: bulk room key backup retrieval not yet implemented.
-SCENARIO("GET /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][e2ee]")
+SCENARIO("GET /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2447,8 +2447,7 @@ SCENARIO("GET /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)",
 // --- PUT /_matrix/client/v3/room_keys/keys ------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3room_keyskeys
 // IMPLEMENTATION GAP: bulk room key backup upload not yet implemented.
-SCENARIO("PUT /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][e2ee]")
+SCENARIO("PUT /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2459,8 +2458,7 @@ SCENARIO("PUT /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("PUT /room_keys/keys is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/room_keys/keys", token, R"({"rooms":{}})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/room_keys/keys", token, R"({"rooms":{}})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2478,8 +2476,7 @@ SCENARIO("PUT /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)",
 // --- DELETE /_matrix/client/v3/room_keys/keys ---------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#delete_matrixclientv3room_keyskeys
 // IMPLEMENTATION GAP: bulk room key backup deletion not yet implemented.
-SCENARIO("DELETE /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][e2ee]")
+SCENARIO("DELETE /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2507,8 +2504,7 @@ SCENARIO("DELETE /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)
 
 // --- GET /_matrix/client/v3/room_keys/keys/{roomId} --------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keyskeysroomid
-SCENARIO("GET /room_keys/keys/{roomId} returns room key backup data",
-         "[conformance][client-server][e2ee]")
+SCENARIO("GET /room_keys/keys/{roomId} returns room key backup data", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2519,8 +2515,7 @@ SCENARIO("GET /room_keys/keys/{roomId} returns room key backup data",
         WHEN("GET /room_keys/keys/{roomId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org", token, {}});
 
             THEN("the server returns 200 with a rooms object")
             {
@@ -2535,8 +2530,7 @@ SCENARIO("GET /room_keys/keys/{roomId} returns room key backup data",
 
 // --- PUT /_matrix/client/v3/room_keys/keys/{roomId} --------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3room_keyskeysroomid
-SCENARIO("PUT /room_keys/keys/{roomId} is handled by the server",
-         "[conformance][client-server][e2ee]")
+SCENARIO("PUT /room_keys/keys/{roomId} is handled by the server", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2548,8 +2542,7 @@ SCENARIO("PUT /room_keys/keys/{roomId} is handled by the server",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org", token,
-                 R"({"sessions":{}})"});
+                {"PUT", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org", token, R"({"sessions":{}})"});
 
             THEN("the server handles the request (endpoint is implemented)")
             {
@@ -2564,8 +2557,7 @@ SCENARIO("PUT /room_keys/keys/{roomId} is handled by the server",
 
 // --- DELETE /_matrix/client/v3/room_keys/keys/{roomId} -----------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#delete_matrixclientv3room_keyskeysroomid
-SCENARIO("DELETE /room_keys/keys/{roomId} is handled by the server",
-         "[conformance][client-server][e2ee]")
+SCENARIO("DELETE /room_keys/keys/{roomId} is handled by the server", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2576,8 +2568,7 @@ SCENARIO("DELETE /room_keys/keys/{roomId} is handled by the server",
         WHEN("DELETE /room_keys/keys/{roomId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"DELETE", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org", token, {}});
+                started.runtime, {"DELETE", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org", token, {}});
 
             THEN("the server handles the request (endpoint is implemented)")
             {
@@ -2599,8 +2590,7 @@ SCENARIO("DELETE /room_keys/keys/{roomId} is handled by the server",
 //
 // MUST return:
 //   m.upload.size - integer maximum upload size in bytes
-SCENARIO("GET /media/v3/config returns the maximum upload size",
-         "[conformance][client-server][media]")
+SCENARIO("GET /media/v3/config returns the maximum upload size", "[conformance][client-server][media]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2646,8 +2636,7 @@ SCENARIO("POST /media/v3/upload route is recognised and returns a JSON error bod
         WHEN("POST /media/v3/upload is called with binary content")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/media/v3/upload", token, "binary-data"});
+                started.runtime, {"POST", "/_matrix/media/v3/upload", token, "binary-data"});
 
             THEN("the route is recognised and the body is a parseable JSON object")
             {
@@ -2670,8 +2659,7 @@ SCENARIO("POST /media/v3/upload route is recognised and returns a JSON error bod
 //
 // Route is recognised (no auth required). Non-existent media returns 404
 // M_NOT_FOUND rather than M_UNRECOGNIZED, confirming the route is wired up.
-SCENARIO("GET /media/v3/download/{serverName}/{mediaId} route is recognised",
-         "[conformance][client-server][media]")
+SCENARIO("GET /media/v3/download/{serverName}/{mediaId} route is recognised", "[conformance][client-server][media]")
 {
     GIVEN("a running client-server")
     {
@@ -2681,8 +2669,7 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId} route is recognised",
         WHEN("GET /media/v3/download/example.org/nonexistent is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/media/v3/download/example.org/nonexistent", {}, {}});
+                started.runtime, {"GET", "/_matrix/media/v3/download/example.org/nonexistent", {}, {}});
 
             THEN("the route is recognised and returns an error (not M_UNRECOGNIZED)")
             {
@@ -2713,8 +2700,7 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId}/{fileName} returns 404 M
         WHEN("GET /media/v3/download/example.org/abc/file.txt is called for missing media")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/media/v3/download/example.org/abc/file.txt", {}, {}});
+                started.runtime, {"GET", "/_matrix/media/v3/download/example.org/abc/file.txt", {}, {}});
 
             THEN("the server returns 404 M_NOT_FOUND for non-existent media")
             {
@@ -2743,8 +2729,7 @@ SCENARIO("GET /media/v3/preview_url returns 404 M_UNRECOGNIZED (implementation g
         WHEN("GET /media/v3/preview_url is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/media/v3/preview_url?url=https://matrix.org", token, {}});
+                started.runtime, {"GET", "/_matrix/media/v3/preview_url?url=https://matrix.org", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2774,8 +2759,7 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns 404 M_UNRECOGNI
         WHEN("GET /media/v3/thumbnail/example.org/abc is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/media/v3/thumbnail/example.org/abc?width=32&height=32", token, {}});
+                started.runtime, {"GET", "/_matrix/media/v3/thumbnail/example.org/abc?width=32&height=32", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2805,8 +2789,7 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} returns 404 M_UNRECOGNIZED
         WHEN("PUT /media/v3/upload/example.org/abc is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/media/v3/upload/example.org/abc", token, "data"});
+                started.runtime, {"PUT", "/_matrix/media/v3/upload/example.org/abc", token, "data"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2824,8 +2807,7 @@ SCENARIO("PUT /media/v3/upload/{serverName}/{mediaId} returns 404 M_UNRECOGNIZED
 // --- POST /_matrix/media/v1/create --------------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixmediav1create
 // IMPLEMENTATION GAP: async media reservation not yet implemented.
-SCENARIO("POST /media/v1/create returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][media]")
+SCENARIO("POST /media/v1/create returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][media]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2854,8 +2836,7 @@ SCENARIO("POST /media/v1/create returns 404 M_UNRECOGNIZED (implementation gap)"
 // --- GET /_matrix/client/v1/media/config --------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv1mediaconfig
 // IMPLEMENTATION GAP: authenticated media config endpoint not yet implemented.
-SCENARIO("GET /v1/media/config returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][media]")
+SCENARIO("GET /v1/media/config returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][media]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2866,8 +2847,7 @@ SCENARIO("GET /v1/media/config returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("GET /_matrix/client/v1/media/config is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/media/config", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/media/config", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2897,8 +2877,7 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId} returns 404 M_UNRECOGNIZ
         WHEN("GET /_matrix/client/v1/media/download/example.org/abc is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/media/download/example.org/abc", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/media/download/example.org/abc", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2928,8 +2907,7 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId}/{fileName} returns 404 M
         WHEN("GET /_matrix/client/v1/media/download/example.org/abc/file.txt is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/media/download/example.org/abc/file.txt", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/media/download/example.org/abc/file.txt", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -2959,8 +2937,7 @@ SCENARIO("GET /v1/media/preview_url returns 404 M_UNRECOGNIZED (implementation g
         WHEN("GET /_matrix/client/v1/media/preview_url is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/media/preview_url?url=https://matrix.org", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/media/preview_url?url=https://matrix.org", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3025,11 +3002,8 @@ SCENARIO("PUT /directory/list/appservice/{networkId}/{roomId} returns 404 M_UNRE
         WHEN("PUT /directory/list/appservice/net1/!room:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/directory/list/appservice/net1/%21room%3Aexample.org",
-                 token,
-                 R"({"visibility":"public"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/directory/list/appservice/net1/%21room%3Aexample.org",
+                                  token, R"({"visibility":"public"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3061,8 +3035,7 @@ SCENARIO("POST /createRoom returns a room_id", "[conformance][client-server][roo
         WHEN("POST /createRoom is called with an empty body")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
 
             THEN("the server returns 200 with a non-empty room_id")
             {
@@ -3094,8 +3067,7 @@ SCENARIO("GET /directory/room/{alias} returns a recognisable error for unknown a
         WHEN("GET /directory/room/%23unknown%3Aexample.org is called without authentication")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/directory/room/%23unknown%3Aexample.org", {}, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/directory/room/%23unknown%3Aexample.org", {}, {}});
 
             THEN("the server returns a Matrix error — NOT M_UNRECOGNIZED (route is known)")
             {
@@ -3111,8 +3083,7 @@ SCENARIO("GET /directory/room/{alias} returns a recognisable error for unknown a
 
 // --- PUT /_matrix/client/v3/directory/room/{roomAlias} -----------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3directoryroomroomalias
-SCENARIO("PUT /directory/room/{alias} maps an alias to a room",
-         "[conformance][client-server][room-directory]")
+SCENARIO("PUT /directory/room/{alias} maps an alias to a room", "[conformance][client-server][room-directory]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
     {
@@ -3124,11 +3095,8 @@ SCENARIO("PUT /directory/room/{alias} maps an alias to a room",
         WHEN("PUT /directory/room/%23myalias%3Aexample.org is called with the room_id")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/directory/room/%23myalias%3Aexample.org",
-                 token,
-                 R"({"room_id":")" + room_id + R"("})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/directory/room/%23myalias%3Aexample.org", token,
+                                  R"({"room_id":")" + room_id + R"("})"});
 
             THEN("the server returns 200 with an empty JSON object")
             {
@@ -3156,8 +3124,7 @@ SCENARIO("DELETE /directory/room/{alias} returns 404 M_UNRECOGNIZED (implementat
         WHEN("DELETE /directory/room/%23myalias%3Aexample.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"DELETE", "/_matrix/client/v3/directory/room/%23myalias%3Aexample.org", token, {}});
+                started.runtime, {"DELETE", "/_matrix/client/v3/directory/room/%23myalias%3Aexample.org", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3188,8 +3155,7 @@ SCENARIO("GET /rooms/{roomId}/aliases returns 404 M_UNRECOGNIZED (implementation
         WHEN("GET /rooms/{roomId}/aliases is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/aliases", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/aliases", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3210,8 +3176,7 @@ SCENARIO("GET /rooms/{roomId}/aliases returns 404 M_UNRECOGNIZED (implementation
 
 // --- GET /_matrix/client/v3/publicRooms --------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3publicrooms
-SCENARIO("GET /publicRooms returns chunk and total_room_count_estimate",
-         "[conformance][client-server][room-discovery]")
+SCENARIO("GET /publicRooms returns chunk and total_room_count_estimate", "[conformance][client-server][room-discovery]")
 {
     GIVEN("a running client-server")
     {
@@ -3221,8 +3186,7 @@ SCENARIO("GET /publicRooms returns chunk and total_room_count_estimate",
         WHEN("GET /publicRooms is called without authentication")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/publicRooms", {}, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/publicRooms", {}, {}});
 
             THEN("the server returns 200 with a chunk array and total_room_count_estimate")
             {
@@ -3253,8 +3217,7 @@ SCENARIO("POST /publicRooms returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("POST /publicRooms is called with a filter body")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/publicRooms", token, R"({"limit":10})"});
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token, R"({"limit":10})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3285,8 +3248,7 @@ SCENARIO("GET /directory/list/room/{roomId} returns 404 M_UNRECOGNIZED (implemen
         WHEN("GET /directory/list/room/{roomId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/directory/list/room/" + room_id, token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/directory/list/room/" + room_id, token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3318,10 +3280,7 @@ SCENARIO("PUT /directory/list/room/{roomId} returns 404 M_UNRECOGNIZED (implemen
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/directory/list/room/" + room_id,
-                 token,
-                 R"({"visibility":"public"})"});
+                {"PUT", "/_matrix/client/v3/directory/list/room/" + room_id, token, R"({"visibility":"public"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3353,8 +3312,7 @@ SCENARIO("GET /joined_rooms returns a joined_rooms array", "[conformance][client
         WHEN("GET /joined_rooms is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/joined_rooms", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/joined_rooms", token, {}});
 
             THEN("the server returns 200 with a joined_rooms array")
             {
@@ -3370,8 +3328,7 @@ SCENARIO("GET /joined_rooms returns a joined_rooms array", "[conformance][client
 
 // --- POST /_matrix/client/v3/join/{roomIdOrAlias} ----------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3joinroomidoralias
-SCENARIO("POST /join/{roomIdOrAlias} returns room_id on success",
-         "[conformance][client-server][room-membership]")
+SCENARIO("POST /join/{roomIdOrAlias} returns room_id on success", "[conformance][client-server][room-membership]")
 {
     GIVEN("a running client-server with two users, alice has a public room")
     {
@@ -3384,8 +3341,7 @@ SCENARIO("POST /join/{roomIdOrAlias} returns room_id on success",
         WHEN("bob POSTs to /join/{roomId}")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/join/" + room_id, bob, "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/join/" + room_id, bob, "{}"});
 
             THEN("the server returns 200 with a room_id field")
             {
@@ -3402,8 +3358,7 @@ SCENARIO("POST /join/{roomIdOrAlias} returns room_id on success",
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/join -----------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidmembership
-SCENARIO("POST /rooms/{roomId}/join returns room_id on success",
-         "[conformance][client-server][room-membership]")
+SCENARIO("POST /rooms/{roomId}/join returns room_id on success", "[conformance][client-server][room-membership]")
 {
     GIVEN("a running client-server with two users, alice owns a room")
     {
@@ -3416,8 +3371,7 @@ SCENARIO("POST /rooms/{roomId}/join returns room_id on success",
         WHEN("bob POSTs to /rooms/{roomId}/join")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
 
             THEN("the server returns 200 with a room_id field")
             {
@@ -3434,8 +3388,7 @@ SCENARIO("POST /rooms/{roomId}/join returns room_id on success",
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/leave ----------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidleave
-SCENARIO("POST /rooms/{roomId}/leave returns 200 empty object",
-         "[conformance][client-server][room-membership]")
+SCENARIO("POST /rooms/{roomId}/leave returns 200 empty object", "[conformance][client-server][room-membership]")
 {
     GIVEN("a running client-server with a user who is in a room")
     {
@@ -3447,8 +3400,7 @@ SCENARIO("POST /rooms/{roomId}/leave returns 200 empty object",
         WHEN("the user POSTs to /rooms/{roomId}/leave")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", token, "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", token, "{}"});
 
             THEN("the server returns 200 with an empty JSON object")
             {
@@ -3478,10 +3430,7 @@ SCENARIO("POST /rooms/{roomId}/ban returns 404 M_UNRECOGNIZED (implementation ga
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/ban",
-                 token,
-                 R"({"user_id":"@bob:example.org"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/ban", token, R"({"user_id":"@bob:example.org"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3513,10 +3462,7 @@ SCENARIO("POST /rooms/{roomId}/kick returns 404 M_UNRECOGNIZED (implementation g
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/kick",
-                 token,
-                 R"({"user_id":"@bob:example.org"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/kick", token, R"({"user_id":"@bob:example.org"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3548,10 +3494,7 @@ SCENARIO("POST /rooms/{roomId}/unban returns 404 M_UNRECOGNIZED (implementation 
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/unban",
-                 token,
-                 R"({"user_id":"@bob:example.org"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/unban", token, R"({"user_id":"@bob:example.org"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3582,11 +3525,8 @@ SCENARIO("POST /rooms/{roomId}/invite returns 404 M_UNRECOGNIZED (implementation
         WHEN("POST /rooms/{roomId}/invite is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/invite",
-                 token,
-                 R"({"user_id":"@bob:example.org"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", token,
+                                  R"({"user_id":"@bob:example.org"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3617,11 +3557,7 @@ SCENARIO("POST /rooms/{roomId}/forget returns 404 M_UNRECOGNIZED (implementation
         WHEN("POST /rooms/{roomId}/forget is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/forget",
-                 token,
-                 "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/forget", token, "{}"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3651,8 +3587,7 @@ SCENARIO("POST /knock/{roomIdOrAlias} returns 404 M_UNRECOGNIZED (implementation
         WHEN("POST /knock/!someroom:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/knock/%21someroom%3Aexample.org", token, "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/knock/%21someroom%3Aexample.org", token, "{}"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3686,11 +3621,8 @@ SCENARIO("PUT /rooms/{roomId}/send/{eventType}/{txnId} returns event_id",
         WHEN("PUT /rooms/{roomId}/send/m.room.message/txn1 is called with a text message")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn1",
-                 token,
-                 R"({"msgtype":"m.text","body":"hello conformance"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn1", token,
+                                  R"({"msgtype":"m.text","body":"hello conformance"})"});
 
             THEN("the server returns 200 with a non-empty event_id")
             {
@@ -3706,7 +3638,8 @@ SCENARIO("PUT /rooms/{roomId}/send/{eventType}/{txnId} returns event_id",
 }
 
 // --- PUT /_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey} ------
-// Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3roomsroomidstateeventtypestatekeystateeventtype
+// Spec:
+// https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3roomsroomidstateeventtypestatekeystateeventtype
 SCENARIO("PUT /rooms/{roomId}/state/{eventType}/{stateKey} returns event_id",
          "[conformance][client-server][room-participation]")
 {
@@ -3720,11 +3653,8 @@ SCENARIO("PUT /rooms/{roomId}/state/{eventType}/{stateKey} returns event_id",
         WHEN("PUT /rooms/{roomId}/state/m.room.topic/ is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.topic/",
-                 token,
-                 R"({"topic":"conformance test room"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.topic/", token,
+                                  R"({"topic":"conformance test room"})"});
 
             THEN("the server returns 200 with a non-empty event_id")
             {
@@ -3755,11 +3685,8 @@ SCENARIO("PUT /rooms/{roomId}/state/{eventType} (no state key) returns event_id"
         WHEN("PUT /rooms/{roomId}/state/m.room.name (no trailing state key) is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name",
-                 token,
-                 R"({"name":"Conformance Room"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name", token,
+                                  R"({"name":"Conformance Room"})"});
 
             THEN("the server returns 200 with a non-empty event_id")
             {
@@ -3789,8 +3716,7 @@ SCENARIO("GET /rooms/{roomId}/state returns an array of state events",
         WHEN("GET /rooms/{roomId}/state is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state", token, {}});
 
             THEN("the server returns 200 with a JSON array of state events")
             {
@@ -3806,7 +3732,8 @@ SCENARIO("GET /rooms/{roomId}/state returns an array of state events",
 }
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey} ------
-// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidstateeventtypestatekeystateeventtype
+// Spec:
+// https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidstateeventtypestatekeystateeventtype
 // IMPLEMENTATION GAP: specific state event retrieval not yet implemented.
 SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} returns 404 M_UNRECOGNIZED (implementation gap)",
          "[conformance][client-server][room-participation]")
@@ -3821,11 +3748,7 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} returns 404 M_UNRECOG
         WHEN("GET /rooms/{roomId}/state/m.room.create/ is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.create/",
-                 token,
-                 {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.create/", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3856,11 +3779,7 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType} (no state key) returns 404 M_UNR
         WHEN("GET /rooms/{roomId}/state/m.room.create is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.create",
-                 token,
-                 {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.create", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -3877,8 +3796,7 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType} (no state key) returns 404 M_UNR
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/messages --------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmessages
-SCENARIO("GET /rooms/{roomId}/messages returns chunk array",
-         "[conformance][client-server][room-participation]")
+SCENARIO("GET /rooms/{roomId}/messages returns chunk array", "[conformance][client-server][room-participation]")
 {
     GIVEN("a running client-server and a logged-in user with a room and a message")
     {
@@ -3891,11 +3809,7 @@ SCENARIO("GET /rooms/{roomId}/messages returns chunk array",
         WHEN("GET /rooms/{roomId}/messages?dir=b is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b",
-                 token,
-                 {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b", token, {}});
 
             THEN("the server returns 200 with a chunk array")
             {
@@ -3924,11 +3838,8 @@ SCENARIO("PUT /rooms/{roomId}/typing/{userId} returns 200 empty object",
         WHEN("PUT /typing/@alice:example.org is called with typing true")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/rooms/" + room_id + "/typing/%40alice%3Aexample.org",
-                 token,
-                 R"({"typing":true,"timeout":30000})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/typing/%40alice%3Aexample.org",
+                                  token, R"({"typing":true,"timeout":30000})"});
 
             THEN("the server returns 200 with an empty JSON object")
             {
@@ -3957,11 +3868,8 @@ SCENARIO("POST /rooms/{roomId}/read_markers returns 200 empty object",
         WHEN("POST /read_markers is called marking the message as read")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/read_markers",
-                 token,
-                 R"({"m.read":")" + event_id + R"("})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/read_markers", token,
+                                  R"({"m.read":")" + event_id + R"("})"});
 
             THEN("the server returns 200 with an empty JSON object")
             {
@@ -3992,10 +3900,7 @@ SCENARIO("POST /rooms/{roomId}/receipt/{receiptType}/{eventId} returns 404 M_UNR
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + event_id,
-                 token,
-                 "{}"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + event_id, token, "{}"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4013,8 +3918,7 @@ SCENARIO("POST /rooms/{roomId}/receipt/{receiptType}/{eventId} returns 404 M_UNR
 // --- GET /_matrix/client/v3/rooms/{roomId}/members ---------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
 // IMPLEMENTATION GAP: room member list not yet implemented.
-SCENARIO("GET /rooms/{roomId}/members returns the room membership",
-         "[conformance][client-server][room-participation]")
+SCENARIO("GET /rooms/{roomId}/members returns the room membership", "[conformance][client-server][room-participation]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
     {
@@ -4026,8 +3930,7 @@ SCENARIO("GET /rooms/{roomId}/members returns the room membership",
         WHEN("GET /rooms/{roomId}/members is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/members", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/members", token, {}});
 
             THEN("the server returns 200 with a chunk array")
             {
@@ -4056,8 +3959,7 @@ SCENARIO("GET /rooms/{roomId}/joined_members returns 404 M_UNRECOGNIZED (impleme
         WHEN("GET /rooms/{roomId}/joined_members is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/joined_members", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/joined_members", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4089,11 +3991,7 @@ SCENARIO("GET /rooms/{roomId}/event/{eventId} returns 404 M_UNRECOGNIZED (implem
         WHEN("GET /rooms/{roomId}/event/{eventId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/rooms/" + room_id + "/event/" + event_id,
-                 token,
-                 {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + event_id, token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4125,11 +4023,7 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} returns 404 M_UNRECOGNIZED (impl
         WHEN("GET /rooms/{roomId}/context/{eventId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/rooms/" + room_id + "/context/" + event_id,
-                 token,
-                 {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/" + event_id, token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4160,11 +4054,7 @@ SCENARIO("GET /rooms/{roomId}/initialSync returns 404 M_UNRECOGNIZED (implementa
         WHEN("GET /rooms/{roomId}/initialSync is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/rooms/" + room_id + "/initialSync",
-                 token,
-                 {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/initialSync", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4194,8 +4084,7 @@ SCENARIO("GET /initialSync returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("GET /initialSync is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/initialSync", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/initialSync", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4227,10 +4116,7 @@ SCENARIO("POST /rooms/{roomId}/upgrade returns 404 M_UNRECOGNIZED (implementatio
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/upgrade",
-                 token,
-                 R"({"new_version":"11"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token, R"({"new_version":"11"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4262,10 +4148,7 @@ SCENARIO("GET /rooms/{roomId}/timestamp_to_event returns 404 M_UNRECOGNIZED (imp
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET",
-                 "/_matrix/client/v1/rooms/" + room_id + "/timestamp_to_event?ts=0&dir=f",
-                 token,
-                 {}});
+                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/timestamp_to_event?ts=0&dir=f", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4295,8 +4178,7 @@ SCENARIO("GET /events returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("GET /events is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/events", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/events", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4326,8 +4208,7 @@ SCENARIO("GET /events/{eventId} returns 404 M_UNRECOGNIZED (implementation gap)"
         WHEN("GET /events/$someevent is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/events/%24someevent", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/events/%24someevent", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4348,8 +4229,7 @@ SCENARIO("GET /events/{eventId} returns 404 M_UNRECOGNIZED (implementation gap)"
 
 // --- GET /_matrix/client/v3/profile/{userId} ---------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3profileuserid
-SCENARIO("GET /profile/{userId} returns a JSON object (unauthenticated)",
-         "[conformance][client-server][profile]")
+SCENARIO("GET /profile/{userId} returns a JSON object (unauthenticated)", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server with a registered user")
     {
@@ -4360,8 +4240,7 @@ SCENARIO("GET /profile/{userId} returns a JSON object (unauthenticated)",
         WHEN("GET /profile/@alice:example.org is called without authentication")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
 
             THEN("the server returns 200 with a JSON object")
             {
@@ -4377,8 +4256,7 @@ SCENARIO("GET /profile/{userId} returns a JSON object (unauthenticated)",
 
 // --- GET /_matrix/client/v3/profile/{userId}/displayname ---------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3profileuseriddisplayname
-SCENARIO("GET /profile/{userId}/displayname returns a JSON object",
-         "[conformance][client-server][profile]")
+SCENARIO("GET /profile/{userId}/displayname returns a JSON object", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server with a registered user")
     {
@@ -4389,11 +4267,7 @@ SCENARIO("GET /profile/{userId}/displayname returns a JSON object",
         WHEN("GET /profile/@alice:example.org/displayname is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
-                 {},
-                 {}});
+                started.runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", {}, {}});
 
             THEN("the server returns a response that is NOT M_UNRECOGNIZED")
             {
@@ -4412,8 +4286,7 @@ SCENARIO("GET /profile/{userId}/displayname returns a JSON object",
 
 // --- GET /_matrix/client/v3/profile/{userId}/avatar_url ----------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3profileuseridavatar_url
-SCENARIO("GET /profile/{userId}/avatar_url returns a JSON object",
-         "[conformance][client-server][profile]")
+SCENARIO("GET /profile/{userId}/avatar_url returns a JSON object", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server with a registered user")
     {
@@ -4424,11 +4297,7 @@ SCENARIO("GET /profile/{userId}/avatar_url returns a JSON object",
         WHEN("GET /profile/@alice:example.org/avatar_url is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url",
-                 {},
-                 {}});
+                started.runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url", {}, {}});
 
             THEN("the server returns a response that is NOT M_UNRECOGNIZED")
             {
@@ -4446,8 +4315,7 @@ SCENARIO("GET /profile/{userId}/avatar_url returns a JSON object",
 
 // --- PUT /_matrix/client/v3/profile/{userId}/displayname ---------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3profileuseriddisplayname
-SCENARIO("PUT /profile/{userId}/displayname updates the display name",
-         "[conformance][client-server][profile]")
+SCENARIO("PUT /profile/{userId}/displayname updates the display name", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -4458,11 +4326,8 @@ SCENARIO("PUT /profile/{userId}/displayname updates the display name",
         WHEN("PUT /profile/@alice:example.org/displayname is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
-                 token,
-                 R"({"displayname":"Alice Conformance"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", token,
+                                  R"({"displayname":"Alice Conformance"})"});
 
             THEN("the server returns 200 with an empty JSON object")
             {
@@ -4477,8 +4342,7 @@ SCENARIO("PUT /profile/{userId}/displayname updates the display name",
 
 // --- PUT /_matrix/client/v3/profile/{userId}/avatar_url ----------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3profileuseridavatar_url
-SCENARIO("PUT /profile/{userId}/avatar_url updates the avatar URL",
-         "[conformance][client-server][profile]")
+SCENARIO("PUT /profile/{userId}/avatar_url updates the avatar URL", "[conformance][client-server][profile]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -4489,11 +4353,8 @@ SCENARIO("PUT /profile/{userId}/avatar_url updates the avatar URL",
         WHEN("PUT /profile/@alice:example.org/avatar_url is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url",
-                 token,
-                 R"({"avatar_url":"mxc://example.org/abc123"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url", token,
+                                  R"({"avatar_url":"mxc://example.org/abc123"})"});
 
             THEN("the server returns 200 with an empty JSON object")
             {
@@ -4512,8 +4373,7 @@ SCENARIO("PUT /profile/{userId}/avatar_url updates the avatar URL",
 
 // --- POST /_matrix/client/v3/user/{userId}/filter ----------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3useruseridffilter
-SCENARIO("POST /user/{userId}/filter returns a filter_id",
-         "[conformance][client-server][filtering]")
+SCENARIO("POST /user/{userId}/filter returns a filter_id", "[conformance][client-server][filtering]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -4524,11 +4384,7 @@ SCENARIO("POST /user/{userId}/filter returns a filter_id",
         WHEN("POST /user/@alice:example.org/filter is called with an empty filter")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/filter",
-                 token,
-                 "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/user/%40alice%3Aexample.org/filter", token, "{}"});
 
             THEN("the server returns 200 with a non-empty filter_id")
             {
@@ -4545,8 +4401,7 @@ SCENARIO("POST /user/{userId}/filter returns a filter_id",
 
 // --- GET /_matrix/client/v3/user/{userId}/filter/{filterId} ------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3useruseridffilterfilterid
-SCENARIO("GET /user/{userId}/filter/{filterId} returns the stored filter",
-         "[conformance][client-server][filtering]")
+SCENARIO("GET /user/{userId}/filter/{filterId} returns the stored filter", "[conformance][client-server][filtering]")
 {
     GIVEN("a running client-server and a logged-in user who has created a filter")
     {
@@ -4555,11 +4410,7 @@ SCENARIO("GET /user/{userId}/filter/{filterId} returns the stored filter",
         auto const token = logged_in_token(started.runtime);
 
         auto const create_resp = merovingian::homeserver::handle_client_server_request(
-            started.runtime,
-            {"POST",
-             "/_matrix/client/v3/user/%40alice%3Aexample.org/filter",
-             token,
-             "{}"});
+            started.runtime, {"POST", "/_matrix/client/v3/user/%40alice%3Aexample.org/filter", token, "{}"});
         REQUIRE(create_resp.response.status == 200U);
         auto const create_body = parse_object(create_resp.response.body);
         auto const* filter_id = string_member(create_body, "filter_id");
@@ -4569,10 +4420,7 @@ SCENARIO("GET /user/{userId}/filter/{filterId} returns the stored filter",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/filter/" + *filter_id,
-                 token,
-                 {}});
+                {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/filter/" + *filter_id, token, {}});
 
             THEN("the server returns 200 with a JSON object")
             {
@@ -4591,8 +4439,7 @@ SCENARIO("GET /user/{userId}/filter/{filterId} returns the stored filter",
 
 // --- PUT /_matrix/client/v3/user/{userId}/account_data/{type} ----------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3useruseridaccount_datatype
-SCENARIO("PUT /user/{userId}/account_data/{type} stores account data",
-         "[conformance][client-server][account-data]")
+SCENARIO("PUT /user/{userId}/account_data/{type} stores account data", "[conformance][client-server][account-data]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -4603,11 +4450,8 @@ SCENARIO("PUT /user/{userId}/account_data/{type} stores account data",
         WHEN("PUT /user/@alice:example.org/account_data/m.test is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.test",
-                 token,
-                 R"({"key":"value"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.test", token,
+                                  R"({"key":"value"})"});
 
             THEN("the server returns 200 with an empty JSON object")
             {
@@ -4632,21 +4476,15 @@ SCENARIO("GET /user/{userId}/account_data/{type} retrieves stored account data",
         auto const token = logged_in_token(started.runtime);
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"PUT",
-                     "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.test",
-                     token,
-                     R"({"key":"value"})"})
+                    started.runtime, {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.test",
+                                      token, R"({"key":"value"})"})
                     .response.status == 200U);
 
         WHEN("GET /user/@alice:example.org/account_data/m.test is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.test",
-                 token,
-                 {}});
+                {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.test", token, {}});
 
             THEN("the server returns 200 with the stored data object")
             {
@@ -4678,11 +4516,8 @@ SCENARIO("PUT /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UN
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id +
-                     "/account_data/m.test",
-                 token,
-                 R"({"key":"value"})"});
+                {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/m.test",
+                 token, R"({"key":"value"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4715,8 +4550,7 @@ SCENARIO("GET /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UN
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"GET",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id +
-                     "/account_data/m.test",
+                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/m.test",
                  token,
                  {}});
 
@@ -4754,10 +4588,7 @@ SCENARIO("GET /user/{userId}/rooms/{roomId}/tags returns 404 M_UNRECOGNIZED (imp
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags",
-                 token,
-                 {}});
+                {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4789,9 +4620,7 @@ SCENARIO("PUT /user/{userId}/rooms/{roomId}/tags/{tag} returns 404 M_UNRECOGNIZE
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/u.work",
-                 token,
+                {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/u.work", token,
                  R"({"order":0.5})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
@@ -4823,11 +4652,10 @@ SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} returns 404 M_UNRECOGN
         WHEN("DELETE /user/@alice:example.org/rooms/{roomId}/tags/u.work is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"DELETE",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/u.work",
-                 token,
-                 {}});
+                started.runtime, {"DELETE",
+                                  "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/u.work",
+                                  token,
+                                  {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4848,8 +4676,7 @@ SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} returns 404 M_UNRECOGN
 
 // --- PUT /_matrix/client/v3/presence/{userId}/status -------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3presenceuseridstatus
-SCENARIO("PUT /presence/{userId}/status sets the presence state",
-         "[conformance][client-server][presence]")
+SCENARIO("PUT /presence/{userId}/status sets the presence state", "[conformance][client-server][presence]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -4860,11 +4687,8 @@ SCENARIO("PUT /presence/{userId}/status sets the presence state",
         WHEN("PUT /presence/@alice:example.org/status is called with online presence")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/presence/%40alice%3Aexample.org/status",
-                 token,
-                 R"({"presence":"online","status_msg":"conformance test"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", token,
+                                  R"({"presence":"online","status_msg":"conformance test"})"});
 
             THEN("the server returns 200 with an empty JSON object")
             {
@@ -4892,11 +4716,7 @@ SCENARIO("GET /presence/{userId}/status returns 404 M_UNRECOGNIZED (implementati
         WHEN("GET /presence/@alice:example.org/status is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/presence/%40alice%3Aexample.org/status",
-                 token,
-                 {}});
+                started.runtime, {"GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4917,8 +4737,7 @@ SCENARIO("GET /presence/{userId}/status returns 404 M_UNRECOGNIZED (implementati
 
 // --- GET /_matrix/client/v3/pushrules/ ---------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3pushrules
-SCENARIO("GET /pushrules/ returns a global push rules object",
-         "[conformance][client-server][push]")
+SCENARIO("GET /pushrules/ returns a global push rules object", "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -4929,8 +4748,7 @@ SCENARIO("GET /pushrules/ returns a global push rules object",
         WHEN("GET /pushrules/ is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/pushrules/", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/pushrules/", token, {}});
 
             THEN("the server returns 200 with a global push rules object")
             {
@@ -4960,10 +4778,7 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (imp
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name",
-                 token,
-                 {}});
+                {"GET", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -4993,11 +4808,8 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (imp
         WHEN("PUT /pushrules/global/content/myrule is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/pushrules/global/content/myrule",
-                 token,
-                 R"({"pattern":"conformance","actions":["notify"]})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/content/myrule", token,
+                                  R"({"pattern":"conformance","actions":["notify"]})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -5027,11 +4839,7 @@ SCENARIO("DELETE /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (
         WHEN("DELETE /pushrules/global/content/myrule is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"DELETE",
-                 "/_matrix/client/v3/pushrules/global/content/myrule",
-                 token,
-                 {}});
+                started.runtime, {"DELETE", "/_matrix/client/v3/pushrules/global/content/myrule", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -5062,10 +4870,7 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/actions returns 404 M_UNRECOGNI
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions",
-                 token,
-                 {}});
+                {"GET", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -5096,9 +4901,7 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/actions returns 404 M_UNRECOGNI
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions",
-                 token,
+                {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions", token,
                  R"({"actions":["notify"]})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
@@ -5130,10 +4933,7 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNI
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET",
-                 "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled",
-                 token,
-                 {}});
+                {"GET", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -5164,9 +4964,7 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNI
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT",
-                 "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled",
-                 token,
+                {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled", token,
                  R"({"enabled":true})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
@@ -5185,8 +4983,7 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNI
 // --- GET /_matrix/client/v3/notifications ------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3notifications
 // IMPLEMENTATION GAP: notification list not yet implemented.
-SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][push]")
+SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -5197,8 +4994,7 @@ SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("GET /notifications is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/notifications", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/notifications", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -5215,9 +5011,7 @@ SCENARIO("GET /notifications returns 404 M_UNRECOGNIZED (implementation gap)",
 
 // --- GET /_matrix/client/v3/pushers ------------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3pushers
-// IMPLEMENTATION GAP: pusher list not yet implemented.
-SCENARIO("GET /pushers returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][push]")
+SCENARIO("GET /pushers returns 200 with empty pushers array", "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -5228,17 +5022,14 @@ SCENARIO("GET /pushers returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("GET /pushers is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/pushers", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with a pushers array")
             {
-                // IMPLEMENTATION GAP: pusher list not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* pushers = object_member_as_array(body, "pushers");
+                REQUIRE(pushers != nullptr);
             }
         }
     }
@@ -5247,8 +5038,7 @@ SCENARIO("GET /pushers returns 404 M_UNRECOGNIZED (implementation gap)",
 // --- POST /_matrix/client/v3/pushers/set -------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3pushersset
 // IMPLEMENTATION GAP: pusher configuration not yet implemented.
-SCENARIO("POST /pushers/set returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][push]")
+SCENARIO("POST /pushers/set returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -5259,11 +5049,8 @@ SCENARIO("POST /pushers/set returns 404 M_UNRECOGNIZED (implementation gap)",
         WHEN("POST /pushers/set is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/pushers/set",
-                 token,
-                 R"({"kind":null,"app_id":"org.example","pushkey":"key1"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/pushers/set", token,
+                                  R"({"kind":null,"app_id":"org.example","pushkey":"key1"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -5284,8 +5071,7 @@ SCENARIO("POST /pushers/set returns 404 M_UNRECOGNIZED (implementation gap)",
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/report/{eventId} -----------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidreporteventid
-SCENARIO("POST /rooms/{roomId}/report/{eventId} accepts a report",
-         "[conformance][client-server][reporting]")
+SCENARIO("POST /rooms/{roomId}/report/{eventId} accepts a report", "[conformance][client-server][reporting]")
 {
     GIVEN("a running client-server and a logged-in user with a room and a message")
     {
@@ -5298,11 +5084,8 @@ SCENARIO("POST /rooms/{roomId}/report/{eventId} accepts a report",
         WHEN("POST /rooms/{roomId}/report/{eventId} is called with a reason")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/report/" + event_id,
-                 token,
-                 R"({"reason":"conformance test report"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/report/" + event_id, token,
+                                  R"({"reason":"conformance test report"})"});
 
             THEN("the server returns 200 with an empty JSON object")
             {
@@ -5332,10 +5115,7 @@ SCENARIO("POST /rooms/{roomId}/report returns 404 M_UNRECOGNIZED (implementation
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room_id + "/report",
-                 token,
-                 R"({"reason":"room report"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/report", token, R"({"reason":"room report"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -5366,10 +5146,7 @@ SCENARIO("POST /users/{userId}/report returns 404 M_UNRECOGNIZED (implementation
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/users/%40bob%3Aexample.org/report",
-                 token,
-                 R"({"reason":"user report"})"});
+                {"POST", "/_matrix/client/v3/users/%40bob%3Aexample.org/report", token, R"({"reason":"user report"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
             {
@@ -5401,8 +5178,7 @@ SCENARIO("GET /voip/turnServer returns a JSON object", "[conformance][client-ser
         WHEN("GET /voip/turnServer is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/voip/turnServer", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/voip/turnServer", token, {}});
 
             THEN("the server returns a JSON object (200 with TURN info, or error if not configured)")
             {
@@ -5434,8 +5210,7 @@ SCENARIO("GET /presence/{userId}/status conformance")
         WHEN("GET /presence/%40alice%3Aexample.org/status is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -5466,8 +5241,7 @@ SCENARIO("GET /notifications conformance")
         WHEN("GET /notifications is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/notifications", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/notifications", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -5485,7 +5259,6 @@ SCENARIO("GET /notifications conformance")
 // 13.8   Push notifications — GET/POST /pushers
 // ============================================================================
 // Spec: Matrix v1.18 §13.8 GET/POST /_matrix/client/v3/pushers
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
 
 SCENARIO("GET /pushers conformance")
 {
@@ -5498,16 +5271,14 @@ SCENARIO("GET /pushers conformance")
         WHEN("GET /pushers is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/pushers", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/pushers", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with a pushers array")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* pushers = object_member_as_array(body, "pushers");
+                REQUIRE(pushers != nullptr);
             }
         }
     }
@@ -5525,8 +5296,7 @@ SCENARIO("POST /pushers/set conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/pushers/set",
-                 token,
+                {"POST", "/_matrix/client/v3/pushers/set", token,
                  R"({"pushkey":"key","kind":"http","app_id":"app","app_display_name":"App","device_display_name":"Phone"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
@@ -5559,8 +5329,7 @@ SCENARIO("GET /pushrules/global/ conformance")
         WHEN("GET /pushrules/global/ is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/pushrules/global/", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/pushrules/global/", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -5611,10 +5380,8 @@ SCENARIO("PUT /pushrules/global/{kind}/{ruleId} conformance")
         WHEN("PUT /pushrules/global/content/.m.rule.contains_user_name is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name",
-                 token,
-                 R"({"pattern":"alice","actions":["notify"]})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name",
+                                  token, R"({"pattern":"alice","actions":["notify"]})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -5692,8 +5459,7 @@ SCENARIO("PUT /pushrules/global/{kind}/{ruleId}/actions conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions",
-                 token,
+                {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions", token,
                  R"(["notify"])"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
@@ -5746,8 +5512,7 @@ SCENARIO("PUT /pushrules/global/{kind}/{ruleId}/enabled conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled",
-                 token,
+                {"PUT", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled", token,
                  R"({"enabled":true})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
@@ -5780,18 +5545,15 @@ SCENARIO("POST /rooms/{roomId}/report/{eventId} conformance")
         WHEN("POST /rooms/{roomId}/report/{eventId} is called with a reason")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/report/$event_id",
-                 token,
-                 R"({"reason":"inappropriate content","score":-100})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/report/$event_id", token,
+                                  R"({"reason":"inappropriate content","score":-100})"});
 
             THEN("the server returns 200 or 404 (event not found)")
             {
                 // The event_id may not exist, so the server returns 404.
                 // What MUST NOT happen is a non-JSON or 5xx response.
-                REQUIRE((response.response.status == 200
-                      || response.response.status == 400
-                      || response.response.status == 404));
+                REQUIRE((response.response.status == 200 || response.response.status == 400 ||
+                         response.response.status == 404));
                 auto const body = parse_object(response.response.body);
                 // 200 returns {}; 404/400 returns errcode
                 REQUIRE(true);
@@ -5812,10 +5574,8 @@ SCENARIO("POST /rooms/{roomId}/report conformance")
         WHEN("POST /rooms/{roomId}/report is called without an event ID")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/report",
-                 token,
-                 R"({"reason":"inappropriate room"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/report", token,
+                                  R"({"reason":"inappropriate room"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -5841,10 +5601,8 @@ SCENARIO("POST /users/{userId}/report conformance")
         WHEN("POST /users/%40alice%3Aexample.org/report is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/users/%40alice%3Aexample.org/report",
-                 token,
-                 R"({"reason":"abusive user"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/users/%40alice%3Aexample.org/report", token,
+                                  R"({"reason":"abusive user"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -5875,8 +5633,7 @@ SCENARIO("GET /profile/{userId} conformance")
         WHEN("GET /profile/@alice:example.org is called without authentication")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", "", {}});
+                started.runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", "", {}});
 
             THEN("the server returns 200 with a profile object containing displayname and/or avatar_url")
             {
@@ -5898,17 +5655,14 @@ SCENARIO("GET /profile/{userId}/displayname conformance")
         auto const token = logged_in_token(started.runtime);
 
         auto const put_response = merovingian::homeserver::handle_client_server_request(
-            started.runtime,
-            {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
-             token,
-             R"({"displayname":"Alice Liddell"})"});
+            started.runtime, {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", token,
+                              R"({"displayname":"Alice Liddell"})"});
         REQUIRE(put_response.response.status == 200);
 
         WHEN("GET /profile/@alice:example.org/displayname is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", "", {}});
+                started.runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", "", {}});
 
             THEN("the server returns 200 with the displayname")
             {
@@ -5931,17 +5685,14 @@ SCENARIO("GET /profile/{userId}/avatar_url conformance")
         auto const token = logged_in_token(started.runtime);
 
         auto const put_response = merovingian::homeserver::handle_client_server_request(
-            started.runtime,
-            {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url",
-             token,
-             R"({"avatar_url":"mxc://example.org/abc123"})"});
+            started.runtime, {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url", token,
+                              R"({"avatar_url":"mxc://example.org/abc123"})"});
         REQUIRE(put_response.response.status == 200);
 
         WHEN("GET /profile/@alice:example.org/avatar_url is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url", "", {}});
+                started.runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url", "", {}});
 
             THEN("the server returns 200 with the avatar_url")
             {
@@ -5966,10 +5717,8 @@ SCENARIO("PUT /profile/{userId}/displayname conformance")
         WHEN("PUT /profile/@alice:example.org/displayname is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
-                 token,
-                 R"({"displayname":"Alice Liddell"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", token,
+                                  R"({"displayname":"Alice Liddell"})"});
 
             THEN("the server returns 200 with an empty object")
             {
@@ -5992,10 +5741,8 @@ SCENARIO("PUT /profile/{userId}/avatar_url conformance")
         WHEN("PUT /profile/@alice:example.org/avatar_url is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url",
-                 token,
-                 R"({"avatar_url":"mxc://example.org/abc123"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/avatar_url", token,
+                                  R"({"avatar_url":"mxc://example.org/abc123"})"});
 
             THEN("the server returns 200 with an empty object")
             {
@@ -6023,8 +5770,7 @@ SCENARIO("GET /user/{userId}/filter/{filterId} conformance")
         WHEN("GET /user/@alice:example.org/filter/9999 is called with a non-existent filter ID")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/filter/9999", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/filter/9999", token, {}});
 
             THEN("the server returns 404 M_NOT_FOUND for unknown filter ID")
             {
@@ -6057,9 +5803,9 @@ SCENARIO("PUT /user/{userId}/rooms/{roomId}/account_data/{type} conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/org.example.custom",
-                 token,
-                 R"({"data":42})"});
+                {"PUT",
+                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/org.example.custom",
+                 token, R"({"data":42})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6086,7 +5832,10 @@ SCENARIO("GET /user/{userId}/rooms/{roomId}/account_data/{type} conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/org.example.custom", token, {}});
+                {"GET",
+                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/account_data/org.example.custom",
+                 token,
+                 {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6140,8 +5889,7 @@ SCENARIO("PUT /user/{userId}/rooms/{roomId}/tags/{tag} conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/m.favourite",
-                 token,
+                {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/m.favourite", token,
                  R"({"order":0.5})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
@@ -6169,7 +5917,10 @@ SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"DELETE", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/m.favourite", token, {}});
+                {"DELETE",
+                 "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/m.favourite",
+                 token,
+                 {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6201,8 +5952,7 @@ SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId} conformance")
         WHEN("GET /v1/rooms/{roomId}/relations/{eventId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/relations/$event_id", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/relations/$event_id", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6256,7 +6006,10 @@ SCENARIO("GET /v1/rooms/{roomId}/relations/{eventId}/{relType}/{eventType} confo
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/relations/$event_id/m.annotation/m.reaction", token, {}});
+                {"GET",
+                 "/_matrix/client/v1/rooms/" + room_id + "/relations/$event_id/m.annotation/m.reaction",
+                 token,
+                 {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6288,8 +6041,7 @@ SCENARIO("POST /search conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/search",
-                 token,
+                {"POST", "/_matrix/client/v3/search", token,
                  R"({"search_categories":{"room_events":{"search_term":"test","filter":{"limit":10}}}})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
@@ -6321,10 +6073,8 @@ SCENARIO("PUT /sendToDevice/{eventType}/{txnId} conformance")
         WHEN("PUT /sendToDevice/m.room.encrypted/1 is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/1",
-                 token,
-                 R"({"messages":{"@alice:example.org":{"DEVICE":{"body":"enc"}}}})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/1", token,
+                                  R"({"messages":{"@alice:example.org":{"DEVICE":{"body":"enc"}}}})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6355,8 +6105,7 @@ SCENARIO("GET /admin/whois/{userId} conformance")
         WHEN("GET /admin/whois/@alice:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/admin/whois/%40alice%3Aexample.org", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/admin/whois/%40alice%3Aexample.org", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6381,8 +6130,7 @@ SCENARIO("POST /admin/suspend/{userId} conformance")
         WHEN("POST /admin/suspend/@alice:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/admin/suspend/%40alice%3Aexample.org", token, "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/admin/suspend/%40alice%3Aexample.org", token, "{}"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6407,8 +6155,7 @@ SCENARIO("POST /admin/lock/{userId} conformance")
         WHEN("POST /admin/lock/@alice:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/admin/lock/%40alice%3Aexample.org", token, "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/admin/lock/%40alice%3Aexample.org", token, "{}"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6439,8 +6186,7 @@ SCENARIO("GET /.well-known/matrix/policy_server conformance")
         WHEN("GET /.well-known/matrix/policy_server is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/.well-known/matrix/policy_server", token, {}});
+                started.runtime, {"GET", "/.well-known/matrix/policy_server", token, {}});
 
             THEN("the server returns 404")
             {
@@ -6461,8 +6207,7 @@ SCENARIO("GET /.well-known/matrix/support conformance")
         WHEN("GET /.well-known/matrix/support is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/.well-known/matrix/support", token, {}});
+                started.runtime, {"GET", "/.well-known/matrix/support", token, {}});
 
             THEN("the server returns 404")
             {
@@ -6490,8 +6235,7 @@ SCENARIO("GET /v1/rooms/{roomId}/hierarchy conformance")
         WHEN("GET /v1/rooms/{roomId}/hierarchy is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/hierarchy", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/hierarchy", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6522,8 +6266,7 @@ SCENARIO("GET /thirdparty/protocols conformance")
         WHEN("GET /thirdparty/protocols is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/thirdparty/protocols", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/thirdparty/protocols", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6548,8 +6291,7 @@ SCENARIO("GET /thirdparty/location/{protocol} conformance")
         WHEN("GET /thirdparty/location/irc is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/thirdparty/location/irc", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/thirdparty/location/irc", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6574,8 +6316,7 @@ SCENARIO("GET /thirdparty/user/{protocol} conformance")
         WHEN("GET /thirdparty/user/irc is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/thirdparty/user/irc", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/thirdparty/user/irc", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6607,8 +6348,7 @@ SCENARIO("GET /v1/rooms/{roomId}/threads conformance")
         WHEN("GET /v1/rooms/{roomId}/threads is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v1/rooms/" + room_id + "/threads", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/rooms/" + room_id + "/threads", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6640,9 +6380,7 @@ SCENARIO("POST /user/{userId}/openid/request_token conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/user/%40alice%3Aexample.org/openid/request_token",
-                 token,
-                 "{}"});
+                {"POST", "/_matrix/client/v3/user/%40alice%3Aexample.org/openid/request_token", token, "{}"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6674,9 +6412,7 @@ SCENARIO("POST /user_directory/search conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/user_directory/search",
-                 token,
-                 R"({"search_term":"alice"})"});
+                {"POST", "/_matrix/client/v3/user_directory/search", token, R"({"search_term":"alice"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6709,9 +6445,7 @@ SCENARIO("POST /rooms/{roomId}/upgrade conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade",
-                 token,
-                 R"({"new_version":"11"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token, R"({"new_version":"11"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6743,9 +6477,7 @@ SCENARIO("POST /rooms/{roomId}/receipt/{receiptType}/{eventId} conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/$event_id",
-                 token,
-                 "{}"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/$event_id", token, "{}"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6771,8 +6503,7 @@ SCENARIO("GET /rooms/{roomId}/members conformance")
         WHEN("GET /rooms/{roomId}/members is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/members", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/members", token, {}});
 
             THEN("the server returns 200 with a chunk array")
             {
@@ -6797,8 +6528,7 @@ SCENARIO("GET /rooms/{roomId}/joined_members conformance")
         WHEN("GET /rooms/{roomId}/joined_members is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/joined_members", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/joined_members", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6824,8 +6554,7 @@ SCENARIO("GET /rooms/{roomId}/event/{eventId} conformance")
         WHEN("GET /rooms/{roomId}/event/$eventId is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/event/$event_id", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/event/$event_id", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6851,8 +6580,7 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} conformance")
         WHEN("GET /rooms/{roomId}/context/$eventId is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/$event_id", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/context/$event_id", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6878,8 +6606,7 @@ SCENARIO("GET /rooms/{roomId}/initialSync conformance")
         WHEN("GET /rooms/{roomId}/initialSync is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/initialSync", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/initialSync", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6905,8 +6632,7 @@ SCENARIO("GET /initialSync conformance")
         WHEN("GET /initialSync is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/initialSync", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/initialSync", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6932,8 +6658,7 @@ SCENARIO("GET /events conformance")
         WHEN("GET /events is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/events", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/events", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -6959,8 +6684,7 @@ SCENARIO("GET /events/{eventId} conformance")
         WHEN("GET /events/$eventId is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/events/$event_id", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/events/$event_id", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7014,8 +6738,7 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType} conformance")
         WHEN("GET /rooms/{roomId}/state/m.room.name is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7042,8 +6765,7 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} conformance")
         WHEN("GET /rooms/{roomId}/state/m.room.name/ is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name/", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name/", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7071,9 +6793,7 @@ SCENARIO("POST /rooms/{roomId}/redact/{eventId}/{txnId} conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/redact/$event_id/1",
-                 token,
-                 R"({"reason":"test"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/redact/$event_id/1", token, R"({"reason":"test"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7101,9 +6821,7 @@ SCENARIO("PUT /rooms/{roomId}/redact/{eventId}/{txnId} conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/redact/$event_id/1",
-                 token,
-                 R"({"reason":"test"})"});
+                {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/redact/$event_id/1", token, R"({"reason":"test"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7134,10 +6852,8 @@ SCENARIO("POST /rooms/{roomId}/ban conformance")
         WHEN("POST /rooms/{roomId}/ban is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/ban",
-                 token,
-                 R"({"user_id":"@bob:example.org","reason":"test"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/ban", token,
+                                  R"({"user_id":"@bob:example.org","reason":"test"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7164,10 +6880,8 @@ SCENARIO("POST /rooms/{roomId}/kick conformance")
         WHEN("POST /rooms/{roomId}/kick is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/kick",
-                 token,
-                 R"({"user_id":"@bob:example.org","reason":"test"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/kick", token,
+                                  R"({"user_id":"@bob:example.org","reason":"test"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7194,9 +6908,7 @@ SCENARIO("POST /rooms/{roomId}/unban conformance")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/unban",
-                 token,
-                 R"({"user_id":"@bob:example.org"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/unban", token, R"({"user_id":"@bob:example.org"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7222,10 +6934,8 @@ SCENARIO("POST /rooms/{roomId}/invite conformance")
         WHEN("POST /rooms/{roomId}/invite is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite",
-                 token,
-                 R"({"user_id":"@bob:example.org"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", token,
+                                  R"({"user_id":"@bob:example.org"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7251,10 +6961,7 @@ SCENARIO("POST /rooms/{roomId}/forget conformance")
         WHEN("POST /rooms/{roomId}/forget is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/forget",
-                 token,
-                 "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/forget", token, "{}"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7279,10 +6986,7 @@ SCENARIO("POST /knock/{roomIdOrAlias} conformance")
         WHEN("POST /knock/{roomIdOrAlias} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/knock/!room:example.org",
-                 token,
-                 "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/knock/!room:example.org", token, "{}"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7311,8 +7015,7 @@ SCENARIO("DELETE /directory/room/{roomAlias} conformance")
         WHEN("DELETE /directory/room/%23alias:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"DELETE", "/_matrix/client/v3/directory/room/%23test%3Aexample.org", token, {}});
+                started.runtime, {"DELETE", "/_matrix/client/v3/directory/room/%23test%3Aexample.org", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7339,8 +7042,7 @@ SCENARIO("GET /rooms/{roomId}/aliases conformance")
         WHEN("GET /rooms/{roomId}/aliases is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/aliases", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/aliases", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7365,10 +7067,8 @@ SCENARIO("POST /publicRooms conformance")
         WHEN("POST /publicRooms is called with a filter")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/publicRooms",
-                 token,
-                 R"({"filter":{"generic_search_term":"test"},"limit":10})"});
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token,
+                                  R"({"filter":{"generic_search_term":"test"},"limit":10})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7394,8 +7094,7 @@ SCENARIO("GET /directory/list/room/{roomId} conformance")
         WHEN("GET /directory/list/room/!room:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/directory/list/room/!room:example.org", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/directory/list/room/!room:example.org", token, {}});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
@@ -7420,10 +7119,8 @@ SCENARIO("PUT /directory/list/room/{roomId} conformance")
         WHEN("PUT /directory/list/room/!room:example.org is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/directory/list/room/!room:example.org",
-                 token,
-                 R"({"visibility":"private"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/directory/list/room/!room:example.org", token,
+                                  R"({"visibility":"private"})"});
 
             THEN("the server returns 404 M_UNRECOGNIZED")
             {

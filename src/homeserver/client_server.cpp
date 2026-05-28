@@ -1464,11 +1464,11 @@ namespace
         case auth::KeyApiEndpoint::upload_keys:
             return json_serialize(json_obj({json_member("one_time_key_counts", json_obj({}))}));
         case auth::KeyApiEndpoint::query_keys:
-            return json_serialize(json_obj({json_member("device_keys", json_obj({})),
-                                            json_member("failures", json_obj({}))}));
+            return json_serialize(
+                json_obj({json_member("device_keys", json_obj({})), json_member("failures", json_obj({}))}));
         case auth::KeyApiEndpoint::claim_keys:
-            return json_serialize(json_obj({json_member("one_time_keys", json_obj({})),
-                                            json_member("failures", json_obj({}))}));
+            return json_serialize(
+                json_obj({json_member("one_time_keys", json_obj({})), json_member("failures", json_obj({}))}));
         case auth::KeyApiEndpoint::get_key_backup_version:
             return json_serialize(json_obj({
                 json_member("algorithm", json_str("m.megolm_backup.v1")),
@@ -1763,9 +1763,9 @@ namespace
         }
         // Spec MUST: "failures" object for unreachable remote servers (empty for local-only claims).
         return resp(200U, json_serialize(json_obj({
-            json_member("one_time_keys", json_obj(std::move(users))),
-            json_member("failures", json_obj({})),
-        })));
+                              json_member("one_time_keys", json_obj(std::move(users))),
+                              json_member("failures", json_obj({})),
+                          })));
     }
 
     [[nodiscard]] auto route_suffix(std::string_view target, std::string_view prefix) noexcept -> std::string_view
@@ -2170,8 +2170,8 @@ namespace
                     if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
                     {
                         auto with_version = *obj;
-                        with_version.push_back({"version",
-                            std::make_unique<canonicaljson::Value>(std::string{v.version})});
+                        with_version.push_back(
+                            {"version", std::make_unique<canonicaljson::Value>(std::string{v.version})});
                         return resp(200U, json_serialize(canonicaljson::Value{std::move(with_version)}));
                     }
                 }
@@ -2708,9 +2708,9 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                              {"actor", *user, false}
         });
         return dispatch_resp(200U, json_serialize(json_obj({
-            json_member("user_id", json_str(*user)),
-            json_member("device_id", json_str(whoami_device)),
-        })));
+                                       json_member("user_id", json_str(*user)),
+                                       json_member("device_id", json_str(whoami_device)),
+                                   })));
     }
     if (req.method == "PUT" && starts_with(request_path, directory_room_prefix))
     {
@@ -2767,6 +2767,22 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                 result.reason);
         }
         return dispatch_resp(200U, "{}");
+    }
+    // Spec: GET /account/3pid returns the third-party IDs linked to the
+    // authenticated user. Merovingian does not yet support 3PID binding,
+    // so return the spec-required empty list so Element's settings UI
+    // does not show a spurious error.
+    if (req.method == "GET" && req.target == "/_matrix/client/v3/account/3pid")
+    {
+        return dispatch_resp(200U, R"({"threepids":[]})");
+    }
+    // Spec: GET /pushers returns the push notification pushers for the
+    // authenticated user. Merovingian does not yet support push
+    // subscriptions, so return the spec-required empty list so Element's
+    // settings UI does not show a spurious error.
+    if (req.method == "GET" && req.target == "/_matrix/client/v3/pushers")
+    {
+        return dispatch_resp(200U, R"({"pushers":[]})");
     }
     // Clients (Cinny, Element) fetch /capabilities immediately after login to
     // discover what the server supports. Return a minimal stable set; extend
@@ -3237,12 +3253,10 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             auto constexpr members_s = std::string_view{"/members"};
             auto const path_suffix = suffix.substr(0U, suffix.find('?'));
-            auto const query_string = suffix.size() > path_suffix.size()
-                                          ? suffix.substr(path_suffix.size() + 1U)
-                                          : std::string_view{};
-            auto const path_ends_with_members =
-                req.method == "GET" && path_suffix.size() > members_s.size() &&
-                path_suffix.substr(path_suffix.size() - members_s.size()) == members_s;
+            auto const query_string =
+                suffix.size() > path_suffix.size() ? suffix.substr(path_suffix.size() + 1U) : std::string_view{};
+            auto const path_ends_with_members = req.method == "GET" && path_suffix.size() > members_s.size() &&
+                                                path_suffix.substr(path_suffix.size() - members_s.size()) == members_s;
             if (path_ends_with_members)
             {
                 auto const encoded_room_id = path_suffix.substr(0U, path_suffix.size() - members_s.size());
@@ -3255,9 +3269,8 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                         return {};
                     auto const val_start = pos + search.size();
                     auto const val_end = qs.find('&', val_start);
-                    return std::string{qs.substr(val_start,
-                                                 val_end == std::string_view::npos ? std::string_view::npos
-                                                                                   : val_end - val_start)};
+                    return std::string{qs.substr(val_start, val_end == std::string_view::npos ? std::string_view::npos
+                                                                                              : val_end - val_start)};
                 };
                 auto const not_membership = parse_qparam(query_string, "not_membership");
                 auto const membership_filter = parse_qparam(query_string, "membership");
@@ -3282,23 +3295,41 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                         continue;
                     auto const state_it =
                         std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& s) {
-                            return s.room_id == room_id && s.event_type == "m.room.member" &&
-                                   s.state_key == m.user_id;
+                            return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == m.user_id;
                         });
-                    if (state_it == store.state.end())
-                        continue;
-                    auto const ev_json = event_json_for_id(store, state_it->event_id);
-                    if (!ev_json.has_value())
-                        continue;
-                    auto const parsed = canonicaljson::parse_lossless(*ev_json);
-                    if (parsed.error != canonicaljson::ParseError::none)
-                        continue;
-                    chunk.push_back(parsed.value);
+                    if (state_it != store.state.end())
+                    {
+                        auto const ev_json = event_json_for_id(store, state_it->event_id);
+                        if (ev_json.has_value())
+                        {
+                            auto const parsed = canonicaljson::parse_lossless(*ev_json);
+                            if (parsed.error == canonicaljson::ParseError::none)
+                            {
+                                chunk.push_back(parsed.value);
+                                continue;
+                            }
+                        }
+                    }
+                    // Fallback: construct a synthetic m.room.member event from the
+                    // membership record when no state event exists (e.g. local join
+                    // path stores membership but has not yet persisted the state event).
+                    auto ev = canonicaljson::Object{};
+                    ev.push_back(
+                        canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+                    ev.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{room_id}));
+                    ev.push_back(canonicaljson::make_member("sender", canonicaljson::Value{m.user_id}));
+                    ev.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{m.user_id}));
+                    auto content = canonicaljson::Object{};
+                    content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{m.membership}));
+                    ev.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+                    chunk.push_back(canonicaljson::Value{std::move(ev)});
                 }
-                log_diagnostic("room.members.accepted",
-                               {{"actor", *user, false}, {"room_id", room_id, false}});
-                return dispatch_resp(
-                    200U, json_serialize(json_obj({json_member("chunk", json_arr(std::move(chunk)))})));
+                log_diagnostic("room.members.accepted", {
+                                                            {"actor",   *user,   false},
+                                                            {"room_id", room_id, false}
+                });
+                return dispatch_resp(200U,
+                                     json_serialize(json_obj({json_member("chunk", json_arr(std::move(chunk)))})));
             }
         }
         if (req.method == "PUT")
