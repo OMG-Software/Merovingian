@@ -609,7 +609,7 @@ SCENARIO("Incremental sync with can_wait=false emits no room data when nothing c
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
 // URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
 //
-// When a user joins a remote room via federation (make_join/send_join), the
+// If a user joins a remote room via federation (make_join/send_join), the
 // state events from the send_join response MUST be stored with a proper
 // stream_ordering so that incremental sync can surface them. Events stored
 // with stream_ordering == 0 are invisible because the sync filter excludes
