@@ -1,0 +1,24 @@
+CompileFlags:
+	CompilationDatabase: build-wsl
+
+Diagnostics:
+	Suppress:
+		- pp_file_not_found
+		- no_member
+	UnusedIncludes: None
+	ClangTidy:
+		Remove:
+			- bugprone-*
+			- modernize-*
+			- readability-*
+			- google-*
+			- cppcoreguidelines-*
+
+InlayHints:
+	Enabled: Yes
+	ParameterNames: Yes
+	DeducedTypes: Yes
+	Designators: Yes
+
+Hover:
+	ShowAKA: Yes
