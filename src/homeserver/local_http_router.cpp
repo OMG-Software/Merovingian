@@ -1072,8 +1072,10 @@ namespace
                     }
                 }
             }
+            // Pass the raw PDU JSON so the federation layer can echo it back
+            // in the send_join v2 "event" field as required by the spec.
             return {true, 200U, {}, std::move(auth_chain), std::move(state_events),
-                    room_version_from_store(store, room_id)};
+                    room_version_from_store(store, room_id), std::string{envelope.json}};
         };
 
         runtime.federation.invite_handler =

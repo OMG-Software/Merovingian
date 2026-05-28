@@ -15,6 +15,11 @@
   `room_account_data` are empty when a `since` token is present, so the
   `rooms.join` map is empty in the response rather than repeating the full state
   of every joined room.
+- Fix inbound `send_join` (v2) response missing the `"event"` field. Per Matrix
+  federation spec §11.5.1 the resident server must echo the accepted join event
+  back to the joining server. `MembershipAcceptResult` gains `signed_event_json`;
+  `handle_send_membership` serialises it under `"event"` for `send_join` only;
+  `send_leave` and `send_knock` are unaffected.
 
 ## 0.4.27
 

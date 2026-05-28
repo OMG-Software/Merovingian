@@ -1027,3 +1027,87 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
         }
     }
 }
+
+SCENARIO("send_join v2 response echoes the signed join event in the 'event' field",
+         "[federation][callbacks][membership][spec]")
+{
+    GIVEN("a runtime with a membership acceptor that returns the signed join event JSON")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"send-join-event-echo-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto const join_event_json = signed_json_pdu(origin, key_id, token);
+
+        runtime.membership_acceptor =
+            [join_event_json](merovingian::federation::FederationEndpoint /*endpoint*/,
+                              std::string_view /*room_id*/, std::string_view /*event_id*/,
+                              merovingian::federation::InboundPduEnvelope const& /*envelope*/)
+            -> merovingian::federation::MembershipAcceptResult {
+            auto result = merovingian::federation::MembershipAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            result.room_version = "12";
+            result.signed_event_json = join_event_json;
+            return result;
+        };
+
+        auto const target = std::string{"/_matrix/federation/v2/send_join/!room:example.org/$ev1:example.org"};
+        auto const request = signed_put_request(origin, key_id, token, target, join_event_json);
+
+        WHEN("the send_join request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the response is 200 and the body contains the 'event' field with the signed PDU")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find(R"("event")") != std::string::npos);
+                // auth_chain and state are empty in this stub, so "sender" can only
+                // appear inside the echoed event — proves it is the actual PDU.
+                REQUIRE(response.body.find(R"("sender")") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a runtime with a membership acceptor for send_leave")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"send-leave-no-event-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto const leave_event_json = signed_json_pdu(origin, key_id, token);
+
+        runtime.membership_acceptor =
+            [leave_event_json](merovingian::federation::FederationEndpoint /*endpoint*/,
+                               std::string_view /*room_id*/, std::string_view /*event_id*/,
+                               merovingian::federation::InboundPduEnvelope const& /*envelope*/)
+            -> merovingian::federation::MembershipAcceptResult {
+            auto result = merovingian::federation::MembershipAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            // signed_event_json is populated but must be ignored for send_leave
+            result.signed_event_json = leave_event_json;
+            return result;
+        };
+
+        auto const target =
+            std::string{"/_matrix/federation/v2/send_leave/!room:example.org/$ev2:example.org"};
+        auto const request = signed_put_request(origin, key_id, token, target, leave_event_json);
+
+        WHEN("the send_leave request is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the response is 200 and the body does not contain an 'event' field")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find(R"("event")") == std::string::npos);
+            }
+        }
+    }
+}

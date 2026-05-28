@@ -449,6 +449,18 @@ namespace
         }
         response.push_back(canonicaljson::make_member("auth_chain", build_array_value(acceptance.auth_chain_json)));
         response.push_back(canonicaljson::make_member("state", build_array_value(acceptance.state_json)));
+        // Per Matrix federation spec §11.5.1, the send_join v2 response MUST
+        // include the accepted event under the "event" key. send_leave and
+        // send_knock do not carry this field.
+        if (route.endpoint == FederationEndpoint::send_join && !acceptance.signed_event_json.empty())
+        {
+            auto parsed_event = canonicaljson::parse_lossless(acceptance.signed_event_json);
+            if (parsed_event.error == canonicaljson::ParseError::none)
+            {
+                response.push_back(
+                    canonicaljson::make_member("event", std::move(parsed_event.value)));
+            }
+        }
         auto body = serialize_response_object(std::move(response));
         if (body.empty())
         {

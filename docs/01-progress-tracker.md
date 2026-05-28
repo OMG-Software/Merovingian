@@ -502,6 +502,11 @@ a non-production environment.
   room-join loop now skips rooms where both `timeline_events` and
   `room_account_data` are empty, so `rooms.join` is empty in the response
   rather than returning 476 bytes of stale state on each timeout.
+- Fix (0.4.28): Inbound `send_join` (v2) response was missing the `"event"`
+  field. Per Matrix federation spec §11.5.1 the resident server must echo the
+  accepted join event back in the response body. `MembershipAcceptResult` gains
+  `signed_event_json`; `handle_send_membership` serialises it under `"event"`
+  for `send_join` only; `send_leave` and `send_knock` are unaffected.
 - Fix (0.4.6): `PUT /_matrix/federation/v1/send/{txnId}` response body returned
   plain-text diagnostic strings instead of the Matrix-required `{"pdus":{}}` JSON,
   causing Synapse JSONDecodeError on transaction responses.

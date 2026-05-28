@@ -67,6 +67,10 @@ struct MembershipAcceptResult final
     // Room version string echoed in the send_join/send_leave response body.
     // Read from m.room.create; empty means the caller should use a safe default.
     std::string room_version{};
+    // For send_join v2: the signed join event echoed back in the 'event' field.
+    // Per Matrix federation spec §11.5.1 the resident server MUST return the
+    // event exactly as it was accepted. Empty for send_leave and send_knock.
+    std::string signed_event_json{};
 };
 
 // Hook signature for accepting a signed membership event. The implementation
