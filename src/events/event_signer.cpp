@@ -24,8 +24,8 @@ namespace
         LOG_DEBUG(observability::diagnostic_log_summary("event_signer", event, std::move(fields)));
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::ObjectMember const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> canonicaljson::ObjectMember const*
     {
         for (auto const& member : object)
         {
@@ -38,8 +38,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto object_member_value(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member_value(canonicaljson::Object const& object,
+                                           std::string_view key) noexcept -> canonicaljson::Value const*
     {
         auto const* member = object_member(object, key);
         return member == nullptr ? nullptr : member->value.get();
@@ -162,8 +162,8 @@ namespace
             canonicaljson::make_member(key_id.key_id, canonicaljson::Value{std::string{signature}}));
     }
 
-    auto upsert_signature(canonicaljson::Object& signatures, SigningKeyId const& key_id, std::string_view signature)
-        -> void
+    auto upsert_signature(canonicaljson::Object& signatures, SigningKeyId const& key_id,
+                          std::string_view signature) -> void
     {
         for (auto& server_member : signatures)
         {
@@ -199,9 +199,8 @@ auto matrix_base64_from_bytes(std::string_view bytes) -> std::string
     }
 
     auto output = std::string(sodium_base64_ENCODED_LEN(bytes.size(), sodium_base64_VARIANT_ORIGINAL_NO_PADDING), '\0');
-    std::ignore = sodium_bin2base64(output.data(), output.size(),
-                                    reinterpret_cast<unsigned char const*>(bytes.data()), bytes.size(),
-                                    sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
+    std::ignore = sodium_bin2base64(output.data(), output.size(), reinterpret_cast<unsigned char const*>(bytes.data()),
+                                    bytes.size(), sodium_base64_VARIANT_ORIGINAL_NO_PADDING);
     output.resize(std::char_traits<char>::length(output.c_str()));
     return output;
 }
@@ -237,8 +236,8 @@ auto make_event_signing_payload(canonicaljson::Value const& event) -> canonicalj
     return canonicaljson::serialize_canonical(canonicaljson::Value{clone_without_unsigned_and_signatures(*object)});
 }
 
-auto make_event_signing_payload(canonicaljson::Value const& event, rooms::RoomVersionPolicy const& policy)
-    -> canonicaljson::SerializeResult
+auto make_event_signing_payload(canonicaljson::Value const& event,
+                                rooms::RoomVersionPolicy const& policy) -> canonicaljson::SerializeResult
 {
     auto const* object = std::get_if<canonicaljson::Object>(&event.storage());
     if (object == nullptr)
@@ -246,25 +245,39 @@ auto make_event_signing_payload(canonicaljson::Value const& event, rooms::RoomVe
         return {{}, canonicaljson::CanonicalJsonError::invalid_string};
     }
 
+    // Synapse signs the PRUNED (redacted) form of the event, not the full
+    // event. For m.room.member events, the pruned content keeps only
+    // "membership" — extra fields like "is_direct" are stripped. If we sign
+    // the full content, Synapse verification fails with BadSignatureError
+    // because the canonical JSON bytes differ. Redact first, then strip
+    // unsigned/signatures/event_id from the redacted form.
+    auto const redacted = redact_event(event, policy);
+    if (!redacted.error.empty())
+    {
+        return {{}, canonicaljson::CanonicalJsonError::invalid_string};
+    }
+
+    auto const* redacted_obj = std::get_if<canonicaljson::Object>(&redacted.event.storage());
+    if (redacted_obj == nullptr)
+    {
+        return {{}, canonicaljson::CanonicalJsonError::invalid_string};
+    }
+
     // For room versions that use reference-hash event IDs (room v4+), event_id is
     // not part of the canonical event body — it is derived from the content hash.
-    // Federation senders (Synapse included) often attach event_id to outbound PDUs
-    // as a convenience, but their signing payload never contained it. Strip it here
-    // so our verification payload is byte-identical to what the sender signed.
     if (policy.event_id_format == rooms::EventIdFormat::reference_hash)
     {
         return canonicaljson::serialize_canonical(
-            canonicaljson::Value{clone_without_unsigned_signatures_and_event_id(*object)});
+            canonicaljson::Value{clone_without_unsigned_signatures_and_event_id(*redacted_obj)});
     }
 
-    // Legacy room versions (1–3) include event_id in the event body itself, so it
-    // is part of the signing payload and must not be removed.
+    // Legacy room versions (1–3) include event_id in the event body itself.
     return canonicaljson::serialize_canonical(
-        canonicaljson::Value{clone_without_unsigned_and_signatures(*object)});
+        canonicaljson::Value{clone_without_unsigned_and_signatures(*redacted_obj)});
 }
 
-auto attach_event_signature(canonicaljson::Value const& event, SigningKeyId const& key_id, std::string_view signature)
-    -> canonicaljson::SerializeResult
+auto attach_event_signature(canonicaljson::Value const& event, SigningKeyId const& key_id,
+                            std::string_view signature) -> canonicaljson::SerializeResult
 {
     if (!signing_key_id_is_valid(key_id) || !signature_is_valid_shape(signature))
     {
@@ -303,28 +316,32 @@ auto sign_event_for_server(canonicaljson::Value const& event, rooms::RoomVersion
     if (payload.error != canonicaljson::CanonicalJsonError::none)
     {
         log_diagnostic("sign_event.rejected",
-                       {{"server_name", std::string{server_name}, false},
-                        {"reason",      canonicaljson::canonical_json_error_name(payload.error), false}});
+                       {
+                           {"server_name", std::string{server_name},                                false},
+                           {"reason",      canonicaljson::canonical_json_error_name(payload.error), false}
+        });
         return {{}, {}, {}, {}, canonicaljson::canonical_json_error_name(payload.error)};
     }
 
     auto signature = crypto::sign_for_server(key_store, provider, server_name, payload.output);
     if (!signature.error.empty())
     {
-        log_diagnostic("sign_event.failed",
-                       {{"server_name", signature.server_name, false},
-                        {"key_id",      signature.key_id,       false},
-                        {"reason",      signature.error,         false}});
+        log_diagnostic("sign_event.failed", {
+                                                {"server_name", signature.server_name, false},
+                                                {"key_id",      signature.key_id,      false},
+                                                {"reason",      signature.error,       false}
+        });
         return {{}, signature.server_name, signature.key_id, {}, signature.error};
     }
 
     auto const encoded = matrix_base64_from_bytes(signature.signature.bytes);
     if (encoded.empty())
     {
-        log_diagnostic("sign_event.failed",
-                       {{"server_name", signature.server_name,               false},
-                        {"key_id",      signature.key_id,                     false},
-                        {"reason",      "signature base64 encoding failed",   false}});
+        log_diagnostic("sign_event.failed", {
+                                                {"server_name", signature.server_name,              false},
+                                                {"key_id",      signature.key_id,                   false},
+                                                {"reason",      "signature base64 encoding failed", false}
+        });
         return {{}, signature.server_name, signature.key_id, {}, "signature base64 encoding failed"};
     }
 
@@ -332,9 +349,11 @@ auto sign_event_for_server(canonicaljson::Value const& event, rooms::RoomVersion
     if (signed_json.error != canonicaljson::CanonicalJsonError::none)
     {
         log_diagnostic("sign_event.failed",
-                       {{"server_name", signature.server_name,                                              false},
-                        {"key_id",      signature.key_id,                                                   false},
-                        {"reason",      canonicaljson::canonical_json_error_name(signed_json.error), false}});
+                       {
+                           {"server_name", signature.server_name,                                       false},
+                           {"key_id",      signature.key_id,                                            false},
+                           {"reason",      canonicaljson::canonical_json_error_name(signed_json.error), false}
+        });
         return {{},
                 signature.server_name,
                 signature.key_id,
@@ -343,13 +362,15 @@ auto sign_event_for_server(canonicaljson::Value const& event, rooms::RoomVersion
     }
 
     log_diagnostic("sign_event.accepted",
-                   {{"server_name", signature.server_name, false},
-                    {"key_id",      signature.key_id,       false}});
+                   {
+                       {"server_name", signature.server_name, false},
+                       {"key_id",      signature.key_id,      false}
+    });
     return {signed_json.output, signature.server_name, signature.key_id, encoded, {}};
 }
 
-auto verify_event_signature_presence(canonicaljson::Value const& event, SigningKeyId const& key_id)
-    -> SignatureVerificationResult
+auto verify_event_signature_presence(canonicaljson::Value const& event,
+                                     SigningKeyId const& key_id) -> SignatureVerificationResult
 {
     if (!signing_key_id_is_valid(key_id))
     {
@@ -405,10 +426,11 @@ auto verify_event_signature(canonicaljson::Value const& event, rooms::RoomVersio
     auto presence = verify_event_signature_presence(event, key_id);
     if (!presence.valid)
     {
-        log_diagnostic("verify_event.rejected",
-                       {{"server_name", key_id.server_name, false},
-                        {"key_id",      key_id.key_id,       false},
-                        {"reason",      presence.error,       false}});
+        log_diagnostic("verify_event.rejected", {
+                                                    {"server_name", key_id.server_name, false},
+                                                    {"key_id",      key_id.key_id,      false},
+                                                    {"reason",      presence.error,     false}
+        });
         return presence;
     }
 
@@ -443,14 +465,18 @@ auto verify_event_signature(canonicaljson::Value const& event, rooms::RoomVersio
     auto verified = provider.verify(public_key, payload.output, crypto::Ed25519Signature{signature_bytes});
     if (!verified.valid)
     {
-        log_diagnostic("verify_event.rejected",
-                       {{"server_name", key_id.server_name, false},
-                        {"key_id",      key_id.key_id,       false},
-                        {"reason",      verified.error,       false}});
+        log_diagnostic("verify_event.rejected", {
+                                                    {"server_name", key_id.server_name, false},
+                                                    {"key_id",      key_id.key_id,      false},
+                                                    {"reason",      verified.error,     false}
+        });
         return {false, verified.error};
     }
     log_diagnostic("verify_event.accepted",
-                   {{"server_name", key_id.server_name, false}, {"key_id", key_id.key_id, false}});
+                   {
+                       {"server_name", key_id.server_name, false},
+                       {"key_id",      key_id.key_id,      false}
+    });
     return {true, {}};
 }
 

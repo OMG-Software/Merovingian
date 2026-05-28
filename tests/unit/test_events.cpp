@@ -68,8 +68,8 @@ private:
 class CapturingEd25519Provider final : public merovingian::crypto::Ed25519Provider
 {
 public:
-    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const& key, std::string_view message)
-        -> merovingian::crypto::SignatureResult override
+    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const& key,
+                            std::string_view message) -> merovingian::crypto::SignatureResult override
     {
         if (key.key_id != "ed25519:auto")
         {
@@ -295,11 +295,10 @@ SCENARIO("Event signing payload removes unsigned metadata but keeps event conten
                 // Spec MUST: "signatures" MUST NOT appear in the signing payload.
                 // Do NOT remove/change - see signing-events spec section above.
                 REQUIRE(payload.output.find("signatures") == std::string::npos);
-                // Spec MUST: event content MUST be included in the signing payload intact.
-                // Do NOT remove/change - content is authenticated by the signature;
-                // stripping it means the receiver cannot verify what was actually sent.
-                REQUIRE(payload.output.find("secret") != std::string::npos);
-                REQUIRE(payload.output.find(R"("content":{"body":"secret","msgtype":"m.text"})") != std::string::npos);
+                // Spec MUST: the signing payload is the PRUNED (redacted) form of the
+                // event. For m.room.message, the content is empty after pruning.
+                // The full content is authenticated via hashes.sha256 instead.
+                REQUIRE(payload.output.find(R"("content":{})") != std::string::npos);
                 // Spec MUST: "hashes" MUST be present in the signing payload so that the
                 // content hash is itself covered by the Ed25519 signature.
                 // Do NOT remove/change - a missing hashes field means the content hash is
@@ -426,6 +425,71 @@ SCENARIO("Signing payload for room v4+ PDUs strips event_id included by federati
     }
 }
 
+// --- Signing payload prunes event content (Synapse parity) --------------------
+// Spec: Matrix Server-Server API v1.18
+// Section: Signing Events
+// URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
+//
+// Synapse signs the PRUNED (redacted) form of the event, not the full event.
+// For m.room.member events, the pruned content keeps only "membership" —
+// extra fields like "is_direct" are stripped before computing the signing
+// payload. If we sign the full content, Synapse verification fails with
+// BadSignatureError because the canonical JSON bytes differ.
+SCENARIO("Signing payload for m.room.member prunes content to membership only", "[events][signing][federation]")
+{
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+
+    GIVEN("an m.room.member invite event with is_direct in the content")
+    {
+        auto const event_json = std::string{R"({"auth_events":[],"content":{"is_direct":true,"membership":"invite"},)"
+                                            R"("depth":1,"hashes":{"sha256":"abc123"},)"
+                                            R"("origin_server_ts":1748300000000,"prev_events":[],)"
+                                            R"("room_id":"!room:pong.ping.me.uk","sender":"@alice:pong.ping.me.uk",)"
+                                            R"("state_key":"@bob:matrix.ping.me.uk","type":"m.room.member"})"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the signing payload is built with a room-v12 policy")
+        {
+            auto const payload = merovingian::events::make_event_signing_payload(parsed.value, *policy);
+            THEN("the payload contains only membership in content — is_direct is pruned")
+            {
+                REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                // Spec MUST: Synapse signs the pruned event where m.room.member
+                // content keeps only "membership". Including is_direct causes
+                // BadSignatureError because the canonical bytes differ.
+                REQUIRE(payload.output.find("is_direct") == std::string::npos);
+                REQUIRE(payload.output.find("\"membership\":\"invite\"") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("an m.room.member join event with displayname and avatar_url")
+    {
+        auto const event_json =
+            std::string{R"({"auth_events":[],"content":{"avatar_url":"mxc://example.org/abc","displayname":"Bob",)"
+                        R"("membership":"join"},"depth":1,"hashes":{"sha256":"abc123"},)"
+                        R"("origin_server_ts":1748300000000,"prev_events":[],)"
+                        R"("room_id":"!room:pong.ping.me.uk","sender":"@alice:pong.ping.me.uk",)"
+                        R"("state_key":"@bob:pong.ping.me.uk","type":"m.room.member"})"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the signing payload is built with a room-v12 policy")
+        {
+            auto const payload = merovingian::events::make_event_signing_payload(parsed.value, *policy);
+            THEN("displayname and avatar_url are pruned from content")
+            {
+                REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(payload.output.find("displayname") == std::string::npos);
+                REQUIRE(payload.output.find("avatar_url") == std::string::npos);
+                REQUIRE(payload.output.find("\"membership\":\"join\"") != std::string::npos);
+            }
+        }
+    }
+}
+
 // --- Event signature attachment and presence detection -----------------------
 // Spec: Matrix Server-Server API v1.18
 // Section: Signing Events
@@ -509,10 +573,10 @@ SCENARIO("Event signing stores Matrix base64 Ed25519 signatures and verifies the
                 // to reject the event during signature verification.
                 REQUIRE(signed_event.signature ==
                         "c3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzcw");
-                // Spec MUST: the signing payload must include the event content.
-                // Do NOT remove/change - the signature is a commitment to the full event body;
-                // signing an empty or partial payload is a security vulnerability.
-                REQUIRE(provider.signed_message.find("secret") != std::string::npos);
+                // Spec MUST: the signing payload is the pruned (redacted) form.
+                // For m.room.message the content is empty after pruning; the full
+                // content is authenticated via hashes.sha256 instead.
+                REQUIRE(provider.signed_message.find("secret") == std::string::npos);
                 // Spec MUST: the signature must verify correctly against the signing payload
                 // using the server's public key. Do NOT remove/change - if round-trip
                 // verification fails, the event cannot be authenticated by federation peers.
@@ -523,17 +587,17 @@ SCENARIO("Event signing stores Matrix base64 Ed25519 signatures and verifies the
     }
 }
 
-// --- Signing payload preserves member profile fields -------------------------
+// --- Signing payload prunes member profile fields (Synapse parity) ------------
 // Spec: Matrix Server-Server API v1.18
 // Section: Signing Events / m.room.member redaction rules
 // URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
 // URL: https://spec.matrix.org/v1.18/server-server-api/#redactions
 //
-// For m.room.member events, the "displayname" and "avatar_url" content fields
-// are preserved through redaction and MUST therefore also be present in the
-// signing payload. Stripping them before signing would produce a signature that
-// fails verification once the receiver applies redaction rules.
-SCENARIO("Event signing keeps member profile fields in the signed payload", "[events][signing][member]")
+// For m.room.member events, only "membership" survives redaction in the
+// content. Profile fields like "displayname" and "avatar_url" are stripped
+// by Synapse's prune_event_dict before signing. Our signing payload must
+// match to avoid BadSignatureError.
+SCENARIO("Event signing prunes member profile fields from the signed payload", "[events][signing][member]")
 {
     GIVEN("a room v12 member event with a displayname")
     {
@@ -556,14 +620,14 @@ SCENARIO("Event signing keeps member profile fields in the signed payload", "[ev
             auto const signed_event =
                 merovingian::events::sign_event_for_server(parsed.value, *policy, store, provider, "example.org");
 
-            THEN("the signed payload still contains the member displayname")
+            THEN("the signed payload prunes displayname — only membership remains")
             {
                 REQUIRE(signed_event.error.empty());
-                // Spec MUST: "displayname" is a redaction-preserved field for m.room.member
-                // events and MUST appear in the signing payload.
-                // Do NOT remove/change - stripping displayname before signing causes the
-                // signature to mismatch after a receiver applies member-event redaction rules.
-                REQUIRE(provider.signed_message.find("\"displayname\":\"Alice\"") != std::string::npos);
+                // Spec MUST: Synapse signs the pruned form. For m.room.member,
+                // only "membership" survives pruning. Including displayname
+                // causes BadSignatureError because canonical bytes differ.
+                REQUIRE(provider.signed_message.find("\"displayname\":\"Alice\"") == std::string::npos);
+                REQUIRE(provider.signed_message.find("\"membership\":\"join\"") != std::string::npos);
             }
         }
     }
