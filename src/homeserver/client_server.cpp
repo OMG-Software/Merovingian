@@ -1464,9 +1464,11 @@ namespace
         case auth::KeyApiEndpoint::upload_keys:
             return json_serialize(json_obj({json_member("one_time_key_counts", json_obj({}))}));
         case auth::KeyApiEndpoint::query_keys:
-            return json_serialize(json_obj({json_member("device_keys", json_obj({}))}));
+            return json_serialize(json_obj({json_member("device_keys", json_obj({})),
+                                            json_member("failures", json_obj({}))}));
         case auth::KeyApiEndpoint::claim_keys:
-            return json_serialize(json_obj({json_member("one_time_keys", json_obj({}))}));
+            return json_serialize(json_obj({json_member("one_time_keys", json_obj({})),
+                                            json_member("failures", json_obj({}))}));
         case auth::KeyApiEndpoint::get_key_backup_version:
             return json_serialize(json_obj({
                 json_member("algorithm", json_str("m.megolm_backup.v1")),
@@ -1475,10 +1477,15 @@ namespace
             }));
         case auth::KeyApiEndpoint::get_room_key_backup:
             return json_serialize(json_obj({json_member("rooms", json_obj({}))}));
+        case auth::KeyApiEndpoint::create_key_backup_version:
+            // Spec: POST /room_keys/version MUST return {"version":"<id>"} so
+            // clients can reference the backup. Omitting it causes Element to
+            // fail key setup with "Unable to set up keys".
+            return json_serialize(json_obj({json_member("version", json_str("1"))}));
+        case auth::KeyApiEndpoint::upload_signatures:
+            return json_serialize(json_obj({json_member("failures", json_obj({}))}));
         case auth::KeyApiEndpoint::device_list_update:
         case auth::KeyApiEndpoint::upload_cross_signing_keys:
-        case auth::KeyApiEndpoint::upload_signatures:
-        case auth::KeyApiEndpoint::create_key_backup_version:
         case auth::KeyApiEndpoint::update_key_backup_version:
         case auth::KeyApiEndpoint::delete_key_backup_version:
         case auth::KeyApiEndpoint::put_room_key_backup:
@@ -1694,6 +1701,8 @@ namespace
         {
             response.push_back(json_member("user_signing_keys", json_obj(std::move(user_signing_keys))));
         }
+        // Spec MUST: "failures" object for unreachable remote servers (empty for local-only queries).
+        response.push_back(json_member("failures", json_obj({})));
         return resp(200U, json_serialize(json_obj(std::move(response))));
     }
 
@@ -1752,7 +1761,11 @@ namespace
                 users.push_back(json_member(user_request.key, json_obj(std::move(devices))));
             }
         }
-        return resp(200U, json_serialize(json_obj({json_member("one_time_keys", json_obj(std::move(users)))})));
+        // Spec MUST: "failures" object for unreachable remote servers (empty for local-only claims).
+        return resp(200U, json_serialize(json_obj({
+            json_member("one_time_keys", json_obj(std::move(users))),
+            json_member("failures", json_obj({})),
+        })));
     }
 
     [[nodiscard]] auto route_suffix(std::string_view target, std::string_view prefix) noexcept -> std::string_view
@@ -2142,7 +2155,21 @@ namespace
         case auth::KeyApiEndpoint::get_key_backup_version:
             if (auto const& versions = rt.homeserver.database.persistent_store.key_backup_versions; !versions.empty())
             {
-                return resp(200U, versions.front().json);
+                auto const& v = versions.front();
+                // v.json is the original POST body (algorithm + auth_data only).
+                // The spec response MUST also include "version" — inject it here.
+                auto parsed = canonicaljson::parse_lossless(v.json);
+                if (parsed.error == canonicaljson::ParseError::none)
+                {
+                    if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
+                    {
+                        auto with_version = *obj;
+                        with_version.push_back({"version",
+                            std::make_unique<canonicaljson::Value>(std::string{v.version})});
+                        return resp(200U, json_serialize(canonicaljson::Value{std::move(with_version)}));
+                    }
+                }
+                return resp(200U, v.json);
             }
             return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
         case auth::KeyApiEndpoint::get_room_key_backup:
@@ -2670,10 +2697,14 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/whoami")
     {
+        auto const whoami_device = first_device_id(rt, *user);
         log_diagnostic("account.whoami", {
                                              {"actor", *user, false}
         });
-        return dispatch_resp(200U, json_serialize(json_obj({json_member("user_id", json_str(*user))})));
+        return dispatch_resp(200U, json_serialize(json_obj({
+            json_member("user_id", json_str(*user)),
+            json_member("device_id", json_str(whoami_device)),
+        })));
     }
     if (req.method == "PUT" && starts_with(request_path, directory_room_prefix))
     {

@@ -85,6 +85,7 @@ if get_option ('build_tests')
       'unit/test_canonicaljson_parser.cpp',
       'unit/test_canonicaljson_serializer.cpp',
       'unit/test_client_server.cpp',
+      'unit/test_client_server_conformance.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_media_timeout.cpp',
       'unit/test_config_parser.cpp',

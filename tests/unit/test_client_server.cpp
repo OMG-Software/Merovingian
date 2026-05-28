@@ -20,9 +20,8 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
+#include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
-#include "merovingian/canonicaljson/parser.hpp"
-#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -103,55 +102,7 @@ namespace
     return body.substr(value_begin, value_end - value_begin);
 }
 
-[[nodiscard]] auto object_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
-    -> merovingian::canonicaljson::Value const*
-{
-    for (auto const& member : object)
-    {
-        if (member.key == key)
-        {
-            return member.value.get();
-        }
-    }
-    return nullptr;
-}
-
-[[nodiscard]] auto string_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
-    -> std::string const*
-{
-    auto const* value = object_member(object, key);
-    return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
-}
-
-[[nodiscard]] auto bool_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
-    -> bool const*
-{
-    auto const* value = object_member(object, key);
-    return value == nullptr ? nullptr : std::get_if<bool>(&value->storage());
-}
-
-[[nodiscard]] auto int_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
-    -> std::int64_t const*
-{
-    auto const* value = object_member(object, key);
-    return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
-}
-
-[[nodiscard]] auto object_member_as_object(merovingian::canonicaljson::Object const& object, std::string_view key)
-    -> merovingian::canonicaljson::Object const*
-{
-    auto const* value = object_member(object, key);
-    return value == nullptr ? nullptr : std::get_if<merovingian::canonicaljson::Object>(&value->storage());
-}
-
-[[nodiscard]] auto parse_object(std::string const& json) -> merovingian::canonicaljson::Object
-{
-    auto const parsed = merovingian::canonicaljson::parse_lossless(json);
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-    auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
-    REQUIRE(object != nullptr);
-    return *object;
-}
+using namespace merovingian::tests;
 
 [[nodiscard]] auto event_json_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
                                         std::string_view event_type, std::string_view state_key = {}) -> std::string
@@ -2419,6 +2370,53 @@ SCENARIO("Account data endpoint stores and retrieves global account data", "[hom
             THEN("the response is 401")
             {
                 REQUIRE(response.response.status == 401U);
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3room_keysversion
+SCENARIO("POST /room_keys/version returns a version identifier to the client",
+         "[homeserver][client-server][key-api][key-backup]")
+{
+    GIVEN("a logged-in device")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the device creates a key backup version")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/room_keys/version",
+                 token,
+                 R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"});
+
+            THEN("the response is 200 with a JSON object containing a non-empty string version field")
+            {
+                // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3room_keysversion
+                // The response MUST be a JSON object with a string "version" field.
+                // Element fails with "Unable to set up keys" if the field is absent.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* version = string_member(body, "version");
+                REQUIRE(version != nullptr);
+                REQUIRE(!version->empty());
             }
         }
     }
