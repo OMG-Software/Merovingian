@@ -9,6 +9,9 @@ jobs:
     name: Debian package
     runs-on: ubuntu-latest
     container: ubuntu:latest
+    env:
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
@@ -16,11 +19,17 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends \
             ca-certificates \
+            ccache \
             clang meson ninja-build pkg-config git make binutils \
             libssl-dev \
             libsodium-dev \
             libpq-dev \
             perl bison flex m4
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-deb-${{ github.run_id }}
+          restore-keys: ccache-deb-
       - name: Build .deb
         run: sh scripts/build-deb.sh
       - uses: actions/upload-artifact@v4
@@ -33,6 +42,9 @@ jobs:
     name: Static Linux fallback binary
     runs-on: ubuntu-latest
     container: alpine:latest
+    env:
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
@@ -40,6 +52,7 @@ jobs:
           apk add --no-cache \
             bison \
             binutils \
+            ccache \
             clang \
             flex \
             g++ \
@@ -58,6 +71,11 @@ jobs:
             libpq-dev \
             pkgconf \
             zlib-static
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-alpine-${{ github.run_id }}
+          restore-keys: ccache-alpine-
       - name: Build static Linux fallback tarball
         run: sh scripts/build-static-linux.sh
       - uses: actions/upload-artifact@v4
@@ -72,11 +90,14 @@ jobs:
     name: Fedora RPM package
     runs-on: ubuntu-latest
     container: fedora:latest
+    env:
+      CC: clang
+      CXX: clang++
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
         run: |
-          dnf install -y clang meson ninja-build pkgconf-pkg-config git \
+          dnf install -y ccache clang meson ninja-build pkgconf-pkg-config git \
             openssl-devel \
             libsodium-devel \
             libpq-devel \
@@ -86,6 +107,11 @@ jobs:
             libnghttp2-devel \
             catch-devel perl bison flex m4 \
             rpm-build systemd-rpm-macros
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-rpm-${{ github.run_id }}
+          restore-keys: ccache-rpm-
       - name: Build .rpm
         run: sh scripts/build-rpm.sh
       - uses: actions/upload-artifact@v4
@@ -111,7 +137,6 @@ jobs:
         with:
           name: freebsd-package
           path: merovingian-*.pkg
-          retention-days: 30
 
   publish-latest:
     name: Publish rolling latest
