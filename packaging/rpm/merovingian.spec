@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.34
+Version:        0.4.35
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.35-1
+- Add ccache and build caching to GitHub Actions CI workflows
+
 * Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.34-1
 - Add GET /account/3pid and GET /pushers returning empty arrays for Element settings
 - Fix GET /rooms/{roomId}/members returning empty chunk for locally-joined users

@@ -497,6 +497,10 @@ a non-production environment.
   remote servers with members in the room.
 - Feature (0.4.4): Presence route wired. `PUT /presence/{userId}/status` now
   persists presence state via `set_presence` and publishes sync notifications.
+- Infra (0.4.35): GitHub Actions CI, package, and release workflows now use
+  ccache compiler caching (`hendrikmuhs/ccache-action`) to speed up builds.
+  Linux, Fedora, Alpine, and Debian container jobs cache compiler output across
+  runs. FreeBSD VM jobs are excluded due to VM action limitations.
 - Feature (0.4.34): `GET /account/3pid` returns `{"threepids":[]}` and `GET /pushers`
   returns `{"pushers":[]}`, fixing Element account and notification settings pages.
   `GET /rooms/{roomId}/members` now synthesizes a fallback `m.room.member` event

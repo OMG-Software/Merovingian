@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.35
+
+- Add ccache compiler caching to GitHub Actions CI, package, and release workflows
+  to speed up builds. Linux, Fedora, Alpine, and Debian container jobs now cache
+  compiler output across runs; FreeBSD VM jobs are excluded due to VM action
+  limitations.
+
 ## 0.4.34
 
 - Add GET /account/3pid returning `{"threepids":[]}` so Element can load account settings
