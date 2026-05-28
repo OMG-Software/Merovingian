@@ -24,6 +24,18 @@ This rule applies to:
 - Prefer one behavioral assertion group per test.
 - Security-sensitive code requires negative-path tests.
 
+## Conformance tests
+
+- Matrix conformance and spec-facing tests must cite the exact spec version they
+  are pinned to.
+- Each conformance test file should carry a prominent comment stating that a
+  failure means the implementation must be fixed before the assertion is
+  weakened or removed.
+- Each scenario should cite the relevant spec URL or section immediately above
+  the scenario.
+- If a conformance expectation changes, the test comment must cite the newer
+  spec section that justifies the change.
+
 ## Catch2 example
 
 ```cpp

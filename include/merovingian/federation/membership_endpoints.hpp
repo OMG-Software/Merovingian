@@ -30,19 +30,22 @@ struct MembershipPathParams final
     -> std::optional<MembershipPathParams>;
 
 // Templates returned by the make_join / make_leave / make_knock endpoints.
-// The remote peer signs this template, sets `origin_server_ts`, and submits
-// it through send_join / send_leave / send_knock.
+// The resident server populates the spec-required template fields and the
+// remote peer signs the template before submitting it through
+// send_join / send_leave / send_knock.
 struct MembershipEventTemplate final
 {
     std::string room_id{};
     std::string user_id{};
-    std::string membership{};        // "join" | "leave" | "knock"
-    std::string room_version{};      // actual room version read from m.room.create
+    std::string membership{};   // "join" | "leave" | "knock"
+    std::string room_version{}; // actual room version read from m.room.create
+    std::string origin{};       // resident server returning the template
+    std::int64_t origin_server_ts{0};
     std::vector<std::string> prev_events{};
     std::vector<std::string> auth_events{};
     std::int64_t depth{0};
-    std::string content_json{};      // canonical JSON object for content
-    std::string reason{};            // human-readable when an error occurred
+    std::string content_json{}; // canonical JSON object for content
+    std::string reason{};       // human-readable when an error occurred
 };
 
 // Hook signature for building a membership event template. Implementations
@@ -67,6 +70,10 @@ struct MembershipAcceptResult final
     // Room version string echoed in the send_join/send_leave response body.
     // Read from m.room.create; empty means the caller should use a safe default.
     std::string room_version{};
+    // For send_join v2: the signed join event echoed back in the 'event' field.
+    // Per Matrix federation spec §11.5.1 the resident server MUST return the
+    // event exactly as it was accepted. Empty for send_leave and send_knock.
+    std::string signed_event_json{};
 };
 
 // Hook signature for accepting a signed membership event. The implementation

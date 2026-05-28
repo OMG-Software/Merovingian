@@ -1320,11 +1320,21 @@ namespace
                 ++event_count;
             }
 
-            ++join_count;
-
             auto const limited = store.events.size() > timeline_cap;
             auto room_account_data = build_account_data_events(store, filter.room.account_data, user, room.room_id,
                                                                since_sync_stream_id, max_observed_sync_stream_id);
+
+            // Incremental sync: suppress rooms that have nothing new to report.
+            // Without this check, re-dispatches after a long-poll timeout emit
+            // the full membership state of every joined room on every 5-second
+            // cycle, causing clients to receive the same stale payload repeatedly
+            // and making it appear as if the room is stuck.
+            if (since_token.has_value() && timeline_events.empty() && room_account_data.empty())
+            {
+                continue;
+            }
+
+            ++join_count;
             join_members.push_back(json_member(
                 room.room_id,
                 json_obj({

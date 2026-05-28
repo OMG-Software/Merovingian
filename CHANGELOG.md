@@ -1,5 +1,40 @@
 # Changelog
 
+## 0.4.28
+
+- Fix remote-join `make_join` handling to match the Matrix v1.18 join
+  handshake more closely. Inbound `make_join` templates now include
+  `origin` and `origin_server_ts`, and outbound remote joins now reject
+  malformed `make_join` templates instead of silently repairing missing
+  required fields before signing them.
+- Fix restricted-room auth handling for the v1.18
+  `join_authorised_via_users_server` path. Restricted joins are now accepted
+  when the supplied authorising user is joined and has sufficient invite power,
+  rather than being rejected unconditionally unless the target user was
+  explicitly invited.
+- Pin spec-facing and conformance test comments to Matrix v1.18 sections and
+  add explicit guardrails telling future maintainers and LLMs to fix the
+  implementation rather than weakening protocol assertions when a spec test
+  fails.
+- Fix federation `/send` transaction handler returning HTTP 403 for the entire
+  transaction when a single PDU fails signature verification. Per the Matrix
+  federation spec, individual PDU failures must be reported inside the response
+  body as `{"pdus": {"$event_id": {"error": "reason"}}}` at HTTP 200. Returning
+  a non-200 caused Synapse's `retryutils` to mark `pong.ping.me.uk` as a failed
+  destination and back off all federation for 600 seconds, blocking join
+  acknowledgements and subsequent room messages.
+- Fix incremental `/sync` emitting stale room data (476 bytes of membership
+  state) on every 5-second long-poll timeout re-dispatch when nothing had
+  changed. The room-join loop now skips rooms where both `timeline_events` and
+  `room_account_data` are empty when a `since` token is present, so the
+  `rooms.join` map is empty in the response rather than repeating the full state
+  of every joined room.
+- Fix inbound `send_join` (v2) response missing the `"event"` field. Per Matrix
+  federation spec §11.5.1 the resident server must echo the accepted join event
+  back to the joining server. `MembershipAcceptResult` gains `signed_event_json`;
+  `handle_send_membership` serialises it under `"event"` for `send_join` only;
+  `send_leave` and `send_knock` are unaffected.
+
 ## 0.4.27
 
 - Expand `docs/architecture.md` into a comprehensive reference covering source

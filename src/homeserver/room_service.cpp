@@ -355,6 +355,68 @@ namespace
         return canonicaljson::Value{std::move(array)};
     }
 
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
+    }
+
+    [[nodiscard]] auto validate_make_join_event(std::string_view requested_room_id, std::string_view requested_user_id,
+                                                canonicaljson::Object const& response_object)
+        -> ValidatedMakeJoinResponse
+    {
+        auto const* room_version_str = string_member(response_object, "room_version");
+        auto const* event_value = object_member(response_object, "event");
+        auto const* event_object =
+            event_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&event_value->storage());
+        if (event_object == nullptr)
+        {
+            return {false, "make_join missing event field"};
+        }
+        auto const* room_id = string_member(*event_object, "room_id");
+        if (room_id == nullptr || *room_id != requested_room_id)
+        {
+            return {false, "make_join event room_id does not match request"};
+        }
+        auto const* sender = string_member(*event_object, "sender");
+        if (sender == nullptr || *sender != requested_user_id)
+        {
+            return {false, "make_join event sender does not match request"};
+        }
+        auto const* state_key = string_member(*event_object, "state_key");
+        if (state_key == nullptr || *state_key != requested_user_id)
+        {
+            return {false, "make_join event state_key does not match request"};
+        }
+        auto const* event_type = string_member(*event_object, "type");
+        if (event_type == nullptr || *event_type != "m.room.member")
+        {
+            return {false, "make_join event type must be m.room.member"};
+        }
+        auto const* origin = string_member(*event_object, "origin");
+        if (origin == nullptr || origin->empty())
+        {
+            return {false, "make_join event origin is required"};
+        }
+        if (integer_member(*event_object, "origin_server_ts") == nullptr)
+        {
+            return {false, "make_join event origin_server_ts is required"};
+        }
+        auto const* content = object_member_as_object(*event_object, "content");
+        if (content == nullptr)
+        {
+            return {false, "make_join event content must be an object"};
+        }
+        auto const* membership = string_member(*content, "membership");
+        if (membership == nullptr || *membership != "join")
+        {
+            return {false, "make_join event content.membership must be join"};
+        }
+
+        return {true, {}, room_version_str == nullptr ? std::string{"1"} : *room_version_str, *event_object};
+    }
+
     [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store, std::string_view room_id)
         -> std::vector<std::string>
     {
@@ -1219,7 +1281,7 @@ namespace
             });
             return make_operation_result(false, {}, "make_join failed: " + make_body, 502U);
         }
-        // Parse the make_join response: { "room_version": "12", "event": {...} }
+        // Parse the make_join response and validate the template before we sign it.
         auto const make_response = canonicaljson::parse_lossless(make_body);
         auto const* make_obj = std::get_if<canonicaljson::Object>(&make_response.value.storage());
         if (make_obj == nullptr)
@@ -1232,53 +1294,19 @@ namespace
             });
             return make_operation_result(false, {}, "malformed make_join response", 502U);
         }
-        // Extract the room_version from the make_join response so we use the
-        // correct event-auth and redaction policy when signing the join event.
-        // Fall back to "12" if the field is absent (shouldn't happen per spec).
-        auto const* room_version_str = string_member(*make_obj, "room_version");
-        auto const room_version =
-            (room_version_str != nullptr && !room_version_str->empty()) ? *room_version_str : std::string{"12"};
-
-        // Extract the "event" member (an object, not a string) from the
-        // make_join response.
-        auto const* event_member_value = object_member(*make_obj, "event");
-        auto const* event_inner = event_member_value == nullptr
-                                      ? nullptr
-                                      : std::get_if<canonicaljson::Object>(&event_member_value->storage());
-        if (event_inner == nullptr)
+        auto const validated = validate_make_join_event(room_id, *user_id, *make_obj);
+        if (!validated.ok)
         {
             log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,                        false},
-                                                     {"room_id", std::string{room_id},            false},
-                                                     {"status",  "502",                           false},
-                                                     {"reason",  "make_join missing event field", false}
+                                                     {"actor",   *user_id,             false},
+                                                     {"room_id", std::string{room_id}, false},
+                                                     {"status",  "502",                false},
+                                                     {"reason",  validated.reason,     false}
             });
-            return make_operation_result(false, {}, "make_join missing event field", 502U);
+            return make_operation_result(false, {}, validated.reason, 502U);
         }
-        // The template event arrives without origin_server_ts; inject it.
-        auto const now_ms = static_cast<std::int64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count());
-        auto event_object = canonicaljson::Object{};
-        for (auto const& member : *event_inner)
-        {
-            if (member.key == "origin_server_ts")
-            {
-                event_object.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
-            }
-            else
-            {
-                event_object.push_back(member);
-            }
-        }
-        // Ensure origin_server_ts is present even if the remote omitted it.
-        auto const has_ost = std::ranges::any_of(*event_inner, [](canonicaljson::ObjectMember const& m) {
-            return m.key == "origin_server_ts";
-        });
-        if (!has_ost)
-        {
-            event_object.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
-        }
+        auto const room_version = validated.room_version;
+        auto event_object = validated.event;
         // Compute and attach the content hash (hashes.sha256) before signing.
         // The Matrix spec requires every PDU to carry this field (room versions >= 2).
         // Without it, Synapse rejects send_join with:
@@ -1806,6 +1834,22 @@ namespace
 [[nodiscard]] auto audit_event_count(HomeserverRuntime const& runtime) noexcept -> std::size_t
 {
     return runtime.database.audit_events.size();
+}
+
+auto validate_make_join_response(std::string_view requested_room_id, std::string_view requested_user_id,
+                                 std::string_view body) -> ValidatedMakeJoinResponse
+{
+    auto const parsed = canonicaljson::parse_lossless(body);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return {false, "make_join response is not valid canonical JSON"};
+    }
+    auto const* response_object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (response_object == nullptr)
+    {
+        return {false, "make_join response must be a JSON object"};
+    }
+    return validate_make_join_event(requested_room_id, requested_user_id, *response_object);
 }
 
 } // namespace merovingian::homeserver

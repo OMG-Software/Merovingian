@@ -179,8 +179,8 @@ namespace
 
     // Returns the room_version string from the room's m.room.create state event,
     // falling back to "10" for rooms that pre-date version tracking.
-    [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store,
-                                               std::string_view room_id) -> std::string
+    [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store, std::string_view room_id)
+        -> std::string
     {
         for (auto const& state : store.state)
         {
@@ -952,14 +952,12 @@ namespace
                 err.push_back(canonicaljson::make_member(
                     "errcode", canonicaljson::Value{std::string{"M_INCOMPATIBLE_ROOM_VERSION"}}));
                 err.push_back(canonicaljson::make_member(
-                    "error",
-                    canonicaljson::Value{
-                        std::string{"Your homeserver does not support the features required to join this room"}}));
+                    "error", canonicaljson::Value{std::string{
+                                 "Your homeserver does not support the features required to join this room"}}));
                 err.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{room_version}));
                 auto tmpl = federation::MembershipEventTemplate{};
                 tmpl.room_version = room_version;
-                tmpl.reason =
-                    canonicaljson::serialize_canonical(canonicaljson::Value{std::move(err)}).output;
+                tmpl.reason = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(err)}).output;
                 return tmpl;
             }
 
@@ -967,6 +965,10 @@ namespace
             tmpl.room_id = std::string{room_id};
             tmpl.user_id = std::string{user_id};
             tmpl.room_version = room_version;
+            tmpl.origin = rt->config.server().server_name;
+            tmpl.origin_server_ts = static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                                  std::chrono::system_clock::now().time_since_epoch())
+                                                                  .count());
             if (endpoint == federation::FederationEndpoint::make_join)
             {
                 tmpl.membership = "join";
@@ -1072,8 +1074,15 @@ namespace
                     }
                 }
             }
-            return {true, 200U, {}, std::move(auth_chain), std::move(state_events),
-                    room_version_from_store(store, room_id)};
+            // Pass the raw PDU JSON so the federation layer can echo it back
+            // in the send_join v2 "event" field as required by the spec.
+            return {true,
+                    200U,
+                    {},
+                    std::move(auth_chain),
+                    std::move(state_events),
+                    room_version_from_store(store, room_id),
+                    std::string{envelope.json}};
         };
 
         runtime.federation.invite_handler =

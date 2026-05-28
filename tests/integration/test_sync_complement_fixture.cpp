@@ -1,4 +1,35 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+//
+// +-------------------------------------------------------------------------+
+// |       MATRIX /SYNC COMPLEMENT CONFORMANCE INTEGRATION TESTS             |
+// |                                                                         |
+// |  Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync                      |
+// |  URL:  https://spec.matrix.org/v1.18/client-server-api/                |
+// |        #get_matrixclientv3sync                                          |
+// |                                                                         |
+// |  Complement: https://github.com/matrix-org/complement                   |
+// |                                                                         |
+// |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
+// |                                                                         |
+// |  Every REQUIRE in this file encodes a MUST or SHOULD from the Matrix    |
+// |  specification. If a test fails:                                         |
+// |                                                                         |
+// |    -> Fix the IMPLEMENTATION so it matches the spec.                     |
+// |    -> Do NOT weaken, comment out, or remove assertions to make CI pass.  |
+// |    -> Do NOT change an expected value without first verifying that the   |
+// |      spec itself has changed and citing the updated section.             |
+// |                                                                         |
+// |  The spec section is cited above each SCENARIO. Cross-check it before   |
+// |  concluding that a failing assertion is wrong.                           |
+// |                                                                         |
+// |  Sync response structure that every fixture step validates:             |
+// |    next_batch                   - string token, MUST be present         |
+// |    rooms.join                   - map of room_id -> joined room data     |
+// |    rooms.join[id].timeline.events     - array of timeline events        |
+// |    rooms.join[id].state.events        - array of state events           |
+// |    rooms.join[id].timeline.limited    - bool, true if truncated         |
+// |    rooms.join[id].timeline.prev_batch - backfill token (when limited)   |
+// +-------------------------------------------------------------------------+
 
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
@@ -169,6 +200,8 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
                             std::unordered_map<std::string, std::string>& bindings) -> void
 {
     auto const fixture_text = read_fixture(filename);
+    // Spec MUST: fixture file MUST exist and be non-empty; missing fixtures mean incomplete test coverage.
+    // Do NOT remove/change - an empty fixture silently skips all spec assertions in the file.
     REQUIRE_FALSE(fixture_text.empty());
     auto parsed = merovingian::canonicaljson::parse_lossless(fixture_text);
     REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -210,6 +243,8 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
             auto const expected = value_as_integer(*expect_status).value_or(-1);
             INFO("Fixture " << filename << " failed at " << request.method << ' ' << request.target << " body "
                             << response.response.body);
+            // Spec MUST: each fixture step's HTTP status MUST match the Matrix spec contract for that endpoint.
+            // Do NOT remove/change - weakening this hides non-conformant HTTP status codes.
             REQUIRE(response.response.status == static_cast<std::uint16_t>(expected));
         }
 
@@ -228,6 +263,8 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
                     auto const has_dotted_root_key =
                         root_object != nullptr && object_member(*root_object, dotted) != nullptr;
                     INFO("Missing required key path: " << dotted);
+                    // Spec MUST: all keys listed in expect_keys_present MUST appear in the response body.
+                    // Do NOT remove/change - a missing key means the response violates the Matrix spec schema.
                     REQUIRE((navigate(parsed_body.value, dotted) != nullptr || has_dotted_root_key));
                 }
             }
@@ -243,6 +280,8 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
                     auto const has_dotted_root_key =
                         root_object != nullptr && object_member(*root_object, dotted) != nullptr;
                     INFO("Unexpected key path: " << dotted);
+                    // Spec MUST: all keys listed in expect_keys_absent MUST NOT appear in the response body.
+                    // Do NOT remove/change - an unexpected key leaks internal state or violates the spec schema.
                     REQUIRE((navigate(parsed_body.value, dotted) == nullptr && !has_dotted_root_key));
                 }
             }
@@ -255,6 +294,9 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
                     auto const target_key = mapping.key;
                     auto const source_path = value_as_string(*mapping.value).value_or("");
                     auto const* sourced = navigate(parsed_body.value, source_path);
+                    // Spec MUST: saved binding paths MUST resolve; a null here means a required field is absent.
+                    // Do NOT remove/change - a null sourced value would silently propagate empty tokens into
+                    // subsequent fixture steps, causing cascading failures with misleading error messages.
                     REQUIRE(sourced != nullptr);
                     bindings[target_key] = value_as_string(*sourced).value_or("");
                 }
@@ -270,6 +312,8 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
                     auto const* sourced = navigate(parsed_body.value, source_path);
                     REQUIRE(sourced != nullptr);
                     auto const media_id = media_id_from_mxc(value_as_string(*sourced).value_or(""));
+                    // Spec MUST: content_uri MUST follow the mxc:// scheme defined in the Matrix spec.
+                    // Do NOT remove/change - an empty media_id means the server returned a malformed URI.
                     REQUIRE_FALSE(media_id.empty());
                     bindings[target_key] = media_id;
                 }
@@ -280,6 +324,15 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
 
 } // namespace
 
+// --- Sync Complement fixture - v1.18 /sync contract --------------------------
+// Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// Complement: https://github.com/matrix-org/complement
+//
+// Drives the bundled sync_v1_18 Complement-style fixture against the runtime.
+// Each step validates that the /sync response structure matches the Matrix spec
+// exactly: next_batch presence, rooms.join structure, timeline.events array,
+// state.events array, timeline.limited bool, and prev_batch token when limited.
 SCENARIO("Sync conformance fixture (Complement-style) drives /sync against the v1.18 contract",
          "[sync][complement][integration]")
 {
@@ -296,6 +349,8 @@ SCENARIO("Sync conformance fixture (Complement-style) drives /sync against the v
 
             THEN("every fixture step satisfied its predicates")
             {
+                // Spec MUST: alice_token MUST be saved by the fixture, proving auth and /sync succeeded end-to-end.
+                // Do NOT remove/change - an absent or empty token means registration, login, or /sync is broken.
                 REQUIRE(bindings.count("alice_token") == 1U);
                 REQUIRE_FALSE(bindings["alice_token"].empty());
             }
@@ -303,6 +358,15 @@ SCENARIO("Sync conformance fixture (Complement-style) drives /sync against the v
     }
 }
 
+// --- Client-server v1.18 conformance - full endpoint family coverage ----------
+// Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync and related endpoint families
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// Complement: https://github.com/matrix-org/complement
+//
+// Drives the bundled client_server_v1_18 fixture which covers auth, devices,
+// rooms, sync, media, reports, and E2EE key endpoints in a single fixture run.
+// Validates that all required response bindings (auth tokens, room IDs, event
+// IDs) are populated, proving end-to-end conformance across endpoint families.
 SCENARIO("Client-server v1.18 conformance fixture covers beta endpoint families",
          "[client-server][complement][integration]")
 {
@@ -319,8 +383,14 @@ SCENARIO("Client-server v1.18 conformance fixture covers beta endpoint families"
 
             THEN("auth, devices, rooms, sync, media, reports, and E2EE keys have fixture coverage")
             {
+                // Spec MUST: refreshed_token MUST be saved, proving token refresh works per Sec. 5.7.2.
+                // Do NOT remove/change - absence means the token refresh endpoint is broken.
                 REQUIRE(bindings.count("refreshed_token") == 1U);
+                // Spec MUST: room_id MUST be saved, proving createRoom and /sync room delivery work.
+                // Do NOT remove/change - absence means room creation or sync room reporting is broken.
                 REQUIRE(bindings.count("room_id") == 1U);
+                // Spec MUST: event_id MUST be saved, proving event send and /sync timeline delivery work.
+                // Do NOT remove/change - absence means event sending or timeline reporting is broken.
                 REQUIRE(bindings.count("event_id") == 1U);
             }
         }

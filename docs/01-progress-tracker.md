@@ -157,6 +157,18 @@ separate operator decision once this branch is approved._
   `M_INCOMPATIBLE_ROOM_VERSION` (HTTP 400). The `membership_acceptor` populates
   `room_version` in `MembershipAcceptResult`, and `handle_send_membership`
   echoes it in the `send_join` response body instead of hardcoding "12".
+- Remote join template validation (0.4.28): outbound remote joins now validate
+  `make_join` responses against the Matrix v1.18 handshake requirements before
+  signing them. Merovingian rejects a template when `room_id`, `sender`,
+  `state_key`, `type`, `content.membership`, `origin`, or `origin_server_ts`
+  do not match the expected shape, instead of silently repairing malformed
+  responses. Inbound `make_join` templates now include `origin` and
+  `origin_server_ts` by default.
+- Restricted join auth bridge (0.4.28): event authorization now accepts the
+  `join_authorised_via_users_server` path used by restricted rooms when the
+  named resident user is joined and has sufficient invite power. Full
+  resident-side evaluation of restricted-room allow conditions remains a
+  follow-up item.
 - Inbound PDU signing payload fix (0.4.26): `make_event_signing_payload` now
   strips `event_id` from the verification payload when the room version uses
   reference-hash event IDs (all room versions 4+, i.e. every version we
@@ -244,6 +256,10 @@ separate operator decision once this branch is approved._
   filename (random salt + atomic counter) so parallel `meson test` jobs do not
   truncate each other's token file mid-write, eliminating intermittent 403
   failures in the rate-limit cross-user isolation test.
+- Spec-test guardrails: conformance and spec-facing test files now pin the
+  relevant Matrix v1.18 sections in comments and explicitly tell future
+  maintainers and LLMs to fix the implementation rather than weakening the
+  assertion when a protocol conformance test fails.
 - Supply-chain automation: release publication, secret scanning, dependency
   vulnerability triage, and SBOM workflows exist and are checked by the
   release-readiness gate.
@@ -490,6 +506,23 @@ a non-production environment.
   replaced a test-injected dispatch worker with a new one.
 - Fix (0.4.5): Empty `transaction_id` in outbound membership and EDU transactions
   causing `transaction_is_well_formed` rejection.
+- Fix (0.4.28): `PUT /_matrix/federation/v1/send/{txnId}` returned HTTP 403 for
+  the entire transaction when any single PDU failed signature verification. Per
+  the Matrix federation spec, individual PDU failures must be reported inside
+  `{"pdus": {"$event_id": {"error": "reason"}}}` at HTTP 200. Returning 4xx
+  caused Synapse's `retryutils` to back off the destination for 600 s, blocking
+  all subsequent federation including join acknowledgements.
+- Fix (0.4.28): Incremental `/sync` with `can_wait=false` (long-poll timeout
+  re-dispatch) emitted the full membership state of every joined room on every
+  5-second cycle even when nothing had changed since the `since` token. The
+  room-join loop now skips rooms where both `timeline_events` and
+  `room_account_data` are empty, so `rooms.join` is empty in the response
+  rather than returning 476 bytes of stale state on each timeout.
+- Fix (0.4.28): Inbound `send_join` (v2) response was missing the `"event"`
+  field. Per Matrix federation spec §11.5.1 the resident server must echo the
+  accepted join event back in the response body. `MembershipAcceptResult` gains
+  `signed_event_json`; `handle_send_membership` serialises it under `"event"`
+  for `send_join` only; `send_leave` and `send_knock` are unaffected.
 - Fix (0.4.6): `PUT /_matrix/federation/v1/send/{txnId}` response body returned
   plain-text diagnostic strings instead of the Matrix-required `{"pdus":{}}` JSON,
   causing Synapse JSONDecodeError on transaction responses.
