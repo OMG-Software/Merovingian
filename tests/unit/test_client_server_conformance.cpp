@@ -971,12 +971,12 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token",
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
 
-                // Spec MUST: new access_token is a non-empty string.
+                // Spec MUST: the refreshed access_token is a non-empty string.
                 auto const* access_token = string_member(body, "access_token");
                 REQUIRE(access_token != nullptr);
                 REQUIRE(!access_token->empty());
 
-                // Spec MUST: new refresh_token is returned for next rotation.
+                // Spec MUST: the refreshed refresh_token is returned for next rotation.
                 auto const* new_rt = string_member(body, "refresh_token");
                 REQUIRE(new_rt != nullptr);
                 REQUIRE(!new_rt->empty());
