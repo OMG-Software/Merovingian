@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.31
+
+- Fix `POST /_matrix/client/v3/room_keys/version` returning `{}` instead of
+  `{"version":"1"}`. The Matrix spec requires the response to include the
+  version identifier of the newly created backup so clients can reference it.
+  Element was failing with "Unable to set up keys" because it could not read
+  the backup version from the empty response body.
+
 ## 0.4.30
 
 - Fix federation join state events stored with `stream_ordering == 0`, making

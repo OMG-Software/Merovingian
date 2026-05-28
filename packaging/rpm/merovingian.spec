@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.30
+Version:        0.4.31
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.31-1
+- Fix POST /room_keys/version returning empty body instead of {"version":"1"}
+
 * Thu May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.30-1
 - Fix federation join state events invisible to incremental sync (stream_ordering == 0)
 - Fix cross-signing key upload losing self_signing and user_signing keys
