@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.32
+
+- Fix `DELETE /_matrix/client/v3/room_keys/version/{version}` not removing the
+  key backup from the database. The handler returned 200 without touching storage,
+  so the subsequent `GET /room_keys/version` still returned backup data. Element
+  interpreted this as a failed delete and retried indefinitely in a tight loop.
+  Added `delete_key_backup_version` to the database layer and wired it up; the
+  delete is idempotent (missing version returns 200).
+
 ## 0.4.31
 
 - Fix `POST /_matrix/client/v3/room_keys/version` returning `{}` instead of
