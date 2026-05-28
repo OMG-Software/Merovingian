@@ -501,7 +501,10 @@ a non-production environment.
   returns `{"pushers":[]}`, fixing Element account and notification settings pages.
   `GET /rooms/{roomId}/members` now synthesizes a fallback `m.room.member` event
   from the membership record when no persisted state event exists, fixing empty
-  member lists for locally-joined users.
+  member lists for locally-joined users. Outbound federation invite signatures
+  now use the pruned (redacted) event form matching Synapse's
+  `compute_event_signature` behavior, fixing `BadSignatureError` rejections
+  for invite events with extra content fields like `is_direct`.
 - Feature (0.4.33): Comprehensive Matrix v1.18 Client-Server API conformance test
   suite added. 221 test scenarios cover all 165 spec operations across session
   management, account management, capabilities, devices, E2E key API, media,

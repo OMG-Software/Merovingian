@@ -7,6 +7,10 @@
 - Fix GET /rooms/{roomId}/members returning empty chunk for members without a
   persisted m.room.member state event — the handler now synthesizes a fallback
   event from the membership record when no state event is found
+- Fix outbound federation invite signature verification failure — the signing
+  payload now uses the pruned (redacted) event form matching Synapse's
+  `compute_event_signature` behavior, which strips non-essential content
+  fields like `is_direct` from m.room.member events before signing
 
 ## 0.4.33
 
