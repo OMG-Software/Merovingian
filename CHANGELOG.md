@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.33
+
+- Add comprehensive Matrix v1.18 Client-Server API conformance test suite
+  covering all 165 spec operations (221 test scenarios). Implemented endpoints
+  verify 200 response shapes and required fields; gap endpoints document the
+  current 404 M_UNRECOGNIZED response with clear IMPLEMENTATION GAP comments.
+
 ## 0.4.32
 
 - Fix `DELETE /_matrix/client/v3/room_keys/version/{version}` not removing the

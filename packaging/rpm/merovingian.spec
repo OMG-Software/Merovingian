@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.32
+Version:        0.4.33
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.33-1
+- Add comprehensive Matrix v1.18 Client-Server API conformance test suite (221 scenarios)
+
 * Wed May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.32-1
 - Fix DELETE /room_keys/version not removing backup, causing infinite Element retry loop
 

@@ -497,6 +497,15 @@ a non-production environment.
   remote servers with members in the room.
 - Feature (0.4.4): Presence route wired. `PUT /presence/{userId}/status` now
   persists presence state via `set_presence` and publishes sync notifications.
+- Feature (0.4.33): Comprehensive Matrix v1.18 Client-Server API conformance test
+  suite added. 221 test scenarios cover all 165 spec operations across session
+  management, account management, capabilities, devices, E2E key API, media,
+  room creation/directory/discovery/membership/participation, user data, presence,
+  push notifications, reporting, VoIP, event relations, search, send-to-device,
+  server administration, well-known, spaces, threads, third-party lookup, OpenID,
+  user directory, and untagged endpoints. Implemented endpoints verify 200 response
+  shapes and required fields; gap endpoints document the current 404 M_UNRECOGNIZED
+  response with clear IMPLEMENTATION GAP comments.
 - Feature (0.4.5): Client-server v1.18 conformance fixtures extended with login
   edge cases, createRoom with name and visibility, room join and leave, message
   send idempotency, and PUT state events. Seven client-server endpoints promoted
