@@ -1395,8 +1395,8 @@ namespace
         auto fallback_key_types = build_fallback_key_types(store, user, device_id);
 
         auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, store.next_sync_stream_id);
-        auto const next_token = sync::StreamToken{rt.homeserver.database.next_stream_ordering,
-                                                  rt.homeserver.database.next_stream_ordering, advanced_sync_stream_id};
+        auto const next_token = sync::StreamToken{rt.homeserver.database.next_stream_ordering - 1U,
+                                                  rt.homeserver.database.next_stream_ordering - 1U, advanced_sync_stream_id};
 
         auto const body = json_serialize(json_obj({
             json_member("next_batch", json_str(sync::encode_stream_token(next_token))),

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.27
+
+- Fix off-by-one in `/sync` `next_batch` token that caused federated users to
+  get stuck in an infinite empty-sync loop after joining a room. The
+  `next_batch` token was constructed from `next_stream_ordering` (a "next
+  available slot" counter, always +1 ahead of the last published event) instead
+  of `next_stream_ordering - 1`. This meant the client's subsequent
+  `since` token pointed to a stream ordering that would never be reached, so
+  the long-poll check (`stream_ordering > since_ordering`) never fired and the
+  client received empty sync responses forever. Every other usage of
+  `next_stream_ordering` in the codebase (the `sync_notifier->publish()` calls
+  and the long-poll check itself) already applied the `- 1U` correction — only
+  the token construction was missing it.
+
 ## 0.4.26
 
 - Break the dependency between long-polling `/sync` connections and regular

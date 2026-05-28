@@ -301,6 +301,75 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
     }
 }
 
+SCENARIO("Sync next_batch token matches last published stream ordering", "[sync][handler][next_batch]")
+{
+    GIVEN("a registered Alice with a created room and an initial sync")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(create.response.status == 200U);
+
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+
+        WHEN("the next_batch token is decoded")
+        {
+            auto const body = parse_body(initial.response.body);
+            auto const* root = as_object(body);
+            auto const* next_batch_val = json_member(*root, "next_batch");
+            REQUIRE(next_batch_val != nullptr);
+            auto const next_batch_str = std::get<std::string>(next_batch_val->storage());
+            auto const decoded = merovingian::sync::decode_stream_token(next_batch_str);
+            REQUIRE(decoded.has_value());
+
+            THEN("event_ordering and membership_ordering never exceed the last published stream ordering")
+            {
+                // next_stream_ordering is a "next available slot" counter,
+                // always +1 ahead of the last published event. The token must
+                // reference the actual last ordering, not the next slot.
+                auto const last_published = rt.homeserver.database.next_stream_ordering - 1U;
+                REQUIRE(decoded->event_ordering <= last_published);
+                REQUIRE(decoded->membership_ordering <= last_published);
+            }
+        }
+
+        WHEN("an incremental sync after creating another room returns a valid next_batch")
+        {
+            auto const body = parse_body(initial.response.body);
+            auto const* root = as_object(body);
+            auto const next_batch = std::get<std::string>(json_member(*root, "next_batch")->storage());
+
+            auto const create2 = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+            REQUIRE(create2.response.status == 200U);
+
+            auto const incremental = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", std::string{"/_matrix/client/v3/sync?since="} + next_batch, token, {}});
+            REQUIRE(incremental.response.status == 200U);
+
+            auto const inc_body = parse_body(incremental.response.body);
+            auto const* inc_root = as_object(inc_body);
+            auto const* inc_next_val = json_member(*inc_root, "next_batch");
+            REQUIRE(inc_next_val != nullptr);
+            auto const inc_decoded =
+                merovingian::sync::decode_stream_token(std::get<std::string>(inc_next_val->storage()));
+            REQUIRE(inc_decoded.has_value());
+
+            THEN("the incremental next_batch token also stays within the published range")
+            {
+                auto const last_published = rt.homeserver.database.next_stream_ordering - 1U;
+                REQUIRE(inc_decoded->event_ordering <= last_published);
+                REQUIRE(inc_decoded->membership_ordering <= last_published);
+            }
+        }
+    }
+}
+
 SCENARIO("Two-phase sync dispatch returns needs_wait when no data is available", "[sync][dispatch]")
 {
     GIVEN("a registered Alice with no new events after initial sync")
@@ -327,10 +396,12 @@ SCENARIO("Two-phase sync dispatch returns needs_wait when no data is available",
             THEN("the result is needs_wait because no new data is available")
             {
                 REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
-                // Verify the wait parameters were populated from the sync state.
-                // since_stream_ordering starts at 1, but since_sync_stream_id can be 0
-                // if no sync events have been published yet.
-                REQUIRE(result.wait.since_stream_ordering > 0U);
+                // since_stream_ordering matches the next_batch token from the
+                // initial sync. It can be 0 when no room events have been
+                // published (next_stream_ordering starts at 1, token uses -1U).
+                auto const decoded = merovingian::sync::decode_stream_token(next_batch);
+                REQUIRE(decoded.has_value());
+                REQUIRE(result.wait.since_stream_ordering == decoded->event_ordering);
                 REQUIRE(result.wait.timeout.count() > 0);
             }
         }

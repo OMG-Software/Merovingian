@@ -129,6 +129,15 @@ separate operator decision once this branch is approved._
   `old_verify_keys` from all non-active signing keys in the persistent store,
   with `expired_ts` capped at `now` to prevent future-dated entries from
   superseded keys that carried the year-2999 sentinel.
+- Sync `next_batch` off-by-one fix (0.4.27): The `next_batch` token in `/sync`
+  responses was constructed from `next_stream_ordering` (a "next available
+  slot" counter, always +1 ahead of the last published event) instead of
+  `next_stream_ordering - 1U`. This caused federated users who joined a room
+  to get stuck in an infinite empty-sync loop: the client's subsequent `since`
+  token pointed to a stream ordering that would never be reached, so the
+  long-poll check never fired. Every other usage of `next_stream_ordering`
+  already applied the `- 1U` correction — only the token construction was
+  missing it.
 - Sync long-poll decoupled from main request pool (0.4.26): A dedicated
   32-thread `sync_pool` is created alongside the 8-thread main pool. When a
   `/sync` long-poll needs to wait, `serve_stream` hands the plain-HTTP fd to
