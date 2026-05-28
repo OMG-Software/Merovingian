@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+﻿// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include <cstdint>
 #include <iostream>
@@ -13,7 +13,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.4.31"};
+constexpr auto version = std::string_view{"0.4.32"};
 
 auto print_help() -> void
 {

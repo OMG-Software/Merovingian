@@ -2126,12 +2126,18 @@ namespace
                                                               std::string{suffix.substr(0U, separator)},
                                                               std::string{suffix.substr(separator + 1U)}, req.body});
         }
+        case auth::KeyApiEndpoint::delete_key_backup_version: {
+            auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
+            auto const version_str = route_suffix(req.target, prefix);
+            if (version_str.empty())
+                return false;
+            return database::delete_key_backup_version(store, user, version_str);
+        }
         case auth::KeyApiEndpoint::upload_keys:
         case auth::KeyApiEndpoint::query_keys:
         case auth::KeyApiEndpoint::claim_keys:
         case auth::KeyApiEndpoint::device_list_update:
         case auth::KeyApiEndpoint::get_key_backup_version:
-        case auth::KeyApiEndpoint::delete_key_backup_version:
         case auth::KeyApiEndpoint::get_room_key_backup:
         case auth::KeyApiEndpoint::delete_room_key_backup:
             return true;
@@ -3220,6 +3226,80 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 return dispatch_err(result.status, error_code_for_status(result.status), result.body);
             }
             return complete(result);
+        }
+        // GET /_matrix/client/v3/rooms/{roomId}/members
+        // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
+        // Returns the current state of the room membership as a chunk of
+        // m.room.member events. Optional query params:
+        //   membership     - include only this type (join/leave/invite/ban/knock)
+        //   not_membership - exclude this type (commonly "leave")
+        //   at             - snapshot token (ignored; we return current state)
+        {
+            auto constexpr members_s = std::string_view{"/members"};
+            auto const path_suffix = suffix.substr(0U, suffix.find('?'));
+            auto const query_string = suffix.size() > path_suffix.size()
+                                          ? suffix.substr(path_suffix.size() + 1U)
+                                          : std::string_view{};
+            auto const path_ends_with_members =
+                req.method == "GET" && path_suffix.size() > members_s.size() &&
+                path_suffix.substr(path_suffix.size() - members_s.size()) == members_s;
+            if (path_ends_with_members)
+            {
+                auto const encoded_room_id = path_suffix.substr(0U, path_suffix.size() - members_s.size());
+                auto const room_id = core::percent_decode_path_component(encoded_room_id);
+
+                auto const parse_qparam = [](std::string_view qs, std::string_view key) -> std::string {
+                    auto const search = std::string{key} + "=";
+                    auto const pos = qs.find(search);
+                    if (pos == std::string_view::npos)
+                        return {};
+                    auto const val_start = pos + search.size();
+                    auto const val_end = qs.find('&', val_start);
+                    return std::string{qs.substr(val_start,
+                                                 val_end == std::string_view::npos ? std::string_view::npos
+                                                                                   : val_end - val_start)};
+                };
+                auto const not_membership = parse_qparam(query_string, "not_membership");
+                auto const membership_filter = parse_qparam(query_string, "membership");
+
+                auto const& store = rt.homeserver.database.persistent_store;
+                auto const room_it = std::ranges::find_if(store.rooms, [&room_id](auto const& r) {
+                    return r.room_id == room_id;
+                });
+                if (room_it == store.rooms.end())
+                {
+                    return dispatch_err(404U, "M_NOT_FOUND", "room not found");
+                }
+
+                auto chunk = canonicaljson::Array{};
+                for (auto const& m : store.memberships)
+                {
+                    if (m.room_id != room_id)
+                        continue;
+                    if (!not_membership.empty() && m.membership == not_membership)
+                        continue;
+                    if (!membership_filter.empty() && m.membership != membership_filter)
+                        continue;
+                    auto const state_it =
+                        std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& s) {
+                            return s.room_id == room_id && s.event_type == "m.room.member" &&
+                                   s.state_key == m.user_id;
+                        });
+                    if (state_it == store.state.end())
+                        continue;
+                    auto const ev_json = event_json_for_id(store, state_it->event_id);
+                    if (!ev_json.has_value())
+                        continue;
+                    auto const parsed = canonicaljson::parse_lossless(*ev_json);
+                    if (parsed.error != canonicaljson::ParseError::none)
+                        continue;
+                    chunk.push_back(parsed.value);
+                }
+                log_diagnostic("room.members.accepted",
+                               {{"actor", *user, false}, {"room_id", room_id, false}});
+                return dispatch_resp(
+                    200U, json_serialize(json_obj({json_member("chunk", json_arr(std::move(chunk)))})));
+            }
         }
         if (req.method == "PUT")
         {

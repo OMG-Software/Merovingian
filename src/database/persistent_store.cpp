@@ -1401,6 +1401,28 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id,
+                                             std::string_view version) -> bool
+{
+    auto const existing =
+        std::ranges::find_if(store.key_backup_versions, [user_id, version](PersistentKeyBackupVersion const& v) {
+            return v.user_id == user_id && v.version == version;
+        });
+    if (existing == store.key_backup_versions.end())
+    {
+        return true; // Already absent — treat as idempotent success.
+    }
+    if (!record_and_persist(store,
+                            record_statement("delete_key_backup_version",
+                                            "DELETE FROM key_backup_versions WHERE user_id = $1 AND version = $2",
+                                            {public_value(user_id), public_value(version)})))
+    {
+        return false;
+    }
+    store.key_backup_versions.erase(existing);
+    return true;
+}
+
 [[nodiscard]] auto store_key_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> bool
 {
     if (!key_payload_is_valid(session.json) || session.version.empty() || session.room_id.empty() ||

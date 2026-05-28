@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.31
+Version:        0.4.32
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.32-1
+- Fix DELETE /room_keys/version not removing backup, causing infinite Element retry loop
+
 * Wed May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.31-1
 - Fix POST /room_keys/version returning empty body instead of {"version":"1"}
 

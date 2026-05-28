@@ -651,6 +651,52 @@ SCENARIO("GET /room_keys/version returns algorithm, auth_data, and version after
     }
 }
 
+// --- DELETE /_matrix/client/v3/room_keys/version/{version} -------------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#delete_matrixclientv3room_keysversion
+//
+// After a successful DELETE the backup MUST be gone: a subsequent GET
+// MUST return 404 M_NOT_FOUND. Element polls GET immediately after DELETE;
+// if the backup is still visible it retries DELETE indefinitely.
+SCENARIO("DELETE /room_keys/version removes the backup so a subsequent GET returns 404",
+         "[conformance][client-server][key-backup]")
+{
+    GIVEN("a logged-in device that has created a key backup")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"POST",
+                     "/_matrix/client/v3/room_keys/version",
+                     token,
+                     R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"})
+                    .response.status == 200U);
+
+        WHEN("the device deletes the backup version")
+        {
+            auto const del = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"DELETE", "/_matrix/client/v3/room_keys/version/1", token, {}});
+
+            THEN("the response is 200 and a subsequent GET returns 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 200 on successful delete.
+                REQUIRE(del.response.status == 200U);
+
+                // Spec MUST: backup is gone — GET must return 404.
+                // Do NOT remove — Element loops DELETE/GET until the backup disappears.
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/room_keys/version", token, {}});
+                REQUIRE(get.response.status == 404U);
+                auto const body = parse_object(get.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
 // --- GET /_matrix/client/v3/sync ---------------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
 //
@@ -686,6 +732,99 @@ SCENARIO("GET /sync returns required spec fields", "[conformance][client-server]
                 // Do NOT remove — clients iterate rooms.join/invite/leave.
                 auto const* rooms = object_member_as_object(body, "rooms");
                 REQUIRE(rooms != nullptr);
+            }
+        }
+    }
+}
+
+// --- GET /_matrix/client/v3/rooms/{roomId}/members ---------------------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
+//
+// MUST return a JSON object with:
+//   chunk - array of m.room.member state events (may be empty; filtered by membership param)
+//
+// The creator is a "join" member, so the chunk MUST contain at least one entry
+// immediately after createRoom.
+SCENARIO("GET /rooms/{roomId}/members returns chunk array with creator membership event",
+         "[conformance][client-server][rooms][members]")
+{
+    GIVEN("a logged-in user who has created a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
+        REQUIRE(create.response.status == 200U);
+
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id_ptr = string_member(create_body, "room_id");
+        REQUIRE(room_id_ptr != nullptr);
+        auto const room_id = *room_id_ptr;
+
+        WHEN("the user requests the member list")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + room_id + "/members", token, {}});
+
+            THEN("the response is 200 with a non-empty chunk array containing the creator")
+            {
+                // Spec MUST: 200 with chunk array.
+                // Do NOT remove — clients use this to build the member list sidebar.
+                // A missing or wrong-typed chunk breaks all member-list UIs.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+
+                // Spec MUST: "chunk" is an array.
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+
+                // The creator joined the room, so at least one member event MUST be present.
+                REQUIRE(!chunk->empty());
+
+                // The first entry MUST be a valid event object with type and sender.
+                auto const* first = std::get_if<merovingian::canonicaljson::Object>(&(*chunk)[0].storage());
+                REQUIRE(first != nullptr);
+                auto const* type = string_member(*first, "type");
+                REQUIRE(type != nullptr);
+                REQUIRE(*type == "m.room.member");
+                auto const* sender = string_member(*first, "sender");
+                REQUIRE(sender != nullptr);
+                REQUIRE(!sender->empty());
+            }
+        }
+    }
+}
+
+// --- GET /_matrix/client/v3/rooms/{roomId}/members (unknown room) ------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
+//
+// MUST return 404 M_NOT_FOUND for a room that does not exist.
+SCENARIO("GET /rooms/{roomId}/members returns 404 for an unknown room",
+         "[conformance][client-server][rooms][members]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("the user requests members for a non-existent room")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/rooms/%21nonexistent%3Aexample.org/members", token, {}});
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 when the room does not exist.
+                REQUIRE(response.response.status == 404U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }

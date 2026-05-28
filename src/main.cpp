@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+﻿// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/bootstrap/exit_code.hpp"
 #include "merovingian/config/config.hpp"
@@ -37,7 +37,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.4.31"};
+constexpr auto version = std::string_view{"0.4.32"};
 
 struct BootstrapConfigResult final
 {
@@ -671,7 +671,7 @@ struct ListenerBinding final
 {
     auto stats = merovingian::homeserver::HttpServeStats{};
     // Main pool handles all non-sync request types. Keep this modest so that
-    // threads aren't wasted — sync long-polls are offloaded to sync_pool below.
+    // threads aren't wasted â€” sync long-polls are offloaded to sync_pool below.
     auto pool = merovingian::net::ThreadPool{8U};
     // Dedicated pool for /sync long-polls. Each waiting sync client occupies one
     // thread here rather than in the main pool, so regular requests (join, send,

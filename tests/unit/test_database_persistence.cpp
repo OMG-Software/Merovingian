@@ -693,6 +693,40 @@ SCENARIO("Persistent store records durable server-blind E2EE key state", "[datab
     }
 }
 
+SCENARIO("delete_key_backup_version removes the version from the store", "[database][key-backup]")
+{
+    GIVEN("a store with a key backup version")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        REQUIRE(merovingian::database::store_key_backup_version(
+            store, {"@alice:example.org", "1", R"({"algorithm":"m.megolm_backup.v1"})"}));
+        REQUIRE(store.key_backup_versions.size() == 1U);
+
+        WHEN("the backup version is deleted")
+        {
+            auto const result = merovingian::database::delete_key_backup_version(store, "@alice:example.org", "1");
+
+            THEN("the operation succeeds and the version is gone from the store")
+            {
+                REQUIRE(result);
+                REQUIRE(store.key_backup_versions.empty());
+            }
+        }
+
+        WHEN("a non-existent version is deleted")
+        {
+            auto const result =
+                merovingian::database::delete_key_backup_version(store, "@alice:example.org", "99");
+
+            THEN("the operation succeeds idempotently and the existing version is unaffected")
+            {
+                REQUIRE(result);
+                REQUIRE(store.key_backup_versions.size() == 1U);
+            }
+        }
+    }
+}
+
 SCENARIO("PostgreSQL connection policy rejects unsafe or ambiguous libpq inputs", "[database][postgresql]")
 {
     GIVEN("empty and non-PostgreSQL connection strings")
