@@ -90,14 +90,11 @@ jobs:
     name: Fedora RPM package
     runs-on: ubuntu-latest
     container: fedora:latest
-    env:
-      CC: clang
-      CXX: clang++
     steps:
       - uses: actions/checkout@v4
       - name: Install build dependencies
         run: |
-          dnf install -y ccache clang meson ninja-build pkgconf-pkg-config git \
+          dnf install -y clang meson ninja-build pkgconf-pkg-config git \
             openssl-devel \
             libsodium-devel \
             libpq-devel \
@@ -107,11 +104,6 @@ jobs:
             libnghttp2-devel \
             catch-devel perl bison flex m4 \
             rpm-build systemd-rpm-macros
-      - name: Cache compiler output with ccache
-        uses: hendrikmuhs/ccache-action@v1.2
-        with:
-          key: ccache-rpm-${{ github.run_id }}
-          restore-keys: ccache-rpm-
       - name: Build .rpm
         run: sh scripts/build-rpm.sh
       - uses: actions/upload-artifact@v4
