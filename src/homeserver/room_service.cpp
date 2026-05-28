@@ -48,6 +48,60 @@ namespace
         LOG_DEBUG(observability::diagnostic_log_summary("rooms", event, std::move(fields)));
     }
 
+    [[nodiscard]] auto json_object_member(canonicaljson::Object const& object,
+                                          std::string_view key) noexcept -> canonicaljson::Value const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto json_string_member(canonicaljson::Object const& object,
+                                          std::string_view key) noexcept -> std::string const*
+    {
+        auto const* value = json_object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto json_integer_member(canonicaljson::Object const& object,
+                                           std::string_view key) noexcept -> std::int64_t const*
+    {
+        auto const* value = json_object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<std::int64_t>(&value->storage());
+    }
+
+    [[nodiscard]] auto json_string_array(canonicaljson::Value const& value) -> std::vector<std::string>
+    {
+        auto out = std::vector<std::string>{};
+        auto const* array = std::get_if<canonicaljson::Array>(&value.storage());
+        if (array == nullptr)
+        {
+            return out;
+        }
+        for (auto const& entry : *array)
+        {
+            auto const* text = std::get_if<std::string>(&entry.storage());
+            if (text != nullptr)
+            {
+                out.push_back(*text);
+            }
+        }
+        return out;
+    }
+
     struct ComposedEvent final
     {
         std::string event_id{};
@@ -208,8 +262,8 @@ namespace
         {
         }
 
-        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/, std::string_view message)
-            -> crypto::SignatureResult override
+        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/,
+                                std::string_view message) -> crypto::SignatureResult override
         {
             auto signature = std::string(crypto_sign_BYTES, '\0');
             if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
@@ -240,8 +294,8 @@ namespace
         std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key_{};
     };
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -253,15 +307,15 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::int64_t const*
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object,
+                                      std::string_view key) noexcept -> std::int64_t const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
@@ -329,14 +383,14 @@ namespace
         return error == std::errc{} && ptr == room_version.data() + room_version.size() ? parsed : 0;
     }
 
-    [[nodiscard]] auto full_room_alias(config::ServerConfig const& server, std::string_view room_alias_name)
-        -> std::string
+    [[nodiscard]] auto full_room_alias(config::ServerConfig const& server,
+                                       std::string_view room_alias_name) -> std::string
     {
         return "#" + std::string{room_alias_name} + ":" + server.server_name;
     }
 
-    [[nodiscard]] auto copy_member_or_empty_object(canonicaljson::Object const& object, std::string_view key)
-        -> canonicaljson::Value
+    [[nodiscard]] auto copy_member_or_empty_object(canonicaljson::Object const& object,
+                                                   std::string_view key) -> canonicaljson::Value
     {
         auto const* value = object_member(object, key);
         auto const* member_object = value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -355,8 +409,8 @@ namespace
         return canonicaljson::Value{std::move(array)};
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
+                                               std::string_view key) noexcept -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -415,8 +469,8 @@ namespace
         return {true, {}, room_version_str == nullptr ? std::string{"1"} : *room_version_str, *event_object};
     }
 
-    [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store, std::string_view room_id)
-        -> std::vector<std::string>
+    [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store,
+                                                std::string_view room_id) -> std::vector<std::string>
     {
         for (auto iterator = store.events.rbegin(); iterator != store.events.rend(); ++iterator)
         {
@@ -428,8 +482,8 @@ namespace
         return {};
     }
 
-    [[nodiscard]] auto auth_events_for_room(database::PersistentStore const& store, std::string_view room_id)
-        -> std::vector<std::string>
+    [[nodiscard]] auto auth_events_for_room(database::PersistentStore const& store,
+                                            std::string_view room_id) -> std::vector<std::string>
     {
         auto event_ids = std::vector<std::string>{};
         for (auto const& state : store.state)
@@ -442,8 +496,8 @@ namespace
         return event_ids;
     }
 
-    [[nodiscard]] auto next_depth_for_room(database::PersistentStore const& store, std::string_view room_id) noexcept
-        -> std::uint64_t
+    [[nodiscard]] auto next_depth_for_room(database::PersistentStore const& store,
+                                           std::string_view room_id) noexcept -> std::uint64_t
     {
         auto depth = std::uint64_t{0U};
         for (auto const& event : store.events)
@@ -466,8 +520,8 @@ namespace
         }
     }
 
-    [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
-        -> canonicaljson::Value
+    [[nodiscard]] auto find_event_json(database::PersistentStore const& store,
+                                       std::string_view event_id) -> canonicaljson::Value
     {
         for (auto const& event : store.events)
         {
@@ -521,8 +575,8 @@ namespace
 
     // Returns the room_version string from the room's m.room.create event, or "10"
     // as a safe fallback for rooms that pre-date initial-state generation.
-    [[nodiscard]] auto room_version_for_room(database::PersistentStore const& store, std::string_view room_id)
-        -> std::string
+    [[nodiscard]] auto room_version_for_room(database::PersistentStore const& store,
+                                             std::string_view room_id) -> std::string
     {
         for (auto const& state : store.state)
         {
@@ -557,8 +611,8 @@ namespace
     }
 
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                            std::string_view sender, std::string_view client_event_json)
-        -> std::optional<ComposedEvent>
+                                            std::string_view sender,
+                                            std::string_view client_event_json) -> std::optional<ComposedEvent>
     {
         auto const parsed = canonicaljson::parse_lossless(client_event_json);
         auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
@@ -1209,8 +1263,8 @@ namespace
     return make_operation_result(true, room_id);
 }
 
-[[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
-    -> OperationResult
+[[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token,
+                             std::string_view room_id) -> OperationResult
 {
     auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
     log_diagnostic("room.join.started", {
@@ -1440,13 +1494,64 @@ namespace
                         auto const parsed = events::parse_event_envelope(state_entry);
                         if (parsed.error.empty())
                         {
+                            auto const* entry_obj = std::get_if<canonicaljson::Object>(&state_entry.storage());
+                            auto event_id = std::string{};
+                            if (entry_obj != nullptr)
+                            {
+                                if (policy->event_id_format == rooms::EventIdFormat::reference_hash)
+                                {
+                                    auto const eid = events::make_reference_hash_event_id(state_entry, *policy);
+                                    event_id = eid.event_id;
+                                }
+                                else
+                                {
+                                    auto const* id_field = json_string_member(*entry_obj, "event_id");
+                                    if (id_field != nullptr)
+                                    {
+                                        event_id = *id_field;
+                                    }
+                                }
+                            }
+                            auto depth = std::uint64_t{0U};
+                            if (entry_obj != nullptr)
+                            {
+                                if (auto const* d = json_integer_member(*entry_obj, "depth"); d != nullptr && *d >= 0)
+                                {
+                                    depth = static_cast<std::uint64_t>(*d);
+                                }
+                            }
+                            auto prev_ids = std::vector<std::string>{};
+                            auto auth_ids = std::vector<std::string>{};
+                            if (entry_obj != nullptr)
+                            {
+                                if (auto const* pv = json_object_member(*entry_obj, "prev_events"); pv != nullptr)
+                                {
+                                    prev_ids = json_string_array(*pv);
+                                }
+                                if (auto const* av = json_object_member(*entry_obj, "auth_events"); av != nullptr)
+                                {
+                                    auth_ids = json_string_array(*av);
+                                }
+                            }
+                            auto const stream_ordering = runtime.database.next_stream_ordering++;
+                            auto state = std::optional<database::PersistentStateEvent>{};
+                            if (!parsed.event.state_key.empty())
+                            {
+                                state = database::PersistentStateEvent{parsed.event.room_id, parsed.event.event_type,
+                                                                       parsed.event.state_key, event_id};
+                            }
                             auto pe = database::PersistentEvent{};
-                            pe.event_id = ""; // hash-based IDs computed elsewhere
+                            pe.event_id = event_id;
                             pe.room_id = parsed.event.room_id;
                             pe.sender_user_id = parsed.event.sender;
                             pe.json = serialized.output;
+                            pe.depth = depth;
+                            pe.stream_ordering = stream_ordering;
+                            pe.prev_event_ids = std::move(prev_ids);
+                            pe.auth_event_ids = std::move(auth_ids);
                             pe.signatures = parsed.event.signatures;
-                            std::ignore = database::store_event(runtime.database.persistent_store, std::move(pe));
+                            std::ignore = database::store_event_with_state(runtime.database.persistent_store,
+                                                                           std::move(pe), state);
                             if (parsed.event.event_type == "m.room.member" && !parsed.event.state_key.empty() &&
                                 events::extract_content_membership(state_entry) == "join")
                             {
@@ -1474,13 +1579,64 @@ namespace
                         auto const parsed = events::parse_event_envelope(auth_entry);
                         if (parsed.error.empty())
                         {
+                            auto const* entry_obj = std::get_if<canonicaljson::Object>(&auth_entry.storage());
+                            auto event_id = std::string{};
+                            if (entry_obj != nullptr)
+                            {
+                                if (policy->event_id_format == rooms::EventIdFormat::reference_hash)
+                                {
+                                    auto const eid = events::make_reference_hash_event_id(auth_entry, *policy);
+                                    event_id = eid.event_id;
+                                }
+                                else
+                                {
+                                    auto const* id_field = json_string_member(*entry_obj, "event_id");
+                                    if (id_field != nullptr)
+                                    {
+                                        event_id = *id_field;
+                                    }
+                                }
+                            }
+                            auto depth = std::uint64_t{0U};
+                            if (entry_obj != nullptr)
+                            {
+                                if (auto const* d = json_integer_member(*entry_obj, "depth"); d != nullptr && *d >= 0)
+                                {
+                                    depth = static_cast<std::uint64_t>(*d);
+                                }
+                            }
+                            auto prev_ids = std::vector<std::string>{};
+                            auto auth_ids = std::vector<std::string>{};
+                            if (entry_obj != nullptr)
+                            {
+                                if (auto const* pv = json_object_member(*entry_obj, "prev_events"); pv != nullptr)
+                                {
+                                    prev_ids = json_string_array(*pv);
+                                }
+                                if (auto const* av = json_object_member(*entry_obj, "auth_events"); av != nullptr)
+                                {
+                                    auth_ids = json_string_array(*av);
+                                }
+                            }
+                            auto const stream_ordering = runtime.database.next_stream_ordering++;
+                            auto state = std::optional<database::PersistentStateEvent>{};
+                            if (!parsed.event.state_key.empty())
+                            {
+                                state = database::PersistentStateEvent{parsed.event.room_id, parsed.event.event_type,
+                                                                       parsed.event.state_key, event_id};
+                            }
                             auto pe = database::PersistentEvent{};
-                            pe.event_id = "";
+                            pe.event_id = event_id;
                             pe.room_id = parsed.event.room_id;
                             pe.sender_user_id = parsed.event.sender;
                             pe.json = serialized.output;
+                            pe.depth = depth;
+                            pe.stream_ordering = stream_ordering;
+                            pe.prev_event_ids = std::move(prev_ids);
+                            pe.auth_event_ids = std::move(auth_ids);
                             pe.signatures = parsed.event.signatures;
-                            std::ignore = database::store_event(runtime.database.persistent_store, std::move(pe));
+                            std::ignore = database::store_event_with_state(runtime.database.persistent_store,
+                                                                           std::move(pe), state);
                         }
                     }
                 }

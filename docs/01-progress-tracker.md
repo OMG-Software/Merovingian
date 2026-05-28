@@ -508,6 +508,15 @@ a non-production environment.
   replaced a test-injected dispatch worker with a new one.
 - Fix (0.4.5): Empty `transaction_id` in outbound membership and EDU transactions
   causing `transaction_is_well_formed` rejection.
+- Fix (0.4.30): Federation join state events from the `send_join` response were
+  stored with `stream_ordering == 0`, making them invisible to incremental
+  `/sync`. The sync handler filters events where `stream_ordering <= since_ordering`,
+  and `0 <= any_since_ordering` is always true. Combined with the incremental
+  suppression that omits rooms with empty timeline and account data, the joined
+  room was absent from sync. The `join_room` path now assigns proper stream
+  ordering from `next_stream_ordering++`, parses `depth`, `prev_event_ids`, and
+  `auth_event_ids` from the event JSON, computes hash-based event IDs for room
+  v4+, creates `PersistentStateEvent` entries, and calls `store_event_with_state()`.
 - Fix (0.4.29): `validate_make_join_response` rejected make_join event templates
   that omitted the `origin` field. The `origin` field was removed from events in
   room version 4 (hash-based event IDs replaced server-name-based IDs), so
