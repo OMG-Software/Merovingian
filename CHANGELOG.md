@@ -2,6 +2,9 @@
 
 ## 0.4.27
 
+- Expand `docs/architecture.md` into a comprehensive reference covering source
+  tree, runtime model, request flow, data types, database layer, federation,
+  client-server API surface, sync subsystem, build system, testing, and security.
 - Fix off-by-one in `/sync` `next_batch` token that caused federated users to
   get stuck in an infinite empty-sync loop after joining a room. The
   `next_batch` token was constructed from `next_stream_ordering` (a "next

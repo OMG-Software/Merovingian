@@ -129,6 +129,10 @@ separate operator decision once this branch is approved._
   `old_verify_keys` from all non-active signing keys in the persistent store,
   with `expired_ts` capped at `now` to prevent future-dated entries from
   superseded keys that carried the year-2999 sentinel.
+- Architecture doc rewrite (0.4.27): Expanded `docs/architecture.md` from a sparse
+  outline to a comprehensive reference covering source tree, runtime model,
+  request flow, data types, database layer, federation subsystem, client-server
+  API surface, sync subsystem, build system, testing, and security measures.
 - Sync `next_batch` off-by-one fix (0.4.27): The `next_batch` token in `/sync`
   responses was constructed from `next_stream_ordering` (a "next available
   slot" counter, always +1 ahead of the last published event) instead of
