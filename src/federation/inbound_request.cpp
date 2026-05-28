@@ -5,13 +5,13 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
-#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -48,8 +48,8 @@ namespace
     // body parsed as JSON and is omitted entirely for a body-less request.
     // Returns std::nullopt when a non-empty body is not canonical-parseable.
     [[nodiscard]] auto federation_request_payload(std::string_view origin, std::string_view destination,
-                                                  std::string_view method, std::string_view uri,
-                                                  std::string_view body) -> std::optional<std::string>
+                                                  std::string_view method, std::string_view uri, std::string_view body)
+        -> std::optional<std::string>
     {
         auto object = canonicaljson::Object{};
         if (!body.empty())
@@ -340,6 +340,8 @@ namespace
         event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{tmpl.user_id}));
         event.push_back(canonicaljson::make_member("sender", canonicaljson::Value{tmpl.user_id}));
         event.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{tmpl.room_id}));
+        event.push_back(canonicaljson::make_member("origin", canonicaljson::Value{tmpl.origin}));
+        event.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{tmpl.origin_server_ts}));
         event.push_back(
             canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(tmpl.depth)}));
         auto content_value = canonicaljson::Value{};
@@ -393,11 +395,23 @@ namespace
         {
             return {404U, "membership template unavailable"};
         }
-        if (!tmpl->reason.empty())
+        auto populated = *tmpl;
+        if (populated.origin.empty())
         {
-            return {400U, tmpl->reason};
+            populated.origin = runtime.config.server_name;
         }
-        auto body = build_make_template_response(*tmpl);
+        if (populated.origin_server_ts == 0)
+        {
+            populated.origin_server_ts =
+                static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                              std::chrono::system_clock::now().time_since_epoch())
+                                              .count());
+        }
+        if (!populated.reason.empty())
+        {
+            return {400U, populated.reason};
+        }
+        auto body = build_make_template_response(populated);
         if (body.empty())
         {
             return {500U, "failed to serialize membership template"};
@@ -439,13 +453,11 @@ namespace
         auto response = canonicaljson::Object{};
         // Echo the room's actual version from the acceptor; fall back to "12" only
         // if the acceptor did not populate it (e.g. in legacy test stubs).
-        auto const resp_room_version =
-            acceptance.room_version.empty() ? std::string{"12"} : acceptance.room_version;
+        auto const resp_room_version = acceptance.room_version.empty() ? std::string{"12"} : acceptance.room_version;
         response.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{resp_room_version}));
         if (route.endpoint == FederationEndpoint::send_join)
         {
-            response.push_back(
-                canonicaljson::make_member("origin", canonicaljson::Value{runtime.config.server_name}));
+            response.push_back(canonicaljson::make_member("origin", canonicaljson::Value{runtime.config.server_name}));
         }
         response.push_back(canonicaljson::make_member("auth_chain", build_array_value(acceptance.auth_chain_json)));
         response.push_back(canonicaljson::make_member("state", build_array_value(acceptance.state_json)));
@@ -457,8 +469,7 @@ namespace
             auto parsed_event = canonicaljson::parse_lossless(acceptance.signed_event_json);
             if (parsed_event.error == canonicaljson::ParseError::none)
             {
-                response.push_back(
-                    canonicaljson::make_member("event", std::move(parsed_event.value)));
+                response.push_back(canonicaljson::make_member("event", std::move(parsed_event.value)));
             }
         }
         auto body = serialize_response_object(std::move(response));
@@ -481,7 +492,8 @@ namespace
         {
             return {400U, "invite path is malformed"};
         }
-        auto invite_request = parse_invite_body(request.body, params->room_id, params->subject, FederationEndpoint::invite);
+        auto invite_request =
+            parse_invite_body(request.body, params->room_id, params->subject, FederationEndpoint::invite);
         if (!invite_request.has_value())
         {
             return {400U, "invite body is malformed"};
@@ -851,35 +863,39 @@ auto make_federation_signature(std::string_view origin, std::string_view destina
         // Key size mismatch means no signature can be produced. Log so operators
         // can detect misconfiguration without needing a debugger attached.
         log_diagnostic("signature.key_size_invalid",
-                       {{"expected",  std::to_string(crypto_sign_SECRETKEYBYTES), false},
-                        {"actual",    std::to_string(secret_key.size()),           false},
-                        {"origin",    std::string{origin},                         false},
-                        {"target",    std::string{target},                         false}});
+                       {
+                           {"expected", std::to_string(crypto_sign_SECRETKEYBYTES), false},
+                           {"actual",   std::to_string(secret_key.size()),          false},
+                           {"origin",   std::string{origin},                        false},
+                           {"target",   std::string{target},                        false}
+        });
         return {};
     }
     auto const payload = federation_request_payload(origin, destination, method, target, body);
     if (!payload.has_value())
     {
         // Body could not be parsed as canonical JSON — signature will be empty.
-        log_diagnostic("signature.payload_build_failed",
-                       {{"origin",      std::string{origin},           false},
-                        {"destination", std::string{destination},      false},
-                        {"method",      std::string{method},           false},
-                        {"target",      std::string{target},           false},
-                        {"body_bytes",  std::to_string(body.size()),   false}});
+        log_diagnostic("signature.payload_build_failed", {
+                                                             {"origin",      std::string{origin},         false},
+                                                             {"destination", std::string{destination},    false},
+                                                             {"method",      std::string{method},         false},
+                                                             {"target",      std::string{target},         false},
+                                                             {"body_bytes",  std::to_string(body.size()), false}
+        });
         return {};
     }
     // libsodium Ed25519 secret keys are [seed(32) | public_key(32)]. Derive and
     // log the embedded public key so operators can compare it against the value
     // published at /_matrix/key/v2/server to catch signing/publishing key mismatches.
     auto const embedded_pk = events::matrix_base64_from_bytes(secret_key.substr(32U));
-    log_diagnostic("signature.signing",
-                   {{"origin",        std::string{origin},                false},
-                    {"destination",   std::string{destination},           false},
-                    {"method",        std::string{method},                false},
-                    {"target",        std::string{target},                false},
-                    {"embedded_pk",   embedded_pk,                        false},
-                    {"payload_bytes", std::to_string(payload->size()),   false}});
+    log_diagnostic("signature.signing", {
+                                            {"origin",        std::string{origin},             false},
+                                            {"destination",   std::string{destination},        false},
+                                            {"method",        std::string{method},             false},
+                                            {"target",        std::string{target},             false},
+                                            {"embedded_pk",   embedded_pk,                     false},
+                                            {"payload_bytes", std::to_string(payload->size()), false}
+    });
     auto signature = std::string(crypto_sign_BYTES, '\0');
     if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
                              reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),
@@ -1322,8 +1338,8 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         audit_federation(runtime, "federation.duplicate", request.origin, request.target,
                          "transaction already accepted");
         return {200U, serialize_response_object(canonicaljson::Object{
-            canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Object{}}),
-        })};
+                          canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Object{}}),
+                      })};
     }
     auto pdus_appended = std::size_t{0U};
     auto pdus_state_conflict = std::size_t{0U};
@@ -1352,12 +1368,9 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
             });
             audit_federation(runtime, "federation.rejected", request.origin, request.target, pdu_decision.reason);
             // Record the per-PDU error and continue processing remaining PDUs.
-            pdu_errors.push_back(
-                canonicaljson::make_member(pdu.event_id,
-                                           canonicaljson::Value{canonicaljson::Object{
-                                               canonicaljson::make_member("error",
-                                                                          canonicaljson::Value{pdu_decision.reason})
-                                           }}));
+            pdu_errors.push_back(canonicaljson::make_member(
+                pdu.event_id, canonicaljson::Value{canonicaljson::Object{
+                                  canonicaljson::make_member("error", canonicaljson::Value{pdu_decision.reason})}}));
             continue;
         }
         if (!runtime.pdu_sink)
@@ -1469,12 +1482,12 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     if (!runtime.pdu_sink && !runtime.edu_sink && transaction.edus.empty())
     {
         return {200U, serialize_response_object(canonicaljson::Object{
-            canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
-        })};
+                          canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
+                      })};
     }
     return {200U, serialize_response_object(canonicaljson::Object{
-        canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
-    })};
+                      canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
+                  })};
 }
 
 auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string

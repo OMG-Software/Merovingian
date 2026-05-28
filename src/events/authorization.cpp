@@ -497,10 +497,36 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 {
                     return make_allowed("5");
                 }
-                // For restricted rooms, check if user is joined to a parent space
-                // This requires room membership checking beyond auth events
-                // For now, reject without an explicit invite
-                return make_denied("5", "user was not invited to restricted room");
+                auto const* authorising_user = event_content_string(event, "join_authorised_via_users_server");
+                if (authorising_user == nullptr || authorising_user->empty())
+                {
+                    return make_denied("5", "restricted join requires join_authorised_via_users_server");
+                }
+                auto const* authorising_member_obj = value_is_object(auth_events.authorising_user_member);
+                if (authorising_member_obj == nullptr)
+                {
+                    return make_denied("5", "restricted join missing authorising user membership");
+                }
+                auto const* authorising_state_key = string_member(*authorising_member_obj, "state_key");
+                if (authorising_state_key == nullptr || *authorising_state_key != *authorising_user)
+                {
+                    return make_denied("5", "restricted join authorising user does not match membership event");
+                }
+                if (parse_membership_state(extract_content_membership(auth_events.authorising_user_member)) !=
+                    MembershipState::join)
+                {
+                    return make_denied("5", "restricted join authorising user is not joined");
+                }
+                auto const invite_power = value_has_content(auth_events.power_levels)
+                                              ? extract_power_level_key(auth_events.power_levels, "invite", 0)
+                                              : 0;
+                auto const authorising_power =
+                    effective_sender_power(auth_events.power_levels, *authorising_user, auth_events.create);
+                if (authorising_power < invite_power)
+                {
+                    return make_denied("5", "restricted join authorising user lacks invite power");
+                }
+                return make_allowed("5");
             }
 
             return make_denied("5", "unknown join rule");

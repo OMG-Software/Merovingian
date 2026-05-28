@@ -1,31 +1,30 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// ┌─────────────────────────────────────────────────────────────────────────┐
-// │              MATRIX FEDERATION CONFORMANCE TESTS                        │
-// │                                                                         │
-// │  Spec: Matrix Server-Server API v1.11                                   │
-// │  URL:  https://spec.matrix.org/v1.11/server-server-api/                 │
-// │                                                                         │
-// │  !! IMPORTANT — FOR HUMANS AND LLMs ALIKE !!                            │
-// │                                                                         │
-// │  Every REQUIRE in this file encodes a MUST or SHOULD from the Matrix    │
-// │  specification. If a test fails:                                         │
-// │                                                                         │
-// │    → Fix the IMPLEMENTATION so it matches the spec.                     │
-// │    → Do NOT weaken, comment out, or remove assertions to make CI pass.  │
-// │    → Do NOT change an expected value without first verifying that the   │
-// │      spec itself has changed and citing the updated section.             │
-// │                                                                         │
-// │  The spec section is cited above each SCENARIO. Cross-check it before   │
-// │  concluding that a failing assertion is wrong.                           │
-// └─────────────────────────────────────────────────────────────────────────┘
-
-#include "merovingian/federation/inbound_request.hpp"
-#include "merovingian/federation/inbound_ingestion.hpp"
-#include "merovingian/federation/membership_endpoints.hpp"
-#include "merovingian/federation/runtime_federation.hpp"
+// +-------------------------------------------------------------------------+
+// |              MATRIX FEDERATION CONFORMANCE TESTS                        |
+// |                                                                         |
+// |  Spec: Matrix Server-Server API v1.18                                   |
+// |  URL:  https://spec.matrix.org/v1.18/server-server-api/                 |
+// |                                                                         |
+// |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
+// |                                                                         |
+// |  Every REQUIRE in this file encodes a MUST or SHOULD from the Matrix    |
+// |  specification. If a test fails:                                         |
+// |                                                                         |
+// |    -> Fix the IMPLEMENTATION so it matches the spec.                     |
+// |    -> Do NOT weaken, comment out, or remove assertions to make CI pass.  |
+// |    -> Do NOT change an expected value without first verifying that the   |
+// |      spec itself has changed and citing the updated section.             |
+// |                                                                         |
+// |  The spec section is cited above each SCENARIO. Cross-check it before   |
+// |  concluding that a failing assertion is wrong.                           |
+// +-------------------------------------------------------------------------+
 
 #include "federation_signing_test_support.hpp"
+#include "merovingian/federation/inbound_ingestion.hpp"
+#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/membership_endpoints.hpp"
+#include "merovingian/federation/runtime_federation.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -66,8 +65,7 @@ namespace
     return remote;
 }
 
-[[nodiscard]] auto signed_get_request(std::string const& origin, std::string const& key_id,
-                                      std::string const& key_seed,
+[[nodiscard]] auto signed_get_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
                                       std::string const& target) -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
@@ -85,9 +83,9 @@ namespace
     return request;
 }
 
-[[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id,
-                                      std::string const& key_seed, std::string const& target,
-                                      std::string const& body) -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
+                                      std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
@@ -111,16 +109,15 @@ auto const key_seed = std::string{"conformance-test-seed"};
 
 } // namespace
 
-// ─── make_join ───────────────────────────────────────────────────────────────
-// Spec: Matrix Server-Server API v1.11
+// --- make_join ---------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
 // Endpoint: GET /_matrix/federation/v1/make_join/{roomId}/{userId}
-// https://spec.matrix.org/v1.11/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+// https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
 //
 // The resident server MUST respond 200 with a JSON object containing:
-//   room_version  – the version of the room
-//   event         – a partial event template for the joining server to complete
-SCENARIO("make_join returns room version and event template for a remote user",
-         "[federation][conformance][make_join]")
+//   room_version  - the version of the room
+//   event         - a partial event template for the joining server to complete
+SCENARIO("make_join returns room version and event template for a remote user", "[federation][conformance][make_join]")
 {
     GIVEN("a runtime with membership_template_provider wired for make_join")
     {
@@ -129,10 +126,8 @@ SCENARIO("make_join returns room version and event template for a remote user",
 
         auto template_invoked = std::make_shared<bool>(false);
         runtime.membership_template_provider =
-            [template_invoked](merovingian::federation::FederationEndpoint endpoint,
-                               std::string_view target_room_id,
-                               std::string_view user_id,
-                               std::vector<std::string> const& /*supported_room_versions*/)
+            [template_invoked](merovingian::federation::FederationEndpoint endpoint, std::string_view target_room_id,
+                               std::string_view user_id, std::vector<std::string> const& /*supported_room_versions*/)
             -> std::optional<merovingian::federation::MembershipEventTemplate> {
             *template_invoked = true;
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::make_join);
@@ -155,49 +150,54 @@ SCENARIO("make_join returns room version and event template for a remote user",
                 // Spec MUST: HTTP 200 for a valid make_join request.
                 REQUIRE(response.status == 200U);
                 REQUIRE(*template_invoked);
+                // Spec MUST: the returned template event names the resident server.
+                // Do NOT remove - the joining server signs and submits this exact
+                // event shape to /send_join.
+                REQUIRE(response.body.find(R"("origin":"local.example.org")") != std::string::npos);
+                // Spec MUST: the returned template event carries origin_server_ts.
+                // Do NOT remove - if the resident server omits it, the joining
+                // server must reject the template as malformed.
+                REQUIRE(response.body.find(R"("origin_server_ts":)") != std::string::npos);
             }
         }
     }
 }
 
-// ─── send_join ───────────────────────────────────────────────────────────────
-// Spec: Matrix Server-Server API v1.11
+// --- send_join ---------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}
-// https://spec.matrix.org/v1.11/server-server-api/#put_matrixfederationv2send_joinroomideventid
+// https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
 //
 // The resident server MUST respond 200 with a JSON object containing:
-//   room_version  – the version of the room
-//   origin        – the server_name of the resident server (v2 only)
-//   auth_chain    – array of PDUs forming the auth chain for the event
-//   state         – array of PDUs representing the current room state
-//   event         – the join event as accepted by the resident server (v2 MUST)
+//   room_version  - the version of the room
+//   origin        - the server_name of the resident server (v2 only)
+//   auth_chain    - array of PDUs forming the auth chain for the event
+//   state         - array of PDUs representing the current room state
+//   event         - the join event as accepted by the resident server (v2 MUST)
 //
 // IMPORTANT: all five fields are REQUIRED by the spec for v2 send_join.
 // A receiving server may reject the join if any are absent.
-SCENARIO("send_join persists membership and returns auth chain and state",
-         "[federation][conformance][send_join]")
+SCENARIO("send_join persists membership and returns auth chain and state", "[federation][conformance][send_join]")
 {
     GIVEN("a runtime with membership_acceptor wired for send_join")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const join_event_body = std::string{
-            "{\"type\":\"m.room.member\","
-            "\"room_id\":\"!conformance:local.example.org\","
-            "\"sender\":\"@remote:remote.example.org\","
-            "\"state_key\":\"@remote:remote.example.org\","
-            "\"content\":{\"membership\":\"join\"},"
-            "\"depth\":1,\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
+        auto const join_event_body = std::string{"{\"type\":\"m.room.member\","
+                                                 "\"room_id\":\"!conformance:local.example.org\","
+                                                 "\"sender\":\"@remote:remote.example.org\","
+                                                 "\"state_key\":\"@remote:remote.example.org\","
+                                                 "\"content\":{\"membership\":\"join\"},"
+                                                 "\"depth\":1,\"hashes\":{\"sha256\":\"x\"},"
+                                                 "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
 
         auto accept_invoked = std::make_shared<bool>(false);
-        runtime.membership_acceptor =
-            [accept_invoked, join_event_body](
-                merovingian::federation::FederationEndpoint endpoint,
-                [[maybe_unused]] std::string_view target_room_id,
-                [[maybe_unused]] std::string_view event_id,
-                [[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
+        runtime.membership_acceptor = [accept_invoked, join_event_body](
+                                          merovingian::federation::FederationEndpoint endpoint,
+                                          [[maybe_unused]] std::string_view target_room_id,
+                                          [[maybe_unused]] std::string_view event_id,
+                                          [[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
             -> merovingian::federation::MembershipAcceptResult {
             *accept_invoked = true;
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::send_join);
@@ -224,7 +224,7 @@ SCENARIO("send_join persists membership and returns auth chain and state",
                 REQUIRE(*accept_invoked);
 
                 // Spec MUST: room_version present.
-                // Do NOT remove — a joining server uses this to select the correct
+                // Do NOT remove - a joining server uses this to select the correct
                 // event format and auth rules. An absent room_version breaks the join.
                 REQUIRE(response.body.find("\"room_version\"") != std::string::npos);
 
@@ -232,17 +232,17 @@ SCENARIO("send_join persists membership and returns auth chain and state",
                 REQUIRE(response.body.find("\"origin\"") != std::string::npos);
 
                 // Spec MUST: auth_chain present.
-                // Do NOT remove — the joining server needs the auth chain to
+                // Do NOT remove - the joining server needs the auth chain to
                 // validate the join event. An absent auth_chain causes the join to fail.
                 REQUIRE(response.body.find("\"auth_chain\"") != std::string::npos);
 
                 // Spec MUST: state present.
-                // Do NOT remove — the joining server needs the room state to
+                // Do NOT remove - the joining server needs the room state to
                 // build its local copy of the room. An absent state breaks the join.
                 REQUIRE(response.body.find("\"state\"") != std::string::npos);
 
-                // Spec MUST (v2): event present — the accepted join PDU echoed back.
-                // Do NOT remove — the spec requires the resident server to return the
+                // Spec MUST (v2): event present - the accepted join PDU echoed back.
+                // Do NOT remove - the spec requires the resident server to return the
                 // event as it was accepted. Synapse and other servers validate this field.
                 // If this fails, fix handle_send_membership in inbound_request.cpp,
                 // not this assertion.
@@ -252,16 +252,15 @@ SCENARIO("send_join persists membership and returns auth chain and state",
     }
 }
 
-// ─── make_leave ──────────────────────────────────────────────────────────────
-// Spec: Matrix Server-Server API v1.11
+// --- make_leave --------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
 // Endpoint: GET /_matrix/federation/v1/make_leave/{roomId}/{userId}
-// https://spec.matrix.org/v1.11/server-server-api/#get_matrixfederationv1make_leaveroomiduserid
+// https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_leaveroomiduserid
 //
 // The resident server MUST respond 200 with a JSON object containing:
-//   room_version  – the version of the room
-//   event         – a partial leave event template for the leaving server to complete
-SCENARIO("make_leave returns event template for a leaving user",
-         "[federation][conformance][make_leave]")
+//   room_version  - the version of the room
+//   event         - a partial leave event template for the leaving server to complete
+SCENARIO("make_leave returns event template for a leaving user", "[federation][conformance][make_leave]")
 {
     GIVEN("a runtime with membership_template_provider wired for make_leave")
     {
@@ -270,10 +269,8 @@ SCENARIO("make_leave returns event template for a leaving user",
 
         auto template_invoked = std::make_shared<bool>(false);
         runtime.membership_template_provider =
-            [template_invoked](merovingian::federation::FederationEndpoint endpoint,
-                               std::string_view target_room_id,
-                               std::string_view user_id,
-                               std::vector<std::string> const& /*supported_room_versions*/)
+            [template_invoked](merovingian::federation::FederationEndpoint endpoint, std::string_view target_room_id,
+                               std::string_view user_id, std::vector<std::string> const& /*supported_room_versions*/)
             -> std::optional<merovingian::federation::MembershipEventTemplate> {
             *template_invoked = true;
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::make_leave);
@@ -301,15 +298,14 @@ SCENARIO("make_leave returns event template for a leaving user",
     }
 }
 
-// ─── send_leave ──────────────────────────────────────────────────────────────
-// Spec: Matrix Server-Server API v1.11
+// --- send_leave --------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v2/send_leave/{roomId}/{eventId}
-// https://spec.matrix.org/v1.11/server-server-api/#put_matrixfederationv2send_leaveroomideventid
+// https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_leaveroomideventid
 //
 // The resident server MUST respond 200. The v2 response body is an empty
 // object {}. The "event" field MUST NOT appear (it is send_join-only).
-SCENARIO("send_leave processes departure and returns 200",
-         "[federation][conformance][send_leave]")
+SCENARIO("send_leave processes departure and returns 200", "[federation][conformance][send_leave]")
 {
     GIVEN("a runtime with membership_acceptor wired for send_leave")
     {
@@ -332,14 +328,13 @@ SCENARIO("send_leave processes departure and returns 200",
         {
             auto const event_id = std::string{"$leave_event:"} + origin;
             auto const target = "/_matrix/federation/v2/send_leave/" + std::string{room_id} + "/" + event_id;
-            auto const body = std::string{
-                "{\"type\":\"m.room.member\","
-                "\"room_id\":\"!conformance:local.example.org\","
-                "\"sender\":\"@remote:remote.example.org\","
-                "\"state_key\":\"@remote:remote.example.org\","
-                "\"content\":{\"membership\":\"leave\"},"
-                "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
-                "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
+            auto const body = std::string{"{\"type\":\"m.room.member\","
+                                          "\"room_id\":\"!conformance:local.example.org\","
+                                          "\"sender\":\"@remote:remote.example.org\","
+                                          "\"state_key\":\"@remote:remote.example.org\","
+                                          "\"content\":{\"membership\":\"leave\"},"
+                                          "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
+                                          "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
             auto const request = signed_put_request(origin, key_id, key_seed, target, body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
@@ -350,7 +345,7 @@ SCENARIO("send_leave processes departure and returns 200",
                 REQUIRE(*accept_invoked);
 
                 // Spec: "event" is send_join-only. It MUST NOT appear in send_leave.
-                // Do NOT remove — its presence would be a spec violation and could
+                // Do NOT remove - its presence would be a spec violation and could
                 // confuse the remote server's response parser.
                 REQUIRE(response.body.find("\"event\"") == std::string::npos);
             }
@@ -358,15 +353,14 @@ SCENARIO("send_leave processes departure and returns 200",
     }
 }
 
-// ─── invite v2 ───────────────────────────────────────────────────────────────
-// Spec: Matrix Server-Server API v1.11
+// --- invite v2 ---------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v2/invite/{roomId}/{eventId}
-// https://spec.matrix.org/v1.11/server-server-api/#put_matrixfederationv2inviteroomideventid
+// https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2inviteroomideventid
 //
 // The resident server MUST respond 200 with a JSON object containing:
-//   event  – the invite event signed by the resident server
-SCENARIO("invite v2 processes inbound invite and returns signed event",
-         "[federation][conformance][invite_v2]")
+//   event  - the invite event signed by the resident server
+SCENARIO("invite v2 processes inbound invite and returns signed event", "[federation][conformance][invite_v2]")
 {
     GIVEN("a runtime with invite_handler wired")
     {
@@ -399,15 +393,14 @@ SCENARIO("invite v2 processes inbound invite and returns signed event",
     }
 }
 
-// ─── invite v1 ───────────────────────────────────────────────────────────────
-// Spec: Matrix Server-Server API v1.11
+// --- invite v1 ---------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/invite/{roomId}/{eventId}
-// https://spec.matrix.org/v1.11/server-server-api/#put_matrixfederationv1inviteroomideventid
+// https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1inviteroomideventid
 //
 // Legacy path. The resident server MUST respond 200. Response format differs
 // from v2: the event is returned as a bare JSON value, not wrapped in an object.
-SCENARIO("invite v1 processes inbound invite and returns signed event",
-         "[federation][conformance][invite_v1]")
+SCENARIO("invite v1 processes inbound invite and returns signed event", "[federation][conformance][invite_v1]")
 {
     GIVEN("a runtime with invite_handler wired")
     {
@@ -440,15 +433,14 @@ SCENARIO("invite v1 processes inbound invite and returns signed event",
     }
 }
 
-// ─── backfill ────────────────────────────────────────────────────────────────
-// Spec: Matrix Server-Server API v1.11
+// --- backfill ----------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
 // Endpoint: GET /_matrix/federation/v1/backfill/{roomId}
-// https://spec.matrix.org/v1.11/server-server-api/#get_matrixfederationv1backfillroomid
+// https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1backfillroomid
 //
 // The resident server MUST respond 200 with a JSON object containing:
-//   pdus  – array of PDUs from the room's history, oldest first
-SCENARIO("backfill returns room event history as PDU array",
-         "[federation][conformance][backfill]")
+//   pdus  - array of PDUs from the room's history, oldest first
+SCENARIO("backfill returns room event history as PDU array", "[federation][conformance][backfill]")
 {
     GIVEN("a runtime with backfill_provider wired")
     {
@@ -480,10 +472,10 @@ SCENARIO("backfill returns room event history as PDU array",
     }
 }
 
-// ─── key publishing ──────────────────────────────────────────────────────────
-// Spec: Matrix Server-Server API v1.11
+// --- key publishing ----------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
 // Endpoint: GET /_matrix/key/v2/server
-// https://spec.matrix.org/v1.11/server-server-api/#get_matrixkeyv2server
+// https://spec.matrix.org/v1.18/server-server-api/#get_matrixkeyv2server
 //
 // Key publication is served by the local HTTP router, NOT the federation
 // request handler. Verifying the separation prevents a regression where the
@@ -504,21 +496,20 @@ SCENARIO("key publishing is served via the local HTTP router, not federation han
             THEN("the federation handler returns 404 as key publishing is served via the local HTTP router")
             {
                 // Architectural invariant: the federation handler must not serve /_matrix/key/*.
-                // Do NOT change to 200 — if this fires the routing table has regressed.
+                // Do NOT change to 200 - if this fires the routing table has regressed.
                 REQUIRE(response.status == 404U);
             }
         }
     }
 }
 
-// ─── unwired endpoints ───────────────────────────────────────────────────────
-// Spec: Matrix Server-Server API v1.11 (general error handling)
+// --- unwired endpoints -------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18 (general error handling)
 //
-// When a handler is not wired the server MUST respond 501 Not Implemented
+// If a handler is not wired the server MUST respond 501 Not Implemented
 // rather than 404 or 500, so the remote can distinguish "not supported" from
 // "routing error" or "internal failure".
-SCENARIO("unwired endpoints return 501 Not Implemented",
-         "[federation][conformance][unwired]")
+SCENARIO("unwired endpoints return 501 Not Implemented", "[federation][conformance][unwired]")
 {
     GIVEN("a runtime with no membership, invite, or backfill handlers wired")
     {
@@ -533,7 +524,7 @@ SCENARIO("unwired endpoints return 501 Not Implemented",
 
             THEN("the runtime returns 501 Not Implemented")
             {
-                // Do NOT change to 404 or 200 — 501 is the correct signal for
+                // Do NOT change to 404 or 200 - 501 is the correct signal for
                 // "this server understands the endpoint but has not wired a handler."
                 REQUIRE(response.status == 501U);
             }

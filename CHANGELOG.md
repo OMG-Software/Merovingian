@@ -2,6 +2,20 @@
 
 ## 0.4.28
 
+- Fix remote-join `make_join` handling to match the Matrix v1.18 join
+  handshake more closely. Inbound `make_join` templates now include
+  `origin` and `origin_server_ts`, and outbound remote joins now reject
+  malformed `make_join` templates instead of silently repairing missing
+  required fields before signing them.
+- Fix restricted-room auth handling for the v1.18
+  `join_authorised_via_users_server` path. Restricted joins are now accepted
+  when the supplied authorising user is joined and has sufficient invite power,
+  rather than being rejected unconditionally unless the target user was
+  explicitly invited.
+- Pin spec-facing and conformance test comments to Matrix v1.18 sections and
+  add explicit guardrails telling future maintainers and LLMs to fix the
+  implementation rather than weakening protocol assertions when a spec test
+  fails.
 - Fix federation `/send` transaction handler returning HTTP 403 for the entire
   transaction when a single PDU fails signature verification. Per the Matrix
   federation spec, individual PDU failures must be reported inside the response

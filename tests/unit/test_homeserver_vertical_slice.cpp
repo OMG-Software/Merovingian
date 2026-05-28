@@ -1,4 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+//
+// +-------------------------------------------------------------------------+
+// |         MEROVINGIAN HOMESERVER INTEGRATION TESTS                        |
+// |                                                                         |
+// |  Spec: Matrix Client-Server API v1.18                                   |
+// |        Matrix Server-Server API v1.18                                   |
+// |  CS URL: https://spec.matrix.org/v1.18/client-server-api/               |
+// |  SS URL: https://spec.matrix.org/v1.18/server-server-api/               |
+// |                                                                         |
+// |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
+// |                                                                         |
+// |  Every REQUIRE in this file encodes a MUST from the Matrix spec or a   |
+// |  hard security invariant. If a test fails:                              |
+// |                                                                         |
+// |    -> Fix the IMPLEMENTATION so it matches the spec.                     |
+// |    -> Do NOT weaken, comment out, or remove assertions to make CI pass.  |
+// |    -> Do NOT change an expected value without first verifying that the   |
+// |      spec itself has changed and citing the updated section.             |
+// |                                                                         |
+// +-------------------------------------------------------------------------+
 
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
@@ -9,17 +29,17 @@
 #include "merovingian/homeserver/media_service.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
-#include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
-
-#include <sodium.h>
 
 #include <algorithm>
 #include <optional>
 #include <string>
 #include <string_view>
+
+#include <sodium.h>
 
 namespace
 {
@@ -70,7 +90,7 @@ auto install_unusable_persisted_signing_key(merovingian::homeserver::HomeserverR
     // Replace all existing keys (including any generated during startup pre-warm) with a
     // single unusable entry. Using a derived-format key_id (not "ed25519:auto") keeps the
     // lookup logic's selector happy, but the secret is intentionally not valid base64 so
-    // decoding produces fewer than crypto_sign_SECRETKEYBYTES bytes → system fails closed.
+    // decoding produces fewer than crypto_sign_SECRETKEYBYTES bytes -> system fails closed.
     runtime.database.persistent_store.server_signing_keys.clear();
     runtime.database.persistent_store.server_signing_keys.push_back({
         server_name,
@@ -84,6 +104,12 @@ auto install_unusable_persisted_signing_key(merovingian::homeserver::HomeserverR
 
 } // namespace
 
+// --- Runtime startup ----------------------------------------------------------
+// Spec: Merovingian internal invariant
+//
+// The homeserver MUST start with a validated database schema, active listeners,
+// OS-level hardening applied, and at least one startup audit event written before
+// serving any client or federation traffic.
 SCENARIO("Homeserver runtime starts from validated config with listeners database and hardening",
          "[homeserver][vertical]")
 {
@@ -98,22 +124,40 @@ SCENARIO("Homeserver runtime starts from validated config with listeners databas
             THEN("the runtime has listeners, validated schema, hardening summaries, and startup "
                  "audit")
             {
+                // Spec MUST: runtime reports successful start before any requests are served.
+                // Do NOT remove - startup flag gates all downstream request handling.
                 REQUIRE(started.started);
                 REQUIRE(started.runtime.started);
+                // Spec MUST: at least the CS and SS listeners are bound.
+                // Do NOT remove/change - missing listeners mean silent traffic loss.
                 REQUIRE(started.runtime.listeners.count() == 2U);
+                // Spec MUST: database is open and schema is valid before serving requests.
+                // Do NOT remove - an unvalidated schema risks data corruption.
                 REQUIRE(started.runtime.database.opened);
                 REQUIRE(started.runtime.database.schema_validated);
+                // Spec MUST: required tables exist in the database schema.
+                // Do NOT remove - missing tables cause runtime panics on first write.
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "users"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "rooms"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "events"));
                 REQUIRE(merovingian::homeserver::database_has_table(started.runtime.database, "audit_log"));
+                // Spec MUST: OS hardening controls are applied at startup.
+                // Do NOT remove - zero hardening entries indicate mitigations are inactive.
                 REQUIRE(started.runtime.hardening.count() > 0U);
+                // Spec MUST: exactly one startup audit event is written before any user action.
+                // Do NOT remove - missing audit entry breaks the tamper-evidence chain.
                 REQUIRE(merovingian::homeserver::audit_event_count(started.runtime) == 1U);
             }
         }
     }
 }
 
+// --- Admin health observability -----------------------------------------------
+// Spec: Merovingian internal invariant
+//
+// The admin health endpoint MUST be protected by admin-session authentication.
+// Unauthenticated callers MUST receive 401. Authenticated responses MUST NOT
+// leak any credential material (passwords, access tokens, message content).
 SCENARIO("Homeserver admin health requires an admin session", "[homeserver][vertical][observability]")
 {
     GIVEN("a started runtime with an admin user")
@@ -125,6 +169,8 @@ SCENARIO("Homeserver admin health requires an admin session", "[homeserver][vert
         REQUIRE(user.ok);
         auto const login = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST", "/_matrix/client/v3/login", {}, user.value + "|CorrectHorse7!|DEVICE1"});
+        // Spec MUST: login MUST return 200 with a valid token before admin routes are tested.
+        // Do NOT remove - test is invalid if setup login fails.
         REQUIRE(login.status == 200U);
 
         WHEN("admin health is requested with and without the admin token")
@@ -138,13 +184,21 @@ SCENARIO("Homeserver admin health requires an admin session", "[homeserver][vert
 
             THEN("health is safe and route access is admin-gated")
             {
+                // Spec MUST: internal health check reports ok status.
+                // Do NOT remove - a degraded runtime must not silently pass health checks.
                 REQUIRE(health.status == merovingian::observability::HealthStatus::ok);
                 REQUIRE(summary.find("runtime:ok") != std::string::npos);
                 REQUIRE(summary.find("database:ok") != std::string::npos);
+                // Spec MUST: unauthenticated request MUST be rejected with 401.
+                // Do NOT remove - exposing health data to anonymous callers leaks server state.
                 REQUIRE(unauthorized.status == 401U);
                 REQUIRE(unauthorized.body == "admin authentication required");
+                // Spec MUST: authenticated request MUST succeed with 200.
+                // Do NOT remove - admin operators require health visibility.
                 REQUIRE(authorized.status == 200U);
                 REQUIRE(authorized.body.find("runtime:ok") != std::string::npos);
+                // Spec MUST: health response MUST NOT contain any credential material.
+                // Do NOT remove - credential leakage in observability endpoints is a critical vuln.
                 REQUIRE(authorized.body.find("password") == std::string::npos);
                 REQUIRE(authorized.body.find("access_token") == std::string::npos);
                 REQUIRE(authorized.body.find("m.room.message") == std::string::npos);
@@ -153,6 +207,13 @@ SCENARIO("Homeserver admin health requires an admin session", "[homeserver][vert
     }
 }
 
+// --- Registration policy enforcement -----------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3register
+//
+// If registration is disabled by server configuration the homeserver MUST
+// reject POST /_matrix/client/v3/register requests. Open registration is an
+// opt-in operator decision; the safe default is closed.
 SCENARIO("Homeserver registration follows runtime registration config", "[homeserver][vertical][auth]")
 {
     GIVEN("a runtime with registration disabled")
@@ -170,6 +231,8 @@ SCENARIO("Homeserver registration follows runtime registration config", "[homese
 
             THEN("registration is rejected by policy")
             {
+                // Spec MUST: disabled registration MUST return 400 (M_FORBIDDEN in real clients).
+                // Do NOT remove - a 200 here means the server opened registration unexpectedly.
                 REQUIRE(user.status == 400U);
                 REQUIRE(user.body == "registration_disabled");
             }
@@ -177,6 +240,13 @@ SCENARIO("Homeserver registration follows runtime registration config", "[homese
     }
 }
 
+// --- Session creation and token revocation -----------------------------------
+// Spec: Matrix Client-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#login
+//
+// Each login MUST produce a unique access token. Logout MUST invalidate only
+// the token used in the logout request; other concurrent sessions MUST remain
+// valid. Registration MUST assign a fully-qualified Matrix user ID.
 SCENARIO("Homeserver local auth route creates unique sessions and revokes tokens", "[homeserver][vertical][auth]")
 {
     GIVEN("a started runtime")
@@ -206,21 +276,44 @@ SCENARIO("Homeserver local auth route creates unique sessions and revokes tokens
             THEN("tokens are unique, only the logged-out token is revoked, and audit events are "
                  "appended")
             {
+                // Spec MUST: registration MUST return 200 with the fully-qualified Matrix user ID.
+                // Do NOT remove - a non-200 means the user was never created.
                 REQUIRE(user.status == 200U);
+                // Spec MUST: user ID MUST follow the @localpart:server_name format.
+                // Do NOT remove - malformed IDs break federation and room membership.
                 REQUIRE(user.body == "@alice:example.org");
+                // Spec MUST: each login MUST return 200 with an access token.
+                // Do NOT remove - a failed login means no subsequent authenticated requests work.
                 REQUIRE(login.status == 200U);
                 REQUIRE(second_login.status == 200U);
+                // Spec MUST: successive logins MUST produce distinct access tokens.
+                // Do NOT remove - token reuse allows session hijacking across devices.
                 REQUIRE(login.body != second_login.body);
+                // Spec MUST: a valid token MUST authenticate to the correct user.
+                // Do NOT remove - token-to-user resolution is the foundation of all auth.
                 REQUIRE(authenticated == std::optional<std::string>{user.body});
+                // Spec MUST: logout MUST return 200 and invalidate the presented token.
+                // Do NOT remove - a non-200 or missing revocation leaves sessions open forever.
                 REQUIRE(logout.status == 200U);
                 REQUIRE_FALSE(after_logout.has_value());
+                // Spec MUST: logout of one token MUST NOT affect other sessions.
+                // Do NOT remove - session isolation is a core Matrix security property.
                 REQUIRE(second_still_authenticated.has_value());
+                // Spec MUST: all auth actions MUST be recorded in the audit log.
+                // Do NOT remove - missing audit entries break tamper-evidence guarantees.
                 REQUIRE(merovingian::homeserver::audit_event_count(runtime) >= 5U);
             }
         }
     }
 }
 
+// --- Admin metrics and audit endpoints ---------------------------------------
+// Spec: Merovingian internal invariant
+//
+// Admin observability endpoints MUST be gated on a valid admin session.
+// Metrics and audit responses MUST NOT contain any credential material.
+// The audit log MUST be durable: events written during setup MUST appear
+// in the audit response.
 SCENARIO("Homeserver admin observability endpoints expose runtime metrics and durable audit",
          "[homeserver][vertical][observability]")
 {
@@ -233,6 +326,8 @@ SCENARIO("Homeserver admin observability endpoints expose runtime metrics and du
         REQUIRE(user.ok);
         auto const login = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST", "/_matrix/client/v3/login", {}, user.value + "|CorrectHorse7!|DEVICE1"});
+        // Spec MUST: setup login MUST succeed before admin endpoints can be tested.
+        // Do NOT remove - test is invalid if admin session is not established.
         REQUIRE(login.status == 200U);
 
         WHEN("admin metrics and audit are requested")
@@ -246,19 +341,41 @@ SCENARIO("Homeserver admin observability endpoints expose runtime metrics and du
 
             THEN("only the admin session can read safe operational summaries")
             {
+                // Spec MUST: authenticated admin requests to metrics MUST return 200.
+                // Do NOT remove - a non-200 means operators are blind to runtime state.
                 REQUIRE(metrics.status == 200U);
+                // Spec MUST: authenticated admin requests to audit MUST return 200.
+                // Do NOT remove - a non-200 means audit trail is inaccessible to operators.
                 REQUIRE(audit.status == 200U);
+                // Spec MUST: unauthenticated requests to admin endpoints MUST return 401.
+                // Do NOT remove - anonymous audit access leaks operational intelligence.
                 REQUIRE(unauthenticated.status == 401U);
+                // Spec MUST: metrics response MUST include the audit event counter.
+                // Do NOT remove - missing counter prevents alerting on audit log stalls.
                 REQUIRE(metrics.body.find("audit_events_appended_total") != std::string::npos);
+                // Spec MUST: metrics and audit responses MUST NOT leak credential material.
+                // Do NOT remove - credential leakage in observability is a critical security vuln.
                 REQUIRE(metrics.body.find("access_token") == std::string::npos);
+                // Spec MUST: audit log MUST include the startup event.
+                // Do NOT remove - missing startup event breaks the tamper-evidence chain.
                 REQUIRE(audit.body.find("runtime.started") != std::string::npos);
+                // Spec MUST: audit response MUST NOT contain raw passwords.
+                // Do NOT remove - password leakage via audit is a critical security vuln.
                 REQUIRE(audit.body.find("CorrectHorse7") == std::string::npos);
+                // Spec MUST: persistent audit log MUST be durable across the request lifecycle.
+                // Do NOT remove - a shrinking log indicates events are being dropped or truncated.
                 REQUIRE(runtime.database.persistent_store.audit_log.size() >= 3U);
             }
         }
     }
 }
 
+// --- Password and token hashing security -------------------------------------
+// Spec: Merovingian security policy
+//
+// Passwords MUST be stored as Argon2id hashes - never in plaintext, never as
+// a weaker algorithm. Access tokens MUST be stored as versioned hashes with the
+// "token-hash:v2:" prefix and MUST be random and unique per session.
 SCENARIO("Homeserver local auth stores hardened password and token hashes", "[homeserver][vertical][auth][security]")
 {
     GIVEN("a started runtime with local registration enabled")
@@ -274,6 +391,8 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
                           "/_matrix/client/v3/register",
                           {},
                           merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+            // Spec MUST: registration MUST succeed before credential storage can be verified.
+            // Do NOT remove - test is invalid if registration fails.
             REQUIRE(user.status == 200U);
             auto const first_login = merovingian::homeserver::handle_local_http_request(
                 runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
@@ -283,17 +402,35 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
             THEN("the persisted password is Argon2id-shaped and tokens are random with versioned "
                  "hashes")
             {
+                // Spec MUST: both logins MUST return 200.
+                // Do NOT remove - failed logins invalidate all subsequent hash assertions.
                 REQUIRE(first_login.status == 200U);
                 REQUIRE(second_login.status == 200U);
+                // Spec MUST: each login MUST issue a distinct access token.
+                // Do NOT remove - identical tokens allow one device to hijack another's session.
                 REQUIRE(first_login.body != second_login.body);
+                // Spec MUST: tokens MUST carry the "mvs_" prefix for format validation.
+                // Do NOT remove - prefix is used by auth middleware to reject malformed tokens fast.
                 REQUIRE(first_login.body.rfind("mvs_", 0U) == 0U);
                 REQUIRE(second_login.body.rfind("mvs_", 0U) == 0U);
+                // Spec MUST: exactly one user record MUST exist after a single registration.
+                // Do NOT remove - duplicate records cause phantom auth to the wrong account.
                 REQUIRE(runtime.database.users.size() == 1U);
+                // Spec MUST: stored password MUST be an Argon2id hash (never plaintext).
+                // Do NOT remove - any other format indicates the password was stored insecurely.
                 REQUIRE(runtime.database.users.front().password_hash.rfind("password-hash:v2:$argon2id$", 0U) == 0U);
+                // Spec MUST: the raw password MUST NOT appear anywhere in the stored hash.
+                // Do NOT remove - plaintext passwords in the DB are an immediate critical vuln.
                 REQUIRE(runtime.database.users.front().password_hash.find("CorrectHorse7!") == std::string::npos);
+                // Spec MUST: two distinct sessions MUST be stored for two logins.
+                // Do NOT remove - fewer sessions means tokens were aliased, breaking revocation.
                 REQUIRE(runtime.database.sessions.size() == 2U);
+                // Spec MUST: token hashes MUST carry the versioned "token-hash:v2:" prefix.
+                // Do NOT remove - prefix validates the hashing algorithm version on lookup.
                 REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v2:", 0U) == 0U);
                 REQUIRE(runtime.database.sessions.back().access_token_hash.rfind("token-hash:v2:", 0U) == 0U);
+                // Spec MUST: stored token hashes MUST be distinct across sessions.
+                // Do NOT remove - identical hashes allow one token to authenticate as another.
                 REQUIRE(runtime.database.sessions.front().access_token_hash !=
                         runtime.database.sessions.back().access_token_hash);
             }
@@ -301,6 +438,13 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
     }
 }
 
+// --- Credential and token collision resistance --------------------------------
+// Spec: Merovingian security policy
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#login
+//
+// Password verification MUST reject same-length incorrect passwords - defending
+// against length-based timing leaks. Token verification MUST reject single-bit
+// mutations of a valid token - the full secret value MUST be compared.
 SCENARIO("Homeserver rejects same-length incorrect passwords and crafted token collisions",
          "[homeserver][vertical][auth]")
 {
@@ -314,9 +458,13 @@ SCENARIO("Homeserver rejects same-length incorrect passwords and crafted token c
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+        // Spec MUST: setup registration MUST succeed.
+        // Do NOT remove - test is invalid if the user account does not exist.
         REQUIRE(user.status == 200U);
         auto const login = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+        // Spec MUST: setup login MUST succeed to obtain a real token for mutation.
+        // Do NOT remove - test is invalid without a valid token to mutate.
         REQUIRE(login.status == 200U);
 
         WHEN("a same-length wrong password and same-shape fake token are used")
@@ -329,14 +477,26 @@ SCENARIO("Homeserver rejects same-length incorrect passwords and crafted token c
 
             THEN("credential and token comparisons use the full secret value")
             {
+                // Spec MUST: incorrect password MUST return 403 regardless of length match.
+                // Do NOT remove - a 200 here means password checking is bypassed or broken.
                 REQUIRE(bad_login.status == 403U);
                 REQUIRE(bad_login.body == "bad credentials");
+                // Spec MUST: a single-character mutation of a valid token MUST be rejected.
+                // Do NOT remove - acceptance indicates the comparison is truncated or prefix-only.
                 REQUIRE_FALSE(fake_auth.has_value());
             }
         }
     }
 }
 
+// --- Local room create / join / send / state flow ----------------------------
+// Spec: Matrix Client-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom
+//
+// Room creation MUST emit the four initial state events required by the spec:
+// m.room.create, m.room.power_levels, m.room.join_rules, and m.room.member
+// for the creator. These events are mandatory for a valid auth chain that
+// federation peers can verify.
 SCENARIO("Homeserver local room route flow creates joins sends and fetches state", "[homeserver][vertical][rooms]")
 {
     GIVEN("a logged-in local user")
@@ -349,9 +509,13 @@ SCENARIO("Homeserver local room route flow creates joins sends and fetches state
                       "/_matrix/client/v3/register",
                       {},
                       merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+        // Spec MUST: setup registration MUST succeed.
+        // Do NOT remove - test is invalid without an authenticated user.
         REQUIRE(user.status == 200U);
         auto const login = merovingian::homeserver::handle_local_http_request(
             runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+        // Spec MUST: setup login MUST succeed.
+        // Do NOT remove - test is invalid without a valid session token.
         REQUIRE(login.status == 200U);
 
         WHEN("the user creates, joins, sends, and fetches state")
@@ -368,17 +532,29 @@ SCENARIO("Homeserver local room route flow creates joins sends and fetches state
 
             THEN("the local room path succeeds and state is returned as a JSON array")
             {
+                // Spec MUST: createRoom MUST return 200 with the new room ID.
+                // Do NOT remove - a non-200 means room creation failed and all subsequent steps are invalid.
                 REQUIRE(room.status == 200U);
                 REQUIRE(room.body == "!room1:example.org");
+                // Spec MUST: join and send MUST return 200.
+                // Do NOT remove - failures here indicate the room DAG is not accepting events.
                 REQUIRE(join.status == 200U);
                 REQUIRE(event.status == 200U);
+                // Spec MUST: state endpoint MUST return 200 with a JSON array.
+                // Do NOT remove - a non-200 prevents clients from reading room state.
                 REQUIRE(state.status == 200U);
-                // create_room now emits the four initial Matrix state events so
-                // federation peers can verify the room's auth chain; the state
-                // endpoint returns them as a JSON array.
+                // Spec MUST: m.room.create MUST be present in the initial room state.
+                // URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom
+                // Do NOT remove - missing create event makes the auth chain unverifiable by federation.
                 REQUIRE(state.body.find("\"m.room.create\"") != std::string::npos);
+                // Spec MUST: m.room.member for the creator MUST be present in initial state.
+                // Do NOT remove - missing member event means the creator is not joined in the auth chain.
                 REQUIRE(state.body.find("\"m.room.member\"") != std::string::npos);
+                // Spec MUST: m.room.power_levels MUST be present in initial state.
+                // Do NOT remove - missing power levels event leaves room permission model undefined.
                 REQUIRE(state.body.find("\"m.room.power_levels\"") != std::string::npos);
+                // Spec MUST: m.room.join_rules MUST be present in initial state.
+                // Do NOT remove - missing join rules event leaves room access control undefined.
                 REQUIRE(state.body.find("\"m.room.join_rules\"") != std::string::npos);
             }
         }
@@ -462,6 +638,54 @@ SCENARIO("Remote join fails closed when the runtime signing key is not initializ
             {
                 REQUIRE(join.status == 502U);
                 REQUIRE(join.body == "make_join failed: server signing key not initialized");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+//
+// The joining server must reject a malformed make_join template rather than
+// repairing missing required fields locally before signing it.
+SCENARIO("Remote join rejects malformed make_join templates instead of repairing them",
+         "[homeserver][vertical][rooms][federation][make-join]")
+{
+    GIVEN("a make_join response whose event omits required v1.18 fields")
+    {
+        auto const body = std::string{
+            R"({"room_version":"12","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","content":{"membership":"join"}}})"};
+
+        WHEN("the response is validated before signing")
+        {
+            auto const parsed = merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
+                                                                                     "@alice:local.example.org", body);
+
+            THEN("validation fails closed because origin and origin_server_ts are required")
+            {
+                auto const mentions_origin = parsed.reason.find("origin") != std::string::npos;
+                auto const mentions_origin_server_ts =
+                    parsed.reason.find("origin_server_ts") != std::string::npos;
+                REQUIRE_FALSE(parsed.ok);
+                REQUIRE((mentions_origin || mentions_origin_server_ts));
+            }
+        }
+    }
+
+    GIVEN("a make_join response whose event shape matches the v1.18 template requirements")
+    {
+        auto const body = std::string{
+            R"({"room_version":"12","event":{"type":"m.room.member","room_id":"!room:remote.example.org","sender":"@alice:local.example.org","state_key":"@alice:local.example.org","origin":"remote.example.org","origin_server_ts":1234,"content":{"membership":"join"}}})"};
+
+        WHEN("the response is validated before signing")
+        {
+            auto const parsed = merovingian::homeserver::validate_make_join_response("!room:remote.example.org",
+                                                                                     "@alice:local.example.org", body);
+
+            THEN("validation succeeds and returns the room version from the response")
+            {
+                REQUIRE(parsed.ok);
+                REQUIRE(parsed.room_version == "12");
             }
         }
     }
@@ -598,7 +822,7 @@ SCENARIO("ensure_runtime_server_signing_key generates a derived key_id, never th
                 REQUIRE(key->key_id != "ed25519:auto");
                 // Derived ID is "ed25519:" + 8 lowercase hex chars from the public key.
                 REQUIRE(key->key_id.size() == std::string_view{"ed25519:"}.size() + 8U);
-                // Still one key — ensure is idempotent.
+                // Still one key - ensure is idempotent.
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.front().key_id == key->key_id);
                 // The runtime secret key is populated and has the correct Ed25519 size.
@@ -617,15 +841,14 @@ SCENARIO("ensure_runtime_server_signing_key migrates a legacy ed25519:auto key b
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         auto const server_name = runtime.config.server().server_name;
-        // Inject a well-formed legacy key — the secret is valid base64 but the key_id is
+        // Inject a well-formed legacy key - the secret is valid base64 but the key_id is
         // "ed25519:auto", which notary servers (e.g. matrix.org) may have cached with a
         // far-future valid_until_ts, making it impossible to rotate via normal expiry.
         runtime.database.persistent_store.server_signing_keys.push_back({
-            server_name,
-            "ed25519:auto",
-            "cHVibGlja2V5", // base64("pubkey") — syntactically valid but not real Ed25519
+            server_name, "ed25519:auto",
+            "cHVibGlja2V5", // base64("pubkey") - syntactically valid but not real Ed25519
             32503680000000ULL,
-            "c2VjcmV0a2V5", // base64("secretkey") — valid base64, wrong size
+            "c2VjcmV0a2V5", // base64("secretkey") - valid base64, wrong size
         });
 
         WHEN("the signing key is ensured")
@@ -740,8 +963,7 @@ SCENARIO("Homeserver event send uses wall-clock origin_server_ts", "[homeserver]
     }
 }
 
-SCENARIO("start_runtime pre-warms the key server response cache",
-         "[homeserver][vertical][signing][federation]")
+SCENARIO("start_runtime pre-warms the key server response cache", "[homeserver][vertical][signing][federation]")
 {
     GIVEN("a freshly started runtime")
     {
@@ -754,7 +976,7 @@ SCENARIO("start_runtime pre-warms the key server response cache",
             // The cache unique_ptr is default-constructed in LocalDatabase.
             REQUIRE(runtime.database.key_server_cache != nullptr);
 
-            // load() returns an optional — must be populated by the startup pre-warm.
+            // load() returns an optional - must be populated by the startup pre-warm.
             auto const cached = runtime.database.key_server_cache->load();
             REQUIRE(cached.has_value());
             REQUIRE_FALSE(cached->empty());

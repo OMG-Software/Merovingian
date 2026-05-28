@@ -65,6 +65,7 @@ struct AuthEventMap final
     canonicaljson::Value join_rules{};
     canonicaljson::Value sender_member{};
     canonicaljson::Value target_member{};
+    canonicaljson::Value authorising_user_member{};
     canonicaljson::Value third_party_invite{};
 };
 

@@ -40,6 +40,9 @@ Implemented now:
   iterative auth-based conflict resolution
 - helper functions for power-level extraction, membership parsing, sender
   domain extraction
+- restricted-room join auth accepts a valid
+  `content.join_authorised_via_users_server` when the named resident user is
+  joined and has sufficient invite power
 - unit coverage for content hashes, reference-hash event IDs, event envelope
   parsing, signing payloads, signature attachment/verification, redaction,
   room-version fixtures, full auth rule steps, and v2 state resolution
@@ -48,7 +51,8 @@ Not implemented yet:
 
 - signing-key rotation
 - full Matrix room-version conformance fixture suite
-- restricted join rule evaluation (requires parent-space membership)
+- resident-side restricted-join allow-condition evaluation (requires checking
+  parent-space membership when choosing whether to grant a join)
 - third-party invite auth event handling
 
 ## Runtime wiring

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
@@ -9,8 +10,6 @@
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
-
-#include "federation_signing_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -165,8 +164,7 @@ private:
     return signed_event.event_json;
 }
 
-[[nodiscard]] auto signed_get_request(std::string const& origin, std::string const& key_id,
-                                      std::string const& key_seed,
+[[nodiscard]] auto signed_get_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
                                       std::string const& target) -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
@@ -184,9 +182,9 @@ private:
     return request;
 }
 
-[[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id,
-                                      std::string const& key_seed, std::string const& target,
-                                      std::string const& body) -> merovingian::federation::SignedFederationRequest
+[[nodiscard]] auto signed_put_request(std::string const& origin, std::string const& key_id, std::string const& key_seed,
+                                      std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "PUT";
@@ -204,8 +202,8 @@ private:
 }
 
 [[nodiscard]] auto signed_post_request(std::string const& origin, std::string const& key_id,
-                                       std::string const& key_seed, std::string const& target,
-                                       std::string const& body) -> merovingian::federation::SignedFederationRequest
+                                       std::string const& key_seed, std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
 {
     auto request = merovingian::federation::SignedFederationRequest{};
     request.method = "POST";
@@ -280,8 +278,9 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
         auto conflict_seen = std::make_shared<bool>(false);
-        runtime.pdu_sink = [conflict_seen](merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::PduIngestionResult {
+        runtime.pdu_sink =
+            [conflict_seen](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
             *conflict_seen = true;
             return {merovingian::federation::PduIngestionStatus::rejected_state_conflict, "fork detected"};
         };
@@ -324,8 +323,7 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
     }
 }
 
-SCENARIO("Membership template provider is invoked for make_join and make_leave",
-         "[federation][callbacks][membership]")
+SCENARIO("Membership template provider is invoked for make_join and make_leave", "[federation][callbacks][membership]")
 {
     GIVEN("a runtime with membership_template_provider wired and a known remote")
     {
@@ -338,10 +336,10 @@ SCENARIO("Membership template provider is invoked for make_join and make_leave",
         auto provider_invoked = std::make_shared<bool>(false);
         auto captured_room_id = std::make_shared<std::string>();
         auto captured_user_id = std::make_shared<std::string>();
-        runtime.membership_template_provider =
-            [provider_invoked, captured_room_id,
-             captured_user_id](merovingian::federation::FederationEndpoint /*endpoint*/, std::string_view room_id,
-                               std::string_view user_id, std::vector<std::string> const& /*versions*/)
+        runtime.membership_template_provider = [provider_invoked, captured_room_id, captured_user_id](
+                                                   merovingian::federation::FederationEndpoint /*endpoint*/,
+                                                   std::string_view room_id, std::string_view user_id,
+                                                   std::vector<std::string> const& /*versions*/)
             -> std::optional<merovingian::federation::MembershipEventTemplate> {
             *provider_invoked = true;
             *captured_room_id = std::string{room_id};
@@ -403,8 +401,7 @@ SCENARIO("Membership template provider is invoked for make_join and make_leave",
     }
 }
 
-SCENARIO("Membership acceptor is invoked for send_join",
-         "[federation][callbacks][membership]")
+SCENARIO("Membership acceptor is invoked for send_join", "[federation][callbacks][membership]")
 {
     GIVEN("a runtime with membership_acceptor wired and a known remote")
     {
@@ -417,10 +414,9 @@ SCENARIO("Membership acceptor is invoked for send_join",
         auto acceptor_invoked = std::make_shared<bool>(false);
         auto captured_event_id = std::make_shared<std::string>();
         runtime.membership_acceptor =
-            [acceptor_invoked, captured_event_id](
-                merovingian::federation::FederationEndpoint /*endpoint*/, std::string_view /*room_id*/,
-                std::string_view event_id,
-                merovingian::federation::InboundPduEnvelope const& /*envelope*/)
+            [acceptor_invoked, captured_event_id](merovingian::federation::FederationEndpoint /*endpoint*/,
+                                                  std::string_view /*room_id*/, std::string_view event_id,
+                                                  merovingian::federation::InboundPduEnvelope const& /*envelope*/)
             -> merovingian::federation::MembershipAcceptResult {
             *acceptor_invoked = true;
             *captured_event_id = std::string{event_id};
@@ -463,10 +459,9 @@ SCENARIO("make_join version negotiation rejects incompatible room versions",
 
         // Simulate a server hosting a v12 room. If the remote does not support
         // v12, the provider signals M_INCOMPATIBLE_ROOM_VERSION via tmpl.reason.
-        runtime.membership_template_provider =
-            [](merovingian::federation::FederationEndpoint, std::string_view room_id,
-               std::string_view user_id,
-               std::vector<std::string> const& supported_versions)
+        runtime.membership_template_provider = [](merovingian::federation::FederationEndpoint, std::string_view room_id,
+                                                  std::string_view user_id,
+                                                  std::vector<std::string> const& supported_versions)
             -> std::optional<merovingian::federation::MembershipEventTemplate> {
             auto const room_version = std::string{"12"};
             if (!supported_versions.empty() &&
@@ -489,10 +484,10 @@ SCENARIO("make_join version negotiation rejects incompatible room versions",
 
         WHEN("make_join is called with only ver=10 (remote does not support v12)")
         {
-            auto const target = std::string{
-                "/_matrix/federation/v1/make_join/!room:example.org/@alice:matrix.example.org?ver=10"};
-            auto const response =
-                merovingian::federation::handle_inbound_federation_request(runtime, signed_get_request(origin, key_id, token, target));
+            auto const target =
+                std::string{"/_matrix/federation/v1/make_join/!room:example.org/@alice:matrix.example.org?ver=10"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, token, target));
 
             THEN("the response is 400 with M_INCOMPATIBLE_ROOM_VERSION in the body")
             {
@@ -505,8 +500,8 @@ SCENARIO("make_join version negotiation rejects incompatible room versions",
         {
             auto const target = std::string{
                 "/_matrix/federation/v1/make_join/!room:example.org/@alice:matrix.example.org?ver=10&ver=12"};
-            auto const response =
-                merovingian::federation::handle_inbound_federation_request(runtime, signed_get_request(origin, key_id, token, target));
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, token, target));
 
             THEN("the response is 200 with room_version 12 in the template")
             {
@@ -530,8 +525,7 @@ SCENARIO("send_join response carries the room_version from the membership accept
 
         runtime.membership_acceptor =
             [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
-               merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::MembershipAcceptResult {
+               merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
             auto result = merovingian::federation::MembershipAcceptResult{};
             result.accepted = true;
             result.status = 200U;
@@ -565,8 +559,7 @@ SCENARIO("send_join response carries the room_version from the membership accept
 
         runtime.membership_acceptor =
             [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
-               merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::MembershipAcceptResult {
+               merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
             auto result = merovingian::federation::MembershipAcceptResult{};
             result.accepted = true;
             result.status = 200U;
@@ -604,9 +597,8 @@ SCENARIO("Backfill provider is invoked for backfill requests", "[federation][cal
         auto captured_limit = std::make_shared<std::size_t>(0U);
         auto captured_event_ids = std::make_shared<std::vector<std::string>>();
         runtime.backfill_provider =
-            [provider_invoked, captured_limit,
-             captured_event_ids](merovingian::federation::BackfillRequest const& req)
-            -> merovingian::federation::BackfillResult {
+            [provider_invoked, captured_limit, captured_event_ids](
+                merovingian::federation::BackfillRequest const& req) -> merovingian::federation::BackfillResult {
             *provider_invoked = true;
             *captured_limit = req.limit;
             *captured_event_ids = req.event_ids;
@@ -670,8 +662,7 @@ SCENARIO("Profile query provider answers inbound federation query/profile", "[fe
         auto const token = std::string{"profile-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
-        runtime.profile_query_provider =
-            [](std::string_view user_id) -> merovingian::federation::FederationProfile {
+        runtime.profile_query_provider = [](std::string_view user_id) -> merovingian::federation::FederationProfile {
             if (user_id == "@alice:local.example.org")
             {
                 return {true, "Alice", "mxc://local.example.org/avatar"};
@@ -732,8 +723,7 @@ SCENARIO("Profile query provider answers inbound federation query/profile", "[fe
         auto const token = std::string{"profile-no-cb-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
 
-        auto const target =
-            std::string{"/_matrix/federation/v1/query/profile?user_id=%40alice%3Alocal.example.org"};
+        auto const target = std::string{"/_matrix/federation/v1/query/profile?user_id=%40alice%3Alocal.example.org"};
 
         WHEN("the query/profile request is handled")
         {
@@ -748,8 +738,7 @@ SCENARIO("Profile query provider answers inbound federation query/profile", "[fe
     }
 }
 
-SCENARIO("E2EE federation key routes dispatch through their runtime hooks",
-         "[federation][callbacks][e2ee-keys]")
+SCENARIO("E2EE federation key routes dispatch through their runtime hooks", "[federation][callbacks][e2ee-keys]")
 {
     GIVEN("a runtime with the E2EE key hooks wired and a known remote")
     {
@@ -829,8 +818,7 @@ SCENARIO("E2EE federation key routes dispatch through their runtime hooks",
     }
 }
 
-SCENARIO("Remote key rotation triggers resolver when cached key is stale",
-         "[federation][callbacks][key_rotation]")
+SCENARIO("Remote key rotation triggers resolver when cached key is stale", "[federation][callbacks][key_rotation]")
 {
     GIVEN("a runtime with a known remote whose signing key has expired")
     {
@@ -841,16 +829,16 @@ SCENARIO("Remote key rotation triggers resolver when cached key is stale",
         auto const old_token = std::string{"old-key-token"};
         auto const new_token = std::string{"new-key-token"};
 
-        // Stale key: valid_until_ts=500, but request.now_ts=1000 → expired
+        // Stale key: valid_until_ts=500, but request.now_ts=1000 -> expired
         auto stale_remote = remote_for(origin, old_key_id, old_token);
         stale_remote.signing_key.valid_until_ts = 500U;
         merovingian::federation::upsert_remote(runtime, stale_remote);
 
         auto resolver_invoked = std::make_shared<bool>(false);
         runtime.remote_key_resolver =
-            [resolver_invoked, origin, new_key_id,
-             new_token](std::string_view server_name,
-                        std::string_view /*key_id*/) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            [resolver_invoked, origin, new_key_id, new_token](
+                std::string_view server_name,
+                std::string_view /*key_id*/) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
             if (server_name != origin)
             {
                 return std::nullopt;
@@ -899,9 +887,9 @@ SCENARIO("Remote key rotation triggers resolver when cached key is stale",
 
         auto resolver_called = std::make_shared<bool>(false);
         runtime.remote_key_resolver =
-            [resolver_called, origin, new_key_id,
-             new_token](std::string_view server_name,
-                        std::string_view req_key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+            [resolver_called, origin, new_key_id, new_token](
+                std::string_view server_name,
+                std::string_view req_key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
             if (server_name != origin || req_key_id != new_key_id)
             {
                 return std::nullopt;
@@ -942,32 +930,31 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
 {
     GIVEN("a remote registered under one keypair and a PDU signed with a different keypair")
     {
-        auto runtime        = merovingian::federation::make_federation_runtime_state(runtime_config());
-        auto const origin   = std::string{"matrix.example.org"};
-        auto const key_id   = std::string{"ed25519:auto"};
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
         auto const reg_seed = std::string{"registered-seed"};
         auto const bad_seed = std::string{"unregistered-seed"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, reg_seed));
 
         auto sink_invoked = std::make_shared<bool>(false);
-        runtime.pdu_sink  = [sink_invoked](merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::PduIngestionResult
-        {
+        runtime.pdu_sink =
+            [sink_invoked](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
             *sink_invoked = true;
             return {merovingian::federation::PduIngestionStatus::accepted, {}};
         };
 
         // PDU whose signature won't verify against the registered key
         auto const bad_pdu = signed_json_pdu(origin, key_id, bad_seed);
-        auto const request  = signed_put_request(origin, key_id, reg_seed,
-                                                 "/_matrix/federation/v1/send/txn-bad-sig-001",
-                                                 bad_pdu);
+        auto const request =
+            signed_put_request(origin, key_id, reg_seed, "/_matrix/federation/v1/send/txn-bad-sig-001", bad_pdu);
 
         WHEN("the transaction containing the bad PDU is handled")
         {
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
-            THEN("the response is 200, not 403 — the whole transaction is not rejected")
+            THEN("the response is 200, not 403 - the whole transaction is not rejected")
             {
                 REQUIRE(response.status == 200U);
             }
@@ -987,28 +974,27 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
 
     GIVEN("a transaction mixing one valid PDU and one bad-signature PDU")
     {
-        auto runtime         = merovingian::federation::make_federation_runtime_state(runtime_config());
-        auto const origin    = std::string{"matrix.example.org"};
-        auto const key_id    = std::string{"ed25519:auto"};
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
         auto const good_seed = std::string{"mixed-good-seed"};
-        auto const bad_seed  = std::string{"mixed-bad-seed"};
+        auto const bad_seed = std::string{"mixed-bad-seed"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, good_seed));
 
         auto sink_calls = std::make_shared<std::size_t>(0U);
-        runtime.pdu_sink = [sink_calls](merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::PduIngestionResult
-        {
+        runtime.pdu_sink =
+            [sink_calls](
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::PduIngestionResult {
             ++(*sink_calls);
             return {merovingian::federation::PduIngestionStatus::accepted, {}};
         };
 
         auto const good_pdu = signed_json_pdu(origin, key_id, good_seed);
-        auto const bad_pdu  = signed_json_pdu(origin, key_id, bad_seed);
+        auto const bad_pdu = signed_json_pdu(origin, key_id, bad_seed);
         // Wrap both PDUs in a proper transaction body
-        auto const body     = std::string{"{\"pdus\":["} + good_pdu + "," + bad_pdu + "]}";
-        auto const request  = signed_put_request(origin, key_id, good_seed,
-                                                 "/_matrix/federation/v1/send/txn-mixed-001",
-                                                 body);
+        auto const body = std::string{"{\"pdus\":["} + good_pdu + "," + bad_pdu + "]}";
+        auto const request =
+            signed_put_request(origin, key_id, good_seed, "/_matrix/federation/v1/send/txn-mixed-001", body);
 
         WHEN("the mixed transaction is handled")
         {
@@ -1028,6 +1014,15 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
     }
 }
 
+// --- send_join / send_leave response shape -----------------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 10 Joining Rooms
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_leaveroomideventid
+//
+// The resident server MUST echo the accepted join event back under "event" for
+// v2 send_join responses. send_leave does not define that field. If this test
+// fails, fix the implementation. Do NOT weaken the assertions unless the Matrix
+// spec itself changes and the new section is cited here.
 SCENARIO("send_join v2 response echoes the signed join event in the 'event' field",
          "[federation][callbacks][membership][spec]")
 {
@@ -1041,10 +1036,9 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
 
         auto const join_event_json = signed_json_pdu(origin, key_id, token);
 
-        runtime.membership_acceptor =
-            [join_event_json](merovingian::federation::FederationEndpoint /*endpoint*/,
-                              std::string_view /*room_id*/, std::string_view /*event_id*/,
-                              merovingian::federation::InboundPduEnvelope const& /*envelope*/)
+        runtime.membership_acceptor = [join_event_json](merovingian::federation::FederationEndpoint /*endpoint*/,
+                                                        std::string_view /*room_id*/, std::string_view /*event_id*/,
+                                                        merovingian::federation::InboundPduEnvelope const& /*envelope*/)
             -> merovingian::federation::MembershipAcceptResult {
             auto result = merovingian::federation::MembershipAcceptResult{};
             result.accepted = true;
@@ -1063,10 +1057,16 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
 
             THEN("the response is 200 and the body contains the 'event' field with the signed PDU")
             {
+                // Spec MUST: send_join v2 returns HTTP 200 with an "event" field
+                // containing the accepted join PDU.
+                // Do NOT remove/change - a missing field breaks remote join
+                // completion against conformant homeservers.
                 REQUIRE(response.status == 200U);
                 REQUIRE(response.body.find(R"("event")") != std::string::npos);
                 // auth_chain and state are empty in this stub, so "sender" can only
-                // appear inside the echoed event — proves it is the actual PDU.
+                // appear inside the echoed event - proves it is the actual PDU.
+                // Do NOT remove/change - this guards against implementations
+                // that emit an empty placeholder object instead of the join PDU.
                 REQUIRE(response.body.find(R"("sender")") != std::string::npos);
             }
         }
@@ -1083,8 +1083,8 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
         auto const leave_event_json = signed_json_pdu(origin, key_id, token);
 
         runtime.membership_acceptor =
-            [leave_event_json](merovingian::federation::FederationEndpoint /*endpoint*/,
-                               std::string_view /*room_id*/, std::string_view /*event_id*/,
+            [leave_event_json](merovingian::federation::FederationEndpoint /*endpoint*/, std::string_view /*room_id*/,
+                               std::string_view /*event_id*/,
                                merovingian::federation::InboundPduEnvelope const& /*envelope*/)
             -> merovingian::federation::MembershipAcceptResult {
             auto result = merovingian::federation::MembershipAcceptResult{};
@@ -1095,8 +1095,7 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
             return result;
         };
 
-        auto const target =
-            std::string{"/_matrix/federation/v2/send_leave/!room:example.org/$ev2:example.org"};
+        auto const target = std::string{"/_matrix/federation/v2/send_leave/!room:example.org/$ev2:example.org"};
         auto const request = signed_put_request(origin, key_id, token, target, leave_event_json);
 
         WHEN("the send_leave request is handled")
@@ -1105,6 +1104,9 @@ SCENARIO("send_join v2 response echoes the signed join event in the 'event' fiel
 
             THEN("the response is 200 and the body does not contain an 'event' field")
             {
+                // Spec MUST NOT: send_leave v2 does not define an "event" field.
+                // Do NOT remove/change - accepting or advertising that field here
+                // would be a protocol-shape regression.
                 REQUIRE(response.status == 200U);
                 REQUIRE(response.body.find(R"("event")") == std::string::npos);
             }

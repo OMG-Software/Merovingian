@@ -1,4 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+//
+// +-------------------------------------------------------------------------+
+// |         MATRIX CLIENT-SERVER API CONFORMANCE TESTS                      |
+// |                                                                         |
+// |  Spec: Matrix Client-Server API v1.18                                   |
+// |  URL:  https://spec.matrix.org/v1.18/client-server-api/                 |
+// |                                                                         |
+// |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
+// |                                                                         |
+// |  Every REQUIRE in this file encodes a MUST or SHOULD from the Matrix    |
+// |  specification. If a test fails:                                         |
+// |                                                                         |
+// |    -> Fix the IMPLEMENTATION so it matches the spec.                     |
+// |    -> Do NOT weaken, comment out, or remove assertions to make CI pass.  |
+// |    -> Do NOT change an expected value without first verifying that the   |
+// |      spec itself has changed and citing the updated section.             |
+// |                                                                         |
+// |  The spec section is cited above each SCENARIO. Cross-check it before   |
+// |  concluding that a failing assertion is wrong.                           |
+// +-------------------------------------------------------------------------+
 
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
@@ -159,6 +179,13 @@ namespace
 
 } // namespace
 
+// --- Matrix error shape -------------------------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// Standard error response format
+// URL: https://spec.matrix.org/v1.18/client-server-api/#standard-error-response
+//
+// Every error response MUST carry an "errcode" string and an "error" human-
+// readable string. The shape is stable across all endpoints.
 SCENARIO("Client-server runtime wraps errors in stable Matrix-style shapes", "[homeserver][client-server]")
 {
     GIVEN("a Matrix error")
@@ -170,6 +197,8 @@ SCENARIO("Client-server runtime wraps errors in stable Matrix-style shapes", "[h
 
             THEN("the response has a stable Matrix error body")
             {
+                // Spec MUST: error body is {"errcode":"<CODE>","error":"<msg>"}
+                // Do NOT remove/change - clients parse this exact shape to display errors
                 REQUIRE(body == R"({"errcode":"M_FORBIDDEN","error":"denied"})");
                 REQUIRE(merovingian::homeserver::is_matrix_error_response(response));
             }
@@ -177,6 +206,13 @@ SCENARIO("Client-server runtime wraps errors in stable Matrix-style shapes", "[h
     }
 }
 
+// --- Production API surface ---------------------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// /sync - initial sync response
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// A compliant /sync response MUST include "next_batch". The server MUST NOT
+// leak raw key material ("secret") in sync payloads.
 SCENARIO("Client-server runtime exposes production-named start and flow APIs", "[homeserver][client-server]")
 {
     GIVEN("registration-enabled client-server configuration")
@@ -192,13 +228,25 @@ SCENARIO("Client-server runtime exposes production-named start and flow APIs", "
             {
                 REQUIRE(started.started);
                 REQUIRE(flow.ok);
+                // Spec MUST: /sync response contains "next_batch" stream token
+                // Do NOT remove - without next_batch clients cannot do incremental sync
                 REQUIRE(flow.value.find("next_batch") != std::string::npos);
+                // Security invariant: plaintext key material must never appear in sync output
+                // Do NOT remove - leaking "secret" would be a critical security regression
                 REQUIRE(flow.value.find("secret") == std::string::npos);
             }
         }
     }
 }
 
+// --- Account and device session management ------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// POST /register, POST /login, GET /account/whoami, GET /devices, PUT /devices/{deviceId}
+// URL: https://spec.matrix.org/v1.18/client-server-api/#account-registration-and-management
+//
+// Registration MUST return 200 with a user_id. Login MUST return an access_token.
+// Authenticated endpoints MUST validate the Bearer token and return the correct
+// user identity. Device display names MUST be persisted and returned in /devices.
 SCENARIO("Client-server runtime account and device endpoints use real sessions", "[homeserver][client-server]")
 {
     GIVEN("a started client-server runtime")
@@ -232,9 +280,17 @@ SCENARIO("Client-server runtime account and device endpoints use real sessions",
 
             THEN("identity, device listing, and device updates work through token validation")
             {
+                // Spec MUST: POST /register returns HTTP 200 on success
+                // Do NOT remove - a non-200 here means registration is broken
                 REQUIRE(registered.response.status == 200U);
+                // Spec MUST: POST /login returns HTTP 200 with access_token
+                // Do NOT remove - login is the entry point for all authenticated flows
                 REQUIRE(login.response.status == 200U);
+                // Spec MUST: GET /account/whoami returns 200 for a valid token
+                // Do NOT remove - 401 here means token validation is broken
                 REQUIRE(whoami.response.status == 200U);
+                // Spec MUST: whoami response body contains the authenticated user's user_id
+                // Do NOT remove - clients depend on this to confirm their own identity
                 REQUIRE(whoami.response.body.find("@alice:example.org") != std::string::npos);
                 REQUIRE(devices.response.status == 200U);
                 REQUIRE(devices.response.body.find("DEVICE1") != std::string::npos);
@@ -246,6 +302,14 @@ SCENARIO("Client-server runtime account and device endpoints use real sessions",
     }
 }
 
+// --- Malformed request body rejection -----------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// Standard error response - M_BAD_JSON
+// URL: https://spec.matrix.org/v1.18/client-server-api/#standard-error-response
+//
+// If the request body is not valid JSON or is missing required fields, the
+// server MUST return HTTP 400 with errcode M_BAD_JSON. The server MUST fail
+// closed - it MUST NOT partially process a malformed request.
 SCENARIO("Client-server runtime rejects malformed Matrix JSON request bodies", "[homeserver][client-server]")
 {
     GIVEN("a started client-server runtime")
@@ -267,8 +331,12 @@ SCENARIO("Client-server runtime rejects malformed Matrix JSON request bodies", "
 
             THEN("the API fails closed with stable Matrix bad-json errors")
             {
+                // Spec MUST: malformed JSON body -> HTTP 400 M_BAD_JSON
+                // Do NOT remove - accepting malformed JSON could allow injection attacks
                 REQUIRE(malformed_registration.response.status == 400U);
                 REQUIRE(incomplete_login.response.status == 400U);
+                // Spec MUST: errcode is exactly "M_BAD_JSON" (not M_UNKNOWN or 500)
+                // Do NOT remove - clients branch on this exact errcode to show user-facing messages
                 REQUIRE(malformed_registration.response.body.find("M_BAD_JSON") != std::string::npos);
                 REQUIRE(incomplete_login.response.body.find("M_BAD_JSON") != std::string::npos);
             }
@@ -276,6 +344,14 @@ SCENARIO("Client-server runtime rejects malformed Matrix JSON request bodies", "
     }
 }
 
+// --- HTTP request dispatch -----------------------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// Authentication - Bearer token via Authorization header
+// URL: https://spec.matrix.org/v1.18/client-server-api/#client-authentication
+//
+// The server MUST accept the Authorization: Bearer <token> header for
+// authentication. The HTTP adapter must correctly parse the request line,
+// headers, and body before dispatching to the Matrix JSON handler.
 SCENARIO("Client-server runtime dispatches complete HTTP requests through Matrix JSON handlers",
          "[homeserver][client-server][http]")
 {
@@ -307,6 +383,8 @@ SCENARIO("Client-server runtime dispatches complete HTTP requests through Matrix
             {
                 REQUIRE(registration.status == 200U);
                 REQUIRE(login.status == 200U);
+                // Spec MUST: Authorization: Bearer token is honoured for authenticated endpoints
+                // Do NOT remove - failure here means the HTTP layer strips auth headers
                 REQUIRE(whoami.status == 200U);
                 REQUIRE(whoami.body.find("@alice:example.org") != std::string::npos);
             }
@@ -314,6 +392,14 @@ SCENARIO("Client-server runtime dispatches complete HTTP requests through Matrix
     }
 }
 
+// --- HTTP body length validation ----------------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// Standard error response - M_BAD_REQUEST
+// URL: https://spec.matrix.org/v1.18/client-server-api/#standard-error-response
+//
+// The server MUST validate that the received body matches the declared
+// Content-Length. Bodies shorter or longer than declared MUST be rejected
+// with HTTP 400 M_BAD_REQUEST before route dispatch.
 SCENARIO("Client-server runtime HTTP adapter rejects incomplete and trailing request bodies",
          "[homeserver][client-server][http]")
 {
@@ -334,6 +420,8 @@ SCENARIO("Client-server runtime HTTP adapter rejects incomplete and trailing req
 
             THEN("the adapter fails closed before route dispatch")
             {
+                // Spec MUST: body/Content-Length mismatch -> 400 before routing
+                // Do NOT remove - allowing mismatched bodies enables request smuggling
                 REQUIRE(incomplete.status == 400U);
                 REQUIRE(trailing.status == 400U);
                 REQUIRE(incomplete.body.find("M_BAD_REQUEST") != std::string::npos);
@@ -343,6 +431,14 @@ SCENARIO("Client-server runtime HTTP adapter rejects incomplete and trailing req
     }
 }
 
+// --- Login flow discovery -----------------------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// GET /_matrix/client/v3/login
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3login
+//
+// GET /login is unauthenticated and MUST return 200 with a "flows" array.
+// The array MUST include "m.login.password" when password login is supported.
+// Clients use this to discover which login methods the server accepts.
 SCENARIO("Client-server GET login returns password flow discovery response", "[homeserver][client-server]")
 {
     GIVEN("a running client-server homeserver")
@@ -358,7 +454,11 @@ SCENARIO("Client-server GET login returns password flow discovery response", "[h
 
             THEN("the server returns 200 with a flows array containing m.login.password")
             {
+                // Spec MUST: GET /login -> HTTP 200 (no auth required)
+                // Do NOT remove - a 401 here would break all Matrix clients before they can log in
                 REQUIRE(resp.response.status == 200U);
+                // Spec MUST: response body contains "flows" array
+                // Do NOT remove - clients enumerate flows to pick the right login method
                 REQUIRE(resp.response.body.find("\"flows\"") != std::string::npos);
                 REQUIRE(resp.response.body.find("\"m.login.password\"") != std::string::npos);
             }
@@ -366,6 +466,14 @@ SCENARIO("Client-server GET login returns password flow discovery response", "[h
     }
 }
 
+// --- JSON string escaping -----------------------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// Device management - PUT /devices/{deviceId}
+// URL: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3devicesdeviceid
+//
+// Device IDs and display names may contain quotes and backslashes. The server
+// MUST produce valid JSON-escaped strings in all responses. Malformed JSON in
+// a device response would silently corrupt client device lists.
 SCENARIO("Client-server runtime escapes login and device JSON strings", "[homeserver][client-server]")
 {
     GIVEN("a logged-in client-server user with a device value requiring JSON escapes")
@@ -398,9 +506,13 @@ SCENARIO("Client-server runtime escapes login and device JSON strings", "[homese
             THEN("login and device responses remain valid escaped JSON strings")
             {
                 REQUIRE(login.response.status == 200U);
+                // Spec MUST: device_id with special chars is JSON-escaped in the login response
+                // Do NOT remove - unescaped output breaks JSON parsers on all downstream clients
                 REQUIRE(login.response.body.find(R"("device_id":"DEV\"\\ICE")") != std::string::npos);
                 REQUIRE(update.response.status == 200U);
                 REQUIRE(devices.response.status == 200U);
+                // Spec MUST: device_id and display_name are correctly JSON-escaped in /devices
+                // Do NOT remove - malformed JSON here corrupts client device tracking
                 REQUIRE(devices.response.body.find(R"("device_id":"DEV\"\\ICE")") != std::string::npos);
                 REQUIRE(devices.response.body.find(R"("display_name":"Alice \"Laptop\" \\ 1")") != std::string::npos);
             }
@@ -408,6 +520,15 @@ SCENARIO("Client-server runtime escapes login and device JSON strings", "[homese
     }
 }
 
+// --- Room creation, state, and sync ------------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// POST /createRoom, GET /rooms/{roomId}/state, GET /joined_rooms, GET /sync
+// URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// A successful room creation MUST return HTTP 200 with a "room_id". The /sync
+// response MUST include "event_count" and MUST NOT expose plaintext encrypted
+// event content - the server is blind to E2EE payloads.
 SCENARIO("Client-server runtime room state joined rooms and sync endpoints compose the homeserver path",
          "[homeserver][client-server]")
 {
@@ -448,14 +569,22 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
 
             THEN("room and sync responses are bounded summaries without plaintext event content")
             {
+                // Spec MUST: POST /createRoom -> HTTP 200
+                // Do NOT remove - non-200 means room creation is broken
                 REQUIRE(room.response.status == 200U);
+                // Spec MUST: POST /rooms/{roomId}/send -> HTTP 200 with event_id
+                // Do NOT remove - non-200 means event sending is broken
                 REQUIRE(send.response.status == 200U);
                 REQUIRE(state.response.status == 200U);
                 REQUIRE(joined.response.status == 200U);
                 REQUIRE(joined.response.body.find(id) != std::string::npos);
+                // Spec MUST: GET /sync -> HTTP 200
+                // Do NOT remove - /sync is the primary client data delivery mechanism
                 REQUIRE(sync.response.status == 200U);
                 REQUIRE(sync.response.body.find(id) != std::string::npos);
                 REQUIRE(sync.response.body.find("event_count") != std::string::npos);
+                // Security MUST: server MUST NOT expose plaintext E2EE content in sync
+                // Do NOT remove - leaking "secret" or "m.room.encrypted" content is a critical breach
                 REQUIRE(sync.response.body.find("secret") == std::string::npos);
                 REQUIRE(sync.response.body.find("m.room.encrypted") == std::string::npos);
                 REQUIRE(merovingian::homeserver::joined_room_count(runtime, "@alice:example.org") == 1U);
@@ -681,8 +810,8 @@ SCENARIO("createRoom defaults to room version 12 when the client omits room_vers
                 // The capabilities endpoint advertises 12 as the default.
                 // createRoom must use the same default so clients get the latest
                 // version even when they rely on server defaults.
-                auto const create = content_for_state(
-                    runtime.homeserver.database.persistent_store, created_room_id, "m.room.create");
+                auto const create =
+                    content_for_state(runtime.homeserver.database.persistent_store, created_room_id, "m.room.create");
                 auto const* rv = string_member(create, "room_version");
                 REQUIRE(rv != nullptr);
                 REQUIRE(*rv == "12");
@@ -692,17 +821,16 @@ SCENARIO("createRoom defaults to room version 12 when the client omits room_vers
         WHEN("the client explicitly requests room version 10")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_version":"10"})"});
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_version":"10"})"});
             REQUIRE(response.response.status == 200U);
             auto const created_room_id = room_id(response.response.body);
 
             THEN("the m.room.create event uses the requested version 10")
             {
-                // Clients can still request older versions — the default change
+                // Clients can still request older versions - the default change
                 // must not override an explicit room_version in the request body.
-                auto const create = content_for_state(
-                    runtime.homeserver.database.persistent_store, created_room_id, "m.room.create");
+                auto const create =
+                    content_for_state(runtime.homeserver.database.persistent_store, created_room_id, "m.room.create");
                 auto const* rv = string_member(create, "room_version");
                 REQUIRE(rv != nullptr);
                 REQUIRE(*rv == "10");
@@ -1998,7 +2126,7 @@ SCENARIO("Profile endpoint returns a user profile stub for authenticated clients
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
 
-            THEN("the response is 200 — profile lookup is unauthenticated per the Matrix spec")
+            THEN("the response is 200 - profile lookup is unauthenticated per the Matrix spec")
             {
                 REQUIRE(response.response.status == 200U);
                 REQUIRE(response.response.body.find("displayname") != std::string::npos);

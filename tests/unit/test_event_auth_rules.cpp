@@ -709,6 +709,51 @@ SCENARIO("Auth rules allow a join to an invite-only room for a previously invite
     }
 }
 
+// Spec: Matrix Room Version 8+ authorization rules for restricted joins.
+// URL:  https://spec.matrix.org/v1.18/rooms/v8/#authorization-rules
+//
+// A restricted join without an invite is allowed when the event includes
+// content.join_authorised_via_users_server naming a joined resident user with
+// enough power to invite others.
+SCENARIO("Auth rules allow a restricted-room join when join_authorised_via_users_server is valid",
+         "[events][auth][membership][join-rules][restricted]")
+{
+    GIVEN("a restricted room where the resident server authorises the join through a joined user")
+    {
+        auto const join_json = std::string{
+            "{\"type\":\"m.room.member\",\"state_key\":\"@bob:example.org\",\"sender\":\"@bob:example.org\","
+            "\"room_id\":\"!room:example.org\",\"content\":{\"membership\":\"join\","
+            "\"join_authorised_via_users_server\":\"@alice:example.org\"},"
+            "\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
+            "\"hashes\":{\"sha256\":\"hash\"}}"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(join_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                .value;
+        auth_events.join_rules = merovingian::canonicaljson::parse_lossless(make_join_rules_event("restricted")).value;
+        auth_events.authorising_user_member = merovingian::canonicaljson::parse_lossless(
+                                                  make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                                  .value;
+
+        WHEN("the join event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the join is allowed because the resident server provided a valid authorising user")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
 SCENARIO("Auth rules allow a kicked user to rejoin an invite-only room after a new invite",
          "[events][auth][membership][join-rules]")
 {

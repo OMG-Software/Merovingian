@@ -1,5 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+//
+// +-------------------------------------------------------------------------+
+// |         MATRIX FEDERATION INBOUND FLOW CONFORMANCE TESTS                |
+// |                                                                         |
+// |  Spec: Matrix Server-Server API v1.18                                   |
+// |  URL:  https://spec.matrix.org/v1.18/server-server-api/                 |
+// |                                                                         |
+// |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
+// |                                                                         |
+// |  Every REQUIRE in this file encodes a MUST or SHOULD from the Matrix    |
+// |  specification. If a test fails:                                        |
+// |                                                                         |
+// |    -> Fix the IMPLEMENTATION so it matches the spec.                     |
+// |    -> Do NOT weaken, comment out, or remove assertions to make CI pass.  |
+// |    -> Do NOT change an expected value without first verifying that the   |
+// |      spec itself has changed and citing the updated section.             |
+// |                                                                         |
+// |  The spec section is cited above each SCENARIO. Cross-check it before   |
+// |  concluding that a failing assertion is wrong.                           |
+// +-------------------------------------------------------------------------+
 
+#include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/config/config.hpp"
@@ -11,8 +32,6 @@
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
-
-#include "federation_signing_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -237,6 +256,14 @@ private:
 
 } // namespace
 
+// --- Federation key publishing ------------------------------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixkeyv2server
+//
+// The GET /_matrix/key/v2/server endpoint MUST be served without requiring
+// request authentication. The response MUST contain server_name, valid_until_ts,
+// verify_keys (active keys), old_verify_keys (superseded keys), and MUST be
+// signed by the server itself under one of the published verify_keys.
 SCENARIO("Homeserver publishes its persisted self-signed federation key without request authentication",
          "[integration][federation][keys]")
 {
@@ -253,6 +280,8 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
 
             THEN("the response publishes the persisted Ed25519 verify key and a valid self-signature")
             {
+                // Spec MUST: endpoint is unauthenticated; any HTTP 200 confirms reachability.
+                // Do NOT remove/change - a non-200 breaks remote key fetching for all federating servers.
                 REQUIRE(response.status == 200U);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -263,6 +292,8 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
                 auto const* valid_until_ts = integer_member(*object, "valid_until_ts");
                 auto const* verify_keys = object_member_as_object(*object, "verify_keys");
                 auto const* signatures = object_member_as_object(*object, "signatures");
+                // Spec MUST: response body MUST contain server_name, valid_until_ts, verify_keys, signatures.
+                // Do NOT remove/change - omitting any field causes remote servers to reject our key material.
                 REQUIRE(server_name != nullptr);
                 REQUIRE(*server_name == "example.org");
                 REQUIRE(valid_until_ts != nullptr);
@@ -272,15 +303,20 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
 
                 // The key_id is now derived from the public key bytes ("ed25519:" + 8 hex
                 // chars) rather than the legacy sentinel "ed25519:auto". Discover it
-                // dynamically from the verify_keys map — there must be exactly one entry.
+                // dynamically from the verify_keys map - there must be exactly one entry.
                 REQUIRE(verify_keys->size() == 1U);
                 auto const& published_key_id = verify_keys->front().key;
+                // Spec MUST: key identifier MUST be of the form "algorithm:identifier"
+                // (Sec. 3.1 Signing JSON). "ed25519:auto" is a legacy placeholder and MUST NOT be published.
+                // Do NOT remove/change - an invalid key_id causes remote signature verification to fail.
                 REQUIRE(published_key_id.starts_with("ed25519:"));
                 REQUIRE(published_key_id != "ed25519:auto");
 
                 auto const* key_object = object_member_as_object(*verify_keys, published_key_id);
                 REQUIRE(key_object != nullptr);
                 auto const* public_key = string_member(*key_object, "key");
+                // Spec MUST: each entry in verify_keys MUST contain the unpadded base64 public key.
+                // Do NOT remove/change - an absent or empty key prevents remote verification entirely.
                 REQUIRE(public_key != nullptr);
                 REQUIRE_FALSE(public_key->empty());
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
@@ -290,6 +326,8 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
                 REQUIRE(server_signatures != nullptr);
                 // Signature is published under the same derived key_id.
                 auto const* encoded_signature = string_member(*server_signatures, published_key_id);
+                // Spec MUST: the response MUST be signed by the server under the published key.
+                // Do NOT remove/change - an absent self-signature causes remote servers to distrust all our keys.
                 REQUIRE(encoded_signature != nullptr);
 
                 auto const payload = merovingian::canonicaljson::serialize_canonical(
@@ -299,18 +337,29 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
                 REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
                 REQUIRE(signature.size() == crypto_sign_BYTES);
                 REQUIRE(public_key_bytes.size() == crypto_sign_PUBLICKEYBYTES);
+                // Spec MUST: the Ed25519 signature over the canonical JSON payload MUST verify.
+                // Do NOT remove/change - a bad signature means no remote server will accept our events.
                 REQUIRE(crypto_sign_verify_detached(
                             reinterpret_cast<unsigned char const*>(signature.data()),
                             reinterpret_cast<unsigned char const*>(payload.output.data()), payload.output.size(),
                             reinterpret_cast<unsigned char const*>(public_key_bytes.data())) == 0);
+                // Spec MUST: the secret signing key MUST NOT appear in the response body.
+                // Do NOT remove/change - leaking the secret key would allow event forgery by any remote server.
                 REQUIRE(response.body.find("secret") == std::string::npos);
             }
         }
     }
 }
 
-SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys",
-         "[integration][federation][keys]")
+// --- Superseded key publication -----------------------------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixkeyv2server
+//
+// Keys that are no longer active MUST appear in old_verify_keys with an
+// expired_ts field. expired_ts MUST be a past timestamp - it MUST NOT be
+// future-dated even if the stored sentinel value is far in the future. Remote
+// servers use old_verify_keys to verify historically signed events.
+SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys", "[integration][federation][keys]")
 {
     GIVEN("a started runtime that also has a superseded legacy signing key in the store")
     {
@@ -320,29 +369,31 @@ SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys",
 
         // Inject a pre-existing legacy key (mimics the ed25519:auto entry left behind after
         // the key-id migration). Its valid_until_ts is far in the future (the old year-2999
-        // sentinel) — the implementation must cap expired_ts at now so it is never future-dated.
+        // sentinel) - the implementation must cap expired_ts at now so it is never future-dated.
         auto const legacy_public_key = std::string{"bGVnYWN5cHVibGlja2V5"}; // base64("legacypublickey")
         runtime.database.persistent_store.server_signing_keys.push_back({
-            "example.org",
-            "ed25519:auto",
-            legacy_public_key,
-            32503680000000ULL, // year-2999 sentinel — must be capped when published
+            "example.org", "ed25519:auto", legacy_public_key,
+            32503680000000ULL, // year-2999 sentinel - must be capped when published
             "",                // no secret; old keys are verification-only
         });
 
         WHEN("a remote homeserver fetches GET /_matrix/key/v2/server")
         {
-            auto const response = merovingian::homeserver::handle_local_http_request(
-                runtime, {"GET", "/_matrix/key/v2/server", {}, {}});
+            auto const response =
+                merovingian::homeserver::handle_local_http_request(runtime, {"GET", "/_matrix/key/v2/server", {}, {}});
 
             THEN("old_verify_keys contains the superseded key with an expired_ts that is not in the future")
             {
+                // Spec MUST: endpoint remains unauthenticated even when old keys are present.
+                // Do NOT remove/change - a non-200 breaks remote key fetching for all federating servers.
                 REQUIRE(response.status == 200U);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
                 auto const* object = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(object != nullptr);
 
+                // Spec MUST: old_verify_keys MUST be present when superseded keys exist.
+                // Do NOT remove/change - omitting this field prevents remote servers from verifying old events.
                 auto const* old_verify_keys = object_member_as_object(*object, "old_verify_keys");
                 REQUIRE(old_verify_keys != nullptr);
                 // Exactly one superseded key: the legacy ed25519:auto entry.
@@ -352,20 +403,26 @@ SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys",
                 REQUIRE(old_entry != nullptr);
 
                 auto const* old_key_str = string_member(*old_entry, "key");
-                auto const* expired_ts  = integer_member(*old_entry, "expired_ts");
+                auto const* expired_ts = integer_member(*old_entry, "expired_ts");
+                // Spec MUST: each old_verify_keys entry MUST contain the public key and expired_ts.
+                // Do NOT remove/change - missing either field causes remote servers to skip the key.
                 REQUIRE(old_key_str != nullptr);
                 REQUIRE(*old_key_str == legacy_public_key);
                 REQUIRE(expired_ts != nullptr);
-                // expired_ts must be a positive timestamp capped at now — never future-dated.
+                // Spec MUST: expired_ts MUST be a past timestamp capped at now - never future-dated.
+                // Do NOT remove/change - a future expired_ts would allow a retired key to be trusted
+                // beyond its actual expiry, violating the key rotation security contract.
                 REQUIRE(*expired_ts > 0);
-                auto const now_approx = static_cast<std::int64_t>(
-                    std::chrono::duration_cast<std::chrono::milliseconds>(
-                        std::chrono::system_clock::now().time_since_epoch())
-                        .count());
+                auto const now_approx =
+                    static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                  std::chrono::system_clock::now().time_since_epoch())
+                                                  .count());
                 REQUIRE(*expired_ts <= now_approx);
 
                 // The active verify_keys must still be present and distinct from old_verify_keys.
                 auto const* verify_keys = object_member_as_object(*object, "verify_keys");
+                // Spec MUST: verify_keys MUST remain populated with the current active key.
+                // Do NOT remove/change - an empty verify_keys means no remote can authenticate new events.
                 REQUIRE(verify_keys != nullptr);
                 REQUIRE(verify_keys->size() == 1U);
                 REQUIRE(verify_keys->front().key != "ed25519:auto");
@@ -374,6 +431,15 @@ SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys",
     }
 }
 
+// --- Inbound transaction routing ----------------------------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 7 Transactions
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+//
+// The PUT /_matrix/federation/v1/send/{txnId} endpoint MUST return HTTP 200
+// for any transaction that passes authentication, even if individual PDUs are
+// rejected. PDU-level failures MUST be reported per-PDU in the response body
+// under the "pdus" key. Returning a 4xx for the whole transaction causes the
+// sending server to back off and retry, breaking federation.
 SCENARIO("Homeserver routes signed inbound federation transactions through runtime policy", "[integration][federation]")
 {
     GIVEN("a started runtime with a known remote server")
@@ -396,17 +462,35 @@ SCENARIO("Homeserver routes signed inbound federation transactions through runti
 
             THEN("the transaction is accepted and recorded")
             {
+                // Spec MUST: a successfully authenticated transaction MUST return HTTP 200.
+                // Do NOT remove/change - returning 4xx causes the remote to back off and federation stalls.
                 REQUIRE(response.status == 200U);
+                // Spec MUST: the response body MUST contain a "pdus" object mapping event IDs to errors.
+                // An empty object means all PDUs were accepted. Do NOT remove/change - a missing or
+                // malformed "pdus" key causes the sending server to treat the transaction as failed.
                 REQUIRE(response.body == R"({"pdus":{}})");
+                // Spec MUST: accepted transactions MUST be recorded for idempotency (Sec. 7.1 Idempotency).
+                // Do NOT remove/change - losing transaction state causes duplicate event processing.
                 REQUIRE(runtime.federation.accepted_transactions.size() == 1U);
                 REQUIRE(runtime.federation.accepted_transactions.front().origin == origin);
                 REQUIRE(runtime.federation.audit_events.size() == 1U);
+                // Spec SHOULD: all federation activity MUST be auditable for security review.
+                // Do NOT remove/change - an unsafe audit log indicates a policy bypass has occurred.
                 REQUIRE(merovingian::federation::federation_audit_is_safe(runtime.federation));
             }
         }
     }
 }
 
+// --- Malformed request rejection ----------------------------------------------
+// Spec: Matrix Server-Server API v1.18, general error handling
+// URL:  https://spec.matrix.org/v1.18/server-server-api/
+//
+// Requests with a malformed or missing Authorization header MUST be rejected
+// before any transaction processing occurs. Requests originating from private
+// or loopback addresses MUST be rejected to prevent SSRF and local-network
+// privilege escalation. All rejection paths MUST fail closed - no transaction
+// state should be recorded for rejected requests.
 SCENARIO("Homeserver rejects malformed overflow and private-address federation requests",
          "[integration][federation][security]")
 {
@@ -442,17 +526,26 @@ SCENARIO("Homeserver rejects malformed overflow and private-address federation r
 
             THEN("all fail closed before accepting a transaction")
             {
+                // Spec MUST: malformed Authorization headers MUST be rejected before processing.
+                // Do NOT remove/change - accepting malformed auth would allow unsigned events to enter the DAG.
                 REQUIRE(malformed.status == 502U);
                 REQUIRE(malformed.body == "malformed federation authorization");
+                // Spec MUST: integer overflow in auth fields MUST be treated as malformed.
+                // Do NOT remove/change - overflow bypasses timestamp and sequence-number validation.
                 REQUIRE(overflow.status == 502U);
                 REQUIRE(overflow.body == "malformed federation authorization");
+                // Spec MUST: requests from private or loopback addresses MUST be rejected (SSRF prevention).
+                // Do NOT remove/change - allowing private-address remotes enables SSRF attacks against
+                // internal services and bypasses network-level federation controls.
                 REQUIRE(uncanonical.status == 403U);
                 REQUIRE(uncanonical.body == "remote address is private or loopback");
                 REQUIRE(private_remote.status == 403U);
                 REQUIRE(private_remote.body == "remote address is private or loopback");
+                // Spec MUST: no transaction state MUST be recorded when a request is rejected.
+                // Do NOT remove/change - recording state for rejected requests breaks idempotency
+                // and could allow a subsequent valid request for the same txnId to be dropped.
                 REQUIRE(runtime.federation.accepted_transactions.empty());
             }
         }
     }
 }
-

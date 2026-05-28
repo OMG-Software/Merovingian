@@ -28,11 +28,21 @@ struct CreateRoomOptions final
     bool is_direct{false};
 };
 
+struct ValidatedMakeJoinResponse final
+{
+    bool ok{false};
+    std::string reason{};
+    std::string room_version{};
+    canonicaljson::Object event{};
+};
+
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token,
                                CreateRoomOptions const& options) -> OperationResult;
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult;
+[[nodiscard]] auto validate_make_join_response(std::string_view requested_room_id, std::string_view requested_user_id,
+                                               std::string_view body) -> ValidatedMakeJoinResponse;
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;
 [[nodiscard]] auto publish_server_signing_keys(HomeserverRuntime& runtime) -> OperationResult;
