@@ -408,12 +408,20 @@ SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", 
             auto const bad_route = merovingian::federation::handle_inbound_federation_request(runtime, extra_segment);
             auto const bad_pdu = merovingian::federation::handle_inbound_federation_request(runtime, missing_signature);
 
-            THEN("extra path segments and missing event signatures fail closed")
+            THEN("extra path segments fail closed with 404")
             {
                 REQUIRE(bad_route.status == 404U);
                 REQUIRE(bad_route.body == "federation route not found");
-                REQUIRE(bad_pdu.status == 400U);
-                REQUIRE(bad_pdu.body == "PDU is missing required fields");
+            }
+
+            THEN("a PDU with missing required fields returns 200 with a per-PDU error — not 400 for the transaction")
+            {
+                // Per Matrix federation spec, individual PDU failures must be
+                // reported inside {"pdus": {"$id": {"error": "..."}}} at HTTP 200.
+                // Returning a non-200 causes the remote to back off all federation.
+                REQUIRE(bad_pdu.status == 200U);
+                REQUIRE(bad_pdu.body.find("\"pdus\"") != std::string::npos);
+                REQUIRE(bad_pdu.body.find("\"error\"") != std::string::npos);
             }
         }
     }

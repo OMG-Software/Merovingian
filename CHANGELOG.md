@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.28
+
+- Fix federation `/send` transaction handler returning HTTP 403 for the entire
+  transaction when a single PDU fails signature verification. Per the Matrix
+  federation spec, individual PDU failures must be reported inside the response
+  body as `{"pdus": {"$event_id": {"error": "reason"}}}` at HTTP 200. Returning
+  a non-200 caused Synapse's `retryutils` to mark `pong.ping.me.uk` as a failed
+  destination and back off all federation for 600 seconds, blocking join
+  acknowledgements and subsequent room messages.
+- Fix incremental `/sync` emitting stale room data (476 bytes of membership
+  state) on every 5-second long-poll timeout re-dispatch when nothing had
+  changed. The room-join loop now skips rooms where both `timeline_events` and
+  `room_account_data` are empty when a `since` token is present, so the
+  `rooms.join` map is empty in the response rather than repeating the full state
+  of every joined room.
+
 ## 0.4.27
 
 - Expand `docs/architecture.md` into a comprehensive reference covering source

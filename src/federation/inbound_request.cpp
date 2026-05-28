@@ -1316,6 +1316,12 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     auto pdus_appended = std::size_t{0U};
     auto pdus_state_conflict = std::size_t{0U};
     auto pdus_state_resolved = std::size_t{0U};
+    // Per-spec (Matrix federation /send): individual PDU failures must be
+    // reported in the response body as {"pdus": {"$id": {"error": "..."}}}
+    // rather than as a non-200 HTTP status. Returning 4xx/5xx causes the
+    // remote server (e.g. Synapse) to back off the entire destination for a
+    // backoff period, blocking all subsequent federation.
+    auto pdu_errors = canonicaljson::Object{};
     for (auto const& encoded_pdu : transaction.pdus)
     {
         auto const pdu = parse_federation_pdu(encoded_pdu);
@@ -1333,7 +1339,14 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
                                                {"reason",         pdu_decision.reason,                 false}
             });
             audit_federation(runtime, "federation.rejected", request.origin, request.target, pdu_decision.reason);
-            return {pdu_decision.status, pdu_decision.reason};
+            // Record the per-PDU error and continue processing remaining PDUs.
+            pdu_errors.push_back(
+                canonicaljson::make_member(pdu.event_id,
+                                           canonicaljson::Value{canonicaljson::Object{
+                                               canonicaljson::make_member("error",
+                                                                          canonicaljson::Value{pdu_decision.reason})
+                                           }}));
+            continue;
         }
         if (!runtime.pdu_sink)
         {
@@ -1444,11 +1457,11 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     if (!runtime.pdu_sink && !runtime.edu_sink && transaction.edus.empty())
     {
         return {200U, serialize_response_object(canonicaljson::Object{
-            canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Object{}}),
+            canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
         })};
     }
     return {200U, serialize_response_object(canonicaljson::Object{
-        canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Object{}}),
+        canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdu_errors)}),
     })};
 }
 

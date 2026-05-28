@@ -936,3 +936,94 @@ SCENARIO("Remote key rotation triggers resolver when cached key is stale",
         }
     }
 }
+
+SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU error, not 403",
+         "[federation][send][pdu-sig]")
+{
+    GIVEN("a remote registered under one keypair and a PDU signed with a different keypair")
+    {
+        auto runtime        = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin   = std::string{"matrix.example.org"};
+        auto const key_id   = std::string{"ed25519:auto"};
+        auto const reg_seed = std::string{"registered-seed"};
+        auto const bad_seed = std::string{"unregistered-seed"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, reg_seed));
+
+        auto sink_invoked = std::make_shared<bool>(false);
+        runtime.pdu_sink  = [sink_invoked](merovingian::federation::InboundPduEnvelope const&)
+            -> merovingian::federation::PduIngestionResult
+        {
+            *sink_invoked = true;
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        // PDU whose signature won't verify against the registered key
+        auto const bad_pdu = signed_json_pdu(origin, key_id, bad_seed);
+        auto const request  = signed_put_request(origin, key_id, reg_seed,
+                                                 "/_matrix/federation/v1/send/txn-bad-sig-001",
+                                                 bad_pdu);
+
+        WHEN("the transaction containing the bad PDU is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the response is 200, not 403 — the whole transaction is not rejected")
+            {
+                REQUIRE(response.status == 200U);
+            }
+
+            THEN("the response body reports a per-PDU error inside the pdus map")
+            {
+                REQUIRE(response.body.find("\"pdus\"") != std::string::npos);
+                REQUIRE(response.body.find("\"error\"") != std::string::npos);
+            }
+
+            THEN("the pdu_sink is not invoked for the rejected PDU")
+            {
+                REQUIRE_FALSE(*sink_invoked);
+            }
+        }
+    }
+
+    GIVEN("a transaction mixing one valid PDU and one bad-signature PDU")
+    {
+        auto runtime         = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin    = std::string{"matrix.example.org"};
+        auto const key_id    = std::string{"ed25519:auto"};
+        auto const good_seed = std::string{"mixed-good-seed"};
+        auto const bad_seed  = std::string{"mixed-bad-seed"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, good_seed));
+
+        auto sink_calls = std::make_shared<std::size_t>(0U);
+        runtime.pdu_sink = [sink_calls](merovingian::federation::InboundPduEnvelope const&)
+            -> merovingian::federation::PduIngestionResult
+        {
+            ++(*sink_calls);
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        auto const good_pdu = signed_json_pdu(origin, key_id, good_seed);
+        auto const bad_pdu  = signed_json_pdu(origin, key_id, bad_seed);
+        // Wrap both PDUs in a proper transaction body
+        auto const body     = std::string{"{\"pdus\":["} + good_pdu + "," + bad_pdu + "]}";
+        auto const request  = signed_put_request(origin, key_id, good_seed,
+                                                 "/_matrix/federation/v1/send/txn-mixed-001",
+                                                 body);
+
+        WHEN("the mixed transaction is handled")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the response is 200 and the valid PDU still reaches the sink")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(*sink_calls == 1U);
+            }
+
+            THEN("the response body contains a per-PDU error for the rejected PDU")
+            {
+                REQUIRE(response.body.find("\"error\"") != std::string::npos);
+            }
+        }
+    }
+}

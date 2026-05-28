@@ -490,6 +490,18 @@ a non-production environment.
   replaced a test-injected dispatch worker with a new one.
 - Fix (0.4.5): Empty `transaction_id` in outbound membership and EDU transactions
   causing `transaction_is_well_formed` rejection.
+- Fix (0.4.28): `PUT /_matrix/federation/v1/send/{txnId}` returned HTTP 403 for
+  the entire transaction when any single PDU failed signature verification. Per
+  the Matrix federation spec, individual PDU failures must be reported inside
+  `{"pdus": {"$event_id": {"error": "reason"}}}` at HTTP 200. Returning 4xx
+  caused Synapse's `retryutils` to back off the destination for 600 s, blocking
+  all subsequent federation including join acknowledgements.
+- Fix (0.4.28): Incremental `/sync` with `can_wait=false` (long-poll timeout
+  re-dispatch) emitted the full membership state of every joined room on every
+  5-second cycle even when nothing had changed since the `since` token. The
+  room-join loop now skips rooms where both `timeline_events` and
+  `room_account_data` are empty, so `rooms.join` is empty in the response
+  rather than returning 476 bytes of stale state on each timeout.
 - Fix (0.4.6): `PUT /_matrix/federation/v1/send/{txnId}` response body returned
   plain-text diagnostic strings instead of the Matrix-required `{"pdus":{}}` JSON,
   causing Synapse JSONDecodeError on transaction responses.

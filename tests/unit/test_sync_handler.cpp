@@ -433,3 +433,56 @@ SCENARIO("Two-phase sync dispatch returns needs_wait when no data is available",
         }
     }
 }
+
+SCENARIO("Incremental sync with can_wait=false emits no room data when nothing changed since the since token",
+         "[sync][handler][stale-rooms]")
+{
+    GIVEN("Alice with a created room and an initial sync already completed")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt                    = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(create.response.status == 200U);
+
+        // Consume all current state so next_batch is up-to-date
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const initial_body  = parse_body(initial.response.body);
+        auto const* initial_root = as_object(initial_body);
+        REQUIRE(initial_root != nullptr);
+        auto const next_batch = std::get<std::string>(json_member(*initial_root, "next_batch")->storage());
+
+        WHEN("an incremental sync is dispatched with can_wait=false and no new events have occurred")
+        {
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"GET",
+                 std::string{"/_matrix/client/v3/sync?since="} + next_batch + "&timeout=5000",
+                 token,
+                 {}},
+                /*can_wait=*/false);
+
+            THEN("the response is 200 with an empty rooms.join section — no stale room data is emitted")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+                auto const body  = parse_body(result.response.body);
+                auto const* root = as_object(body);
+                REQUIRE(root != nullptr);
+                auto const* rooms = as_object(*json_member(*root, "rooms"));
+                REQUIRE(rooms != nullptr);
+                auto const* join = as_object(*json_member(*rooms, "join"));
+                REQUIRE(join != nullptr);
+                // No timeline or account-data change since since-token: room must
+                // be suppressed entirely so the client does not receive 476 bytes
+                // of stale membership state on every 5-second timeout re-dispatch.
+                REQUIRE(join->empty());
+            }
+        }
+    }
+}

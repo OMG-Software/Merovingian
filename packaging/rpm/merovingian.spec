@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.27
+Version:        0.4.28
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.28-1
+- Fix federation /send returning HTTP 403 for whole transaction on single PDU sig failure
+- Fix incremental /sync emitting stale room data on every long-poll timeout re-dispatch
+
 * Thu May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.27-1
 - Fix off-by-one in /sync next_batch token causing infinite empty-sync loop
 
