@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.26
+Version:        0.4.27
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.27-1
+- Fix off-by-one in /sync next_batch token causing infinite empty-sync loop
+
 * Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.26-1
 - Strip event_id from inbound PDU signing payload for room versions using reference-hash event IDs, fixing Synapse signature verification failure
 
