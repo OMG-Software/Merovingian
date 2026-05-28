@@ -119,7 +119,7 @@ auto const key_seed = std::string{"conformance-test-seed"};
 //   event         - a partial event template for the joining server to complete
 SCENARIO("make_join returns room version and event template for a remote user", "[federation][conformance][make_join]")
 {
-    GIVEN("a runtime with membership_template_provider wired for make_join")
+    GIVEN("a runtime with membership_template_provider wired for make_join (room version 12)")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
@@ -145,15 +145,18 @@ SCENARIO("make_join returns room version and event template for a remote user", 
             auto const request = signed_get_request(origin, key_id, key_seed, target);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
-            THEN("the runtime returns 200 with room_version and event template")
+            THEN("the runtime returns 200 with room_version and event template without origin")
             {
                 // Spec MUST: HTTP 200 for a valid make_join request.
                 REQUIRE(response.status == 200U);
                 REQUIRE(*template_invoked);
-                // Spec MUST: the returned template event names the resident server.
-                // Do NOT remove - the joining server signs and submits this exact
-                // event shape to /send_join.
-                REQUIRE(response.body.find(R"("origin":"local.example.org")") != std::string::npos);
+                // Spec: the origin field was removed from events in room version 4
+                // (hash-based event IDs replaced server-name-based IDs). Room
+                // versions 10/11/12 use reference-hash event IDs, so the template
+                // MUST NOT include origin in the event object.
+                // Do NOT remove — if this fails, the template is including a field
+                // that the joining server must strip before signing per v1.18 spec.
+                REQUIRE(response.body.find(R"("origin":"local.example.org")") == std::string::npos);
                 // Spec MUST: the returned template event carries origin_server_ts.
                 // Do NOT remove - if the resident server omits it, the joining
                 // server must reject the template as malformed.

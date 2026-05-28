@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.4.29
+
+- Fix make_join validation rejecting event templates that omit the `origin` field.
+  The `origin` field was removed from events starting in room version 4 (which
+  introduced hash-based event IDs replacing server-name-based IDs). Synapse and
+  other homeservers sending make_join templates for room versions 10/11/12 omit
+  `origin`, causing Merovingian to reject the join with "make_join event origin
+  is required".
+- Fix inbound make_join/make_leave template generation including the `origin` field
+  in the event for room version 4+. Per the Matrix v1.18 spec, `origin` is not part
+  of the event format in room versions that use reference-hash event IDs. The
+  template builder now checks `EventIdFormat::reference_hash` and omits `origin`
+  for room versions 4 and later.
+- Fix conformance test asserting `origin` is present in make_join event templates
+  for room version 12. The test was enforcing pre-v4 event format against the v1.18
+  spec.
+
 ## 0.4.28
 
 - Fix remote-join `make_join` handling to match the Matrix v1.18 join
