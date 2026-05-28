@@ -527,7 +527,7 @@ SCENARIO("POST /keys/signatures/upload response contains failures object",
 // --- GET /_matrix/client/v3/room_keys/version (no backup) --------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keysversion
 //
-// When no backup exists: MUST return 404 with errcode M_NOT_FOUND.
+// If no backup exists: MUST return 404 with errcode M_NOT_FOUND.
 SCENARIO("GET /room_keys/version returns M_NOT_FOUND when no backup exists",
          "[conformance][client-server][key-backup]")
 {
