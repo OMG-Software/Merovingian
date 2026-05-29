@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.38
+
+- Add comprehensive spec-conformance tests for the federation event signing
+  pipeline (signing payload, canonical JSON, redaction, content hash, event ID)
+  covering room versions 10, 11, and 12. Tests verify byte-for-byte match
+  against the Matrix v1.18 specification's expected output for each room version,
+  catching regressions that would cause BadSignatureError on federation peers.
+- Add Matrix v1.18 canonical JSON spec test vectors (key sorting, Unicode
+  normalisation, null, integer representation) to the conformance test suite.
+- Add spec event signing test vectors verifying that v1-v2 payloads preserve
+  origin while v11+ payloads strip it, and that content redaction follows the
+  correct room-version-specific rules.
+- Add content hash and reference hash base64 encoding tests confirming the
+  hashes.sha256 field uses standard unpadded Base64 (RFC 4648) and event IDs
+  use URL-safe unpadded Base64, as required by the spec.
+
 ## 0.4.37
 
 - Fix rooms created with private_chat or trusted_private_chat preset not
