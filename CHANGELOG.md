@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.41
+
+- Add unified `build.py` script providing a single CLI entry point for Linux, BSD,
+  and WSL builds. Delegates to existing shell scripts in `scripts/` and replaces
+  `build-wsl.ps1` for WSL builds.
+
 ## 0.4.40
 
 - Accept v12 (MSC4291) room IDs in event validation. The `matrix_id_is_valid`

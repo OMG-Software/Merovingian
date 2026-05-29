@@ -220,6 +220,28 @@ SCENARIO("Event envelope parser validates core Matrix fields", "[events]")
             }
         }
     }
+
+    // MSC4291 (room v12): room IDs are !<base64-hash> with no :server suffix.
+    // A v12 room ID without a colon MUST still be accepted by parse_event_envelope;
+    // rejecting it causes send_join to fail with 400 Bad Request.
+    GIVEN("an event with a v12 (MSC4291) room ID that has no colon")
+    {
+        auto const parsed = merovingian::canonicaljson::parse_lossless(
+            "{\"room_id\":\"!v5GMC5AOPRz67UBfC59FUdvLNLD17AvyO1FYg3bA3co\",\"type\":\"m.room.member\","
+            "\"sender\":\"@bob:example.org\",\"origin_server_ts\":1,\"content\":{\"membership\":\"join\"},"
+            "\"state_key\":\"@bob:example.org\"}");
+
+        WHEN("the event envelope is parsed")
+        {
+            auto const event = merovingian::events::parse_event_envelope(parsed.value);
+
+            THEN("the v12 room ID is accepted")
+            {
+                REQUIRE(event.error.empty());
+                REQUIRE(event.event.room_id == "!v5GMC5AOPRz67UBfC59FUdvLNLD17AvyO1FYg3bA3co");
+            }
+        }
+    }
 }
 
 // --- Event signing payload - field exclusion ---------------------------------
