@@ -219,6 +219,16 @@ separate operator decision once this branch is approved._
   `crypto_sign_verify_detached` to fail for every inbound encrypted-message
   PDU, making Merovingian return 403 and triggering Synapse's 600-second
   backoff on the federation link.
+- Federation signing conformance tests (0.4.38): spec-vectored unit tests
+  lock in the exact canonical JSON that each room version's signing payload
+  must produce. Covers v10 legacy redaction (keeps `origin`), v11+ updated
+  redaction (drops `origin`, keeps `invite` in power_levels, keeps all
+  `m.room.create` content), content hash base64 alphabet (RFC 4648 standard,
+  not URL-safe), event ID base64 alphabet (URL-safe), canonical JSON spec
+  vectors (key sorting, Unicode normalisation, `-0`→`0`, integer-only
+  representation), and event signing spec vectors (payload construction for
+  v1-v2 and v11+ formats). These tests catch regressions that would cause
+  `BadSignatureError` on federation peers.
 - Remote join content hash (0.4.25): the `make_join` → `send_join` remote
   join path now computes and attaches `hashes.sha256` before signing the join
   event, fixing Synapse rejection with "Malformed 'hashes': `<class

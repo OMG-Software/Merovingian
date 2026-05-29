@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.37
+Version:        0.4.38
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,7 +89,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.37-1
+* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.38-1
 - Emit m.room.encryption state event for private/trusted_private_chat presets
 - Add federation event-signing diagnostic logging for BadSignatureError triage
 
