@@ -128,6 +128,14 @@ using namespace merovingian::tests;
     return *content;
 }
 
+[[nodiscard]] auto has_state_event(merovingian::database::PersistentStore const& store, std::string_view room_id,
+                                   std::string_view event_type, std::string_view state_key = {}) -> bool
+{
+    return std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+               return row.room_id == room_id && row.event_type == event_type && row.state_key == state_key;
+           }) != store.state.end();
+}
+
 } // namespace
 
 // --- Matrix error shape -------------------------------------------------------
@@ -2418,6 +2426,154 @@ SCENARIO("POST /room_keys/version returns a version identifier to the client",
                 auto const* version = string_member(body, "version");
                 REQUIRE(version != nullptr);
                 REQUIRE(!version->empty());
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom
+// "If the preset is private_chat or trusted_private_chat, the server SHOULD enable end-to-end
+// encryption in the room."
+SCENARIO("private_chat preset auto-emits m.room.encryption when the client omits it",
+         "[homeserver][client-server][create-room][encryption]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client creates a private_chat room without specifying encryption in initial_state")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+
+            THEN("m.room.encryption is automatically emitted with the megolm algorithm")
+            {
+                REQUIRE(has_state_event(store, created_room_id, "m.room.encryption"));
+                auto const encryption = content_for_state(store, created_room_id, "m.room.encryption");
+                REQUIRE(string_member(encryption, "algorithm") != nullptr);
+                REQUIRE(*string_member(encryption, "algorithm") == "m.megolm.v1.aes-sha2");
+            }
+        }
+
+        WHEN("the client creates a trusted_private_chat room without specifying encryption in initial_state")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"trusted_private_chat"})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+
+            THEN("m.room.encryption is automatically emitted with the megolm algorithm")
+            {
+                REQUIRE(has_state_event(store, created_room_id, "m.room.encryption"));
+                auto const encryption = content_for_state(store, created_room_id, "m.room.encryption");
+                REQUIRE(string_member(encryption, "algorithm") != nullptr);
+                REQUIRE(*string_member(encryption, "algorithm") == "m.megolm.v1.aes-sha2");
+            }
+        }
+    }
+}
+
+SCENARIO("public_chat preset does not auto-emit m.room.encryption",
+         "[homeserver][client-server][create-room][encryption]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client creates a public_chat room")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"visibility":"public"})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+
+            THEN("m.room.encryption is NOT present in room state")
+            {
+                REQUIRE_FALSE(has_state_event(store, created_room_id, "m.room.encryption"));
+            }
+        }
+    }
+}
+
+SCENARIO("private_chat preset does not duplicate m.room.encryption when the client provides it in initial_state",
+         "[homeserver][client-server][create-room][encryption]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client creates a private_chat room with m.room.encryption already in initial_state")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token,
+                 R"({"preset":"private_chat","initial_state":[{"type":"m.room.encryption","state_key":"","content":{"algorithm":"m.megolm.v1.aes-sha2"}}]})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+
+            THEN("exactly one m.room.encryption state event exists with the correct algorithm")
+            {
+                auto const count = std::ranges::count_if(
+                    store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+                        return row.room_id == created_room_id && row.event_type == "m.room.encryption"
+                               && row.state_key.empty();
+                    });
+                REQUIRE(count == 1);
+                auto const encryption = content_for_state(store, created_room_id, "m.room.encryption");
+                REQUIRE(string_member(encryption, "algorithm") != nullptr);
+                REQUIRE(*string_member(encryption, "algorithm") == "m.megolm.v1.aes-sha2");
             }
         }
     }

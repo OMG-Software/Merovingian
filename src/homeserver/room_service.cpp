@@ -1174,6 +1174,42 @@ namespace
         return make_operation_result(false, {}, "preset room state event generation failed", 500U);
     }
 
+    // Emit m.room.encryption for private room presets. Per the Matrix spec,
+    // private_chat and trusted_private_chat rooms SHOULD enable encryption by
+    // default. Skip if the client already included m.room.encryption in
+    // initial_state to avoid emitting a duplicate state event.
+    auto const encryption_preset = options.preset == "private_chat" || options.preset == "trusted_private_chat";
+    auto client_requested_encryption = false;
+    for (auto const& item : options.initial_state)
+    {
+        auto const* state_obj = std::get_if<canonicaljson::Object>(&item.storage());
+        if (state_obj != nullptr)
+        {
+            auto const* type_str = string_member(*state_obj, "type");
+            if (type_str != nullptr && *type_str == "m.room.encryption")
+            {
+                client_requested_encryption = true;
+                break;
+            }
+        }
+    }
+    if (encryption_preset && !client_requested_encryption)
+    {
+        auto encryption_content = canonicaljson::Object{};
+        encryption_content.push_back(
+            canonicaljson::make_member("algorithm", canonicaljson::Value{std::string{"m.megolm.v1.aes-sha2"}}));
+        if (!emit_state("m.room.encryption", std::move(encryption_content)))
+        {
+            log_diagnostic("room.create.rejected", {
+                                                       {"actor",   *user_id,                                        false},
+                                                       {"room_id", room_id,                                         false},
+                                                       {"status",  "500",                                           false},
+                                                       {"reason",  "encryption room state event generation failed", false}
+            });
+            return make_operation_result(false, {}, "encryption room state event generation failed", 500U);
+        }
+    }
+
     for (auto const& item : options.initial_state)
     {
         auto const* initial_state = std::get_if<canonicaljson::Object>(&item.storage());

@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.37
+
+- Fix rooms created with private_chat or trusted_private_chat preset not
+  enabling end-to-end encryption — Element reported "Encryption is not set up"
+  because no m.room.encryption state event was emitted during room creation.
+  The server now auto-emits m.room.encryption with the m.megolm.v1.aes-sha2
+  algorithm for private presets, matching the Matrix spec recommendation. If the
+  client already includes m.room.encryption in initial_state it is not
+  duplicated.
+- Add enhanced diagnostic logging to the event signing pipeline — the
+  sign_event.accepted diagnostic now includes the exact signing payload,
+  signature, and signed JSON to aid triage of federation BadSignatureError
+  rejections.
+
 ## 0.4.36
 
 - Fix /sync returning incomplete timeline events (only event_id and sender) —

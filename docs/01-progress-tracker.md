@@ -91,6 +91,12 @@ separate operator decision once this branch is approved._
   `room_alias_name`, and `is_direct`, and exposes client room-directory alias
   lookup/registration routes. Outbound federation invites now advertise the
   created room's actual version instead of a hardcoded value.
+- Room encryption for private presets: `create_room` now auto-emits
+  `m.room.encryption` with the `m.megolm.v1.aes-sha2` algorithm for
+  `private_chat` and `trusted_private_chat` presets when the client does not
+  include encryption in `initial_state`. This fixes Element reporting
+  "Encryption is not set up" in newly created rooms. Unit tests cover the
+  auto-emission, public-chat exclusion, and duplicate-suppression cases.
 - FreeBSD portability regression: the `createRoom` follow-up review coverage
   now includes its required standard-library header (`<algorithm>`) so
   `std::ranges::find_if` builds cleanly on libc++-based FreeBSD CI instead of

@@ -142,8 +142,9 @@ SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions 
                 REQUIRE(restarted_runtime.homeserver.database.persistent_store.access_tokens.size() == 1U);
                 REQUIRE(restarted_runtime.homeserver.database.persistent_store.rooms.size() == 1U);
                 // createRoom now persists the full preset chain, including
-                // guest_access, before the additional message event is sent.
-                REQUIRE(restarted_runtime.homeserver.database.persistent_store.events.size() == 7U);
+                // guest_access and m.room.encryption (for private_chat preset),
+                // before the additional message event is sent.
+                REQUIRE(restarted_runtime.homeserver.database.persistent_store.events.size() == 8U);
             }
         }
 
@@ -354,8 +355,8 @@ SCENARIO("Persistent homeserver store records the client-server flow",
                 REQUIRE(runtime.homeserver.database.persistent_store.access_tokens.front().revoked);
                 REQUIRE(runtime.homeserver.database.persistent_store.rooms.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.memberships.size() == 1U);
-                REQUIRE(runtime.homeserver.database.persistent_store.events.size() == 7U);
-                REQUIRE(runtime.homeserver.database.persistent_store.state.size() == 6U);
+                REQUIRE(runtime.homeserver.database.persistent_store.events.size() == 8U);
+                REQUIRE(runtime.homeserver.database.persistent_store.state.size() == 7U);
                 REQUIRE(runtime.homeserver.database.persistent_store.audit_log.size() >= 6U);
                 REQUIRE(
                     merovingian::database::sensitive_values_are_redacted(runtime.homeserver.database.persistent_store));
