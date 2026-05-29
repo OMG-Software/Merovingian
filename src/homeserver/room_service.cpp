@@ -152,68 +152,6 @@ namespace
         return pos == std::string_view::npos ? std::string_view{} : room_id.substr(pos + 1);
     }
 
-    // Perform a single synchronous outbound federation call. Returns the raw
-    // response body on success (HTTP 2xx), or an error description on failure.
-    [[nodiscard]] auto perform_sync_outbound_call(http::OutboundClient* outbound_client,
-                                                  federation::ServerDiscoveryNetwork* discovery_network,
-                                                  federation::OutboundTransaction const& transaction,
-                                                  std::string_view key_id, std::string_view secret_key,
-                                                  std::string_view diagnostic_event) -> std::pair<bool, std::string>
-    {
-        if (outbound_client == nullptr || discovery_network == nullptr)
-        {
-            log_diagnostic(diagnostic_event, {
-                                                 {"reason", "federation infrastructure not available", false}
-            });
-            return {false, "federation not available"};
-        }
-        auto const discovery_timeout = std::uint32_t{30U};
-        auto const resolution =
-            federation::discover_server(transaction.destination, *discovery_network, discovery_timeout);
-        if (!resolution.discovery_allowed)
-        {
-            log_diagnostic(diagnostic_event, {
-                                                 {"destination", transaction.destination,   false},
-                                                 {"reason",      "server discovery failed", false}
-            });
-            return {false, "server discovery failed"};
-        }
-        // Load (or generate) the server signing key so we can read its actual key_id.
-        // Outbound federation requests must reference the exact key_id that was published
-        // to key servers — never a hardcoded sentinel like "ed25519:auto".
-        if (secret_key.size() != crypto_sign_SECRETKEYBYTES)
-        {
-            log_diagnostic(diagnostic_event, {
-                                                 {"reason", "server signing key not initialized", false}
-            });
-            return {false, "server signing key not initialized"};
-        }
-        auto call = federation::OutboundCall{};
-        call.transaction = transaction;
-        call.resolved_host = resolution.resolved_host;
-        call.resolved_port = resolution.resolved_port;
-        call.pinned_addresses = resolution.pinned_addresses;
-        call.key_id = std::string{key_id};
-        call.secret_key = std::string{secret_key};
-        auto destination = federation::FederationDestination{};
-        destination.server_name = transaction.destination;
-        auto const now_ts = static_cast<std::uint64_t>(
-            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
-                .count());
-        auto const result = federation::perform_outbound_transaction(*outbound_client, call, destination, now_ts);
-        if (!result.sent || result.http_status < 200U || result.http_status >= 300U)
-        {
-            log_diagnostic(diagnostic_event, {
-                                                 {"destination", transaction.destination,                         false},
-                                                 {"http_status", std::to_string(result.http_status),              false},
-                                                 {"reason",      result.error.empty() ? "non-2xx" : result.error, false}
-            });
-            return {false, result.error.empty() ? "remote server returned " + std::to_string(result.http_status)
-                                                : result.error};
-        }
-        return {true, result.response_body};
-    }
-
     auto generate_random_signing_keypair(std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>& public_key,
                                          std::array<unsigned char, crypto_sign_SECRETKEYBYTES>& secret_key) noexcept
         -> bool
@@ -793,6 +731,62 @@ namespace
     }
 
 } // namespace
+
+// Perform a single synchronous outbound federation call. Returns the raw
+// response body on success (HTTP 2xx), or an error description on failure.
+[[nodiscard]] auto perform_sync_outbound_call(http::OutboundClient* outbound_client,
+                                              federation::ServerDiscoveryNetwork* discovery_network,
+                                              federation::OutboundTransaction const& transaction,
+                                              std::string_view key_id, std::string_view secret_key,
+                                              std::string_view diagnostic_event) -> std::pair<bool, std::string>
+{
+    if (outbound_client == nullptr || discovery_network == nullptr)
+    {
+        log_diagnostic(diagnostic_event, {{"reason", "federation infrastructure not available", false}});
+        return {false, "federation not available"};
+    }
+    auto const discovery_timeout = std::uint32_t{30U};
+    auto const resolution =
+        federation::discover_server(transaction.destination, *discovery_network, discovery_timeout);
+    if (!resolution.discovery_allowed)
+    {
+        log_diagnostic(diagnostic_event, {
+                                             {"destination", transaction.destination,   false},
+                                             {"reason",      "server discovery failed", false}
+        });
+        return {false, "server discovery failed"};
+    }
+    if (secret_key.size() != crypto_sign_SECRETKEYBYTES)
+    {
+        log_diagnostic(diagnostic_event, {{"reason", "server signing key not initialized", false}});
+        return {false, "server signing key not initialized"};
+    }
+    auto call = federation::OutboundCall{};
+    call.transaction = transaction;
+    call.resolved_host = resolution.resolved_host;
+    call.resolved_port = resolution.resolved_port;
+    call.pinned_addresses = resolution.pinned_addresses;
+    call.key_id = std::string{key_id};
+    call.secret_key = std::string{secret_key};
+    auto destination = federation::FederationDestination{};
+    destination.server_name = transaction.destination;
+    auto const now_ts = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    auto const result = federation::perform_outbound_transaction(*outbound_client, call, destination, now_ts);
+    if (!result.sent || result.http_status < 200U || result.http_status >= 300U)
+    {
+        log_diagnostic(diagnostic_event, {
+                                             {"destination", transaction.destination,                         false},
+                                             {"http_status", std::to_string(result.http_status),              false},
+                                             {"reason",      result.error.empty() ? "non-2xx" : result.error, false}
+        });
+        return {false, result.error.empty() ? "remote server returned " + std::to_string(result.http_status)
+                                            : result.error};
+    }
+    return {true, result.response_body};
+}
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>
