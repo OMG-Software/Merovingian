@@ -350,6 +350,15 @@ separate operator decision once this branch is approved._
   `make_outbound_invite`, `make_outbound_backfill`) compose
   `OutboundTransaction` records carrying the spec-defined targets,
   query parameters, and v1/v2 invite body shapes.
+- Fix (0.4.36): `/sync` timeline events previously returned only `event_id`
+  and `sender`; they now include the full signed event content (`type`,
+  `content`, `sender`, `event_id`, `origin_server_ts`, `state_key`) so clients
+  can render messages and derive room version from `m.room.create`. The `state`
+  section previously returned `{"member_count": N}` instead of actual state
+  events; initial sync now includes the complete current room state. The
+  `room_version_for_room` fallback was changed from `"10"` to `"12"` to match
+  the `createRoom` and capabilities endpoint defaults. These fixes resolve
+  Element reporting "room version 1, marked as unstable" on newly created rooms.
 - Sync v1.18 conformance: `GET /_matrix/client/v3/sync` now populates
   every documented top-level key. `presence.events`,
   `account_data.events` (global and per joined room),
