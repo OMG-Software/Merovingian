@@ -98,6 +98,14 @@ redacts the event, removes `unsigned` and `signatures`, canonicalizes, and
 calculates the SHA-256 reference hash. `make_reference_hash_event_id` prefixes
 the URL-safe unpadded Base64 reference hash with `$` for modern room versions.
 
+For room version 12 (MSC4291) the room ID is the `m.room.create` event's
+reference hash with a `!` sigil — the same hash as the create event ID, which
+uses `$` — and carries no `:server` domain. `create_room` composes the create
+event first to derive this ID. The create event is also excluded from every other
+event's `auth_events`, because the room ID already implies it. Room versions 10
+and 11 keep server-scoped IDs (`!opaque:server`), a `room_id` in the create event,
+and the create event in `auth_events`.
+
 ## Runtime event graph
 
 Runtime events store their immediate `prev_events`, current-state-derived
@@ -112,5 +120,18 @@ a server restart.
 ## Redaction
 
 The redaction engine retains top-level keys and event-content keys according to
-the supported room-version policy split. Later work must expand this with full
-Matrix room-version fixtures.
+the supported room-version policy split (room v1–v10 vs v11+). Two room-version
+policy flags refine this further:
+
+- `create_event_is_room_id` (MSC4291, room v12): the `m.room.create` event has no
+  `room_id` — the room ID is the create event's reference hash — so redaction
+  drops a `room_id` from the create event. This keeps the create event's reference
+  hash and signing payload byte-for-byte identical to a conformant peer's; leaving
+  `room_id` in caused Synapse `send_join` to reject the create event with
+  `BadSignatureError`. Every other event, and all earlier room versions, retain
+  `room_id` as a protected top-level field.
+- `privilege_room_creators` (MSC4289, room v12): the create event sender and the
+  users listed in `content.additional_creators` hold an effectively infinite power
+  level in the authorization rules, overriding any integer in `m.room.power_levels`.
+
+Later work must expand this with full Matrix room-version fixtures.

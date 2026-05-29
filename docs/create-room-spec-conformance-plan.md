@@ -14,7 +14,17 @@ are persisted and exposed through the client directory routes, and outbound
 federation invites use the created room's real version. The remaining gap is
 local execution evidence on this Windows checkout: the new conformance tests are
 present, but the native Meson toolchain is unavailable here (`clang-18`,
-`clang++-18`, and `pkg-config` are missing).
+`clang++-18`, and `pkg-config` are missing). The WSL build (`build-wsl.cmd`,
+forcefallback subprojects) runs the suite locally.
+
+**Update (0.4.39): room version 12 (MSC4291 + MSC4289).** `create_room` now
+derives v12 room IDs from the `m.room.create` event's reference hash (`!` + hash,
+no `:server`), omits `room_id` from the create event, and excludes the create
+event from `auth_events`; room creators (`sender` + `additional_creators`) hold
+infinite power. This fixed the Synapse `send_join` `BadSignatureError` on the
+create event. See `docs/event-engine.md` for the authoritative description and
+`tests/unit/test_client_server.cpp` / `test_events.cpp` / `test_event_auth_rules.cpp`
+for the v10/v11/v12 conformance coverage.
 
 ---
 

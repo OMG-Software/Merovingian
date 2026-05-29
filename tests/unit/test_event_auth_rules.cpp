@@ -36,8 +36,8 @@ namespace
            "\"sha256\":\"hash\"}}";
 }
 
-[[nodiscard]] auto make_member_event(std::string_view sender, std::string_view state_key, std::string_view membership)
-    -> std::string
+[[nodiscard]] auto make_member_event(std::string_view sender, std::string_view state_key,
+                                     std::string_view membership) -> std::string
 {
     return "{\"type\":\"m.room.member\",\"state_key\":\"" + std::string{state_key} + "\",\"sender\":\"" +
            std::string{sender} +
@@ -65,8 +65,8 @@ namespace
            "\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
-[[nodiscard]] auto make_state_event(std::string_view sender, std::string_view type, std::string_view state_key)
-    -> std::string
+[[nodiscard]] auto make_state_event(std::string_view sender, std::string_view type,
+                                    std::string_view state_key) -> std::string
 {
     return "{\"type\":\"" + std::string{type} + "\",\"state_key\":\"" + std::string{state_key} + "\",\"sender\":\"" +
            std::string{sender} +
@@ -294,7 +294,9 @@ SCENARIO("Auth rules reject an invite when the inviter lacks invite power", "[ev
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
-        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        // MSC4289 (room v12): a room creator holds infinite power, so the low-power
+        // actor (@alice) must NOT be the creator — @admin owns the room here.
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 0))
@@ -392,7 +394,9 @@ SCENARIO("Auth rules reject a ban when the banner lacks ban power", "[events][au
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
-        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        // MSC4289 (room v12): a room creator holds infinite power, so the low-power
+        // actor (@alice) must NOT be the creator — @admin owns the room here.
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 0))
@@ -523,7 +527,9 @@ SCENARIO("Auth rules reject state events when sender lacks state_default power",
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
-        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        // MSC4289 (room v12): a room creator holds infinite power, so the low-power
+        // actor (@alice) must NOT be the creator — @admin owns the room here.
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 0))
@@ -590,7 +596,9 @@ SCENARIO("Auth rules reject power level changes that elevate a user above the se
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
-        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        // MSC4289 (room v12): a room creator holds infinite power, so the elevating
+        // sender (@alice) must NOT be the creator — @admin owns the room here.
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 50))
@@ -607,6 +615,102 @@ SCENARIO("Auth rules reject power level changes that elevate a user above the se
             THEN("the event is rejected because it elevates a user above the sender")
             {
                 REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// --- MSC4289: privileged room creators (room version 12) ----------------------
+// Spec: Matrix room version 12 (MSC4289 "Privilege room creators")
+// URL: https://spec.matrix.org/latest/rooms/v12/
+//
+// In room version 12 the create event's sender and every user listed in the create
+// event's content.additional_creators hold an effectively infinite power level: they
+// outrank any integer in m.room.power_levels and need no explicit users entry. Room
+// versions 10 and 11 have no such concept — those users are bound by the ordinary
+// power-level rules. The behaviour MUST differ by room version.
+SCENARIO("Room creators hold privileged power only in room version 12 (MSC4289)",
+         "[events][auth][power-levels][room-version][msc4289]")
+{
+    GIVEN("a create event whose additional_creators lists @bob, and power_levels that omit @bob")
+    {
+        // @alice is the create sender (a creator); @bob is an additional creator.
+        // Neither @bob nor a high state_default entry appears in power_levels: @bob
+        // has only users_default (0) power under the ordinary rules.
+        auto const create_json =
+            std::string{R"({"type":"m.room.create","state_key":"","sender":"@alice:example.org",)"
+                        R"("room_id":"!room:example.org","content":{"creator":"@alice:example.org",)"
+                        R"("room_version":"12","additional_creators":["@bob:example.org"]},)"
+                        R"("origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
+                        R"("hashes":{"sha256":"hash"}})"};
+        // state_default = 50, users_default = 0, only @alice present at 100.
+        auto const power_json =
+            make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100);
+        // A state event (m.room.topic) sent by the additional creator @bob.
+        auto const topic_json = make_state_event("@bob:example.org", "m.room.topic", "");
+
+        auto make_auth = [&]() {
+            auto auth_events = merovingian::events::AuthEventMap{};
+            auth_events.create = merovingian::canonicaljson::parse_lossless(create_json).value;
+            auth_events.power_levels = merovingian::canonicaljson::parse_lossless(power_json).value;
+            auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                            make_member_event("@bob:example.org", "@bob:example.org", "join"))
+                                            .value;
+            return auth_events;
+        };
+        auto const topic = merovingian::canonicaljson::parse_lossless(topic_json);
+        REQUIRE(topic.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the additional creator sends a state event in a room version 12 room")
+        {
+            auto const* policy = merovingian::rooms::find_room_version_policy("12");
+            REQUIRE(policy != nullptr);
+            auto const auth_events = make_auth();
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(topic.value, *policy, auth_events);
+
+            THEN("the creator's infinite power authorizes the event despite no power_levels entry")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+
+        WHEN("the same event is evaluated in room versions 10 and 11")
+        {
+            for (auto const* version : {"10", "11"})
+            {
+                auto const* policy = merovingian::rooms::find_room_version_policy(version);
+                REQUIRE(policy != nullptr);
+                auto const auth_events = make_auth();
+                auto const decision =
+                    merovingian::events::authorize_event_against_auth_events(topic.value, *policy, auth_events);
+
+                THEN("the user has no special privilege and lacks state_default power")
+                {
+                    // additional_creators carries no power meaning before v12, so @bob
+                    // falls back to users_default (0) < state_default (50) and is rejected.
+                    REQUIRE_FALSE(decision.allowed);
+                }
+            }
+        }
+
+        WHEN("the create event sender sends the same state event in room version 12")
+        {
+            // The create sender is also a creator under MSC4289, even with no users entry.
+            auto const sender_topic =
+                merovingian::canonicaljson::parse_lossless(make_state_event("@alice:example.org", "m.room.topic", ""));
+            auto const* policy = merovingian::rooms::find_room_version_policy("12");
+            REQUIRE(policy != nullptr);
+            auto auth_events = make_auth();
+            auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                            make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                            .value;
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(sender_topic.value, *policy, auth_events);
+
+            THEN("the create sender is privileged and the event is allowed")
+            {
+                REQUIRE(decision.allowed);
             }
         }
     }
@@ -859,7 +963,9 @@ SCENARIO("Auth rules reject a kick when the kicker lacks kick power", "[events][
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
-        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        // MSC4289 (room v12): a room creator holds infinite power, so the low-power
+        // actor (@alice) must NOT be the creator — @admin owns the room here.
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 0))

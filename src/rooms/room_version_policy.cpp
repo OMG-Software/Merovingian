@@ -10,13 +10,15 @@ namespace merovingian::rooms
 namespace
 {
 
+    // Fields after `stable`: create_event_is_room_id (MSC4291), privilege_room_creators (MSC4289).
+    // Both are room-v12 features; v10 and v11 leave them disabled.
     constexpr auto policies = std::array{
         RoomVersionPolicy{"10", EventFormat::room_v3_plus, RedactionRules::room_v1_v10,   AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
         RoomVersionPolicy{"11", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
         RoomVersionPolicy{"12", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v6_plus,
-                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true},
+                          StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, true,  true },
     };
 
 } // namespace

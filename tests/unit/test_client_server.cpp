@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -119,8 +120,8 @@ using namespace merovingian::tests;
 }
 
 [[nodiscard]] auto content_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
-                                     std::string_view event_type, std::string_view state_key = {})
-    -> merovingian::canonicaljson::Object
+                                     std::string_view event_type,
+                                     std::string_view state_key = {}) -> merovingian::canonicaljson::Object
 {
     auto const event = parse_object(event_json_for_state(store, room_id, event_type, state_key));
     auto const* content = object_member_as_object(event, "content");
@@ -794,6 +795,133 @@ SCENARIO("createRoom defaults to room version 12 when the client omits room_vers
                 auto const* rv = string_member(create, "room_version");
                 REQUIRE(rv != nullptr);
                 REQUIRE(*rv == "10");
+            }
+        }
+    }
+}
+
+// --- Room v12 MSC4291: room ID is the create event hash -----------------------
+// Spec: Matrix room version 12 (MSC4291 "Room IDs as hashes of the create event")
+// URL: https://spec.matrix.org/latest/rooms/v12/
+//
+// In room version 12: (1) the room ID is "!" + the reference hash of the
+// m.room.create event, with NO ":server" domain; (2) the create event itself
+// carries no room_id; (3) no event lists the create event in its auth_events (it
+// is implied by the room ID). A create event that contains a room_id is rejected
+// by conformant servers (Synapse), which is exactly what broke send_join. Earlier
+// room versions keep the server-scoped room ID, a room_id in the create event, and
+// the create event in auth_events. This behaviour MUST differ by room version.
+SCENARIO("createRoom derives the room ID from the create event in v12 only (MSC4291)",
+         "[homeserver][client-server][create-room][room-version][federation]")
+{
+    GIVEN("a started runtime with a logged-in creator")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+        auto const& store = runtime.homeserver.database.persistent_store;
+
+        auto create_event_id_for = [&store](std::string const& rid) -> std::string {
+            auto const it =
+                std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& r) {
+                    return r.room_id == rid && r.event_type == "m.room.create" && r.state_key.empty();
+                });
+            REQUIRE(it != store.state.end());
+            return it->event_id;
+        };
+        auto auth_events_list = [&store](std::string const& rid, std::string const& event_type) {
+            auto const obj = parse_object(event_json_for_state(store, rid, event_type));
+            auto const* auth = object_member(obj, "auth_events");
+            REQUIRE(auth != nullptr);
+            auto const* arr = std::get_if<merovingian::canonicaljson::Array>(&auth->storage());
+            REQUIRE(arr != nullptr);
+            auto ids = std::vector<std::string>{};
+            for (auto const& element : *arr)
+            {
+                if (auto const* text = std::get_if<std::string>(&element.storage()); text != nullptr)
+                {
+                    ids.push_back(*text);
+                }
+            }
+            return ids;
+        };
+
+        WHEN("the client creates a room with room_version 12")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_version":"12"})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const create_id = create_event_id_for(created_room_id);
+
+            THEN("the room ID is '!' + the create event reference hash with no server domain")
+            {
+                // Spec MUST (MSC4291): room ID = create event ID with the '!' sigil and no
+                // ":server" suffix. Do NOT change - a server-scoped ID is not a valid v12 ID.
+                REQUIRE_FALSE(created_room_id.empty());
+                REQUIRE(created_room_id.front() == '!');
+                REQUIRE(created_room_id.find(':') == std::string::npos);
+                REQUIRE(create_id.front() == '$');
+                REQUIRE(created_room_id == "!" + create_id.substr(1U));
+            }
+
+            AND_THEN("the m.room.create event body carries no room_id field")
+            {
+                // Spec MUST (MSC4291): a v12 create event with a room_id is rejected by peers.
+                auto const create = parse_object(event_json_for_state(store, created_room_id, "m.room.create"));
+                REQUIRE(object_member(create, "room_id") == nullptr);
+            }
+
+            AND_THEN("the create event is not listed in another event's auth_events")
+            {
+                // Spec MUST (MSC4291): the create event is implied by the room ID and is
+                // never referenced explicitly in auth_events.
+                auto const power_auth = auth_events_list(created_room_id, "m.room.power_levels");
+                REQUIRE(std::ranges::find(power_auth, create_id) == power_auth.end());
+            }
+        }
+
+        WHEN("the client creates rooms with the earlier versions 10 and 11")
+        {
+            for (auto const* version : {"10", "11"})
+            {
+                auto const body = std::string{R"({"room_version":")"} + version + R"("})";
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/createRoom", token, body});
+                REQUIRE(response.response.status == 200U);
+                auto const created_room_id = room_id(response.response.body);
+                auto const create_id = create_event_id_for(created_room_id);
+
+                THEN("the room ID is server-scoped, the create event has a room_id, and the "
+                     "create event is in auth_events")
+                {
+                    // Spec MUST (v10/v11): room IDs remain "!opaque:server".
+                    REQUIRE(created_room_id.front() == '!');
+                    REQUIRE(created_room_id.find(':') != std::string::npos);
+                    // Spec MUST (v10/v11): the create event carries its own room_id.
+                    auto const create = parse_object(event_json_for_state(store, created_room_id, "m.room.create"));
+                    auto const* create_room_id_field = string_member(create, "room_id");
+                    REQUIRE(create_room_id_field != nullptr);
+                    REQUIRE(*create_room_id_field == created_room_id);
+                    // Spec MUST (v10/v11): the create event IS referenced in auth_events.
+                    auto const power_auth = auth_events_list(created_room_id, "m.room.power_levels");
+                    REQUIRE(std::ranges::find(power_auth, create_id) != power_auth.end());
+                }
             }
         }
     }
@@ -2250,8 +2378,11 @@ SCENARIO("Join-by-id endpoint joins a room through the local join handler", "[ho
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
 
+        // Use room version 10 so the room ID is server-scoped ("!id:server") and
+        // therefore contains a colon to percent-encode; room v12 IDs are bare hashes
+        // (no ":server") which would make the percent-encoding path trivial.
         auto const room = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_version":"10"})"});
         REQUIRE(room.response.status == 200U);
         auto const id = room_id(room.response.body);
 
@@ -2394,9 +2525,10 @@ SCENARIO("POST /room_keys/version returns a version identifier to the client",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -2411,9 +2543,7 @@ SCENARIO("POST /room_keys/version returns a version identifier to the client",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"POST",
-                 "/_matrix/client/v3/room_keys/version",
-                 token,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
                  R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"});
 
             THEN("the response is 200 with a JSON object containing a non-empty string version field")
@@ -2443,9 +2573,10 @@ SCENARIO("private_chat preset auto-emits m.room.encryption when the client omits
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -2476,8 +2607,7 @@ SCENARIO("private_chat preset auto-emits m.room.encryption when the client omits
         WHEN("the client creates a trusted_private_chat room without specifying encryption in initial_state")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"trusted_private_chat"})"});
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"trusted_private_chat"})"});
             REQUIRE(response.response.status == 200U);
             auto const created_room_id = room_id(response.response.body);
             auto const& store = runtime.homeserver.database.persistent_store;
@@ -2502,9 +2632,10 @@ SCENARIO("public_chat preset does not auto-emit m.room.encryption",
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -2540,9 +2671,10 @@ SCENARIO("private_chat preset does not duplicate m.room.encryption when the clie
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -2565,10 +2697,10 @@ SCENARIO("private_chat preset does not duplicate m.room.encryption when the clie
 
             THEN("exactly one m.room.encryption state event exists with the correct algorithm")
             {
-                auto const count = std::ranges::count_if(
-                    store.state, [&](merovingian::database::PersistentStateEvent const& row) {
-                        return row.room_id == created_room_id && row.event_type == "m.room.encryption"
-                               && row.state_key.empty();
+                auto const count =
+                    std::ranges::count_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+                        return row.room_id == created_room_id && row.event_type == "m.room.encryption" &&
+                               row.state_key.empty();
                     });
                 REQUIRE(count == 1);
                 auto const encryption = content_for_state(store, created_room_id, "m.room.encryption");

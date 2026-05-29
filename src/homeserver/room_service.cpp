@@ -420,16 +420,23 @@ namespace
         return {};
     }
 
-    [[nodiscard]] auto auth_events_for_room(database::PersistentStore const& store,
-                                            std::string_view room_id) -> std::vector<std::string>
+    [[nodiscard]] auto auth_events_for_room(database::PersistentStore const& store, std::string_view room_id,
+                                            bool exclude_create) -> std::vector<std::string>
     {
         auto event_ids = std::vector<std::string>{};
         for (auto const& state : store.state)
         {
-            if (state.room_id == room_id)
+            if (state.room_id != room_id)
             {
-                event_ids.push_back(state.event_id);
+                continue;
             }
+            if (exclude_create && state.event_type == "m.room.create" && state.state_key.empty())
+            {
+                // MSC4291 (room v12): the create event is implied by the room ID and is
+                // never listed explicitly in another event's auth_events.
+                continue;
+            }
+            event_ids.push_back(state.event_id);
         }
         return event_ids;
     }
@@ -571,18 +578,46 @@ namespace
 
         auto const* type = string_member(*input, "type");
         auto const event_type = type == nullptr ? std::string{"m.room.message"} : *type;
-        // Derive the room version from the stored m.room.create event so the correct
-        // signing policy (event-id format, auth rules) is used for every event in the room.
-        auto const room_version = room_version_for_room(runtime.database.persistent_store, room_id);
+        // Derive the room version so the correct signing policy (event-id format, auth
+        // rules, MSC4291/MSC4289 behaviour) is used for every event in the room. The
+        // m.room.create event carries its own room_version in content — and while it is
+        // being composed the store holds no create row yet — so read it from the event
+        // itself; every other event reads the version from the room's persisted create.
+        auto room_version = std::string{};
+        if (event_type == "m.room.create")
+        {
+            auto const* content_value = object_member(*input, "content");
+            auto const* content_obj =
+                content_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&content_value->storage());
+            auto const* rv = content_obj == nullptr ? nullptr : string_member(*content_obj, "room_version");
+            room_version = rv != nullptr && !rv->empty() ? *rv : std::string{"12"};
+        }
+        else
+        {
+            room_version = room_version_for_room(runtime.database.persistent_store, room_id);
+        }
+        auto const* policy = rooms::find_room_version_policy(room_version);
+        if (policy == nullptr)
+        {
+            return std::nullopt;
+        }
+        // MSC4291 (room v12): the create event omits room_id (the room ID is its reference
+        // hash) and no event lists the create event in its auth_events.
+        auto const create_defines_room_id = policy->create_event_is_room_id;
+        auto const omit_room_id = event_type == "m.room.create" && create_defines_room_id;
         auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
-        auto const auth_events = auth_events_for_room(runtime.database.persistent_store, room_id);
+        auto const auth_events =
+            auth_events_for_room(runtime.database.persistent_store, room_id, create_defines_room_id);
         auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
         auto const now_ms = static_cast<std::int64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
                 .count());
         auto event = canonicaljson::Object{};
         event.push_back(canonicaljson::make_member("type", canonicaljson::Value{event_type}));
-        event.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{std::string{room_id}}));
+        if (!omit_room_id)
+        {
+            event.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{std::string{room_id}}));
+        }
         event.push_back(canonicaljson::make_member("sender", canonicaljson::Value{std::string{sender}}));
         event.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
         event.push_back(canonicaljson::make_member("depth", canonicaljson::Value{static_cast<std::int64_t>(depth)}));
@@ -612,11 +647,6 @@ namespace
         hashes.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
         event.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes)}));
         auto hash_event = canonicaljson::Value{event};
-        auto const* policy = rooms::find_room_version_policy(room_version);
-        if (policy == nullptr)
-        {
-            return std::nullopt;
-        }
         auto const event_id = events::make_reference_hash_event_id(hash_event, *policy);
         if (!event_id.error.empty())
         {
@@ -707,6 +737,27 @@ namespace
     // current_state is populated before any federation peer calls send_join.
     // Each event must be stored before the next is generated: auth_events_for_room and
     // previous_events_for_room both read the persistent state to build the correct chain.
+    // Persists an already-composed event (and its state row, if any) under room_id.
+    // Split out from emit_initial_state_event so create_room can compose the room v12
+    // m.room.create event first — deriving the room ID from its reference hash
+    // (MSC4291) — and persist it once that room ID is known.
+    [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
+                                              std::string_view sender, ComposedEvent const& composed) -> bool
+    {
+        auto const stream_ordering = runtime.database.next_stream_ordering++;
+        auto state = std::optional<database::PersistentStateEvent>{};
+        if (composed.state_key.has_value())
+        {
+            state = database::PersistentStateEvent{std::string{room_id}, composed.event_type, *composed.state_key,
+                                                   composed.event_id};
+        }
+        return database::store_event_with_state(runtime.database.persistent_store,
+                                                {composed.event_id, std::string{room_id}, std::string{sender},
+                                                 composed.json, composed.depth, stream_ordering,
+                                                 composed.prev_event_ids, composed.auth_event_ids, composed.signatures},
+                                                std::move(state));
+    }
+
     [[nodiscard]] auto emit_initial_state_event(HomeserverRuntime& runtime, std::string_view room_id,
                                                 std::string_view sender, std::string const& event_json) -> bool
     {
@@ -716,18 +767,7 @@ namespace
             // compose_signed_event already emitted a diagnostic.
             return false;
         }
-        auto const stream_ordering = runtime.database.next_stream_ordering++;
-        auto state = std::optional<database::PersistentStateEvent>{};
-        if (composed->state_key.has_value())
-        {
-            state = database::PersistentStateEvent{std::string{room_id}, composed->event_type, *composed->state_key,
-                                                   composed->event_id};
-        }
-        return database::store_event_with_state(
-            runtime.database.persistent_store,
-            {composed->event_id, std::string{room_id}, std::string{sender}, composed->json, composed->depth,
-             stream_ordering, composed->prev_event_ids, composed->auth_event_ids, composed->signatures},
-            std::move(state));
+        return persist_composed_event(runtime, room_id, sender, *composed);
     }
 
 } // namespace
@@ -742,12 +782,13 @@ namespace
 {
     if (outbound_client == nullptr || discovery_network == nullptr)
     {
-        log_diagnostic(diagnostic_event, {{"reason", "federation infrastructure not available", false}});
+        log_diagnostic(diagnostic_event, {
+                                             {"reason", "federation infrastructure not available", false}
+        });
         return {false, "federation not available"};
     }
     auto const discovery_timeout = std::uint32_t{30U};
-    auto const resolution =
-        federation::discover_server(transaction.destination, *discovery_network, discovery_timeout);
+    auto const resolution = federation::discover_server(transaction.destination, *discovery_network, discovery_timeout);
     if (!resolution.discovery_allowed)
     {
         log_diagnostic(diagnostic_event, {
@@ -758,7 +799,9 @@ namespace
     }
     if (secret_key.size() != crypto_sign_SECRETKEYBYTES)
     {
-        log_diagnostic(diagnostic_event, {{"reason", "server signing key not initialized", false}});
+        log_diagnostic(diagnostic_event, {
+                                             {"reason", "server signing key not initialized", false}
+        });
         return {false, "server signing key not initialized"};
     }
     auto call = federation::OutboundCall{};
@@ -771,8 +814,7 @@ namespace
     auto destination = federation::FederationDestination{};
     destination.server_name = transaction.destination;
     auto const now_ts = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
             .count());
     auto const result = federation::perform_outbound_transaction(*outbound_client, call, destination, now_ts);
     if (!result.sent || result.http_status < 200U || result.http_status >= 300U)
@@ -782,8 +824,8 @@ namespace
                                              {"http_status", std::to_string(result.http_status),              false},
                                              {"reason",      result.error.empty() ? "non-2xx" : result.error, false}
         });
-        return {false, result.error.empty() ? "remote server returned " + std::to_string(result.http_status)
-                                            : result.error};
+        return {false,
+                result.error.empty() ? "remote server returned " + std::to_string(result.http_status) : result.error};
     }
     return {true, result.response_body};
 }
@@ -1012,8 +1054,50 @@ namespace
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
-    auto const room_id =
-        "!room" + std::to_string(runtime.database.rooms.size() + 1U) + ":" + runtime.config.server().server_name;
+    // Build the m.room.create content first. In room version 12 the room ID is the
+    // reference hash of the create event (MSC4291), so the create event must be
+    // composed before a room ID exists; earlier versions use a server-scoped ID.
+    auto create_content = options.creation_content;
+    upsert_object_member(create_content, canonicaljson::make_member("creator", canonicaljson::Value{*user_id}));
+    upsert_object_member(create_content,
+                         canonicaljson::make_member("room_version", canonicaljson::Value{options.room_version}));
+    if (options.preset == "trusted_private_chat" && !options.trusted_invitees.empty())
+    {
+        upsert_object_member(create_content,
+                             canonicaljson::make_member("additional_creators", string_array(options.trusted_invitees)));
+    }
+
+    auto const* version_policy = rooms::find_room_version_policy(options.room_version);
+    auto const create_defines_room_id = version_policy != nullptr && version_policy->create_event_is_room_id;
+    auto room_id = std::string{};
+    auto precomposed_create = std::optional<ComposedEvent>{};
+    if (create_defines_room_id)
+    {
+        // MSC4291: compose the create event (which carries no room_id) so the room ID can
+        // be derived as "!" + the event's reference hash (i.e. the create event ID with a
+        // "!" sigil instead of "$"). There is no ":server" suffix in room v12 IDs.
+        auto create_event_object = canonicaljson::Object{};
+        create_event_object.push_back(
+            canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.create"}}));
+        create_event_object.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{}}));
+        create_event_object.push_back(canonicaljson::make_member("content", canonicaljson::Value{create_content}));
+        auto const create_event_json = serialize_canonical_string(canonicaljson::Value{std::move(create_event_object)});
+        if (!create_event_json.has_value())
+        {
+            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+        }
+        precomposed_create = compose_signed_event(runtime, std::string_view{}, *user_id, *create_event_json);
+        if (!precomposed_create.has_value())
+        {
+            return make_operation_result(false, {}, "initial room state event generation failed", 500U);
+        }
+        room_id = "!" + precomposed_create->event_id.substr(1U);
+    }
+    else
+    {
+        room_id =
+            "!room" + std::to_string(runtime.database.rooms.size() + 1U) + ":" + runtime.config.server().server_name;
+    }
     auto const room_decision = trust_safety::evaluate_room_policy({room_id, false, false, {}});
     if (!room_decision.allowed)
     {
@@ -1063,16 +1147,6 @@ namespace
         auto const serialized = serialize_canonical_string(canonicaljson::Value{std::move(event)});
         return serialized.has_value() && emit_initial_state_event(runtime, room_id, *user_id, *serialized);
     };
-
-    auto create_content = options.creation_content;
-    upsert_object_member(create_content, canonicaljson::make_member("creator", canonicaljson::Value{*user_id}));
-    upsert_object_member(create_content,
-                         canonicaljson::make_member("room_version", canonicaljson::Value{options.room_version}));
-    if (options.preset == "trusted_private_chat" && !options.trusted_invitees.empty())
-    {
-        upsert_object_member(create_content,
-                             canonicaljson::make_member("additional_creators", string_array(options.trusted_invitees)));
-    }
 
     auto power_levels = canonicaljson::Object{};
     power_levels.push_back(canonicaljson::make_member("ban", canonicaljson::Value{std::int64_t{50}}));
@@ -1124,8 +1198,12 @@ namespace
     auto creator_member = canonicaljson::Object{};
     creator_member.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{"join"}}));
 
-    if (!emit_state("m.room.create", std::move(create_content)) ||
-        !emit_state("m.room.member", std::move(creator_member), *user_id) ||
+    // In room v12 the create event was composed up-front to derive the room ID, so
+    // persist that exact event; earlier versions compose and persist it here.
+    auto const create_persisted = create_defines_room_id
+                                      ? persist_composed_event(runtime, room_id, *user_id, *precomposed_create)
+                                      : emit_state("m.room.create", std::move(create_content));
+    if (!create_persisted || !emit_state("m.room.member", std::move(creator_member), *user_id) ||
         !emit_state("m.room.power_levels", std::move(power_levels)))
     {
         log_diagnostic("room.create.rejected", {
@@ -1194,11 +1272,12 @@ namespace
             canonicaljson::make_member("algorithm", canonicaljson::Value{std::string{"m.megolm.v1.aes-sha2"}}));
         if (!emit_state("m.room.encryption", std::move(encryption_content)))
         {
-            log_diagnostic("room.create.rejected", {
-                                                       {"actor",   *user_id,                                        false},
-                                                       {"room_id", room_id,                                         false},
-                                                       {"status",  "500",                                           false},
-                                                       {"reason",  "encryption room state event generation failed", false}
+            log_diagnostic("room.create.rejected",
+                           {
+                               {"actor",   *user_id,                                        false},
+                               {"room_id", room_id,                                         false},
+                               {"status",  "500",                                           false},
+                               {"reason",  "encryption room state event generation failed", false}
             });
             return make_operation_result(false, {}, "encryption room state event generation failed", 500U);
         }

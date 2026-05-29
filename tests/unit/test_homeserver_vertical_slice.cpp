@@ -547,7 +547,11 @@ SCENARIO("Homeserver local room route flow creates joins sends and fetches state
                 // Spec MUST: createRoom MUST return 200 with the new room ID.
                 // Do NOT remove - a non-200 means room creation failed and all subsequent steps are invalid.
                 REQUIRE(room.status == 200U);
-                REQUIRE(room.body == "!room1:example.org");
+                // Room v12 (the default) derives the room ID from the create event hash
+                // (MSC4291), so it is no longer the deterministic "!room1:example.org".
+                // Assert a valid room ID sigil; exact per-version formats are pinned by the
+                // dedicated create-room room-version tests.
+                REQUIRE(room.body.starts_with("!"));
                 // Spec MUST: join and send MUST return 200.
                 // Do NOT remove - failures here indicate the room DAG is not accepting events.
                 REQUIRE(join.status == 200U);

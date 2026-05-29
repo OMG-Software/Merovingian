@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.39
+
+- Implement Matrix room version 12 (MSC4291 + MSC4289), fixing federation with
+  Synapse. Previously the server advertised and defaulted to room v12 but built
+  v12 rooms like v11, so a Synapse user's `send_join` failed signature
+  verification on the `m.room.create` event ("Invalid signature … with key
+  ed25519:… BadSignatureError") and could not join or exchange messages.
+  - MSC4291: the room ID is now `!` + the reference hash of the `m.room.create`
+    event (with no `:server` domain), the create event no longer carries a
+    `room_id`, and the create event is excluded from every event's `auth_events`
+    (it is implied by the room ID). Event redaction now drops `room_id` from the
+    create event under v12 so the reference hash and signing payload match a
+    conformant peer byte-for-byte. Room versions 10 and 11 are unchanged
+    (server-scoped IDs, `room_id` in the create event, create event in
+    `auth_events`).
+  - MSC4289: the `m.room.create` sender and every user listed in the create
+    event's `content.additional_creators` are room creators with an effectively
+    infinite power level that outranks any integer power level and cannot be
+    demoted via `m.room.power_levels` by a non-creator. Only room version 12
+    privileges creators.
+- Add spec-conformance tests covering room versions 10, 11, and 12 for the new
+  behaviour: create-event redaction of `room_id`, room-ID derivation, exclusion
+  of the create event from `auth_events`, creator power privilege, and the
+  room-version policy flags. Existing power-level rejection tests were corrected
+  to use a non-creator actor (a v12 creator now holds infinite power by spec).
+
 ## 0.4.38
 
 - Add comprehensive spec-conformance tests for the federation event signing
