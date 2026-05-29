@@ -775,6 +775,118 @@ SCENARIO("GET /sync returns required spec fields", "[conformance][client-server]
     }
 }
 
+// --- GET /_matrix/client/v3/sync (room state & timeline content) -------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// MUST: timeline events include full event content (type, content, sender,
+//       event_id, origin_server_ts) — not just event_id and sender.
+// MUST: state.events includes the m.room.create event for newly-created rooms
+//       so clients can determine the room version.
+// MUST: rooms created without an explicit room_version default to the server's
+//       latest supported version (currently "12").
+SCENARIO("GET /sync returns full event content and correct room version in state",
+         "[conformance][client-server][sync][room-version]")
+{
+    GIVEN("a logged-in user who has created a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+
+        WHEN("an initial sync is performed")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("the response contains full timeline events with type and content")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* join = object_member_as_object(*rooms, "join");
+                REQUIRE(join != nullptr);
+                auto const* room_obj = object_member_as_object(*join, room_id);
+                REQUIRE(room_obj != nullptr);
+
+                // Spec MUST: timeline.events is a non-empty array.
+                // Do NOT remove — an empty timeline after room creation means
+                // clients see a blank room with no history.
+                auto const* timeline = object_member_as_object(*room_obj, "timeline");
+                REQUIRE(timeline != nullptr);
+                auto const* timeline_events = object_member_as_array(*timeline, "events");
+                REQUIRE(timeline_events != nullptr);
+                REQUIRE(!timeline_events->empty());
+
+                // Spec MUST: each timeline event includes at least "type",
+                // "content", "sender", "event_id", "origin_server_ts".
+                // Do NOT remove — without these fields clients cannot render
+                // events or determine the room version from m.room.create.
+                auto const* first_event_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&timeline_events->front().storage());
+                REQUIRE(first_event_obj != nullptr);
+                REQUIRE(string_member(*first_event_obj, "type") != nullptr);
+                REQUIRE(object_member_as_object(*first_event_obj, "content") != nullptr);
+                REQUIRE(string_member(*first_event_obj, "sender") != nullptr);
+                REQUIRE(string_member(*first_event_obj, "event_id") != nullptr);
+                REQUIRE(int_member(*first_event_obj, "origin_server_ts") != nullptr);
+            }
+
+            THEN("the state section includes m.room.create with room_version 12")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* join = object_member_as_object(*rooms, "join");
+                REQUIRE(join != nullptr);
+                auto const* room_obj = object_member_as_object(*join, room_id);
+                REQUIRE(room_obj != nullptr);
+
+                // Spec MUST: state.events is an array containing room state.
+                // Do NOT remove — clients use state events from /sync to derive
+                // room version, power levels, join rules, encryption status, etc.
+                // A missing m.room.create event causes Element to display
+                // "room version 1" and mark the room as unstable.
+                auto const* state = object_member_as_object(*room_obj, "state");
+                REQUIRE(state != nullptr);
+                auto const* state_events = object_member_as_array(*state, "events");
+                REQUIRE(state_events != nullptr);
+
+                // Find the m.room.create event in state.
+                merovingian::canonicaljson::Object const* create_event = nullptr;
+                for (auto const& evt : *state_events)
+                {
+                    auto const* evt_obj = std::get_if<merovingian::canonicaljson::Object>(&evt.storage());
+                    if (evt_obj == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* type = string_member(*evt_obj, "type");
+                    if (type != nullptr && *type == "m.room.create")
+                    {
+                        create_event = evt_obj;
+                        break;
+                    }
+                }
+                REQUIRE(create_event != nullptr);
+
+                // Spec MUST: m.room.create content includes "room_version".
+                // If absent, clients default to "1" per spec. Merovingian
+                // defaults to "12" (the latest supported stable version).
+                // Do NOT remove — this is the exact assertion that catches the
+                // bug where Element reports "room version 1, marked as unstable".
+                auto const* content = object_member_as_object(*create_event, "content");
+                REQUIRE(content != nullptr);
+                auto const* room_version = string_member(*content, "room_version");
+                REQUIRE(room_version != nullptr);
+                REQUIRE(*room_version == "12");
+            }
+        }
+    }
+}
+
 // --- GET /_matrix/client/v3/rooms/{roomId}/members ---------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
 //

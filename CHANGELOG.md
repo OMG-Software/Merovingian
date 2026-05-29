@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.36
+
+- Fix /sync returning incomplete timeline events (only event_id and sender) —
+  events now include full content (type, content, sender, event_id,
+  origin_server_ts, state_key) so clients can render messages and determine
+  room version from the m.room.create event
+- Fix /sync state section returning only member_count instead of actual state
+  events — initial sync now includes the full current room state (m.room.create,
+  m.room.member, m.room.power_levels, etc.)
+- Fix room_version_for_room fallback returning "10" instead of "12" when
+  composing the first event in a new room, matching the createRoom and
+  capabilities endpoint defaults
+- Fix incorrect E2EE security assertions in run_client_server_flow and tests
+  that rejected m.room.encrypted events in /sync output — the server correctly
+  relays encrypted events opaquely for client-side decryption
+
 ## 0.4.35
 
 - Add ccache compiler caching to GitHub Actions CI, package, and release workflows

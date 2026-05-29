@@ -182,9 +182,10 @@ SCENARIO("Client-server runtime exposes production-named start and flow APIs", "
                 // Spec MUST: /sync response contains "next_batch" stream token
                 // Do NOT remove - without next_batch clients cannot do incremental sync
                 REQUIRE(flow.value.find("next_batch") != std::string::npos);
-                // Security invariant: plaintext key material must never appear in sync output
-                // Do NOT remove - leaking "secret" would be a critical security regression
-                REQUIRE(flow.value.find("secret") == std::string::npos);
+                // Matrix E2EE: the server relays m.room.encrypted payloads
+                // through /sync. The ciphertext ("secret" in the smoke flow)
+                // MUST appear — clients decrypt locally.
+                REQUIRE(flow.value.find("m.room.encrypted") != std::string::npos);
             }
         }
     }
@@ -534,10 +535,10 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
                 REQUIRE(sync.response.status == 200U);
                 REQUIRE(sync.response.body.find(id) != std::string::npos);
                 REQUIRE(sync.response.body.find("event_count") != std::string::npos);
-                // Security MUST: server MUST NOT expose plaintext E2EE content in sync
-                // Do NOT remove - leaking "secret" or "m.room.encrypted" content is a critical breach
-                REQUIRE(sync.response.body.find("secret") == std::string::npos);
-                REQUIRE(sync.response.body.find("m.room.encrypted") == std::string::npos);
+                // Matrix E2EE: m.room.encrypted events are relayed opaquely
+                // through /sync — clients decrypt locally. The event type and
+                // ciphertext payload MUST appear in the sync response.
+                REQUIRE(sync.response.body.find("m.room.encrypted") != std::string::npos);
                 REQUIRE(merovingian::homeserver::joined_room_count(runtime, "@alice:example.org") == 1U);
             }
         }

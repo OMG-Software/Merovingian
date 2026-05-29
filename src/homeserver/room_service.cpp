@@ -607,7 +607,7 @@ namespace
             }
             break;
         }
-        return "10"; // Stable default — the oldest version Merovingian advertises.
+        return "12"; // Latest stable version — matches the createRoom and capabilities defaults.
     }
 
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,

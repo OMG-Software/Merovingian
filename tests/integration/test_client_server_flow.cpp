@@ -36,13 +36,14 @@ SCENARIO("Integrated client-server flow covers auth devices rooms state joined r
         {
             auto const result = merovingian::homeserver::run_client_server_flow(config);
 
-            THEN("the flow completes and sync returns bounded safe summaries")
+            THEN("the flow completes and sync returns full event content")
             {
                 REQUIRE(result.ok);
                 REQUIRE(result.value.find("next_batch") != std::string::npos);
                 REQUIRE(result.value.find("event_count") != std::string::npos);
-                REQUIRE(result.value.find("secret") == std::string::npos);
-                REQUIRE(result.value.find("m.room.encrypted") == std::string::npos);
+                // Matrix E2EE: m.room.encrypted events are relayed opaquely
+                // through /sync — clients decrypt locally.
+                REQUIRE(result.value.find("m.room.encrypted") != std::string::npos);
             }
         }
     }

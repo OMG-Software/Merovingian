@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.35
+Version:        0.4.36
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.36-1
+- Fix /sync returning incomplete timeline events and missing state events
+
 * Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.35-1
 - Add ccache and build caching to GitHub Actions CI workflows
 
