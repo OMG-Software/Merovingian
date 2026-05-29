@@ -361,10 +361,17 @@ auto sign_event_for_server(canonicaljson::Value const& event, rooms::RoomVersion
                 canonicaljson::canonical_json_error_name(signed_json.error)};
     }
 
+    // Diagnostic: log the exact signing payload, signature, and signed event JSON
+    // so operators can compare byte-for-byte with a federation peer's verification
+    // payload when triaging BadSignatureError ("Signature was forged or corrupt").
     log_diagnostic("sign_event.accepted",
                    {
-                       {"server_name", signature.server_name, false},
-                       {"key_id",      signature.key_id,      false}
+                       {"server_name",    signature.server_name,                    false},
+                       {"key_id",         signature.key_id,                         false},
+                       {"payload_bytes",  std::to_string(payload.output.size()),    false},
+                       {"signing_payload", payload.output,                          false},
+                       {"signature",      encoded,                                  false},
+                       {"signed_json",    signed_json.output,                       false}
     });
     return {signed_json.output, signature.server_name, signature.key_id, encoded, {}};
 }

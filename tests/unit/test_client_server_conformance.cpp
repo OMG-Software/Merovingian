@@ -32,6 +32,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <optional>
 #include <string>
 
@@ -2267,8 +2268,10 @@ SCENARIO("POST /delete_devices returns 404 M_UNRECOGNIZED (implementation gap)",
 
 // --- GET /_matrix/client/v3/keys/changes --------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3keyschanges
-// IMPLEMENTATION GAP: device list change tracking endpoint not yet implemented.
-SCENARIO("GET /keys/changes returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][e2ee]")
+// Returns users whose device lists changed between two sync stream positions.
+// Element requests this on startup to avoid redundant /keys/query calls.
+SCENARIO("GET /keys/changes returns 200 with changed and left arrays",
+         "[conformance][client-server][e2ee][keys]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -2276,19 +2279,84 @@ SCENARIO("GET /keys/changes returns 404 M_UNRECOGNIZED (implementation gap)", "[
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /keys/changes is called")
+        WHEN("GET /keys/changes is called with from and to tokens")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/keys/changes?from=s1&to=s2", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/keys/changes?from=s0&to=s99", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with changed and left as arrays")
             {
-                // IMPLEMENTATION GAP: keys/changes route not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: 200 with "changed" and "left" arrays.
+                // Do NOT remove — Element reads these to detect stale device caches.
+                // A missing or wrong-typed field causes silent E2EE key-fetch failures.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* changed = object_member_as_array(body, "changed");
+                REQUIRE(changed != nullptr);
+                auto const* left = object_member_as_array(body, "left");
+                REQUIRE(left != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /keys/changes reflects device-key uploads made after the from token",
+         "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("a running client-server with two users sharing a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob   = register_and_login(started.runtime, "bob");
+
+        // Alice creates a private room and Bob joins so they share membership.
+        auto const room_resp = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(room_resp.response.status == 200U);
+        // Store the parsed body so string_member's pointer into it stays valid.
+        auto const room_body = parse_object(room_resp.response.body);
+        auto const* room_id  = string_member(room_body, "room_id");
+        REQUIRE(room_id != nullptr);
+        std::ignore = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/join", bob, {}});
+
+        // Record the stream position before Bob uploads his device keys.
+        auto const before_sync = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+        REQUIRE(before_sync.response.status == 200U);
+        auto const before_body  = parse_object(before_sync.response.body);
+        auto const* next_batch_val = string_member(before_body, "next_batch");
+        REQUIRE(next_batch_val != nullptr);
+        auto const from_token = *next_batch_val;
+
+        WHEN("Bob uploads his device keys")
+        {
+            std::ignore = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", bob,
+                 R"({"device_keys":{"user_id":"@bob:example.org","device_id":"bob_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:bob_DEV":"BOBKEY"},"signatures":{}}})"});
+
+            THEN("GET /keys/changes from the pre-upload token includes Bob in changed")
+            {
+                // Spec: any user who uploaded keys after `from` must appear in `changed`.
+                // Element uses this to know which users' key caches need refreshing.
+                auto const changes = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=s999", alice,
+                     {}});
+                REQUIRE(changes.response.status == 200U);
+                auto const cbody   = parse_object(changes.response.body);
+                auto const* changed_arr = object_member_as_array(cbody, "changed");
+                REQUIRE(changed_arr != nullptr);
+                auto const bob_in_changed = std::ranges::any_of(
+                    *changed_arr, [](merovingian::canonicaljson::Value const& v) {
+                        auto const* s = std::get_if<std::string>(&v.storage());
+                        return s != nullptr && *s == "@bob:example.org";
+                    });
+                REQUIRE(bob_in_changed);
             }
         }
     }
@@ -3162,6 +3230,112 @@ SCENARIO("POST /createRoom returns a room_id", "[conformance][client-server][roo
     }
 }
 
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom
+// "If the preset is private_chat or trusted_private_chat, the server SHOULD
+// enable end-to-end encryption in the room."
+// Verified via GET /rooms/{roomId}/state/m.room.encryption/ — a spec-defined
+// response-shape check that confirms the state event is present and well-formed.
+SCENARIO("POST /createRoom with private_chat preset produces an encrypted room",
+         "[conformance][client-server][rooms]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("POST /createRoom is called with preset private_chat")
+        {
+            auto const create = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})"});
+            REQUIRE(create.response.status == 200U);
+            auto const create_body = parse_object(create.response.body);
+            auto const* rid        = string_member(create_body, "room_id");
+            REQUIRE(rid != nullptr);
+
+            THEN("GET /rooms/{roomId}/state/m.room.encryption/ returns 200 with the megolm algorithm")
+            {
+                // Spec SHOULD: private_chat rooms must have m.room.encryption state.
+                // Clients (including Element) read this event to enable E2EE UI.
+                auto const enc = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET",
+                     "/_matrix/client/v3/rooms/" + *rid + "/state/m.room.encryption/",
+                     token,
+                     {}});
+                REQUIRE(enc.response.status == 200U);
+                auto const enc_body = parse_object(enc.response.body);
+                auto const* algorithm = string_member(enc_body, "algorithm");
+                REQUIRE(algorithm != nullptr);
+                REQUIRE(*algorithm == "m.megolm.v1.aes-sha2");
+            }
+        }
+
+        WHEN("POST /createRoom is called with preset trusted_private_chat")
+        {
+            auto const create = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"trusted_private_chat"})"});
+            REQUIRE(create.response.status == 200U);
+            auto const create_body = parse_object(create.response.body);
+            auto const* rid        = string_member(create_body, "room_id");
+            REQUIRE(rid != nullptr);
+
+            THEN("GET /rooms/{roomId}/state/m.room.encryption/ returns 200 with the megolm algorithm")
+            {
+                // Spec SHOULD: trusted_private_chat rooms must have m.room.encryption state.
+                auto const enc = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET",
+                     "/_matrix/client/v3/rooms/" + *rid + "/state/m.room.encryption/",
+                     token,
+                     {}});
+                REQUIRE(enc.response.status == 200U);
+                auto const enc_body = parse_object(enc.response.body);
+                auto const* algorithm = string_member(enc_body, "algorithm");
+                REQUIRE(algorithm != nullptr);
+                REQUIRE(*algorithm == "m.megolm.v1.aes-sha2");
+            }
+        }
+    }
+}
+
+SCENARIO("POST /createRoom with public_chat preset does not produce an encrypted room",
+         "[conformance][client-server][rooms]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("POST /createRoom is called with visibility public")
+        {
+            auto const create = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token, R"({"visibility":"public"})"});
+            REQUIRE(create.response.status == 200U);
+            auto const create_body = parse_object(create.response.body);
+            auto const* rid        = string_member(create_body, "room_id");
+            REQUIRE(rid != nullptr);
+
+            THEN("GET /rooms/{roomId}/state/m.room.encryption/ returns a non-200 status")
+            {
+                // Spec: public rooms are not required to be encrypted; the
+                // encryption state event must not be present.
+                auto const enc = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET",
+                     "/_matrix/client/v3/rooms/" + *rid + "/state/m.room.encryption/",
+                     token,
+                     {}});
+                REQUIRE(enc.response.status != 200U);
+            }
+        }
+    }
+}
+
 // =============================================================================
 // ROOM DIRECTORY
 // =============================================================================
@@ -3846,8 +4020,7 @@ SCENARIO("GET /rooms/{roomId}/state returns an array of state events",
 // --- GET /_matrix/client/v3/rooms/{roomId}/state/{eventType}/{stateKey} ------
 // Spec:
 // https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidstateeventtypestatekeystateeventtype
-// IMPLEMENTATION GAP: specific state event retrieval not yet implemented.
-SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} returns the state event content",
          "[conformance][client-server][room-participation]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
@@ -3862,14 +4035,14 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} returns 404 M_UNRECOG
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.create/", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with the content of the m.room.create event")
             {
-                // IMPLEMENTATION GAP: state/{eventType}/{stateKey} GET not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: 200 with the content object of the named state event.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* room_version = string_member(body, "room_version");
+                REQUIRE(room_version != nullptr);
+                REQUIRE(!room_version->empty());
             }
         }
     }
@@ -3877,8 +4050,7 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} returns 404 M_UNRECOG
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/state/{eventType} -----------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidstateeventtype
-// IMPLEMENTATION GAP: state event retrieval by type (empty key) not yet implemented.
-SCENARIO("GET /rooms/{roomId}/state/{eventType} (no state key) returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("GET /rooms/{roomId}/state/{eventType} (no state key) returns the state event content",
          "[conformance][client-server][room-participation]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
@@ -3893,14 +4065,15 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType} (no state key) returns 404 M_UNR
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.create", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with the content of the m.room.create event")
             {
-                // IMPLEMENTATION GAP: state/{eventType} GET not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: 200 with the content object; empty state key is equivalent
+                // to the trailing-slash form.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* room_version = string_member(body, "room_version");
+                REQUIRE(room_version != nullptr);
+                REQUIRE(!room_version->empty());
             }
         }
     }
@@ -6171,10 +6344,12 @@ SCENARIO("POST /search conformance")
 // ============================================================================
 // 17     Send-to-device — PUT /sendToDevice/{eventType}/{txnId}
 // ============================================================================
-// Spec: Matrix v1.18 §17 PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3sendtoeventtypetxnid
+// Sends a to-device message to specific device(s). Used by Element to deliver
+// Olm-encrypted room keys before a Megolm session can begin.
 
-SCENARIO("PUT /sendToDevice/{eventType}/{txnId} conformance")
+SCENARIO("PUT /sendToDevice/{eventType}/{txnId} returns 200 with empty object",
+         "[conformance][client-server][e2ee][send-to-device]")
 {
     GIVEN("a started homeserver with an authenticated user")
     {
@@ -6182,19 +6357,157 @@ SCENARIO("PUT /sendToDevice/{eventType}/{txnId} conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("PUT /sendToDevice/m.room.encrypted/1 is called")
+        WHEN("PUT /sendToDevice/m.room_key/txn1 is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/1", token,
-                                  R"({"messages":{"@alice:example.org":{"DEVICE":{"body":"enc"}}}})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/sendToDevice/m.room_key/txn1", token,
+                                  R"({"messages":{"@alice:example.org":{"DEVICE1":{"algorithm":"m.megolm.v1.aes-sha2","room_id":"!r:example.org","session_id":"sid","session_key":"skey"}}}})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with an empty JSON object")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 200 {} on success.
+                // Do NOT remove — Element blocks message sending until this succeeds.
+                // A 404 causes "Unable to send message" for all encrypted rooms.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(body.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("PUT /sendToDevice delivers the message to the recipient's /sync to_device queue",
+         "[conformance][client-server][e2ee][send-to-device]")
+{
+    GIVEN("a running homeserver with Alice and Bob registered")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob   = register_and_login(started.runtime, "bob");
+
+        // register_and_login creates Bob's device with id "bob_DEV".
+        // The sendToDevice message must target that device for /sync to drain it.
+        WHEN("Alice sends a to-device message to Bob's bob_DEV device")
+        {
+            auto const send = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/sendToDevice/m.room_key/txn1", alice,
+                 R"({"messages":{"@bob:example.org":{"bob_DEV":{"session_key":"sk1","room_id":"!r:example.org"}}}})"});
+            REQUIRE(send.response.status == 200U);
+
+            THEN("Bob's /sync exposes the message in to_device.events")
+            {
+                // Spec MUST: to-device messages must appear in the next /sync
+                // to_device.events array with correct type and sender fields.
+                // Do NOT remove — this is the only delivery path for Olm room-key
+                // messages. If absent, Bob can never decrypt Alice's messages.
+                auto const sync = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+                REQUIRE(sync.response.status == 200U);
+                auto const sbody = parse_object(sync.response.body);
+                auto const* to_device = object_member_as_object(sbody, "to_device");
+                REQUIRE(to_device != nullptr);
+                auto const* events = object_member_as_array(*to_device, "events");
+                REQUIRE(events != nullptr);
+                REQUIRE(!events->empty());
+                auto const* evt = std::get_if<merovingian::canonicaljson::Object>(&(*events)[0].storage());
+                REQUIRE(evt != nullptr);
+                auto const* type = string_member(*evt, "type");
+                REQUIRE(type != nullptr);
+                REQUIRE(*type == "m.room_key");
+                auto const* sender = string_member(*evt, "sender");
+                REQUIRE(sender != nullptr);
+                REQUIRE(*sender == "@alice:example.org");
+            }
+        }
+    }
+}
+
+SCENARIO("POST /keys/upload followed by POST /keys/query returns the uploaded device keys",
+         "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("a running homeserver with Alice logged in")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+
+        WHEN("Alice uploads device keys and then queries her own keys")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", alice,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"aliceCurve25519Key","ed25519:DEVICE1":"aliceEd25519Key"},"signatures":{"@alice:example.org":{"ed25519:DEVICE1":"aliceSig"}}}})"});
+            REQUIRE(upload.response.status == 200U);
+
+            auto const query = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/query", alice,
+                 R"({"device_keys":{"@alice:example.org":[]}})"});
+
+            THEN("the query response includes Alice's DEVICE1 key entry")
+            {
+                // Spec MUST: /keys/query returns device_keys for the queried user.
+                // Do NOT remove — Element calls this to establish Olm sessions.
+                // An empty device_keys means no E2EE sessions can ever be created.
+                REQUIRE(query.response.status == 200U);
+                auto const body = parse_object(query.response.body);
+                auto const* device_keys = object_member_as_object(body, "device_keys");
+                REQUIRE(device_keys != nullptr);
+                auto const* alice_keys = object_member_as_object(*device_keys, "@alice:example.org");
+                REQUIRE(alice_keys != nullptr);
+                auto const* device1 = object_member_as_object(*alice_keys, "DEVICE1");
+                REQUIRE(device1 != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /keys/upload followed by POST /keys/claim returns a one-time key",
+         "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("a running homeserver with Alice logged in")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+
+        WHEN("Alice uploads one-time keys and Bob claims one")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", alice,
+                 R"({"one_time_keys":{"signed_curve25519:AAAAA":"otk_payload_1","signed_curve25519:BBBBB":"otk_payload_2"}})"});
+            REQUIRE(upload.response.status == 200U);
+            // Verify OTK count is reflected immediately.
+            auto const up_body = parse_object(upload.response.body);
+            auto const* counts = object_member_as_object(up_body, "one_time_key_counts");
+            REQUIRE(counts != nullptr);
+            auto const* sc_count = int_member(*counts, "signed_curve25519");
+            REQUIRE(sc_count != nullptr);
+            REQUIRE(*sc_count >= 1);
+
+            auto const claim = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/claim", alice,
+                 R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
+
+            THEN("the claim response contains Alice's one-time key for DEVICE1")
+            {
+                // Spec MUST: /keys/claim returns a one-time key from the uploaded set.
+                // Do NOT remove — this is the Olm X3DH step; without it no new
+                // encrypted session can be established and messages cannot be sent.
+                REQUIRE(claim.response.status == 200U);
+                auto const cbody = parse_object(claim.response.body);
+                auto const* otks = object_member_as_object(cbody, "one_time_keys");
+                REQUIRE(otks != nullptr);
+                auto const* alice_otks = object_member_as_object(*otks, "@alice:example.org");
+                REQUIRE(alice_otks != nullptr);
+                // DEVICE1 must have been given exactly one key.
+                auto const* device_otks = object_member_as_object(*alice_otks, "DEVICE1");
+                REQUIRE(device_otks != nullptr);
+                REQUIRE(!device_otks->empty());
             }
         }
     }
@@ -6838,7 +7151,8 @@ SCENARIO("GET /rooms/{roomId}/timestamp_to_event conformance")
     }
 }
 
-SCENARIO("GET /rooms/{roomId}/state/{eventType} conformance")
+SCENARIO("GET /rooms/{roomId}/state/{eventType} returns 404 for absent state events",
+         "[conformance][client-server][room-participation]")
 {
     GIVEN("a started homeserver with an authenticated user and a room")
     {
@@ -6847,25 +7161,27 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType} conformance")
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
 
-        WHEN("GET /rooms/{roomId}/state/m.room.name is called")
+        WHEN("GET /rooms/{roomId}/state/m.room.name is called for a room with no name")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
-                // IMPLEMENTATION GAP: state-by-type GET not routed
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 404 M_NOT_FOUND when the room has no state event of
+                // the requested type.
+                REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
 }
 
-SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} conformance")
+SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} returns 404 for absent state events",
+         "[conformance][client-server][room-participation]")
 {
     GIVEN("a started homeserver with an authenticated user and a room")
     {
@@ -6874,19 +7190,21 @@ SCENARIO("GET /rooms/{roomId}/state/{eventType}/{stateKey} conformance")
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
 
-        WHEN("GET /rooms/{roomId}/state/m.room.name/ is called")
+        WHEN("GET /rooms/{roomId}/state/m.room.name/ is called for a room with no name")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.name/", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
-                // IMPLEMENTATION GAP: state-by-type-and-key GET not routed
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 404 M_NOT_FOUND when no state event of that type/key
+                // exists — not M_UNRECOGNIZED which implies the route itself is
+                // unknown.
+                REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }

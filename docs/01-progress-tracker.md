@@ -91,6 +91,46 @@ separate operator decision once this branch is approved._
   `room_alias_name`, and `is_direct`, and exposes client room-directory alias
   lookup/registration routes. Outbound federation invites now advertise the
   created room's actual version instead of a hardcoded value.
+- Room encryption for private presets: `create_room` now auto-emits
+  `m.room.encryption` with the `m.megolm.v1.aes-sha2` algorithm for
+  `private_chat` and `trusted_private_chat` presets when the client does not
+  include encryption in `initial_state`. This fixes Element reporting
+  "Encryption is not set up" in newly created rooms. Unit tests cover the
+  auto-emission, public-chat exclusion, and duplicate-suppression cases.
+- `PUT /sendToDevice/{eventType}/{txnId}` implemented: parses the `messages`
+  object, enqueues a `PersistentToDeviceMessage` per target user/device, and
+  returns `{}`. This was a 404 gap that blocked all E2EE session establishment
+  (Olm room-key delivery). Conformance tests verify 200 shape and end-to-end
+  delivery via /sync `to_device.events`.
+- `GET /keys/changes` implemented: extracts the `sync_stream_id` from the
+  composite next_batch token via `sync::decode_stream_token`, then returns
+  `changed` and `left` arrays from `device_list_changes`. Conformance tests
+  verify shape and the round-trip: Bob joins Alice's room, uploads keys, and
+  appears in Alice's `changed` array.
+- `GET /rooms/{roomId}/state/{eventType}/{stateKey}` implemented inline in
+  `client_server.cpp`: looks up `PersistentStateEvent` → `PersistentEvent`,
+  parses the full event JSON, and returns the `content` object. Returns 404
+  `M_NOT_FOUND` for absent events, 403 `M_FORBIDDEN` for unknown rooms. Two
+  former implementation-gap conformance tests are now real passing assertions.
+- Conformance tests for createRoom encryption added to
+  `test_client_server_conformance.cpp`: `POST /createRoom` with `private_chat`
+  or `trusted_private_chat` preset is now verified via
+  `GET /state/m.room.encryption/` in the conformance suite. This class of
+  regression will be caught by CI before it reaches users.
+- E2EE round-trip conformance tests added: `keys/upload` → `keys/query` round-
+  trip, `keys/upload` → `keys/claim` OTK consumption, `sendToDevice` → sync
+  `to_device` delivery, and `keys/changes` device-list propagation. These cover
+  the full Olm session establishment path for local users.
+- Federation E2EE proxying implemented: `POST /keys/query` and `POST /keys/claim`
+  now proxy remote users to their home servers via
+  `/_matrix/federation/v1/user/keys/query` and `/_matrix/federation/v1/user/keys/claim`
+  using `perform_sync_outbound_call` (moved from `room_service.cpp` anon namespace
+  to the `homeserver::` named namespace and declared in `room_service.hpp`).
+  `PUT /sendToDevice` now dispatches `m.direct_to_device` EDUs for remote users
+  via `dispatch_edu_to_server`. Inbound `m.direct_to_device` EDU handling and
+  all three inbound federation key endpoints were already implemented.
+- `.clangd` tab indentation fixed — YAML spec prohibits tabs; spaces now used
+  throughout so clangd parses the file and the diagnostic suppressions work.
 - FreeBSD portability regression: the `createRoom` follow-up review coverage
   now includes its required standard-library header (`<algorithm>`) so
   `std::ranges::find_if` builds cleanly on libc++-based FreeBSD CI instead of

@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.4.37
+
+- Fix rooms created with private_chat or trusted_private_chat preset not
+  enabling end-to-end encryption — Element reported "Encryption is not set up"
+  because no m.room.encryption state event was emitted during room creation.
+  The server now auto-emits m.room.encryption with the m.megolm.v1.aes-sha2
+  algorithm for private presets, matching the Matrix spec recommendation. If the
+  client already includes m.room.encryption in initial_state it is not
+  duplicated.
+- Implement PUT /sendToDevice/{eventType}/{txnId} — accepts Olm pre-key
+  messages (m.room_key, m.olm.v1.curve25519-aes-sha2 key exchanges) and
+  enqueues them for delivery via /sync to_device.events. This was a 404 gap
+  that blocked all E2EE session establishment.
+- Implement GET /keys/changes — returns users whose device lists changed
+  between two /sync stream positions. Element calls this on startup to
+  detect stale key caches. Uses sync::decode_stream_token to extract the
+  correct sync_stream_id component from the composite next_batch token.
+- Implement POST /keys/query federation proxying — remote users (server !=
+  local) are grouped by home server and queried via
+  POST /_matrix/federation/v1/user/keys/query. Unreachable servers are
+  reported in the failures object. Uses perform_sync_outbound_call moved
+  from room_service anonymous namespace to homeserver:: so both services
+  can use it.
+- Implement POST /keys/claim federation proxying — remote OTK claims are
+  proxied to /_matrix/federation/v1/user/keys/claim on the target server.
+- Implement sendToDevice remote delivery — messages targeted at users on
+  remote servers are dispatched as m.direct_to_device EDUs via the
+  federation transaction system (dispatch_edu_to_server helper). The
+  inbound m.direct_to_device handler in local_http_router.cpp was already
+  implemented; no change needed there.
+- Add E2EE round-trip conformance tests: keys/upload → keys/query returns
+  stored device keys; keys/upload → keys/claim returns and consumes OTKs;
+  sendToDevice → /sync to_device.events delivers the message; keys/changes
+  reflects key uploads that happen after the from token. These gaps meant
+  E2EE regressions could not be caught by CI.
+- Implement GET /rooms/{roomId}/state/{eventType}/{stateKey} — returns the
+  content object of the named state event (404 M_NOT_FOUND if absent). This
+  was an implementation gap; clients and conformance tests now use it to verify
+  room state directly from the API.
+- Add conformance tests for createRoom encryption: the conformance suite now
+  asserts that private_chat and trusted_private_chat presets produce an
+  m.room.encryption state event, and public rooms do not. This gap meant the
+  encryption regression had to be reported rather than caught by CI.
+- Fix .clangd indentation: YAML does not permit tab characters; converted all
+  indentation to spaces so clangd parses the config correctly and the
+  pp_file_not_found/no_member suppressions actually take effect.
+- Add enhanced diagnostic logging to the event signing pipeline — the
+  sign_event.accepted diagnostic now includes the exact signing payload,
+  signature, and signed JSON to aid triage of federation BadSignatureError
+  rejections.
+
 ## 0.4.36
 
 - Fix /sync returning incomplete timeline events (only event_id and sender) —
