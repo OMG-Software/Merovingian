@@ -6,6 +6,13 @@
   and WSL builds. Delegates to existing shell scripts in `scripts/` and replaces
   `build-wsl.ps1` for WSL builds.
 
+## 0.4.40
+
+- Accept v12 (MSC4291) room IDs in event validation. The `matrix_id_is_valid`
+  function required a `:` in all Matrix IDs, but MSC4291 room IDs are
+  `!` + base64 hash without a `:server` suffix, causing `send_join` to fail
+  with "invalid room_id" (400 Bad Request).
+
 ## 0.4.39
 
 - Implement Matrix room version 12 (MSC4291 + MSC4289), fixing federation with

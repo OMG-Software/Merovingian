@@ -1,5 +1,9 @@
 Name:           merovingian
+<<<<<<< HEAD
 Version:        0.4.41
+=======
+Version:        0.4.40
+>>>>>>> origin/main
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -91,6 +95,11 @@ fi
 %changelog
 * Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.41-1
 - Add unified build.py script for Linux, BSD, and WSL builds, replacing build-wsl.ps1
+
+* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.40-1
+- Accept v12 (MSC4291) room IDs in matrix_id_is_valid; the colon requirement
+  rejected hash-based room IDs without a :server suffix, causing send_join
+  to fail with 400 Bad Request
 
 * Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.39-1
 - Implement Matrix room version 12 (MSC4291 room IDs as create-event hashes,
