@@ -7,6 +7,7 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -40,8 +41,8 @@ namespace
         return event_type == "m.room.member";
     }
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -54,22 +55,22 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::int64_t const*
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object,
+                                      std::string_view key) noexcept -> std::int64_t const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
+                                               std::string_view key) noexcept -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -100,8 +101,8 @@ namespace
         return {true, {}, std::move(step), {}};
     }
 
-    [[nodiscard]] auto event_content_string(canonicaljson::Value const& event, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto event_content_string(canonicaljson::Value const& event,
+                                            std::string_view key) noexcept -> std::string const*
     {
         auto const* obj = value_is_object(event);
         if (obj == nullptr)
@@ -141,9 +142,63 @@ namespace
         return sender_power >= redact_level || sender_power >= ban_level;
     }
 
-    [[nodiscard]] auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
-                                              canonicaljson::Value const& create_event) noexcept -> std::int64_t
+    [[nodiscard]] auto array_contains_string(canonicaljson::Value const& value,
+                                             std::string_view needle) noexcept -> bool
     {
+        auto const* array = std::get_if<canonicaljson::Array>(&value.storage());
+        if (array == nullptr)
+        {
+            return false;
+        }
+        return std::ranges::any_of(*array, [needle](canonicaljson::Value const& element) {
+            auto const* text = std::get_if<std::string>(&element.storage());
+            return text != nullptr && *text == needle;
+        });
+    }
+
+    // MSC4289 (room v12): the create event's sender and every user listed in the
+    // create event's content.additional_creators are room creators. Only room
+    // versions whose policy privileges creators treat them specially.
+    [[nodiscard]] auto user_is_room_creator(canonicaljson::Value const& create_event, std::string_view user_id,
+                                            rooms::RoomVersionPolicy const& policy) noexcept -> bool
+    {
+        if (!policy.privilege_room_creators)
+        {
+            return false;
+        }
+        auto const* obj = value_is_object(create_event);
+        if (obj == nullptr)
+        {
+            return false;
+        }
+        if (auto const* sender = string_member(*obj, "sender"); sender != nullptr && *sender == user_id)
+        {
+            return true;
+        }
+        auto const* content = object_member_as_object(*obj, "content");
+        if (content == nullptr)
+        {
+            return false;
+        }
+        auto const* additional = object_member(*content, "additional_creators");
+        return additional != nullptr && array_contains_string(*additional, user_id);
+    }
+
+    // The "creator infinite power" sentinel for MSC4289. A room creator outranks
+    // every integer power level, so comparisons treat their power as the maximum
+    // representable value rather than a literal number from the power_levels event.
+    constexpr auto creator_power = std::numeric_limits<std::int64_t>::max();
+
+    [[nodiscard]] auto effective_sender_power(canonicaljson::Value const& power_levels, std::string_view sender,
+                                              canonicaljson::Value const& create_event,
+                                              rooms::RoomVersionPolicy const& policy) noexcept -> std::int64_t
+    {
+        // MSC4289: room creators hold an effectively infinite power level that is
+        // independent of (and overrides) any entry in the power_levels event.
+        if (user_is_room_creator(create_event, sender, policy))
+        {
+            return creator_power;
+        }
         if (value_has_content(power_levels))
         {
             return extract_user_power_level(power_levels, sender);
@@ -266,8 +321,8 @@ auto extract_content_membership(canonicaljson::Value const& event) noexcept -> s
     return membership == nullptr ? std::string{} : *membership;
 }
 
-auto extract_user_power_level(canonicaljson::Value const& power_levels_event, std::string_view user_id) noexcept
-    -> std::int64_t
+auto extract_user_power_level(canonicaljson::Value const& power_levels_event,
+                              std::string_view user_id) noexcept -> std::int64_t
 {
     auto const* obj = value_is_object(power_levels_event);
     if (obj == nullptr)
@@ -316,8 +371,8 @@ auto extract_power_level_key(canonicaljson::Value const& power_levels_event, std
     return default_value;
 }
 
-auto authorize_event(rooms::RoomVersionPolicy const& policy, EventAuthorizationRequest const& request)
-    -> EventAuthorizationDecision
+auto authorize_event(rooms::RoomVersionPolicy const& policy,
+                     EventAuthorizationRequest const& request) -> EventAuthorizationDecision
 {
     auto const rule_hook = auth_rule_hook_name(policy);
     if (policy.id != request.room_version)
@@ -521,7 +576,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                                               ? extract_power_level_key(auth_events.power_levels, "invite", 0)
                                               : 0;
                 auto const authorising_power =
-                    effective_sender_power(auth_events.power_levels, *authorising_user, auth_events.create);
+                    effective_sender_power(auth_events.power_levels, *authorising_user, auth_events.create, policy);
                 if (authorising_power < invite_power)
                 {
                     return make_denied("5", "restricted join authorising user lacks invite power");
@@ -555,7 +610,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             auto const invite_power = value_has_content(auth_events.power_levels)
                                           ? extract_power_level_key(auth_events.power_levels, "invite", 0)
                                           : 0;
-            auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
+            auto const sender_power =
+                effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
             if (sender_power < invite_power)
             {
                 return make_denied("6", "insufficient power to invite");
@@ -585,7 +641,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                 auto const ban_power = value_has_content(auth_events.power_levels)
                                            ? extract_power_level_key(auth_events.power_levels, "ban", 50)
                                            : 50;
-                auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
+                auto const sender_power =
+                    effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
                 if (sender_power < ban_power)
                 {
                     return make_denied("7", "insufficient power to unban");
@@ -597,7 +654,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             auto const kick_power = value_has_content(auth_events.power_levels)
                                         ? extract_power_level_key(auth_events.power_levels, "kick", 50)
                                         : 50;
-            auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
+            auto const sender_power =
+                effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
             if (sender_power < kick_power)
             {
                 return make_denied("7", "insufficient power to kick");
@@ -617,7 +675,8 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             auto const ban_power = value_has_content(auth_events.power_levels)
                                        ? extract_power_level_key(auth_events.power_levels, "ban", 50)
                                        : 50;
-            auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
+            auto const sender_power =
+                effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
             if (sender_power < ban_power)
             {
                 return make_denied("8", "insufficient power to ban");
@@ -650,14 +709,15 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
     }
 
     // Step 11: check power levels for the event type
-    auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
+    auto const sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
 
     auto const* state_key = string_member(*obj, "state_key");
     auto const is_state_event = state_key != nullptr;
 
     if (*event_type == "m.room.power_levels")
     {
-        auto const pl_sender_power = effective_sender_power(auth_events.power_levels, *sender, auth_events.create);
+        auto const pl_sender_power =
+            effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
 
         // For m.room.power_levels, the sender must have the level to change each key
         // Check that the sender can set the new event's content power levels
@@ -680,7 +740,13 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     }
                     auto const old_level =
                         old_users == nullptr ? 0 : extract_user_level_from_users(*old_users, user_entry.key);
-                    auto const user_old = old_level >= 0 ? old_level : 0;
+                    auto user_old = old_level >= 0 ? old_level : 0;
+                    if (user_is_room_creator(auth_events.create, user_entry.key, policy))
+                    {
+                        // MSC4289: a room creator's power level is fixed at infinity and
+                        // cannot be reassigned through m.room.power_levels by a non-creator.
+                        user_old = creator_power;
+                    }
                     if (*new_level > pl_sender_power && user_old <= pl_sender_power)
                     {
                         if (user_entry.key != *sender)

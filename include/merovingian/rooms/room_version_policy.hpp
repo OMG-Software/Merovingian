@@ -45,6 +45,14 @@ struct RoomVersionPolicy final
     StateResolutionAlgorithm state_resolution{StateResolutionAlgorithm::v2};
     EventIdFormat event_id_format{EventIdFormat::reference_hash};
     bool stable{false};
+    // MSC4291 (room v12): the room ID is "!" + the reference hash of the
+    // m.room.create event, the create event carries no room_id, and the create
+    // event is implicit in every event's auth_events (never listed explicitly).
+    bool create_event_is_room_id{false};
+    // MSC4289 (room v12): the create event sender and every user listed in the
+    // create event's content.additional_creators hold an effectively infinite
+    // power level that outranks any integer power level.
+    bool privilege_room_creators{false};
 };
 
 [[nodiscard]] auto known_room_versions() -> std::vector<RoomVersionPolicy>;

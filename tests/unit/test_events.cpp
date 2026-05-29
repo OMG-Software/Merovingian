@@ -781,6 +781,79 @@ SCENARIO("Event redaction uses room-version-specific top-level keys", "[events][
     }
 }
 
+// --- MSC4291: the create event carries no room_id in room version 12 ----------
+// Spec: Matrix room version 12 (MSC4291 "Room IDs as hashes of the create event")
+// URL: https://spec.matrix.org/latest/rooms/v12/
+//
+// In room version 12 the m.room.create event has no room_id - the room ID is the
+// create event's reference hash. The redaction algorithm MUST therefore drop a
+// room_id from a create event so the reference hash and signing payload match a
+// conformant peer (e.g. Synapse), which never includes room_id in the create
+// event's redacted form. For every other event type, and for all earlier room
+// versions, room_id remains a protected top-level field.
+SCENARIO("Room version 12 redaction drops room_id only from the create event (MSC4291)",
+         "[events][redaction][room-version]")
+{
+    GIVEN("the v10, v11, and v12 room-version policies")
+    {
+        auto const* room_v10 = merovingian::rooms::find_room_version_policy("10");
+        auto const* room_v11 = merovingian::rooms::find_room_version_policy("11");
+        auto const* room_v12 = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(room_v10 != nullptr);
+        REQUIRE(room_v11 != nullptr);
+        REQUIRE(room_v12 != nullptr);
+
+        WHEN("an m.room.create event carrying a room_id is redacted under each version")
+        {
+            auto const create = merovingian::canonicaljson::parse_lossless(
+                R"({"type":"m.room.create","room_id":"!r:example.org","sender":"@a:example.org",)"
+                R"("state_key":"","content":{"room_version":"12"},"origin_server_ts":1,)"
+                R"("depth":1,"prev_events":[],"auth_events":[]})");
+            REQUIRE(create.error == merovingian::canonicaljson::ParseError::none);
+            auto const out_v10 = merovingian::canonicaljson::serialize_canonical(
+                                     merovingian::events::redact_event(create.value, *room_v10).event)
+                                     .output;
+            auto const out_v11 = merovingian::canonicaljson::serialize_canonical(
+                                     merovingian::events::redact_event(create.value, *room_v11).event)
+                                     .output;
+            auto const out_v12 = merovingian::canonicaljson::serialize_canonical(
+                                     merovingian::events::redact_event(create.value, *room_v12).event)
+                                     .output;
+
+            THEN("v10 and v11 keep room_id but v12 drops it from the create event")
+            {
+                // Spec MUST (v10/v11): room_id is a protected redaction field for the
+                // create event. Do NOT change - dropping it corrupts the reference hash.
+                REQUIRE(out_v10.find("\"room_id\"") != std::string::npos);
+                REQUIRE(out_v11.find("\"room_id\"") != std::string::npos);
+                // Spec MUST (v12, MSC4291): the create event has no room_id, so it MUST be
+                // dropped during redaction. Do NOT change - leaving it in makes send_join
+                // signature verification fail on conformant peers with BadSignatureError.
+                REQUIRE(out_v12.find("\"room_id\"") == std::string::npos);
+            }
+        }
+
+        WHEN("a non-create event carrying a room_id is redacted under v12")
+        {
+            auto const member = merovingian::canonicaljson::parse_lossless(
+                R"({"type":"m.room.member","room_id":"!r:example.org","sender":"@a:example.org",)"
+                R"("state_key":"@a:example.org","content":{"membership":"join"},)"
+                R"("origin_server_ts":1,"depth":2,"prev_events":[],"auth_events":[]})");
+            REQUIRE(member.error == merovingian::canonicaljson::ParseError::none);
+            auto const out = merovingian::canonicaljson::serialize_canonical(
+                                 merovingian::events::redact_event(member.value, *room_v12).event)
+                                 .output;
+
+            THEN("room_id is retained on non-create events even in v12")
+            {
+                // Spec MUST: only the create event loses room_id in v12; every other event
+                // keeps it. Do NOT change - membership and other events still need room_id.
+                REQUIRE(out.find("\"room_id\"") != std::string::npos);
+            }
+        }
+    }
+}
+
 // --- Join event hashes.sha256 required for send_join -------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 11.5.1
 // Section: PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}
@@ -968,6 +1041,18 @@ SCENARIO("Room-version fixtures pin Matrix v10 v11 and v12 policy differences", 
                 // obsolete fields in the reference hash, producing wrong event IDs.
                 REQUIRE(room_v11->redaction_rules == merovingian::rooms::RedactionRules::room_v11_plus);
                 REQUIRE(room_v12->redaction_rules == merovingian::rooms::RedactionRules::room_v11_plus);
+                // Spec MUST (MSC4291): only room version 12 derives the room ID from the
+                // create event (and so omits room_id from the create event). Do NOT change -
+                // enabling this for v10/v11 corrupts their create-event reference hashes.
+                REQUIRE_FALSE(room_v10->create_event_is_room_id);
+                REQUIRE_FALSE(room_v11->create_event_is_room_id);
+                REQUIRE(room_v12->create_event_is_room_id);
+                // Spec MUST (MSC4289): only room version 12 privileges room creators with
+                // infinite power. Do NOT change - applying it to v10/v11 would grant
+                // creators powers their auth rules never intended.
+                REQUIRE_FALSE(room_v10->privilege_room_creators);
+                REQUIRE_FALSE(room_v11->privilege_room_creators);
+                REQUIRE(room_v12->privilege_room_creators);
             }
         }
     }
@@ -994,13 +1079,13 @@ SCENARIO("Signing payload for v10 event matches Synapse byte-for-byte", "[events
         auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
 
-        auto const event_json = std::string{
-            R"({"auth_events":[],"content":{"membership":"join","displayname":"Alice"},)"
-            R"("depth":1,"hashes":{"sha256":"abc123"},)"
-            R"("origin":"pong.ping.me.uk","origin_server_ts":1748300000000,)"
-            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-            R"("sender":"@alice:pong.ping.me.uk","state_key":"@alice:pong.ping.me.uk",)"
-            R"("type":"m.room.member"})"};
+        auto const event_json =
+            std::string{R"({"auth_events":[],"content":{"membership":"join","displayname":"Alice"},)"
+                        R"("depth":1,"hashes":{"sha256":"abc123"},)"
+                        R"("origin":"pong.ping.me.uk","origin_server_ts":1748300000000,)"
+                        R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                        R"("sender":"@alice:pong.ping.me.uk","state_key":"@alice:pong.ping.me.uk",)"
+                        R"("type":"m.room.member"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -1018,15 +1103,14 @@ SCENARIO("Signing payload for v10 event matches Synapse byte-for-byte", "[events
                 // only "membership". "unsigned" and "signatures" are removed.
                 // "event_id" is removed for v4+ rooms (reference_hash format).
                 // Keys are sorted lexicographically in canonical JSON.
-                auto const expected = std::string{
-                    R"({"auth_events":[],"content":{"membership":"join"},)"
-                    R"("depth":1,"hashes":{"sha256":"abc123"},)"
-                    R"("origin":"pong.ping.me.uk",)"
-                    R"("origin_server_ts":1748300000000,)"
-                    R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-                    R"("sender":"@alice:pong.ping.me.uk",)"
-                    R"("state_key":"@alice:pong.ping.me.uk",)"
-                    R"("type":"m.room.member"})"};
+                auto const expected = std::string{R"({"auth_events":[],"content":{"membership":"join"},)"
+                                                  R"("depth":1,"hashes":{"sha256":"abc123"},)"
+                                                  R"("origin":"pong.ping.me.uk",)"
+                                                  R"("origin_server_ts":1748300000000,)"
+                                                  R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                                                  R"("sender":"@alice:pong.ping.me.uk",)"
+                                                  R"("state_key":"@alice:pong.ping.me.uk",)"
+                                                  R"("type":"m.room.member"})"};
 
                 REQUIRE(payload.output == expected);
             }
@@ -1041,13 +1125,13 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
 
-        auto const event_json = std::string{
-            R"({"auth_events":[],"content":{"membership":"join","displayname":"Alice"},)"
-            R"("depth":1,"hashes":{"sha256":"abc123"},)"
-            R"("origin":"pong.ping.me.uk","origin_server_ts":1748300000000,)"
-            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-            R"("sender":"@alice:pong.ping.me.uk","state_key":"@alice:pong.ping.me.uk",)"
-            R"("type":"m.room.member"})"};
+        auto const event_json =
+            std::string{R"({"auth_events":[],"content":{"membership":"join","displayname":"Alice"},)"
+                        R"("depth":1,"hashes":{"sha256":"abc123"},)"
+                        R"("origin":"pong.ping.me.uk","origin_server_ts":1748300000000,)"
+                        R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                        R"("sender":"@alice:pong.ping.me.uk","state_key":"@alice:pong.ping.me.uk",)"
+                        R"("type":"m.room.member"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -1064,14 +1148,13 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
                 // kept (removed in v11), member content stripped to "membership"
                 // only. "displayname" must be absent. "unsigned", "signatures",
                 // and "event_id" are removed.
-                auto const expected = std::string{
-                    R"({"auth_events":[],"content":{"membership":"join"},)"
-                    R"("depth":1,"hashes":{"sha256":"abc123"},)"
-                    R"("origin_server_ts":1748300000000,)"
-                    R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-                    R"("sender":"@alice:pong.ping.me.uk",)"
-                    R"("state_key":"@alice:pong.ping.me.uk",)"
-                    R"("type":"m.room.member"})"};
+                auto const expected = std::string{R"({"auth_events":[],"content":{"membership":"join"},)"
+                                                  R"("depth":1,"hashes":{"sha256":"abc123"},)"
+                                                  R"("origin_server_ts":1748300000000,)"
+                                                  R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                                                  R"("sender":"@alice:pong.ping.me.uk",)"
+                                                  R"("state_key":"@alice:pong.ping.me.uk",)"
+                                                  R"("type":"m.room.member"})"};
 
                 REQUIRE(payload.output == expected);
             }
@@ -1085,13 +1168,13 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
 
-        auto const event_json = std::string{
-            R"({"auth_events":[],"content":{"creator":"@alice:pong.ping.me.uk","room_version":"12"},)"
-            R"("depth":0,"hashes":{"sha256":"def456"},)"
-            R"("origin_server_ts":1748300000000,)"
-            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-            R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
-            R"("type":"m.room.create"})"};
+        auto const event_json =
+            std::string{R"({"auth_events":[],"content":{"creator":"@alice:pong.ping.me.uk","room_version":"12"},)"
+                        R"("depth":0,"hashes":{"sha256":"def456"},)"
+                        R"("origin_server_ts":1748300000000,)"
+                        R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                        R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
+                        R"("type":"m.room.create"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -1104,11 +1187,14 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
             {
                 REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
 
+                // MSC4291 (room v12): the create event has no room_id (the room ID is its
+                // reference hash), so redaction drops room_id from the signing payload while
+                // content keys (creator, room_version) are fully preserved.
                 auto const expected = std::string{
                     R"({"auth_events":[],"content":{"creator":"@alice:pong.ping.me.uk","room_version":"12"},)"
                     R"("depth":0,"hashes":{"sha256":"def456"},)"
                     R"("origin_server_ts":1748300000000,)"
-                    R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                    R"("prev_events":[],)"
                     R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
                     R"("type":"m.room.create"})"};
 
@@ -1124,13 +1210,12 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
 
-        auto const event_json = std::string{
-            R"({"auth_events":[],"content":{"guest_access":"can_join"},)"
-            R"("depth":2,"hashes":{"sha256":"ghi789"},)"
-            R"("origin_server_ts":1748300000000,)"
-            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-            R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
-            R"("type":"m.room.guest_access"})"};
+        auto const event_json = std::string{R"({"auth_events":[],"content":{"guest_access":"can_join"},)"
+                                            R"("depth":2,"hashes":{"sha256":"ghi789"},)"
+                                            R"("origin_server_ts":1748300000000,)"
+                                            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                                            R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
+                                            R"("type":"m.room.guest_access"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -1143,13 +1228,12 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
             {
                 REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
 
-                auto const expected = std::string{
-                    R"({"auth_events":[],"content":{},)"
-                    R"("depth":2,"hashes":{"sha256":"ghi789"},)"
-                    R"("origin_server_ts":1748300000000,)"
-                    R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-                    R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
-                    R"("type":"m.room.guest_access"})"};
+                auto const expected = std::string{R"({"auth_events":[],"content":{},)"
+                                                  R"("depth":2,"hashes":{"sha256":"ghi789"},)"
+                                                  R"("origin_server_ts":1748300000000,)"
+                                                  R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                                                  R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
+                                                  R"("type":"m.room.guest_access"})"};
 
                 REQUIRE(payload.output == expected);
             }
@@ -1163,15 +1247,15 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
 
-        auto const event_json = std::string{
-            R"({"auth_events":[],"content":{"ban":50,"events":{"m.room.message":0},"events_default":0,)"
-            R"("invite":0,"kick":50,"redact":50,"state_default":50,"users":{},)"
-            R"("users_default":0},)"
-            R"("depth":1,"hashes":{"sha256":"jkl012"},)"
-            R"("origin_server_ts":1748300000000,)"
-            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-            R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
-            R"("type":"m.room.power_levels"})"};
+        auto const event_json =
+            std::string{R"({"auth_events":[],"content":{"ban":50,"events":{"m.room.message":0},"events_default":0,)"
+                        R"("invite":0,"kick":50,"redact":50,"state_default":50,"users":{},)"
+                        R"("users_default":0},)"
+                        R"("depth":1,"hashes":{"sha256":"jkl012"},)"
+                        R"("origin_server_ts":1748300000000,)"
+                        R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                        R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
+                        R"("type":"m.room.power_levels"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -1197,13 +1281,12 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
 
-        auto const event_json = std::string{
-            R"({"auth_events":[],"content":{"history_visibility":"shared"},)"
-            R"("depth":1,"hashes":{"sha256":"mno345"},)"
-            R"("origin_server_ts":1748300000000,)"
-            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-            R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
-            R"("type":"m.room.history_visibility"})"};
+        auto const event_json = std::string{R"({"auth_events":[],"content":{"history_visibility":"shared"},)"
+                                            R"("depth":1,"hashes":{"sha256":"mno345"},)"
+                                            R"("origin_server_ts":1748300000000,)"
+                                            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                                            R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
+                                            R"("type":"m.room.history_visibility"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
@@ -1216,13 +1299,12 @@ SCENARIO("Signing payload for v11+ event matches Synapse byte-for-byte", "[event
             {
                 REQUIRE(payload.error == merovingian::canonicaljson::CanonicalJsonError::none);
 
-                auto const expected = std::string{
-                    R"({"auth_events":[],"content":{"history_visibility":"shared"},)"
-                    R"("depth":1,"hashes":{"sha256":"mno345"},)"
-                    R"("origin_server_ts":1748300000000,)"
-                    R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-                    R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
-                    R"("type":"m.room.history_visibility"})"};
+                auto const expected = std::string{R"({"auth_events":[],"content":{"history_visibility":"shared"},)"
+                                                  R"("depth":1,"hashes":{"sha256":"mno345"},)"
+                                                  R"("origin_server_ts":1748300000000,)"
+                                                  R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                                                  R"("sender":"@alice:pong.ping.me.uk","state_key":"",)"
+                                                  R"("type":"m.room.history_visibility"})"};
 
                 REQUIRE(payload.output == expected);
             }
@@ -1283,9 +1365,9 @@ SCENARIO("Canonical JSON matches spec test vectors", "[events][signing][spec]")
                 REQUIRE(nested.error == merovingian::canonicaljson::ParseError::none);
                 auto const nested_out = merovingian::canonicaljson::serialize_canonical(nested.value);
                 REQUIRE(nested_out.output ==
-                    R"({"auth":{"mxid":"@john.doe:example.com","profile":{"display_name":"John Doe",)"
-                    R"("three_pids":[{"address":"john.doe@example.com","medium":"email"},)"
-                    R"({"address":"123456789","medium":"msisdn"}]},"success":true}})");
+                        R"({"auth":{"mxid":"@john.doe:example.com","profile":{"display_name":"John Doe",)"
+                        R"("three_pids":[{"address":"john.doe@example.com","medium":"email"},)"
+                        R"({"address":"123456789","medium":"msisdn"}]},"success":true}})");
 
                 // Spec test vector: Unicode characters preserved, not escaped
                 auto const unicode = merovingian::canonicaljson::parse_lossless("{\"a\":\"日本語\"}");
@@ -1352,12 +1434,11 @@ SCENARIO("Spec event signing test vectors verify correctly", "[events][signing][
         //
         // The expected signature for domain/ed25519:1 is:
         //   KxwGjPSDEtvnFgU00fwFz+l6d2pJM6XBIaMEn81SXPTRl16AqLAYqfIReFGZlHi5KLjAWbOoMszkwsQma+lYAg
-        auto const event_v1 = std::string{
-            R"({"room_id":"!x:domain","sender":"@a:domain","origin":"domain",)"
-            R"("signatures":{},"hashes":{},)"
-            R"("type":"X","content":{},)"
-            R"("prev_events":[],"auth_events":[],)"
-            R"("unsigned":{"age_ts":1000000}})"};
+        auto const event_v1 = std::string{R"({"room_id":"!x:domain","sender":"@a:domain","origin":"domain",)"
+                                          R"("signatures":{},"hashes":{},)"
+                                          R"("type":"X","content":{},)"
+                                          R"("prev_events":[],"auth_events":[],)"
+                                          R"("unsigned":{"age_ts":1000000}})"};
 
         auto const parsed_v1 = merovingian::canonicaljson::parse_lossless(event_v1);
         REQUIRE(parsed_v1.error == merovingian::canonicaljson::ParseError::none);
@@ -1386,13 +1467,13 @@ SCENARIO("Spec event signing test vectors verify correctly", "[events][signing][
         // After redaction (v1-v10 rules), content is stripped to {} because
         // the event type "X" is not in the type-specific allowlist.
         // "origin" is kept in v1-v10 but stripped in v11+.
-        auto const event_with_content = std::string{
-            R"({"content":{"body":"Here is the message content"},)"
-            R"("event_id":"$0:domain","hashes":{"sha256":"6nJ7KVHYQt8Em7f5bYdvOWPjD4Q8M4j1d4IL+0fF5Zk"},)"
-            R"("origin":"domain","origin_server_ts":1000000,)"
-            R"("prev_events":[],"room_id":"!x:domain","sender":"@a:domain",)"
-            R"("type":"X","depth":1,"auth_events":[],)"
-            R"("signatures":{},"unsigned":{"age_ts":1000000}})"};
+        auto const event_with_content =
+            std::string{R"({"content":{"body":"Here is the message content"},)"
+                        R"("event_id":"$0:domain","hashes":{"sha256":"6nJ7KVHYQt8Em7f5bYdvOWPjD4Q8M4j1d4IL+0fF5Zk"},)"
+                        R"("origin":"domain","origin_server_ts":1000000,)"
+                        R"("prev_events":[],"room_id":"!x:domain","sender":"@a:domain",)"
+                        R"("type":"X","depth":1,"auth_events":[],)"
+                        R"("signatures":{},"unsigned":{"age_ts":1000000}})"};
 
         auto const parsed_content = merovingian::canonicaljson::parse_lossless(event_with_content);
         REQUIRE(parsed_content.error == merovingian::canonicaljson::ParseError::none);
@@ -1447,8 +1528,8 @@ SCENARIO("Content hash uses unpadded Base64 (standard alphabet)", "[events][sign
 {
     GIVEN("an event whose SHA-256 digest may contain + and /")
     {
-        auto const event_json = std::string{
-            R"({"type":"m.room.message","room_id":"!x:domain","sender":"@a:domain","content":{}})"};
+        auto const event_json =
+            std::string{R"({"type":"m.room.message","room_id":"!x:domain","sender":"@a:domain","content":{}})"};
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
@@ -1475,13 +1556,12 @@ SCENARIO("Reference hash event ID uses URL-safe base64", "[events][signing][fede
         auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
 
-        auto const event_json = std::string{
-            R"({"auth_events":[],"content":{"membership":"join"},)"
-            R"("depth":1,"hashes":{"sha256":"abc123"},)"
-            R"("origin_server_ts":1748300000000,"origin":"pong.ping.me.uk",)"
-            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
-            R"("sender":"@alice:pong.ping.me.uk","state_key":"@alice:pong.ping.me.uk",)"
-            R"("type":"m.room.member"})"};
+        auto const event_json = std::string{R"({"auth_events":[],"content":{"membership":"join"},)"
+                                            R"("depth":1,"hashes":{"sha256":"abc123"},)"
+                                            R"("origin_server_ts":1748300000000,"origin":"pong.ping.me.uk",)"
+                                            R"("prev_events":[],"room_id":"!room:pong.ping.me.uk",)"
+                                            R"("sender":"@alice:pong.ping.me.uk","state_key":"@alice:pong.ping.me.uk",)"
+                                            R"("type":"m.room.member"})"};
 
         auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);

@@ -27,8 +27,8 @@ namespace
         return base_key_is_allowed(key);
     }
 
-    [[nodiscard]] auto object_member_value(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member_value(canonicaljson::Object const& object,
+                                           std::string_view key) noexcept -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -41,8 +41,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
-        -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
+                                     std::string_view key) noexcept -> std::string const*
     {
         auto const* value = object_member_value(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
@@ -141,8 +141,18 @@ auto redact_event(canonicaljson::Value const& event, rooms::RoomVersionPolicy co
     auto redacted = canonicaljson::Object{};
     redacted.reserve(object->size());
     auto const* event_type = string_member(*object, "type");
+    // MSC4291 (room v12): the m.room.create event carries no room_id — the room ID
+    // is derived from the create event's reference hash. Drop a spurious room_id so
+    // our reference hash and signing payload match a conformant peer's, which never
+    // includes room_id in the create event's redacted form.
+    auto const create_event_omits_room_id =
+        policy.create_event_is_room_id && event_type != nullptr && *event_type == "m.room.create";
     for (auto const& member : *object)
     {
+        if (member.key == "room_id" && create_event_omits_room_id)
+        {
+            continue;
+        }
         if (key_is_allowed(member.key, policy))
         {
             if (member.key == "content" && event_type != nullptr)

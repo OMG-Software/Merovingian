@@ -39,7 +39,11 @@ SCENARIO("Integrated local homeserver smoke flow boots and exercises auth room a
             THEN("the product path completes through runtime database auth rooms state audit and logout")
             {
                 REQUIRE(result.ok);
-                REQUIRE(result.value.find("room_id=!room1:example.org") != std::string::npos);
+                // Room v12 (the default) derives the room ID from the create event hash
+                // (MSC4291), so it is no longer the deterministic "!room1:example.org".
+                // Assert a room ID with a valid sigil is reported; exact per-version
+                // formats are pinned by the create-room room-version unit tests.
+                REQUIRE(result.value.find("room_id=!") != std::string::npos);
                 REQUIRE(result.value.find("members=1") != std::string::npos);
                 REQUIRE(result.value.find("events=1") != std::string::npos);
             }

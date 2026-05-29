@@ -84,6 +84,18 @@ separate operator decision once this branch is approved._
   remote joins to locally-hosted rooms with "No create event in state"; this is
   now fixed. The room version policy for event composition is derived from the
   stored `m.room.create` event rather than hardcoded to version 12.
+- Room version 12 (MSC4291 + MSC4289): `create_room` derives v12 room IDs from
+  the `m.room.create` event's reference hash (`!` + hash, with no `:server`
+  suffix), omits `room_id` from the create event, and excludes the create event
+  from every event's `auth_events`; redaction drops `room_id` from v12 create
+  events so the reference hash and signing payload match a conformant peer
+  byte-for-byte. The create-event sender and the users in
+  `content.additional_creators` hold an effectively infinite power level
+  (MSC4289). This fixes the Synapse `send_join` `BadSignatureError` on the create
+  event that blocked cross-server joins and messaging. Room versions 10 and 11
+  are unchanged. Spec tests cover all three versions for create-event redaction,
+  room-ID derivation, `auth_events` exclusion, creator privilege, and the
+  room-version policy flags.
 - `createRoom` Matrix v1.18 conformance: `POST /_matrix/client/v3/createRoom`
   now emits the spec-ordered initial state chain, derives presets from
   `visibility`, persists `m.room.guest_access`, honours `room_version`,
