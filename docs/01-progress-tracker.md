@@ -231,6 +231,15 @@ separate operator decision once this branch is approved._
   `crypto_sign_verify_detached` to fail for every inbound encrypted-message
   PDU, making Merovingian return 403 and triggering Synapse's 600-second
   backoff on the federation link.
+- Room v12 (MSC4291 + MSC4289) (0.4.39): room ID is now `!` + reference
+  hash of the create event (no `:server` domain), create event redaction drops
+  `room_id` in v12, create event excluded from `auth_events`, room creators
+  hold infinite power (MSC4289). Fixes Synapse `BadSignatureError` during
+  `send_join`.
+- Accept v12 room IDs in `matrix_id_is_valid` (0.4.40): the validator
+  required a `:` in all Matrix IDs, but MSC4291 room IDs are `!` + base64
+  hash without a server suffix, causing `send_join` to fail with 400 Bad
+  Request ("invalid room_id").
 - Federation signing conformance tests (0.4.38): spec-vectored unit tests
   lock in the exact canonical JSON that each room version's signing payload
   must produce. Covers v10 legacy redaction (keeps `origin`), v11+ updated

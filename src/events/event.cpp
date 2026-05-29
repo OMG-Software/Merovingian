@@ -113,7 +113,12 @@ namespace
 
 auto matrix_id_is_valid(std::string_view id, char sigil) noexcept -> bool
 {
-    return id.size() >= 3U && id.front() == sigil && id.find(':') != std::string_view::npos &&
+    // MSC4291 (room v12): room IDs are !<base64-hash> with no :server suffix.
+    // User IDs (@) and event IDs ($) still require a colon. Room IDs (!) may
+    // omit the colon when the ID is a hash-derived v12 room identifier.
+    auto const requires_colon = sigil != '!';
+    return id.size() >= 3U && id.front() == sigil &&
+           (!requires_colon || id.find(':') != std::string_view::npos) &&
            contains_no_control_or_space(id);
 }
 
