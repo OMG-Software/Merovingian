@@ -96,6 +96,24 @@ separate operator decision once this branch is approved._
   are unchanged. Spec tests cover all three versions for create-event redaction,
   room-ID derivation, `auth_events` exclusion, creator privilege, and the
   room-version policy flags.
+- auth_events per-event-type selection (0.4.45): `auth_events_for_room` now
+  returns only the spec-required auth events for each event type: `[]` for
+  `m.room.create`, `[create*, power_levels, join_rules, sender_member,
+  target_member]` for `m.room.member`, and `[create*, power_levels,
+  sender_member]` for all other types. Previously every room state event was
+  included, causing Synapse to reject non-member events with "unexpected
+  auth_event for ('m.room.join_rules', '')", which cascaded into broken
+  invite state and join failures. `compose_signed_event` passes the event
+  type, state key, and sender so the correct subset is selected. Unit tests
+  cover each event type's auth_events.
+- createRoom initial_state dedup (0.4.45): `create_room` now scans
+  `initial_state` for client-provided `m.room.join_rules`,
+  `m.room.history_visibility`, and `m.room.guest_access` before emitting
+  preset defaults, skipping any preset that the client already supplied.
+  Previously only `m.room.encryption` had a dedup guard, so clients that
+  set guest_access/join_rules/history_visibility in `initial_state` would
+  produce duplicate state events. Unit tests verify each type appears once
+  and the client's values override the preset defaults.
 - v12 power_levels creator omission (0.4.44): `create_room` no longer lists the
   creator or any `additional_creators` in `m.room.power_levels` `content.users`
   for room version 12+, because MSC4291 creators hold an implicit infinite power

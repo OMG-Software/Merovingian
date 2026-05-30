@@ -2918,6 +2918,129 @@ SCENARIO("public_chat preset does not auto-emit m.room.encryption",
     }
 }
 
+// --- auth_events selection ----------------------------------------------------
+// Spec: Matrix Server-Server API v1.18 Sec. 4.4 auth_events
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#auth_events
+//
+// Per the spec, auth_events for each event type MUST be:
+//   m.room.create:  none
+//   m.room.member:  {create, power_levels, join_rules, target_member}
+//   all others:      {create, power_levels}
+// Room v12 (MSC4291) excludes create from auth_events (it is implied by the
+// room ID). Synapse rejects events that include unexpected auth_events (e.g.
+// join_rules in a history_visibility event) with "unexpected auth_event for
+// ('m.room.join_rules', '')", which cascades into broken invite state and
+// "You are not invited" join failures.
+[[nodiscard]] auto auth_event_ids_for_state(merovingian::database::PersistentStore const& store,
+                                            std::string_view room_id, std::string_view event_type,
+                                            std::string_view state_key = {})
+    -> std::vector<std::string>
+{
+    auto const state = std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+        return row.room_id == room_id && row.event_type == event_type && row.state_key == state_key;
+    });
+    REQUIRE(state != store.state.end());
+    auto const event = std::ranges::find_if(store.events, [&](merovingian::database::PersistentEvent const& row) {
+        return row.event_id == state->event_id;
+    });
+    REQUIRE(event != store.events.end());
+    return event->auth_event_ids;
+}
+
+[[nodiscard]] auto state_event_id(merovingian::database::PersistentStore const& store, std::string_view room_id,
+                                   std::string_view event_type, std::string_view state_key = {}) -> std::string
+{
+    auto const state = std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+        return row.room_id == room_id && row.event_type == event_type && row.state_key == state_key;
+    });
+    REQUIRE(state != store.state.end());
+    return state->event_id;
+}
+
+SCENARIO("non-member events exclude join_rules from auth_events per spec v1.18",
+         "[homeserver][client-server][create-room][auth-events]")
+{
+    GIVEN("a logged-in user who creates a private v12 room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the room is created with private_chat preset")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token,
+                 R"({"preset":"private_chat","room_version":"12","invite":["@bob:example.org"],"is_direct":true})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+            auto const sender = std::string{"@alice:example.org"};
+            auto const join_rules_id = state_event_id(store, created_room_id, "m.room.join_rules");
+            auto const member_id = state_event_id(store, created_room_id, "m.room.member", sender);
+            auto const power_levels_id = state_event_id(store, created_room_id, "m.room.power_levels");
+
+            THEN("m.room.create has no auth_events (v12: create is implied)")
+            {
+                auto const ids = auth_event_ids_for_state(store, created_room_id, "m.room.create");
+                REQUIRE(ids.empty());
+            }
+            AND_THEN("m.room.power_levels excludes join_rules from auth_events")
+            {
+                auto const ids = auth_event_ids_for_state(store, created_room_id, "m.room.power_levels");
+                REQUIRE(std::ranges::find(ids, join_rules_id) == ids.end());
+            }
+            AND_THEN("m.room.join_rules includes power_levels but not history_visibility")
+            {
+                auto const ids = auth_event_ids_for_state(store, created_room_id, "m.room.join_rules");
+                REQUIRE(std::ranges::find(ids, power_levels_id) != ids.end());
+                // join_rules itself must not carry unrelated state as auth_events
+                auto const hv_id = state_event_id(store, created_room_id, "m.room.history_visibility");
+                REQUIRE(std::ranges::find(ids, hv_id) == ids.end());
+            }
+            AND_THEN("m.room.history_visibility excludes join_rules from auth_events")
+            {
+                auto const ids = auth_event_ids_for_state(store, created_room_id, "m.room.history_visibility");
+                REQUIRE(std::ranges::find(ids, join_rules_id) == ids.end());
+            }
+            AND_THEN("m.room.guest_access excludes join_rules and history_visibility from auth_events")
+            {
+                auto const ids = auth_event_ids_for_state(store, created_room_id, "m.room.guest_access");
+                REQUIRE(std::ranges::find(ids, join_rules_id) == ids.end());
+                auto const hv_id = state_event_id(store, created_room_id, "m.room.history_visibility");
+                REQUIRE(std::ranges::find(ids, hv_id) == ids.end());
+            }
+            AND_THEN("m.room.encryption excludes join_rules and guest_access from auth_events")
+            {
+                auto const ids = auth_event_ids_for_state(store, created_room_id, "m.room.encryption");
+                REQUIRE(std::ranges::find(ids, join_rules_id) == ids.end());
+                auto const ga_id = state_event_id(store, created_room_id, "m.room.guest_access");
+                REQUIRE(std::ranges::find(ids, ga_id) == ids.end());
+            }
+            AND_THEN("m.room.member invite includes join_rules in auth_events")
+            {
+                auto const ids = auth_event_ids_for_state(store, created_room_id, "m.room.member",
+                                                           "@bob:example.org");
+                REQUIRE(std::ranges::find(ids, join_rules_id) != ids.end());
+            }
+        }
+    }
+}
+
 SCENARIO("private_chat preset does not duplicate m.room.encryption when the client provides it in initial_state",
          "[homeserver][client-server][create-room][encryption]")
 {
@@ -2962,6 +3085,80 @@ SCENARIO("private_chat preset does not duplicate m.room.encryption when the clie
                 auto const encryption = content_for_state(store, created_room_id, "m.room.encryption");
                 REQUIRE(string_member(encryption, "algorithm") != nullptr);
                 REQUIRE(*string_member(encryption, "algorithm") == "m.megolm.v1.aes-sha2");
+            }
+        }
+    }
+}
+
+SCENARIO("createRoom does not duplicate preset events when client provides them in initial_state",
+         "[homeserver][client-server][create-room][initial-state]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client provides guest_access, join_rules, and history_visibility in initial_state")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token,
+                 R"({"preset":"private_chat","room_version":"12","initial_state":[)"
+                 R"({"type":"m.room.guest_access","state_key":"","content":{"guest_access":"forbidden"}},)"
+                 R"({"type":"m.room.join_rules","state_key":"","content":{"join_rule":"public"}},)"
+                 R"({"type":"m.room.history_visibility","state_key":"","content":{"history_visibility":"world_readable"}})"
+                 R"(]})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+
+            THEN("each state event type appears exactly once in persisted state")
+            {
+                auto const guest_count =
+                    std::ranges::count_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+                        return row.room_id == created_room_id && row.event_type == "m.room.guest_access" &&
+                               row.state_key.empty();
+                    });
+                auto const join_rules_count =
+                    std::ranges::count_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+                        return row.room_id == created_room_id && row.event_type == "m.room.join_rules" &&
+                               row.state_key.empty();
+                    });
+                auto const history_count =
+                    std::ranges::count_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
+                        return row.room_id == created_room_id && row.event_type == "m.room.history_visibility" &&
+                               row.state_key.empty();
+                    });
+                REQUIRE(guest_count == 1);
+                REQUIRE(join_rules_count == 1);
+                REQUIRE(history_count == 1);
+            }
+            AND_THEN("the client's initial_state values override the preset defaults")
+            {
+                auto const guest = content_for_state(store, created_room_id, "m.room.guest_access");
+                auto const rules = content_for_state(store, created_room_id, "m.room.join_rules");
+                auto const history = content_for_state(store, created_room_id, "m.room.history_visibility");
+                REQUIRE(string_member(guest, "guest_access") != nullptr);
+                REQUIRE(*string_member(guest, "guest_access") == "forbidden");
+                REQUIRE(string_member(rules, "join_rule") != nullptr);
+                REQUIRE(*string_member(rules, "join_rule") == "public");
+                REQUIRE(string_member(history, "history_visibility") != nullptr);
+                REQUIRE(*string_member(history, "history_visibility") == "world_readable");
             }
         }
     }
