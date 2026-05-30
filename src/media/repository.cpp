@@ -301,6 +301,16 @@ auto find_local_media_blob(LocalMediaRepository const& repository, std::string_v
     return iterator == repository.blobs.end() ? nullptr : &(*iterator);
 }
 
+auto find_local_media_thumbnail(LocalMediaRepository const& repository, std::string_view media_id) noexcept
+    -> LocalMediaThumbnail const*
+{
+    auto const iterator =
+        std::ranges::find_if(repository.thumbnails, [media_id](LocalMediaThumbnail const& thumb) {
+            return thumb.media_id == media_id;
+        });
+    return iterator == repository.thumbnails.end() ? nullptr : &(*iterator);
+}
+
 auto restore_local_media_repository(LocalMediaRepository& repository, std::vector<LocalMediaRecord> records,
                                     std::vector<LocalMediaBlob> blobs) -> void
 {

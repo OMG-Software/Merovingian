@@ -19,6 +19,7 @@
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -1521,6 +1522,7 @@ namespace
         {
             return make_operation_result(false, {}, "invite membership persistence failed", 500U);
         }
+        apply_runtime_membership(runtime.database, room_id, invitee, "invite");
         invited_anyone = true;
     }
 

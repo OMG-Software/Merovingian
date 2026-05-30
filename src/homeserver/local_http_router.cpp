@@ -239,30 +239,7 @@ namespace
             return database::update_membership(store, room_id, user_id, membership);
         }
         return false;
-    }
-
-    auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
-                                  std::string_view membership) -> void
-    {
-        auto room = std::ranges::find_if(database.rooms, [&](LocalRoom const& current) {
-            return current.room_id == room_id;
-        });
-        if (room == database.rooms.end())
-        {
-            return;
-        }
-        auto const member = std::ranges::find_if(room->members, [&](std::string const& member_id) {
-            return member_id == user_id;
-        });
-        if (membership == "join" && member == room->members.end())
-        {
-            room->members.emplace_back(user_id);
-        }
-        else if (membership == "leave" && member != room->members.end())
-        {
-            room->members.erase(member);
-        }
-    }
+    } // end emit_state
 
     [[nodiscard]] auto membership_for_endpoint(federation::FederationEndpoint endpoint) -> std::string_view
     {
@@ -1301,6 +1278,29 @@ namespace
 
 } // namespace
 
+auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
+                              std::string_view membership) -> void
+{
+    auto room = std::ranges::find_if(database.rooms, [&](LocalRoom const& current) {
+        return current.room_id == room_id;
+    });
+    if (room == database.rooms.end())
+    {
+        return;
+    }
+    auto const member = std::ranges::find_if(room->members, [&](std::string const& member_id) {
+        return member_id == user_id;
+    });
+    if ((membership == "join" || membership == "invite") && member == room->members.end())
+    {
+        room->members.emplace_back(user_id);
+    }
+    else if ((membership == "leave" || membership == "ban") && member != room->members.end())
+    {
+        room->members.erase(member);
+    }
+}
+
 auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
 {
     wire_federation_callbacks_impl(runtime);
@@ -1427,6 +1427,39 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     if (request.method == "GET" && starts_with(request.target, download_prefix))
     {
         auto const parts = local_media_download_parts(path_suffix(request.target, download_prefix));
+        if (!parts.has_value())
+        {
+            return response(404U, "route not found");
+        }
+        auto const result = download_local_media(runtime, (*parts)[0], (*parts)[1]);
+        return response_from_media_operation(result);
+    }
+    auto constexpr thumbnail_prefix = std::string_view{"/_matrix/media/v3/thumbnail/"};
+    if (request.method == "GET" && starts_with(request.target, thumbnail_prefix))
+    {
+        auto const parts = local_media_download_parts(path_suffix(request.target, thumbnail_prefix));
+        if (!parts.has_value())
+        {
+            return response(404U, "route not found");
+        }
+        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1]);
+        return response_from_media_operation(result);
+    }
+    auto constexpr v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
+    if (request.method == "GET" && starts_with(request.target, v1_thumbnail_prefix))
+    {
+        auto const parts = local_media_download_parts(path_suffix(request.target, v1_thumbnail_prefix));
+        if (!parts.has_value())
+        {
+            return response(404U, "route not found");
+        }
+        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1]);
+        return response_from_media_operation(result);
+    }
+    auto constexpr v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
+    if (request.method == "GET" && starts_with(request.target, v1_download_prefix))
+    {
+        auto const parts = local_media_download_parts(path_suffix(request.target, v1_download_prefix));
         if (!parts.has_value())
         {
             return response(404U, "route not found");

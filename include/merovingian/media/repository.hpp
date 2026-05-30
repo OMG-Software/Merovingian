@@ -167,6 +167,8 @@ struct RemoteMediaDownloadResult final
     -> LocalMediaRecord const*;
 [[nodiscard]] auto find_local_media_blob(LocalMediaRepository const& repository, std::string_view storage_id) noexcept
     -> LocalMediaBlob const*;
+[[nodiscard]] auto find_local_media_thumbnail(LocalMediaRepository const& repository, std::string_view media_id) noexcept
+    -> LocalMediaThumbnail const*;
 auto restore_local_media_repository(LocalMediaRepository& repository, std::vector<LocalMediaRecord> records,
                                     std::vector<LocalMediaBlob> blobs) -> void;
 [[nodiscard]] auto upload_local_media(LocalMediaRepository& repository, std::string_view server_name,

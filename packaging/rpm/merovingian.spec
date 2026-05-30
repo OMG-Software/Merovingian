@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.45
+Version:        0.4.46
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,14 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.46-1
+- Fix PDU dispatch to include invited users in room members
+- Add receipt endpoint POST /rooms/{roomId}/receipt/{receiptType}/{eventId}
+- Add user directory search endpoint POST /user_directory/search
+- Add media thumbnail endpoints GET /_matrix/media/v3/thumbnail/ and v1
+- Add key backup batch PUT endpoint PUT /room_keys/keys
+- Filter runtime startup to only add join/invite memberships to room->members
+
 * Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.45-1
 - Fix auth_events to include only spec-required events per event type
 - Deduplicate createRoom preset events when client provides initial_state

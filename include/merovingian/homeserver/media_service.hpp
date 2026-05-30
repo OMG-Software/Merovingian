@@ -14,6 +14,8 @@ namespace merovingian::homeserver
                                       bool scanner_clean, std::string_view bytes) -> OperationResult;
 [[nodiscard]] auto download_local_media(HomeserverRuntime& runtime, std::string_view server_name,
                                         std::string_view media_id) -> OperationResult;
+[[nodiscard]] auto download_local_media_thumbnail(HomeserverRuntime& runtime, std::string_view server_name,
+                                                  std::string_view media_id) -> OperationResult;
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                                 std::string_view media_id, std::string_view reason) -> OperationResult;
 [[nodiscard]] auto admin_release_local_media(HomeserverRuntime& runtime, std::string_view access_token,

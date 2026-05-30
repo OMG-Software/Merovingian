@@ -24,6 +24,7 @@ enum class KeyApiEndpoint
     update_key_backup_version,
     delete_key_backup_version,
     put_room_key_backup,
+    put_room_key_backup_batch,
     get_room_key_backup,
     delete_room_key_backup,
 };

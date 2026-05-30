@@ -608,6 +608,26 @@ a non-production environment.
 - Feature (0.4.4): Outbound membership wired into `join_room` for remote rooms.
   Local users joining a room not in the database now perform a synchronous
   `make_join` → sign → `send_join` flow with the remote homeserver.
+- Fix (0.4.46): PDU dispatch now includes invited users in `room->members` so
+  federated events are delivered to invitees' home servers. Previously only
+  "join" members were added at runtime, causing invitees' servers to never
+  receive room events. `apply_runtime_membership` now handles "invite" (add)
+  and "ban" (remove) transitions. Runtime startup filters to only "join" and
+  "invite" memberships, consistent with runtime behavior.
+- Feature (0.4.46): Receipt endpoint `POST /rooms/{roomId}/receipt/{receiptType}/{eventId}`
+  per Matrix spec v1.18. Federates `m.receipt` EDUs and updates local receipt state.
+- Feature (0.4.46): User directory search `POST /user_directory/search`
+  per Matrix spec v1.18. Case-insensitive substring match on displayname and user_id.
+- Feature (0.4.46): Media thumbnail `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}`
+  and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` per spec v1.18.
+- Feature (0.4.46): Key backup batch PUT `PUT /room_keys/keys` per spec v1.18.
+  Stores all sessions from request body, returns `{"version":"1"}`.
+- Feature (0.4.46): v1 media download endpoint `GET /_matrix/client/v1/media/download/{serverName}/{mediaId}`
+  (authenticated variant) per spec v1.18.
+- Conformance tests (0.4.46): Enhanced with positive (success) verification for receipt,
+  user directory search, key backup batch PUT, media upload, media download (v3/v1),
+  and media thumbnail (v3/v1) endpoints. Tests now verify correct response data and
+  runtime state, not just that routes return 404 for missing resources.
 - Feature (0.4.4): Device list update route wired. `PUT /devices/{deviceId}`
   now records device list changes for all local room-sharers via
   `record_device_list_change` and publishes sync notifications.
@@ -966,6 +986,10 @@ adapters.
 | Media | `GET /_matrix/media/v3/config` | `spec-covered` | Returns `m.upload.size` from the configured `security.media.max_upload_size` value and is covered by the v1.18 fixture. Cinny fetches this after login to know the maximum attachment size. |
 | Media | `POST /_matrix/media/v3/upload` | `spec-covered` | Local authenticated upload, MIME checks, quarantine, digest, sandbox/AV/decoder/decompression processing boundary, thumbnail metadata, metrics, audit, metadata/blob persistence, and client-server JSON `content_uri` response are runtime-wired and covered by the v1.18 fixture with unauthenticated and malformed upload rejection. Needs multipart/content handling through real HTTP. |
 | Media | `GET /_matrix/media/v3/download/{serverName}/{mediaId}` | `spec-covered` | Local download is reachable through the client-server adapter and covered by the v1.18 fixture with missing-media rejection. Remote ingest has a repository boundary but route-level live remote transport remains disabled/fail-closed. Needs real content headers once the local request model carries headers. |
+| Media | `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}`, `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` | `runtime-wired` | Thumbnail download returns 64x64 PNG thumbnails from the media repository for locally stored media. Returns 404 for missing thumbnails. Needs real image resampling, remote thumbnail fetch, and v1.18 conformance fixtures. |
+| Receipts | `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` | `runtime-wired` | Receipt endpoint parses `{receiptType}/{eventId}` from the path, federates `m.receipt` EDUs to remote servers in the room, updates local receipt state for `/sync`, and publishes sync notifications. Needs v1.18 conformance fixtures. |
+| User directory | `POST /_matrix/client/v3/user_directory/search` | `runtime-wired` | User directory search returns matching profiles with case-insensitive substring match on displayname and user_id. Returns empty results for empty search terms. Needs v1.18 conformance fixtures. |
+| E2EE keys | `PUT /_matrix/client/v3/room_keys/keys` | `runtime-wired` | Key backup batch PUT iterates `rooms` and `sessions` in the request body, stores each session individually, and returns `{"version":"1"}`. Matches before the per-session `PUT /room_keys/keys/{roomId}/{sessionId}` route. Needs v1.18 conformance fixtures. |
 | Reports | `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` | `spec-covered` | Authenticated event reports are runtime-wired through the client-server adapter, validated by the trust-and-safety policy engine, appended to durable policy audit rows, and covered by the v1.18 fixture with optional `reason`, ignored legacy `score`, and malformed-body rejection. Needs richer report storage/query semantics and joined-room membership enforcement. |
 | E2EE keys | Device keys, one-time keys, fallback keys, cross-signing, backup APIs | `spec-covered` | Authenticated key API route shapes are runtime-wired through the client-server adapter with durable server-blind key storage, request-body-driven `/keys/query` and `/keys/claim`, one-time-key consumption, fallback-key reuse, backup rows, payload redaction, audit records, SQLite restart coverage, 64 KiB body limit, and v1.18 fixture coverage for upload/query/claim plus malformed upload/query/claim rejection. Needs Matrix device-list stream semantics, complete backup retrieval/deletion semantics, and full key-count behavior. |
 | Capabilities/push rules | `GET /_matrix/client/v3/capabilities`, `GET /_matrix/client/v3/pushrules/` | `spec-covered` | Authenticated clients receive minimal stable capability and empty global push-rule responses, both covered by the v1.18 fixture. Needs real push-rule storage and richer capability negotiation. |

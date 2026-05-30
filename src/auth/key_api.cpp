@@ -70,6 +70,8 @@ auto key_api_endpoint_name(KeyApiEndpoint endpoint) noexcept -> char const*
         return "delete_key_backup_version";
     case KeyApiEndpoint::put_room_key_backup:
         return "put_room_key_backup";
+    case KeyApiEndpoint::put_room_key_backup_batch:
+        return "put_room_key_backup_batch";
     case KeyApiEndpoint::get_room_key_backup:
         return "get_room_key_backup";
     case KeyApiEndpoint::delete_room_key_backup:
@@ -91,6 +93,7 @@ auto key_api_routes() -> std::vector<KeyApiRoute>
         route("POST", "/_matrix/client/v3/room_keys/version", KeyApiEndpoint::create_key_backup_version),
         route("PUT", "/_matrix/client/v3/room_keys/version/{version}", KeyApiEndpoint::update_key_backup_version),
         route("DELETE", "/_matrix/client/v3/room_keys/version/{version}", KeyApiEndpoint::delete_key_backup_version),
+        route("PUT", "/_matrix/client/v3/room_keys/keys", KeyApiEndpoint::put_room_key_backup_batch),
         route("PUT", "/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}", KeyApiEndpoint::put_room_key_backup),
         route("GET", "/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}", KeyApiEndpoint::get_room_key_backup),
         route("DELETE", "/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}",
@@ -193,6 +196,12 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
     case KeyApiEndpoint::put_room_key_backup:
         return {
             {"key_api_put_room_key_backup",
+             "INSERT INTO key_backup_sessions VALUES ($1, $2, $3, $4, $5)", {public_value(user_id), public_value("1"), public_value("room_id"), public_value("session_id"),
+              sensitive_placeholder("room-key-backup-payload")}}
+        };
+    case KeyApiEndpoint::put_room_key_backup_batch:
+        return {
+            {"key_api_put_room_key_backup_batch",
              "INSERT INTO key_backup_sessions VALUES ($1, $2, $3, $4, $5)", {public_value(user_id), public_value("1"), public_value("room_id"), public_value("session_id"),
               sensitive_placeholder("room-key-backup-payload")}}
         };
