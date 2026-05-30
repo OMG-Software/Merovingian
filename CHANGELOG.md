@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.43
+
+- Support joining a remote room version 12 room (MSC4291). A v12 room ID is a
+  bare reference hash of the create event with no `:server` suffix, so the
+  resident server cannot be derived from the room ID. `POST /join/{roomIdOrAlias}`
+  now parses the `server_name` and `via` (MSC4156) query parameters and attempts
+  `make_join`/`send_join` against each candidate server in turn. For room versions
+  10 and 11 the room ID's server domain is still used as a fallback candidate. A
+  join request with no routable candidate server now returns a clear error instead
+  of being treated as an unknown local room.
+
 ## 0.4.42
 
 - Fix `send_join` `auth_chain` to walk the auth-events graph from current state

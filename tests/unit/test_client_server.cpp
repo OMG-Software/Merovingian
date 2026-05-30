@@ -2425,6 +2425,81 @@ SCENARIO("Join-by-id endpoint joins a room through the local join handler", "[ho
     }
 }
 
+// --- Federated join routing for room version 12 (MSC4291) ---------------------
+// Spec: Matrix Client-Server API v1.18 — POST /join/{roomIdOrAlias}?server_name=/?via=
+// Spec: Matrix room version 12 (MSC4291) — room IDs are bare create-event hashes
+//
+// A room version 12 room ID has no ":server" suffix, so the only way to route a
+// federated join is the via / server_name query parameters. Without them the join
+// MUST be rejected as unroutable; with them the server MUST attempt federation.
+// With no reachable peer in this test that attempt surfaces as a 502 upstream
+// failure — which proves the via parameter was parsed and used, not ignored.
+SCENARIO("Joining a remote room version 12 room requires and uses via servers (MSC4291)",
+         "[homeserver][client-server][federation][room-version]")
+{
+    GIVEN("a logged-in user and a remote v12 room ID with no server domain")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        // A room v12 room ID: "!" + a base64url reference hash, with no ":server".
+        auto const v12_room = std::string{"!2YQSq5ktnAd_dGjYrlQH9xoneatU4LJBwuoadqUhfTA"};
+
+        WHEN("the room is joined by ID with no via/server_name parameter")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/join/" + v12_room, token, "{}"});
+
+            THEN("the join is rejected as unroutable, not attempted")
+            {
+                // No server domain in the room ID and no via → no candidate server.
+                REQUIRE(response.response.status == 404U);
+            }
+        }
+
+        WHEN("the room is joined by ID with a legacy server_name parameter")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/join/" + v12_room + "?server_name=remote.example", token, "{}"});
+
+            THEN("the via server is used to attempt federation, so it is no longer a 404")
+            {
+                // The candidate server now exists, so the join proceeds to make_join;
+                // with no reachable peer in the test harness this is a 502 upstream error.
+                REQUIRE(response.response.status != 404U);
+                REQUIRE(response.response.status == 502U);
+            }
+        }
+
+        WHEN("the room is joined by ID with a via parameter (MSC4156 spelling)")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/join/" + v12_room + "?via=remote.example", token, "{}"});
+
+            THEN("the via server is used to attempt federation, so it is no longer a 404")
+            {
+                REQUIRE(response.response.status != 404U);
+                REQUIRE(response.response.status == 502U);
+            }
+        }
+    }
+}
+
 SCENARIO("Account data endpoint stores and retrieves global account data", "[homeserver][client-server]")
 {
     GIVEN("a logged-in client-server user")
