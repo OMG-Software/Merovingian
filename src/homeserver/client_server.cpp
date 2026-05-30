@@ -32,6 +32,8 @@
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
+#include <sodium.h>
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -50,8 +52,6 @@
 #include <utility>
 #include <variant>
 #include <vector>
-
-#include <sodium.h>
 
 namespace merovingian::homeserver
 {
