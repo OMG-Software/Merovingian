@@ -1027,6 +1027,20 @@ adapters.
 
 ## Completed capability notes
 
+### Federated invite-join auth chain (0.4.47)
+
+- `membership_template_provider` now populates `auth_events` in `make_join`
+  templates: `m.room.create`, `m.room.join_rules`, `m.room.power_levels`, and
+  the joining user's current membership event (invite). Previously the template
+  had empty `auth_events`, causing remote homeservers (e.g. Synapse) to reject
+  the resulting join PDU with `403: You are not invited to this room`.
+- `membership_acceptor` now copies `auth_event_ids` from the inbound PDU
+  envelope to the persisted `PersistentEvent`. Without this, the BFS auth-chain
+  walk could not follow links from the join event to the invite event.
+- `invite_handler` now stores inbound invite events in `store.events` and
+  `store.state` (in addition to `store.invites`), making them reachable during
+  `send_join` auth-chain construction for the inbound-invite case.
+
 ### Federation key publication and discovery
 
 - `GET /_matrix/key/v2/server` returns a canonical Matrix server-key object

@@ -1,5 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/database/postgresql_store.hpp"
+#include "merovingian/database/schema.hpp"
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
+
+#include <libpq-fe.h>
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -11,14 +20,6 @@
 #include <tuple>
 #include <utility>
 #include <vector>
-
-#include <libpq-fe.h>
-#include <merovingian/canonicaljson/parser.hpp>
-#include <merovingian/canonicaljson/serializer.hpp>
-#include <merovingian/database/postgresql_store.hpp>
-#include <merovingian/database/schema.hpp>
-#include <merovingian/observability/logger.hpp>
-#include <merovingian/observability/observability.hpp>
 
 namespace merovingian::database
 {
