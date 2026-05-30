@@ -7,12 +7,26 @@ Matrix client.
 ## 1. Build
 
 ```sh
-# Install dependencies (Linux / BSD)
+# Install dependencies
 sh scripts/setup-dev-env.sh
 
-# Configure and build
+# Build (Linux)
+python build.py linux
+
+# Or on WSL:
+python build.py wsl
+```
+
+`build.py` configures, compiles, and runs tests in one step. It delegates to
+the shell scripts in `scripts/` (see [dev-environment.md](dev-environment.md)
+for all targets and options).
+
+For manual Meson control:
+
+```sh
 meson setup build --wrap-mode=forcefallback
-ninja -C build
+meson compile -C build
+meson test -C build
 ```
 
 The server binary is at `build/src/merovingian-server`.

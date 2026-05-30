@@ -135,6 +135,66 @@ Skip package installation when dependencies are already managed externally:
 sh scripts/setup-dev-env.sh --no-install
 ```
 
+## Unified Build Script
+
+`build.py` is the single entry point for configuring, compiling, and testing
+on every supported platform. It delegates to the shell scripts in `scripts/`
+and handles Meson setup, compilation, and testing in one step.
+
+```sh
+# Linux
+python build.py linux
+
+# BSD
+python build.py bsd
+
+# WSL (Windows Subsystem for Linux)
+python build.py wsl
+```
+
+### Packaging targets
+
+```sh
+python build.py deb      # Debian .deb package
+python build.py rpm      # RPM package
+python build.py pkg      # FreeBSD .pkg package
+python build.py static   # Portable static Linux tarball
+```
+
+### Common development options
+
+```sh
+# Change build directory
+python build.py linux --builddir build-dev
+
+# Use a hardened build profile
+python build.py linux --profile hardened
+
+# Skip tests (compile only)
+python build.py wsl --no-tests
+
+# Wipe and reconfigure (WSL only)
+python build.py wsl --clean
+
+# Specify WSL distro
+python build.py wsl --distro Ubuntu-24.04
+
+# Preview commands without running them
+python build.py linux --dry-run
+
+# Set up build directory without compiling
+python build.py linux --setup-only
+
+# Compile without running tests or reconfiguring
+python build.py linux --compile-only
+```
+
+Run `python build.py --help` for the full option reference.
+
+`build.py` internally calls the shell scripts described in the Build Wrappers
+section below. Use the scripts directly only when you need script-specific
+options not exposed by `build.py`.
+
 ## Build Wrappers
 
 Use the Linux wrapper on a native Linux shell to configure, compile, and test

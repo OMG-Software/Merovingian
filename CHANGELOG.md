@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.42
+
+- Fix `send_join` `auth_chain` to walk the auth-events graph from current state
+  instead of dumping all room events. Previously the `membership_acceptor`
+  included every event in the room (including non-state events like
+  `m.room.encrypted` and `m.room.message`) in the `auth_chain` response.
+  Synapse assumes all auth_chain entries have `state_key` and crashes with
+  `AttributeError: 'FrozenEventV4' has no 'state_key' property` when it
+  encounters a message event, causing remote joins to fail with 502.
+- Document `build.py` as the recommended build entry point in README,
+  `docs/getting-started.md`, and `docs/dev-environment.md`.
+
 ## 0.4.41
 
 - Add unified `build.py` script providing a single CLI entry point for Linux, BSD,

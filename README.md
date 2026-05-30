@@ -60,13 +60,16 @@ If you want to build or contribute to the project, start here:
 Typical local setup starts with:
 
 ```sh
-sh scripts/setup-dev-env.sh
-meson setup build --wrap-mode=forcefallback
-meson compile -C build
-meson test -C build
+sh scripts/setup-dev-env.sh   # install toolchain and configure build dir
+python build.py linux          # configure, compile, and test
 ```
 
-That gives you a local build and test loop. For platform-specific wrappers and WSL usage, use the development guide above instead of treating this as the full setup contract.
+`build.py` is the unified build entry point for all platforms. It delegates to
+the shell scripts in `scripts/` and handles Meson setup, compilation, and
+testing in one step. See [docs/dev-environment.md](C:/dev/Merovingian/docs/dev-environment.md)
+for platform-specific targets (`linux`, `bsd`, `wsl`), packaging commands
+(`deb`, `rpm`, `pkg`, `static`), and advanced options like build profiles and
+dry-run mode.
 
 ## Project Status
 
