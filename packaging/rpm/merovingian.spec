@@ -1,9 +1,5 @@
 Name:           merovingian
-<<<<<<< HEAD
-Version:        0.4.41
-=======
-Version:        0.4.40
->>>>>>> origin/main
+Version:        0.4.42
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -93,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.42-1
+- Fix send_join auth_chain to include only state events (walk auth_events graph)
+- Document build.py as the recommended build entry point
+
 * Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.41-1
 - Add unified build.py script for Linux, BSD, and WSL builds, replacing build-wsl.ps1
 

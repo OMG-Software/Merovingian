@@ -31,6 +31,8 @@
 #include <string_view>
 #include <thread>
 #include <utility>
+#include <unordered_map>
+#include <unordered_set>
 #include <variant>
 #include <vector>
 
@@ -1052,13 +1054,62 @@ namespace
             auto state_events = std::vector<std::string>{};
             if (endpoint == federation::FederationEndpoint::send_join)
             {
-                for (auto const& evt : store.events)
+                // Build auth_chain by walking auth_events from current state.
+                // Per Matrix spec, auth_chain is the set of events reachable
+                // by following auth_events links from the events in the
+                // current state. All auth_chain events are state events
+                // (they have state_key); including non-state events crashes
+                // Synapse which assumes every auth_chain entry has state_key.
+                auto visited = std::unordered_set<std::string>{};
+                auto queue = std::vector<std::string>{};
+                for (auto const& s : store.state)
                 {
-                    if (evt.room_id == room_id && !evt.json.empty())
+                    if (s.room_id == room_id && !s.event_id.empty())
                     {
-                        auth_chain.push_back(evt.json);
+                        if (visited.insert(s.event_id).second)
+                        {
+                            queue.push_back(s.event_id);
+                        }
                     }
                 }
+                // Build a lookup from event_id to PersistentEvent for this room
+                auto event_by_id = std::unordered_map<std::string, std::size_t>{};
+                for (std::size_t i = 0U; i < store.events.size(); ++i)
+                {
+                    if (store.events[i].room_id == room_id && !store.events[i].event_id.empty())
+                    {
+                        event_by_id[store.events[i].event_id] = i;
+                    }
+                }
+                // BFS: follow auth_event_ids from each discovered event
+                auto cursor = std::size_t{0U};
+                while (cursor < queue.size())
+                {
+                    auto const& eid = queue[cursor];
+                    ++cursor;
+                    auto const it = event_by_id.find(eid);
+                    if (it == event_by_id.end())
+                    {
+                        continue;
+                    }
+                    for (auto const& auth_id : store.events[it->second].auth_event_ids)
+                    {
+                        if (!auth_id.empty() && visited.insert(auth_id).second)
+                        {
+                            queue.push_back(auth_id);
+                        }
+                    }
+                }
+                // Collect JSON for every event in the auth chain
+                for (auto const& eid : queue)
+                {
+                    auto const it = event_by_id.find(eid);
+                    if (it != event_by_id.end() && !store.events[it->second].json.empty())
+                    {
+                        auth_chain.push_back(store.events[it->second].json);
+                    }
+                }
+                // State events (current state snapshot) built as before
                 for (auto const& s : store.state)
                 {
                     if (s.room_id == room_id)

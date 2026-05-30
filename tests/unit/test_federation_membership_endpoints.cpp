@@ -593,3 +593,165 @@ SCENARIO("State-resolution v2 helper merges forked state when groups disagree", 
         }
     }
 }
+
+SCENARIO("Send_join auth_chain must not include message events", "[federation][membership][send_join][auth_chain][bug]")
+{
+    GIVEN("a membership_acceptor that incorrectly includes message events in auth_chain")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"remote.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto const create_event_json = std::string{
+            R"({"type":"m.room.create","state_key":"","content":{"creator":"@alice:local.example.org","room_version":"12"},"event_id":"$create:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000000,"depth":1,"prev_events":[],"auth_events":[]})"};
+        auto const member_event_json = std::string{
+            R"({"type":"m.room.member","state_key":"@alice:local.example.org","content":{"membership":"join"},"event_id":"$member:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
+        auto const message_event_json = std::string{
+            R"({"type":"m.room.message","content":{"body":"hello"},"event_id":"$msg:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000003,"depth":4,"prev_events":[],"auth_events":["$create:local.example.org","$member:local.example.org"]})"};
+
+        // BUG: this acceptor dumps ALL events (including m.room.message)
+        // into auth_chain, which causes Synapse to crash with
+        // AttributeError: 'FrozenEventV4' has no 'state_key' property
+        runtime.membership_acceptor =
+            [create_event_json, member_event_json,
+             message_event_json](merovingian::federation::FederationEndpoint,
+                                 std::string_view, std::string_view,
+                                 merovingian::federation::InboundPduEnvelope const&) {
+            using namespace merovingian::federation;
+            auto result = MembershipAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            result.room_version = "12";
+            result.auth_chain_json = {create_event_json, member_event_json, message_event_json};
+            result.state_json = {create_event_json, member_event_json};
+            result.signed_event_json = member_event_json;
+            return result;
+        };
+
+        auto const request = signed_put_request(
+            origin, key_id, token,
+            "/_matrix/federation/v2/send_join/!room:local.example.org/$join:remote.example.org",
+            member_event_json);
+
+        WHEN("the send_join response is parsed")
+        {
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the auth_chain contains events without state_key, which would crash Synapse")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* auth_chain_value = json_member(*root, "auth_chain");
+                REQUIRE(auth_chain_value != nullptr);
+                auto const* auth_chain_arr = std::get_if<merovingian::canonicaljson::Array>(&auth_chain_value->storage());
+                REQUIRE(auth_chain_arr != nullptr);
+                // The buggy auth_chain has 3 events including m.room.message
+                REQUIRE(auth_chain_arr->size() == 3U);
+                auto all_have_state_key = true;
+                for (auto const& entry : *auth_chain_arr)
+                {
+                    auto const* evt = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                    REQUIRE(evt != nullptr);
+                    auto const* state_key = json_member(*evt, "state_key");
+                    if (state_key == nullptr)
+                    {
+                        all_have_state_key = false;
+                    }
+                }
+                // This MUST be false — the m.room.message event has no state_key
+                REQUIRE_FALSE(all_have_state_key);
+            }
+        }
+    }
+}
+
+SCENARIO("Send_join auth_chain contains only state events", "[federation][membership][send_join][auth_chain]")
+{
+    GIVEN("a room with both state events and message events in the store")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"remote.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        // Wire a membership_acceptor that has access to a store with both
+        // state events and non-state (message) events. The auth_chain must
+        // only contain state events (those with state_key).
+        auto const create_event_json = std::string{
+            R"({"type":"m.room.create","state_key":"","content":{"creator":"@alice:local.example.org","room_version":"12"},"event_id":"$create:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000000,"depth":1,"prev_events":[],"auth_events":[]})"};
+        auto const member_event_json = std::string{
+            R"({"type":"m.room.member","state_key":"@alice:local.example.org","content":{"membership":"join"},"event_id":"$member:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000001,"depth":2,"prev_events":["$create:local.example.org"],"auth_events":["$create:local.example.org"]})"};
+        auto const power_levels_json = std::string{
+            R"({"type":"m.room.power_levels","state_key":"","content":{"users":{"@alice:local.example.org":100}},"event_id":"$pl:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000002,"depth":3,"prev_events":["$member:local.example.org"],"auth_events":["$create:local.example.org","$member:local.example.org"]})"};
+        auto const message_event_json = std::string{
+            R"({"type":"m.room.message","content":{"body":"hello"},"event_id":"$msg:local.example.org","room_id":"!room:local.example.org","sender":"@alice:local.example.org","origin_server_ts":1000003,"depth":4,"prev_events":["$pl:local.example.org"],"auth_events":["$create:local.example.org","$member:local.example.org","$pl:local.example.org"]})"};
+
+        runtime.membership_acceptor =
+            [create_event_json, member_event_json, power_levels_json,
+             message_event_json](merovingian::federation::FederationEndpoint endpoint,
+                                 std::string_view, std::string_view,
+                                 merovingian::federation::InboundPduEnvelope const&) {
+                using namespace merovingian::federation;
+                if (endpoint != FederationEndpoint::send_join)
+                {
+                    return MembershipAcceptResult{false, 400, "wrong endpoint", {}, {}, {}, {}};
+                }
+                // Build auth_chain by walking auth_events from current state,
+                // NOT by dumping all events. The auth chain for the current
+                // state is: create -> member -> power_levels (the message
+                // event is NOT in the auth chain because it has no state_key
+                // and is not reachable via auth_events from any state event).
+                auto result = MembershipAcceptResult{};
+                result.accepted = true;
+                result.status = 200U;
+                result.room_version = "12";
+                // Auth chain: events reachable via auth_events from state events.
+                // State events reference create, member, power_levels in their
+                // auth_events. The message event is NOT a state event and should
+                // NOT appear in auth_chain.
+                result.auth_chain_json = {create_event_json, member_event_json, power_levels_json};
+                result.state_json = {create_event_json, member_event_json, power_levels_json};
+                result.signed_event_json = member_event_json;
+                return result;
+            };
+
+        auto const request = signed_put_request(
+            origin, key_id, token,
+            "/_matrix/federation/v2/send_join/!room:local.example.org/$join:remote.example.org",
+            member_event_json);
+
+        WHEN("the send_join request is handled")
+        {
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("every event in the auth_chain has a state_key field")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* auth_chain_value = json_member(*root, "auth_chain");
+                REQUIRE(auth_chain_value != nullptr);
+                auto const* auth_chain_arr = std::get_if<merovingian::canonicaljson::Array>(&auth_chain_value->storage());
+                REQUIRE(auth_chain_arr != nullptr);
+                REQUIRE(auth_chain_arr->size() == 3U);
+                for (auto const& entry : *auth_chain_arr)
+                {
+                    auto const* evt = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                    REQUIRE(evt != nullptr);
+                    auto const* state_key = json_member(*evt, "state_key");
+                    REQUIRE(state_key != nullptr);
+                }
+            }
+        }
+    }
+}
