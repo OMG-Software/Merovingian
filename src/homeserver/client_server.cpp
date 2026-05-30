@@ -4120,10 +4120,15 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     if (req.method == "POST" && starts_with(req.target, join_by_id_prefix))
     {
         auto room_segment = std::string_view{req.target}.substr(join_by_id_prefix.size());
-        // Drop any ?server_name=... query string; local joins do not need it.
-        if (auto const query = room_segment.find('?'); query != std::string_view::npos)
+        // Preserve the ?server_name=/?via= query string and forward it on the rewritten
+        // target: it carries the candidate resident servers needed to route a federated
+        // join. This is the only way to reach a room version 12 room, whose room ID has
+        // no server domain (MSC4291).
+        auto join_query = std::string_view{};
+        if (auto const query_start = room_segment.find('?'); query_start != std::string_view::npos)
         {
-            room_segment = room_segment.substr(0U, query);
+            join_query = room_segment.substr(query_start + 1U);
+            room_segment = room_segment.substr(0U, query_start);
         }
         if (room_segment.empty())
         {
@@ -4139,6 +4144,10 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const decoded_room_segment = core::percent_decode_path_component(room_segment);
         auto rewritten = req;
         rewritten.target = std::string{"/_matrix/client/v3/rooms/"} + decoded_room_segment + "/join";
+        if (!join_query.empty())
+        {
+            rewritten.target += "?" + std::string{join_query};
+        }
         log_diagnostic("room.join_by_id.rewrite",
                        {
                            {"actor",            *user,                                                  false},

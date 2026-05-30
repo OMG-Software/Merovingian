@@ -1473,7 +1473,15 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         });
         return response(404U, "route not found");
     }
-    auto const suffix = std::string_view{request.target}.substr(rooms_prefix.size());
+    auto suffix = std::string_view{request.target}.substr(rooms_prefix.size());
+    // Split any query string off the path so the suffix routing below still matches;
+    // the join handler reads via/server_name candidate servers from it.
+    auto request_query = std::string_view{};
+    if (auto const query_start = suffix.find('?'); query_start != std::string_view::npos)
+    {
+        request_query = suffix.substr(query_start + 1U);
+        suffix = suffix.substr(0U, query_start);
+    }
     auto constexpr join_suffix = std::string_view{"/join"};
     auto constexpr send_suffix = std::string_view{"/send"};
     auto constexpr state_suffix = std::string_view{"/state"};
@@ -1482,11 +1490,13 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         suffix.substr(suffix.size() - join_suffix.size()) == join_suffix)
     {
         auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - join_suffix.size()));
+        auto const via_servers = parse_join_via_servers(request_query);
         log_diagnostic("room.join.dispatch", {
-                                                 {"room_id", room_id, false}
+                                                 {"room_id",   room_id,                            false},
+                                                 {"via_count", std::to_string(via_servers.size()), false}
         });
         guard.unlock();
-        auto result = join_room(runtime, request.access_token, room_id);
+        auto result = join_room(runtime, request.access_token, room_id, via_servers);
         log_diagnostic(result.ok ? "room.join.accepted" : "room.join.rejected",
                        {
                            {"room_id", room_id,                                                    false},

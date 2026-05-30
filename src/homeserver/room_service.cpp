@@ -6,6 +6,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/core/query_params.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/events/authorization.hpp"
@@ -1372,8 +1373,56 @@ namespace
     return make_operation_result(true, room_id);
 }
 
-[[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token,
-                             std::string_view room_id) -> OperationResult
+auto parse_join_via_servers(std::string_view query) -> std::vector<std::string>
+{
+    auto servers = std::vector<std::string>{};
+    while (!query.empty())
+    {
+        auto const amp = query.find('&');
+        auto const pair = query.substr(0U, amp);
+        query = amp == std::string_view::npos ? std::string_view{} : query.substr(amp + 1U);
+        auto const eq = pair.find('=');
+        if (eq == std::string_view::npos)
+        {
+            continue;
+        }
+        // `server_name` is the legacy spelling; `via` (MSC4156) is the current one.
+        if (auto const key = pair.substr(0U, eq); key != "server_name" && key != "via")
+        {
+            continue;
+        }
+        auto decoded = core::percent_decode_path_component(pair.substr(eq + 1U));
+        if (!decoded.empty() && std::ranges::find(servers, decoded) == servers.end())
+        {
+            servers.push_back(std::move(decoded));
+        }
+    }
+    return servers;
+}
+
+auto join_candidate_servers(std::vector<std::string> const& via_servers, std::string_view room_id,
+                            std::string_view our_server) -> std::vector<std::string>
+{
+    auto candidates = std::vector<std::string>{};
+    auto const add = [&](std::string_view server) {
+        if (!server.empty() && server != our_server && std::ranges::find(candidates, server) == candidates.end())
+        {
+            candidates.emplace_back(server);
+        }
+    };
+    for (auto const& server : via_servers)
+    {
+        add(server);
+    }
+    // Room versions < 12 embed the resident server in the room ID; room version 12
+    // IDs are bare reference hashes (MSC4291), so server_name_from_room_id returns
+    // empty and the via servers are the only route.
+    add(server_name_from_room_id(room_id));
+    return candidates;
+}
+
+[[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
+                             std::vector<std::string> const& via_servers) -> OperationResult
 {
     auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
     log_diagnostic("room.join.started", {
@@ -1394,23 +1443,25 @@ namespace
     auto* room = find_room(runtime.database, room_id);
     if (room == nullptr)
     {
-        auto const remote_server = server_name_from_room_id(room_id);
-        if (remote_server.empty() || remote_server == runtime.config.server().server_name)
+        // Remote room: attempt make_join → sign → send_join. The candidate resident
+        // servers come from the join endpoint's via/server_name parameters, plus the
+        // room ID's domain for room versions < 12 (v12 IDs are domain-less, MSC4291).
+        auto const our_server = runtime.config.server().server_name;
+        auto const candidates = join_candidate_servers(via_servers, room_id, our_server);
+        if (candidates.empty())
         {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,             false},
-                                                     {"room_id", std::string{room_id}, false},
-                                                     {"status",  "403",                false},
-                                                     {"reason",  "unknown room",       false}
+            log_diagnostic("room.join.rejected",
+                           {
+                               {"actor",   *user_id,                                    false},
+                               {"room_id", std::string{room_id},                        false},
+                               {"status",  "404",                                       false},
+                               {"reason",  "no resident server (via required for v12)", false}
             });
-            return make_operation_result(false, {}, "unknown room", 403U);
+            return make_operation_result(false, {}, "unknown room: no resident server to join via", 404U);
         }
-        // Remote room: attempt make_join → sign → send_join via the
-        // remote homeserver that originated the room.
         wire_federation_callbacks(runtime);
         auto* outbound_client = runtime.outbound_client.get();
         auto* discovery_network = runtime.discovery_network.get();
-        auto const our_server = runtime.config.server().server_name;
         auto const supported_versions = std::vector<std::string>{"10", "11", "12"};
         // Best-effort: load the key_id from the persistent store. If the key cannot be
         // hydrated (wrong size, bad base64) ensure_runtime_server_signing_key returns
@@ -1421,24 +1472,40 @@ namespace
         auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
         auto const secret_key = std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
                                             runtime.database.signing_secret_key.size()};
-        auto make_join_tx =
-            federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, remote_server,
-                                                      our_server, room_id, *user_id, supported_versions);
-        log_diagnostic("room.join.remote.make_join", {
-                                                         {"actor",         *user_id,                   false},
-                                                         {"room_id",       std::string{room_id},       false},
-                                                         {"remote_server", std::string{remote_server}, false}
-        });
         guard.unlock();
-        auto const [make_ok, make_body] = perform_sync_outbound_call(
-            outbound_client, discovery_network, make_join_tx, key_id, secret_key, "room.join.remote.make_join_failed");
+        // Try each candidate resident server's make_join until one responds successfully.
+        auto remote_server = std::string{};
+        auto make_body = std::string{};
+        auto make_ok = false;
+        for (auto const& candidate : candidates)
+        {
+            auto make_join_tx = federation::make_outbound_make_membership(
+                federation::FederationEndpoint::make_join, candidate, our_server, room_id, *user_id, supported_versions);
+            log_diagnostic("room.join.remote.make_join", {
+                                                             {"actor",         *user_id,             false},
+                                                             {"room_id",       std::string{room_id}, false},
+                                                             {"remote_server", candidate,            false}
+            });
+            auto [ok, body] = perform_sync_outbound_call(outbound_client, discovery_network, make_join_tx, key_id,
+                                                         secret_key, "room.join.remote.make_join_failed");
+            // Keep the latest body: on success it is the make_join response; on failure it
+            // is the reason, surfaced below if every candidate server fails.
+            make_body = std::move(body);
+            if (ok)
+            {
+                remote_server = candidate;
+                make_ok = true;
+                break;
+            }
+        }
         if (!make_ok)
         {
-            log_diagnostic("room.join.rejected", {
-                                                     {"actor",   *user_id,             false},
-                                                     {"room_id", std::string{room_id}, false},
-                                                     {"status",  "502",                false},
-                                                     {"reason",  "make_join failed",   false}
+            log_diagnostic("room.join.rejected",
+                           {
+                               {"actor",   *user_id,                              false},
+                               {"room_id", std::string{room_id},                  false},
+                               {"status",  "502",                                 false},
+                               {"reason",  "make_join failed via all candidates", false}
             });
             return make_operation_result(false, {}, "make_join failed: " + make_body, 502U);
         }
