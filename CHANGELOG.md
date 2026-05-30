@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.47
+
+- Fix federated invite-join flow so remote homeservers (e.g. Synapse) no longer
+  reject joins with `403: You are not invited to this room`. Three bugs fixed:
+  - `membership_template_provider` now populates `auth_events` in the `make_join`
+    template with `m.room.create`, `m.room.join_rules`, `m.room.power_levels`,
+    and the joining user's current membership event (invite). Without this, the
+    joining server signed a PDU with empty `auth_events`.
+  - `membership_acceptor` now copies `auth_event_ids` from the inbound PDU
+    envelope to the persisted `PersistentEvent`, enabling the BFS auth-chain walk
+    to follow links and include referenced events in the `send_join` response.
+  - `invite_handler` now stores inbound invite events in `store.events` and
+    `store.state` so they are reachable during auth-chain construction for the
+    case where a remote server invites one of our local users.
+
 ## 0.4.46
 
 - Fix PDU dispatch to include invited users in `room->members` so federated

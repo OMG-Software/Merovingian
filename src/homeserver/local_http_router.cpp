@@ -960,6 +960,24 @@ namespace
             {
                 tmpl.membership = "knock";
             }
+            // Populate auth_events: m.room.create, m.room.join_rules,
+            // m.room.power_levels, and the joining user's current membership
+            // (e.g. their invite event). Without this the remote server signs
+            // a join PDU with empty auth_events that remote homeservers reject
+            // with "403: You are not invited to this room".
+            for (auto const& s : store.state)
+            {
+                if (s.room_id != room_id || s.event_id.empty())
+                {
+                    continue;
+                }
+                if (s.event_type == "m.room.create" || s.event_type == "m.room.join_rules" ||
+                    s.event_type == "m.room.power_levels" ||
+                    (s.event_type == "m.room.member" && s.state_key == user_id))
+                {
+                    tmpl.auth_events.push_back(s.event_id);
+                }
+            }
             for (auto const& evt : store.events)
             {
                 if (evt.room_id == room_id)
@@ -976,7 +994,8 @@ namespace
         };
 
         runtime.federation.membership_acceptor =
-            [rt](federation::FederationEndpoint endpoint, std::string_view room_id, std::string_view event_id,
+            [rt](federation::FederationEndpoint endpoint, std::string_view room_id,
+                 [[maybe_unused]] std::string_view event_id,
                  federation::InboundPduEnvelope const& envelope) -> federation::MembershipAcceptResult {
             auto& store = rt->database.persistent_store;
             auto const room_it = std::ranges::find_if(store.rooms, [&room_id](database::PersistentRoom const& r) {
@@ -993,12 +1012,17 @@ namespace
             event.json = envelope.json;
             event.depth = envelope.depth;
             event.stream_ordering = rt->database.next_stream_ordering++;
+            event.auth_event_ids = envelope.auth_event_ids;
             auto const event_stream_ordering = event.stream_ordering;
             auto state = std::optional<database::PersistentStateEvent>{};
             if (envelope.state_key.has_value())
             {
+                // Use envelope.event_id (the computed reference hash) rather
+                // than the URL path event_id parameter. Both should be equal for
+                // conformant peers, but deriving state from the envelope keeps
+                // the stored state consistent with the stored event.
                 state = database::PersistentStateEvent{envelope.room_id, envelope.event_type, *envelope.state_key,
-                                                       std::string{event_id}};
+                                                       envelope.event_id};
             }
             if (!database::store_event_with_state(store, std::move(event), state))
             {
@@ -1153,6 +1177,25 @@ namespace
                                           invite.invite_room_state_json, stream_ordering}))
             {
                 return {false, 500U, "invite metadata persistence failed", {}};
+            }
+            // Store the invite event in the persistent event graph so it is
+            // reachable during auth-chain BFS walks on subsequent send_join
+            // calls for this user. Without this, make_join cannot include it
+            // in auth_events and send_join cannot return it in the auth_chain.
+            {
+                auto invite_pdu = database::PersistentEvent{};
+                invite_pdu.event_id = invite.event_id;
+                invite_pdu.room_id = invite.room_id;
+                invite_pdu.sender_user_id = *sender;
+                invite_pdu.json = *signed_event;
+                invite_pdu.stream_ordering = stream_ordering;
+                auto invite_state = std::optional<database::PersistentStateEvent>{
+                    database::PersistentStateEvent{invite.room_id, "m.room.member", *target_user, invite.event_id}};
+                if (!database::store_event_with_state(rt->database.persistent_store, std::move(invite_pdu),
+                                                      std::move(invite_state)))
+                {
+                    return {false, 500U, "invite event persistence failed", {}};
+                }
             }
             rt->database.persistent_store.next_sync_stream_id += 1U;
             if (rt->sync_notifier != nullptr)

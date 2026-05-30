@@ -101,6 +101,7 @@ if get_option ('build_tests')
       'unit/test_federation_conformance.cpp',
       'unit/test_federation_event_query.cpp',
       'unit/test_federation_inbound_request.cpp',
+      'unit/test_federation_invite_join.cpp',
       'unit/test_federation_key_query.cpp',
       'unit/test_federation_membership_endpoints.cpp',
       'unit/test_federation_runtime_callbacks.cpp',

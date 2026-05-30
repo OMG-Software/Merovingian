@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.46
+Version:        0.4.47
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.47-1
+- Fix federated invite-join auth chain: populate make_join auth_events, copy auth_event_ids in send_join, store inbound invites in event graph
+
 * Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.46-1
 - Fix PDU dispatch to include invited users in room members
 - Add receipt endpoint POST /rooms/{roomId}/receipt/{receiptType}/{eventId}
