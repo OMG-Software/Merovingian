@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.44
+Version:        0.4.45
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.45-1
+- Fix auth_events to include only spec-required events per event type
+- Deduplicate createRoom preset events when client provides initial_state
+
 * Sat May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.44-1
 - Omit room creators from m.room.power_levels content.users in room v12 (MSC4289)
 - Combine and deduplicate trusted_private_chat additional_creators per spec v1.16

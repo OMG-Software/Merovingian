@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.4.45
+
+- Fix `auth_events` to include only the events required by the Matrix spec for
+  each event type, instead of all room state events. Synapse rejects events
+  that list unrelated auth events (e.g. `m.room.join_rules` in a
+  `m.room.history_visibility` event's `auth_events`) with "unexpected
+  auth_event for ('m.room.join_rules', '')", which cascaded into broken
+  invite state and "You are not invited" join failures for federated users.
+  Non-member events now include only `m.room.create` + `m.room.power_levels`
+  + the sender's `m.room.member`; member events additionally include
+  `m.room.join_rules` and the target's `m.room.member` per spec v1.18.
+- Deduplicate `createRoom` preset events when the client already provides
+  them in `initial_state`. Previously, including `m.room.guest_access`,
+  `m.room.join_rules`, or `m.room.history_visibility` in `initial_state`
+  produced duplicate state events. Now the preset emission is skipped for any
+  event type the client supplies, matching the existing `m.room.encryption`
+  dedup pattern.
+
 ## 0.4.44
 
 - Fix room version 12 (MSC4291) room creation so the creator and any

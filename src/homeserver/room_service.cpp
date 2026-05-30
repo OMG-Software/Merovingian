@@ -421,9 +421,22 @@ namespace
         return {};
     }
 
+    // Per the Matrix spec v1.18 Sec. 4.4 auth_events, only specific event types
+    // belong in auth_events depending on the event being composed:
+    //   m.room.create:  none
+    //   m.room.member:  {create, power_levels, join_rules, sender_member, target_member}
+    //   all others:      {create, power_levels, sender_member}
+    // Room v12 (MSC4291) excludes create from auth_events (implied by room ID).
+    // Synapse rejects events that include unrelated auth_events (e.g. join_rules
+    // in a history_visibility event) with "unexpected auth_event".
     [[nodiscard]] auto auth_events_for_room(database::PersistentStore const& store, std::string_view room_id,
-                                            bool exclude_create) -> std::vector<std::string>
+                                            std::string_view event_type, std::string_view target_state_key,
+                                            std::string_view sender, bool exclude_create) -> std::vector<std::string>
     {
+        if (event_type == "m.room.create")
+        {
+            return {};
+        }
         auto event_ids = std::vector<std::string>{};
         for (auto const& state : store.state)
         {
@@ -431,13 +444,48 @@ namespace
             {
                 continue;
             }
-            if (exclude_create && state.event_type == "m.room.create" && state.state_key.empty())
+            if (state.event_type == "m.room.create" && state.state_key.empty())
             {
-                // MSC4291 (room v12): the create event is implied by the room ID and is
-                // never listed explicitly in another event's auth_events.
+                if (!exclude_create)
+                {
+                    event_ids.push_back(state.event_id);
+                }
                 continue;
             }
-            event_ids.push_back(state.event_id);
+            if (state.event_type == "m.room.power_levels" && state.state_key.empty())
+            {
+                event_ids.push_back(state.event_id);
+                continue;
+            }
+            if (state.event_type == "m.room.join_rules" && state.state_key.empty())
+            {
+                if (event_type == "m.room.member")
+                {
+                    event_ids.push_back(state.event_id);
+                }
+                continue;
+            }
+            if (state.event_type == "m.room.member")
+            {
+                if (event_type == "m.room.member" && state.state_key == target_state_key)
+                {
+                    event_ids.push_back(state.event_id);
+                    continue;
+                }
+                if (state.state_key == sender)
+                {
+                    // Avoid duplicate when sender == target (self-join).
+                    if (event_type != "m.room.member" || target_state_key != sender)
+                    {
+                        event_ids.push_back(state.event_id);
+                    }
+                    continue;
+                }
+                continue;
+            }
+            // All other state event types (history_visibility, guest_access,
+            // encryption, canonical_alias, etc.) are NOT valid auth_events
+            // for any event type per the Matrix spec.
         }
         return event_ids;
     }
@@ -579,6 +627,13 @@ namespace
 
         auto const* type = string_member(*input, "type");
         auto const event_type = type == nullptr ? std::string{"m.room.message"} : *type;
+        auto const event_state_key = [input]() -> std::optional<std::string> {
+            if (auto const* sk = string_member(*input, "state_key"); sk != nullptr)
+            {
+                return *sk;
+            }
+            return std::nullopt;
+        }();
         // Derive the room version so the correct signing policy (event-id format, auth
         // rules, MSC4291/MSC4289 behaviour) is used for every event in the room. The
         // m.room.create event carries its own room_version in content — and while it is
@@ -608,7 +663,8 @@ namespace
         auto const omit_room_id = event_type == "m.room.create" && create_defines_room_id;
         auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
         auto const auth_events =
-            auth_events_for_room(runtime.database.persistent_store, room_id, create_defines_room_id);
+            auth_events_for_room(runtime.database.persistent_store, room_id,
+                                  event_type, event_state_key.value_or(""), sender, create_defines_room_id);
         auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
         auto const now_ms = static_cast<std::int64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -626,10 +682,10 @@ namespace
         event.push_back(canonicaljson::make_member("auth_events", string_array(auth_events)));
         event.push_back(canonicaljson::make_member("content", copy_member_or_empty_object(*input, "content")));
         auto state_key = std::optional<std::string>{};
-        if (auto const* found_state_key = string_member(*input, "state_key"); found_state_key != nullptr)
+        if (event_state_key.has_value())
         {
-            state_key = *found_state_key;
-            event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*state_key}));
+            state_key = event_state_key;
+            event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{*event_state_key}));
         }
 
         auto unsigned_event = canonicaljson::Value{event};
@@ -1322,9 +1378,51 @@ namespace
         }
     }
 
-    if (!emit_state("m.room.join_rules", std::move(join_rules)) ||
-        !emit_state("m.room.history_visibility", std::move(history_visibility)) ||
-        !emit_state("m.room.guest_access", std::move(guest_access)))
+    // Scan initial_state once for all client-provided event types that overlap
+    // with preset-derived state, so presets are not emitted as duplicates.
+    auto client_provided_join_rules = false;
+    auto client_provided_history_visibility = false;
+    auto client_provided_guest_access = false;
+    auto client_provided_encryption = false;
+    for (auto const& item : options.initial_state)
+    {
+        auto const* state_obj = std::get_if<canonicaljson::Object>(&item.storage());
+        if (state_obj == nullptr)
+        {
+            continue;
+        }
+        auto const* type_str = string_member(*state_obj, "type");
+        if (type_str == nullptr)
+        {
+            continue;
+        }
+        if (*type_str == "m.room.join_rules") { client_provided_join_rules = true; }
+        else if (*type_str == "m.room.history_visibility") { client_provided_history_visibility = true; }
+        else if (*type_str == "m.room.guest_access") { client_provided_guest_access = true; }
+        else if (*type_str == "m.room.encryption") { client_provided_encryption = true; }
+    }
+
+    if (!client_provided_join_rules && !emit_state("m.room.join_rules", std::move(join_rules)))
+    {
+        log_diagnostic("room.create.rejected", {
+                                                   {"actor",   *user_id,                                    false},
+                                                   {"room_id", room_id,                                     false},
+                                                   {"status",  "500",                                       false},
+                                                   {"reason",  "preset room state event generation failed", false}
+        });
+        return make_operation_result(false, {}, "preset room state event generation failed", 500U);
+    }
+    if (!client_provided_history_visibility && !emit_state("m.room.history_visibility", std::move(history_visibility)))
+    {
+        log_diagnostic("room.create.rejected", {
+                                                   {"actor",   *user_id,                                    false},
+                                                   {"room_id", room_id,                                     false},
+                                                   {"status",  "500",                                       false},
+                                                   {"reason",  "preset room state event generation failed", false}
+        });
+        return make_operation_result(false, {}, "preset room state event generation failed", 500U);
+    }
+    if (!client_provided_guest_access && !emit_state("m.room.guest_access", std::move(guest_access)))
     {
         log_diagnostic("room.create.rejected", {
                                                    {"actor",   *user_id,                                    false},
@@ -1340,21 +1438,7 @@ namespace
     // default. Skip if the client already included m.room.encryption in
     // initial_state to avoid emitting a duplicate state event.
     auto const encryption_preset = options.preset == "private_chat" || options.preset == "trusted_private_chat";
-    auto client_requested_encryption = false;
-    for (auto const& item : options.initial_state)
-    {
-        auto const* state_obj = std::get_if<canonicaljson::Object>(&item.storage());
-        if (state_obj != nullptr)
-        {
-            auto const* type_str = string_member(*state_obj, "type");
-            if (type_str != nullptr && *type_str == "m.room.encryption")
-            {
-                client_requested_encryption = true;
-                break;
-            }
-        }
-    }
-    if (encryption_preset && !client_requested_encryption)
+    if (encryption_preset && !client_provided_encryption)
     {
         auto encryption_content = canonicaljson::Object{};
         encryption_content.push_back(
