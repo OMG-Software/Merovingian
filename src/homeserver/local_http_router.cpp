@@ -978,13 +978,36 @@ namespace
                     tmpl.auth_events.push_back(s.event_id);
                 }
             }
+            // Compute the forward extremities: events not referenced as
+            // prev_events by any other event in this room. These are the only
+            // valid prev_events for a new join template; sending all room events
+            // inflates the state snapshot and breaks state resolution at the
+            // joining server.
+            auto referenced = std::unordered_set<std::string>{};
             for (auto const& evt : store.events)
             {
                 if (evt.room_id == room_id)
                 {
-                    tmpl.prev_events.push_back(evt.event_id);
+                    for (auto const& prev_id : evt.prev_event_ids)
+                    {
+                        referenced.insert(prev_id);
+                    }
                 }
             }
+            auto max_depth = std::int64_t{0};
+            for (auto const& evt : store.events)
+            {
+                if (evt.room_id == room_id && !evt.event_id.empty() &&
+                    referenced.find(evt.event_id) == referenced.end())
+                {
+                    tmpl.prev_events.push_back(evt.event_id);
+                    if (static_cast<std::int64_t>(evt.depth) > max_depth)
+                    {
+                        max_depth = static_cast<std::int64_t>(evt.depth);
+                    }
+                }
+            }
+            tmpl.depth = max_depth + 1;
             auto content_obj = canonicaljson::Object{};
             content_obj.push_back(
                 canonicaljson::make_member("membership", canonicaljson::Value{std::string{tmpl.membership}}));

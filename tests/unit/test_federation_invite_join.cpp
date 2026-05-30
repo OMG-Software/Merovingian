@@ -30,6 +30,8 @@
 
 #include "../support/registration_token.hpp"
 #include "federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event.hpp"
@@ -356,6 +358,231 @@ SCENARIO("invite_handler stores the signed invite event in the persistent event 
                            s.state_key == target_user && s.event_id == invite_event_id;
                 });
                 REQUIRE(in_state);
+            }
+        }
+    }
+}
+
+// --- make_join depth > 0 -----------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+//
+// The make_join template MUST include depth = max(forward-extremity depths) + 1.
+// Leaving it at 0 causes the joining server to produce a join event at depth=0
+// which Synapse rejects internally and returns 500 to its joining client,
+// causing an infinite make_join/send_join retry loop.
+SCENARIO("make_join template has depth greater than zero when the room already has events",
+         "[homeserver][federation][invite-join][make_join][spec]")
+{
+    GIVEN("a room with events already stored at depth > 0")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host3", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        auto const& store = runtime.database.persistent_store;
+        auto const max_stored = std::max_element(store.events.begin(), store.events.end(),
+                                                 [](auto const& a, auto const& b) { return a.depth < b.depth; });
+        REQUIRE(max_stored != store.events.end());
+        REQUIRE(max_stored->depth > 0U);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        WHEN("the remote server calls make_join")
+        {
+            auto const remote_user = std::string{"@alice:"} + remote_origin;
+            auto const target =
+                "/_matrix/federation/v1/make_join/" + room_id + "/" + remote_user + "?ver=12";
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime.federation, signed_get(target));
+
+            THEN("the template event has depth > 0")
+            {
+                // Spec MUST: depth must reflect the room's forward extremity depth.
+                // depth=0 makes Synapse produce a join event at depth=0 which is
+                // rejected during state resolution → 500 on the client join call.
+                // Do NOT remove — guards the bug where tmpl.depth was never set.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const ev_it =
+                    std::ranges::find_if(*root, [](auto const& m) { return m.key == "event"; });
+                REQUIRE(ev_it != root->end());
+                auto const* ev_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&ev_it->value->storage());
+                REQUIRE(ev_obj != nullptr);
+                auto const depth_it =
+                    std::ranges::find_if(*ev_obj, [](auto const& m) { return m.key == "depth"; });
+                REQUIRE(depth_it != ev_obj->end());
+                auto const* depth_val =
+                    std::get_if<std::int64_t>(&depth_it->value->storage());
+                REQUIRE(depth_val != nullptr);
+                REQUIRE(*depth_val > 0);
+            }
+        }
+    }
+}
+
+// --- make_join prev_events = forward extremities only ------------------------
+// Spec: Matrix Server-Server API v1.18
+//
+// The make_join template prev_events MUST contain only the room's current
+// forward extremities (events not yet referenced as another event's prev_events).
+// Including all room events inflates the state snapshot on every retry and
+// breaks state resolution for the joining server.
+SCENARIO("make_join template prev_events contains only forward extremities, not all room events",
+         "[homeserver][federation][invite-join][make_join][spec]")
+{
+    GIVEN("a room with a linear event chain producing exactly one forward extremity")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host4", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        auto const& store = runtime.database.persistent_store;
+        auto const room_event_count = static_cast<std::size_t>(std::count_if(
+            store.events.begin(), store.events.end(),
+            [&](auto const& e) { return e.room_id == room_id; }));
+        REQUIRE(room_event_count > 1U);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        WHEN("the remote server calls make_join")
+        {
+            auto const remote_user = std::string{"@dave:"} + remote_origin;
+            auto const target =
+                "/_matrix/federation/v1/make_join/" + room_id + "/" + remote_user + "?ver=12";
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime.federation, signed_get(target));
+
+            THEN("prev_events is exactly one entry — the forward extremity — not all events")
+            {
+                // Spec MUST: prev_events must be the current forward extremities.
+                // The bug caused every stored event to be pushed into prev_events,
+                // inflating the state snapshot sent to the joining server on each
+                // retry and making state resolution produce incorrect results.
+                // Do NOT remove — guards the bug where all store.events were used.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const ev_it =
+                    std::ranges::find_if(*root, [](auto const& m) { return m.key == "event"; });
+                REQUIRE(ev_it != root->end());
+                auto const* ev_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&ev_it->value->storage());
+                REQUIRE(ev_obj != nullptr);
+                auto const prev_it =
+                    std::ranges::find_if(*ev_obj, [](auto const& m) { return m.key == "prev_events"; });
+                REQUIRE(prev_it != ev_obj->end());
+                auto const* prev_arr =
+                    std::get_if<merovingian::canonicaljson::Array>(&prev_it->value->storage());
+                REQUIRE(prev_arr != nullptr);
+                REQUIRE(prev_arr->size() == 1U);
+                REQUIRE(prev_arr->size() < room_event_count);
+            }
+        }
+    }
+}
+
+// --- send_join response requires members_omitted -----------------------------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+//
+// The send_join v2 response MUST include the `members_omitted` boolean field.
+// Synapse parses this as a required field in SendJoinResponse; a missing field
+// raises a KeyError and Synapse returns 500 to the joining client, which retries
+// indefinitely via make_join / send_join.
+SCENARIO("send_join response body includes the required members_omitted field",
+         "[homeserver][federation][invite-join][send_join][spec]")
+{
+    GIVEN("a room with a pending invite for a remote user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host5", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        auto const remote_user = std::string{"@eve:"} + remote_origin;
+        auto const invite_event_id = std::string{"$invite_eve:example.org"};
+        plant_invite_event(runtime, room_id, user.value, remote_user, invite_event_id);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        auto const join_event_id = std::string{"$join_eve:remote.example.org"};
+        auto const join_body =
+            std::string{R"({"type":"m.room.member","room_id":")"} + room_id +
+            R"(","sender":")" + remote_user + R"(","state_key":")" + remote_user +
+            R"(","content":{"membership":"join"},"depth":6,)" +
+            R"("hashes":{"sha256":"x"},"origin_server_ts":2000,)" +
+            R"("prev_events":[],"auth_events":[")" + invite_event_id +
+            R"("],"signatures":{"remote.example.org":{"ed25519:auto":"aaaa"}}})";
+
+        WHEN("the remote server calls send_join with omit_members=true")
+        {
+            auto const target = "/_matrix/federation/v2/send_join/" + room_id + "/" +
+                                join_event_id + "?omit_members=true";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime.federation, signed_put(target, join_body));
+
+            THEN("the response body contains members_omitted set to false")
+            {
+                // Spec MUST: send_join v2 response must include members_omitted.
+                // Synapse raises KeyError on a missing field and returns 500 to
+                // the joining client, which then retries indefinitely.
+                // Do NOT remove — guards the missing members_omitted wire format bug.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const mo_it = std::ranges::find_if(
+                    *root, [](auto const& m) { return m.key == "members_omitted"; });
+                REQUIRE(mo_it != root->end());
+                auto const* mo_val = std::get_if<bool>(&mo_it->value->storage());
+                REQUIRE(mo_val != nullptr);
+                REQUIRE(*mo_val == false);
             }
         }
     }

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.48
+
+- Fix federated join so Synapse users can successfully join rooms hosted on
+  Merovingian. Three bugs caused Synapse to return `500 Internal Server Error`
+  to its joining client, producing an infinite `make_join`/`send_join` retry loop:
+  - `send_join` v2 response was missing the required `members_omitted` field.
+    Synapse raises a `KeyError` parsing `SendJoinResponse` without it.
+  - `make_join` template had `depth=0` (field was never set). Synapse used this
+    value verbatim, producing join events at depth 0 that fail state resolution.
+  - `make_join` template `prev_events` contained all room events instead of only
+    the forward extremities, inflating the state snapshot on every retry.
+
 ## 0.4.47
 
 - Fix federated invite-join flow so remote homeservers (e.g. Synapse) no longer
