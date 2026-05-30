@@ -138,25 +138,14 @@ namespace
             return 0U;
         }
         auto const& server_name = runtime.config.server().server_name;
-        auto edu_value = canonicaljson::parse_lossless(edu_content_json);
-        if (edu_value.error != canonicaljson::ParseError::none)
+        // Build the transaction body through the shared federation helper so the EDU is
+        // keyed by "edu_type" per spec; a bare "type" key makes Synapse 500 the transaction.
+        auto const tx_body_opt = federation::build_edu_transaction_body(edu_type, edu_content_json);
+        if (!tx_body_opt.has_value())
         {
             return 0U;
         }
-        auto edu_obj = canonicaljson::Object{};
-        edu_obj.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{edu_type}}));
-        edu_obj.push_back(canonicaljson::make_member("content", std::move(edu_value.value)));
-        auto edus_array = canonicaljson::Array{};
-        edus_array.push_back(canonicaljson::Value{std::move(edu_obj)});
-        auto tx_root = canonicaljson::Object{};
-        tx_root.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Array{}}));
-        tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{std::move(edus_array)}));
-        auto const tx_body_result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
-        if (tx_body_result.error != canonicaljson::CanonicalJsonError::none)
-        {
-            return 0U;
-        }
-        auto const& tx_body = tx_body_result.output;
+        auto const& tx_body = *tx_body_opt;
         auto tx_id = std::to_string(runtime.database.next_session_id++);
         auto enqueued = std::size_t{0U};
         for (auto const& destination : destinations)
@@ -1672,7 +1661,7 @@ namespace
         }
 
         auto const& local_server = rt.homeserver.config.server().server_name;
-        auto const& store       = rt.homeserver.database.persistent_store;
+        auto const& store = rt.homeserver.database.persistent_store;
 
         // remote_by_server accumulates remote user IDs grouped by their home
         // server so we can make a single federation key query per server.
@@ -1688,10 +1677,8 @@ namespace
             }
 
             // Remote users are proxied via federation key query.
-            auto const colon       = user_request.key.rfind(':');
-            auto const user_server = colon != std::string::npos
-                                         ? user_request.key.substr(colon + 1U)
-                                         : std::string{};
+            auto const colon = user_request.key.rfind(':');
+            auto const user_server = colon != std::string::npos ? user_request.key.substr(colon + 1U) : std::string{};
             if (!user_server.empty() && user_server != local_server)
             {
                 remote_by_server[user_server].push_back(user_request.key);
@@ -1728,7 +1715,7 @@ namespace
             users.push_back(json_member(user_request.key, json_obj(std::move(devices))));
         }
         // Collect cross-signing keys per user for the queried users.
-        auto master_keys       = canonicaljson::Object{};
+        auto master_keys = canonicaljson::Object{};
         auto self_signing_keys = canonicaljson::Object{};
         auto user_signing_keys = canonicaljson::Object{};
         for (auto const& user_request : *requests)
@@ -1761,10 +1748,10 @@ namespace
         {
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
-            auto const key_id      = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto const secret      = std::string{
-                reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.data()),
-                rt.homeserver.database.signing_secret_key.size()};
+            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+            auto const secret =
+                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.data()),
+                            rt.homeserver.database.signing_secret_key.size()};
             for (auto const& [server, uid_list] : remote_by_server)
             {
                 auto remote_dk = canonicaljson::Object{};
@@ -1777,9 +1764,9 @@ namespace
                 auto const q_body = json_serialize(json_obj(std::move(q_body_obj)));
                 auto const tx = federation::make_outbound_transaction(
                     server, "POST", "/_matrix/federation/v1/user/keys/query", local_server, q_body);
-                auto const [ok, resp_body] = perform_sync_outbound_call(
-                    rt.homeserver.outbound_client.get(), rt.homeserver.discovery_network.get(),
-                    tx, key_id, secret, "key_query.remote");
+                auto const [ok, resp_body] = perform_sync_outbound_call(rt.homeserver.outbound_client.get(),
+                                                                        rt.homeserver.discovery_network.get(), tx,
+                                                                        key_id, secret, "key_query.remote");
                 if (ok)
                 {
                     auto const parsed = canonicaljson::parse_lossless(resp_body);
@@ -1804,9 +1791,9 @@ namespace
                 else
                 {
                     failures.push_back(json_member(server, json_obj({
-                        json_member("errcode", json_str("M_UNKNOWN")),
-                        json_member("error",   json_str(resp_body)),
-                    })));
+                                                               json_member("errcode", json_str("M_UNKNOWN")),
+                                                               json_member("error", json_str(resp_body)),
+                                                           })));
                 }
             }
         }
@@ -1843,7 +1830,7 @@ namespace
         }
 
         auto const& local_server = rt.homeserver.config.server().server_name;
-        auto& store              = rt.homeserver.database.persistent_store;
+        auto& store = rt.homeserver.database.persistent_store;
 
         // remote_by_server accumulates the raw claim requests grouped by server
         // so a single federation call is made per destination.
@@ -1859,10 +1846,8 @@ namespace
             }
 
             // Route remote users to their home server.
-            auto const colon       = user_request.key.rfind(':');
-            auto const user_server = colon != std::string::npos
-                                         ? user_request.key.substr(colon + 1U)
-                                         : std::string{};
+            auto const colon = user_request.key.rfind(':');
+            auto const user_server = colon != std::string::npos ? user_request.key.substr(colon + 1U) : std::string{};
             if (!user_server.empty() && user_server != local_server)
             {
                 // Copy the device→algorithm map for the remote request.
@@ -1919,10 +1904,10 @@ namespace
         {
             wire_federation_callbacks(rt.homeserver);
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
-            auto const key_id      = signing_key.has_value() ? signing_key->key_id : std::string{};
-            auto const secret      = std::string{
-                reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.data()),
-                rt.homeserver.database.signing_secret_key.size()};
+            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+            auto const secret =
+                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.data()),
+                            rt.homeserver.database.signing_secret_key.size()};
             for (auto& [server, user_claims] : remote_by_server)
             {
                 auto claim_body_obj = canonicaljson::Object{};
@@ -1930,9 +1915,9 @@ namespace
                 auto const claim_body = json_serialize(json_obj(std::move(claim_body_obj)));
                 auto const tx = federation::make_outbound_transaction(
                     server, "POST", "/_matrix/federation/v1/user/keys/claim", local_server, claim_body);
-                auto const [ok, resp_body] = perform_sync_outbound_call(
-                    rt.homeserver.outbound_client.get(), rt.homeserver.discovery_network.get(),
-                    tx, key_id, secret, "key_claim.remote");
+                auto const [ok, resp_body] = perform_sync_outbound_call(rt.homeserver.outbound_client.get(),
+                                                                        rt.homeserver.discovery_network.get(), tx,
+                                                                        key_id, secret, "key_claim.remote");
                 if (ok)
                 {
                     auto const parsed = canonicaljson::parse_lossless(resp_body);
@@ -1957,53 +1942,41 @@ namespace
                 else
                 {
                     failures.push_back(json_member(server, json_obj({
-                        json_member("errcode", json_str("M_UNKNOWN")),
-                        json_member("error",   json_str(resp_body)),
-                    })));
+                                                               json_member("errcode", json_str("M_UNKNOWN")),
+                                                               json_member("error", json_str(resp_body)),
+                                                           })));
                 }
             }
         }
 
         return resp(200U, json_serialize(json_obj({
                               json_member("one_time_keys", json_obj(std::move(users))),
-                              json_member("failures",      json_obj(std::move(failures))),
+                              json_member("failures", json_obj(std::move(failures))),
                           })));
     }
 
     // Dispatch a single EDU to a specific remote server without needing a
     // room — used for m.direct_to_device delivery where the destinations are
     // known from the recipient user IDs rather than room membership.
-    auto dispatch_edu_to_server(HomeserverRuntime& runtime, std::string_view destination,
-                                std::string_view edu_type, std::string_view edu_content_json) -> bool
+    auto dispatch_edu_to_server(HomeserverRuntime& runtime, std::string_view destination, std::string_view edu_type,
+                                std::string_view edu_content_json) -> bool
     {
         wire_federation_callbacks(runtime);
         if (runtime.dispatch_worker == nullptr)
         {
             return false;
         }
-        auto edu_value = canonicaljson::parse_lossless(edu_content_json);
-        if (edu_value.error != canonicaljson::ParseError::none)
-        {
-            return false;
-        }
-        auto edu_obj = canonicaljson::Object{};
-        edu_obj.push_back(json_member("type", json_str(std::string{edu_type})));
-        edu_obj.push_back(json_member("content", std::move(edu_value.value)));
-        auto edus_array = canonicaljson::Array{};
-        edus_array.push_back(canonicaljson::Value{std::move(edu_obj)});
-        auto tx_root = canonicaljson::Object{};
-        tx_root.push_back(json_member("pdus", json_arr(canonicaljson::Array{})));
-        tx_root.push_back(json_member("edus", json_arr(std::move(edus_array))));
-        auto const tx_body = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
-        if (tx_body.error != canonicaljson::CanonicalJsonError::none)
+        // Shared builder keys the EDU by "edu_type" per the federation spec.
+        auto const tx_body = federation::build_edu_transaction_body(edu_type, edu_content_json);
+        if (!tx_body.has_value())
         {
             return false;
         }
         auto const& server_name = runtime.config.server().server_name;
-        auto tx_id              = std::to_string(runtime.database.next_session_id++);
-        auto target             = "/_matrix/federation/v1/send/" + tx_id;
+        auto tx_id = std::to_string(runtime.database.next_session_id++);
+        auto target = "/_matrix/federation/v1/send/" + tx_id;
         auto transaction =
-            federation::make_outbound_transaction(std::string{destination}, "PUT", target, server_name, tx_body.output);
+            federation::make_outbound_transaction(std::string{destination}, "PUT", target, server_name, *tx_body);
         transaction.transaction_id = tx_id;
         return runtime.dispatch_worker->enqueue(std::move(transaction));
     }
@@ -2038,8 +2011,7 @@ namespace
     // are grouped by destination server and sent as m.direct_to_device EDUs
     // via the federation dispatch worker.
     [[nodiscard]] auto handle_send_to_device(ClientServerRuntime& rt, std::string_view event_type,
-                                              std::string_view sender,
-                                              std::string_view body) -> LocalHttpResponse
+                                             std::string_view sender, std::string_view body) -> LocalHttpResponse
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -2055,8 +2027,7 @@ namespace
         auto const& local_server = rt.homeserver.config.server().server_name;
 
         // remote_messages: server → { user_id → { device_id → content_json } }
-        auto remote_messages =
-            std::map<std::string, std::map<std::string, std::map<std::string, std::string>>>{};
+        auto remote_messages = std::map<std::string, std::map<std::string, std::map<std::string, std::string>>>{};
 
         for (auto const& user_entry : *messages)
         {
@@ -2065,11 +2036,9 @@ namespace
             {
                 continue;
             }
-            auto const colon       = user_entry.key.rfind(':');
-            auto const user_server = colon != std::string::npos
-                                         ? user_entry.key.substr(colon + 1U)
-                                         : std::string{};
-            auto const is_local    = user_server.empty() || user_server == local_server;
+            auto const colon = user_entry.key.rfind(':');
+            auto const user_server = colon != std::string::npos ? user_entry.key.substr(colon + 1U) : std::string{};
+            auto const is_local = user_server.empty() || user_server == local_server;
 
             for (auto const& device_entry : *device_map)
             {
@@ -2085,13 +2054,8 @@ namespace
                 if (is_local)
                 {
                     // Enqueue directly; /sync drains it into to_device.events.
-                    std::ignore = push_to_device_message(rt,
-                                                         {0U,
-                                                          std::string{sender},
-                                                          user_entry.key,
-                                                          device_entry.key,
-                                                          std::string{event_type},
-                                                          *content});
+                    std::ignore = push_to_device_message(rt, {0U, std::string{sender}, user_entry.key, device_entry.key,
+                                                              std::string{event_type}, *content});
                 }
                 else
                 {
@@ -2118,15 +2082,13 @@ namespace
                 }
                 auto edu_content = canonicaljson::Object{};
                 edu_content.push_back(json_member("message_id", json_str(txn_id)));
-                edu_content.push_back(json_member("sender",     json_str(std::string{sender})));
-                edu_content.push_back(json_member("type",       json_str(std::string{event_type})));
-                edu_content.push_back(json_member("messages",   json_obj(std::move(messages_obj))));
-                auto const edu_body = canonicaljson::serialize_canonical(
-                    canonicaljson::Value{std::move(edu_content)});
+                edu_content.push_back(json_member("sender", json_str(std::string{sender})));
+                edu_content.push_back(json_member("type", json_str(std::string{event_type})));
+                edu_content.push_back(json_member("messages", json_obj(std::move(messages_obj))));
+                auto const edu_body = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(edu_content)});
                 if (edu_body.error == canonicaljson::CanonicalJsonError::none)
                 {
-                    std::ignore = dispatch_edu_to_server(
-                        rt.homeserver, server, "m.direct_to_device", edu_body.output);
+                    std::ignore = dispatch_edu_to_server(rt.homeserver, server, "m.direct_to_device", edu_body.output);
                 }
             }
         }
@@ -2139,12 +2101,11 @@ namespace
     // positions. Clients use this to avoid re-querying /keys/query on every
     // /sync; Element requests it on initial load to detect stale key caches.
     [[nodiscard]] auto handle_keys_changes(ClientServerRuntime const& rt, std::string_view user,
-                                            std::string_view target) -> LocalHttpResponse
+                                           std::string_view target) -> LocalHttpResponse
     {
         // Parse the `from` sync token (may be "s{N}" or plain integer).
         auto const query_start = target.find('?');
-        auto const query =
-            query_start != std::string_view::npos ? target.substr(query_start + 1U) : std::string_view{};
+        auto const query = query_start != std::string_view::npos ? target.substr(query_start + 1U) : std::string_view{};
         auto const parse_qparam = [&query](std::string_view key) -> std::string_view {
             auto const search = std::string{key} + "=";
             auto const pos = query.find(search);
@@ -2171,7 +2132,7 @@ namespace
 
         auto const& store = rt.homeserver.database.persistent_store;
         auto changed = canonicaljson::Array{};
-        auto left    = canonicaljson::Array{};
+        auto left = canonicaljson::Array{};
         for (auto const& change : store.device_list_changes)
         {
             if (change.observer_user_id != user || change.stream_id <= from_id)
@@ -2183,7 +2144,7 @@ namespace
         }
         return resp(200U, json_serialize(json_obj({
                               json_member("changed", json_arr(std::move(changed))),
-                              json_member("left",    json_arr(std::move(left))),
+                              json_member("left", json_arr(std::move(left))),
                           })));
     }
 
@@ -3674,25 +3635,24 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             if (auto const path = room_state_path_parts(req.target); path.has_value())
             {
                 auto const& store = rt.homeserver.database.persistent_store;
-                auto const room_it = std::ranges::find_if(
-                    store.rooms, [&](auto const& r) { return r.room_id == path->room_id; });
+                auto const room_it = std::ranges::find_if(store.rooms, [&](auto const& r) {
+                    return r.room_id == path->room_id;
+                });
                 if (room_it == store.rooms.end())
                 {
                     return dispatch_err(403U, "M_FORBIDDEN", "not a member of this room");
                 }
-                auto const state_it = std::ranges::find_if(
-                    store.state, [&](database::PersistentStateEvent const& s) {
-                        return s.room_id == path->room_id && s.event_type == path->event_type
-                               && s.state_key == path->state_key;
-                    });
+                auto const state_it = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& s) {
+                    return s.room_id == path->room_id && s.event_type == path->event_type &&
+                           s.state_key == path->state_key;
+                });
                 if (state_it == store.state.end())
                 {
                     return dispatch_err(404U, "M_NOT_FOUND", "state event not found");
                 }
-                auto const event_it = std::ranges::find_if(
-                    store.events, [&](database::PersistentEvent const& e) {
-                        return e.event_id == state_it->event_id;
-                    });
+                auto const event_it = std::ranges::find_if(store.events, [&](database::PersistentEvent const& e) {
+                    return e.event_id == state_it->event_id;
+                });
                 if (event_it == store.events.end())
                 {
                     return dispatch_err(500U, "M_UNKNOWN", "state event missing from event store");
@@ -3702,8 +3662,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 {
                     return dispatch_err(500U, "M_UNKNOWN", "state event JSON is malformed");
                 }
-                auto const* event_obj =
-                    std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                auto const* event_obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
                 if (event_obj == nullptr)
                 {
                     return dispatch_err(500U, "M_UNKNOWN", "state event JSON is not an object");

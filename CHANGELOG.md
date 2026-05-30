@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.4.44
+
+- Fix room version 12 (MSC4291) room creation so the creator and any
+  `additional_creators` are omitted from `m.room.power_levels` `content.users`.
+  In v12 creators hold an implicit, infinite power level and must not be listed
+  explicitly; Synapse (and the v12 auth rules) reject a power_levels event that
+  names a creator with `Creator user ... must not appear in content.users`, which
+  prevented remote users from joining locally-created v12 rooms (including DMs).
+  Any creator supplied via `power_level_content_override` is also stripped.
+  Pre-v12 rooms are unchanged: the creator stays listed at power level 100.
+- Make `createRoom` populate `additional_creators` per the spec (MSC4289, Matrix
+  v1.16). For the `trusted_private_chat` preset in room version 12+, the server
+  now **combines** the `additional_creators` supplied in `creation_content` with
+  the `invite` array and **deduplicates** between them (the sender is already a
+  creator and is never repeated), instead of overwriting `additional_creators`
+  with the invite list and discarding any the client supplied. The field is only
+  emitted for room versions that privilege creators; pre-v12 `trusted_private_chat`
+  rooms continue to grant invitees power level 100 via `m.room.power_levels`.
+- Fix outbound federation EDUs (typing, receipts, presence, to-device) to key
+  each EDU by `edu_type` rather than `type`, as required by the federation spec.
+  Synapse reads `edu["edu_type"]` and raised `KeyError: 'edu_type'`, returning
+  HTTP 500 for the entire `/send` transaction — silently dropping all federated
+  ephemeral and to-device traffic. The EDU transaction body is now built by a
+  shared, unit-tested `federation::build_edu_transaction_body` helper.
+
 ## 0.4.43
 
 - Support joining a remote room version 12 room (MSC4291). A v12 room ID is a

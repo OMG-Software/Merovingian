@@ -133,5 +133,12 @@ policy flags refine this further:
 - `privilege_room_creators` (MSC4289, room v12): the create event sender and the
   users listed in `content.additional_creators` hold an effectively infinite power
   level in the authorization rules, overriding any integer in `m.room.power_levels`.
+  Because that privilege is implicit, creators MUST NOT also be listed in
+  `m.room.power_levels` `content.users` for v12+ rooms — a conformant peer (e.g.
+  Synapse) rejects a power_levels event that names a creator with
+  `Creator user ... must not appear in content.users`. `create_room` therefore
+  omits the creator and `additional_creators` from the emitted `users` map (and
+  strips any that arrive via `power_level_content_override`) for room version 12+,
+  while pre-v12 rooms keep listing the creator at level 100.
 
 Later work must expand this with full Matrix room-version fixtures.

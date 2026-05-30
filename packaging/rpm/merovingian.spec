@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.43
+Version:        0.4.44
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,14 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.44-1
+- Omit room creators from m.room.power_levels content.users in room v12 (MSC4289)
+- Combine and deduplicate trusted_private_chat additional_creators per spec v1.16
+- Key outbound federation EDUs by edu_type so Synapse accepts the transaction
+
+* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.43-1
+- Support joining remote room version 12 rooms via server_name/via parameters (MSC4291)
+
 * Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.42-1
 - Fix send_join auth_chain to include only state events (walk auth_events graph)
 - Document build.py as the recommended build entry point
