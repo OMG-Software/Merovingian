@@ -96,6 +96,27 @@ separate operator decision once this branch is approved._
   are unchanged. Spec tests cover all three versions for create-event redaction,
   room-ID derivation, `auth_events` exclusion, creator privilege, and the
   room-version policy flags.
+- v12 power_levels creator omission (0.4.44): `create_room` no longer lists the
+  creator or any `additional_creators` in `m.room.power_levels` `content.users`
+  for room version 12+, because MSC4291 creators hold an implicit infinite power
+  level. Synapse (and the v12 auth rules) reject a power_levels event that names
+  a creator (`Creator user ... must not appear in content.users`), which
+  previously blocked remote users from joining locally-created v12 rooms,
+  including DMs. Creators supplied via `power_level_content_override` are stripped
+  too. Pre-v12 rooms still list the creator at level 100. Unit tests pin both.
+- v12 `additional_creators` combine/dedup (0.4.44): `create_room` now follows the
+  spec (MSC4289, Matrix v1.16) for the `trusted_private_chat` preset in room v12+ by
+  combining the `creation_content` `additional_creators` with the `invite` array and
+  deduplicating (excluding the sender), rather than overwriting with the invite list.
+  The field is gated to room versions whose policy sets `privilege_room_creators`;
+  pre-v12 rooms emit no `additional_creators` and grant invitees power level 100.
+  Unit tests cover v11 (no field, invitee at 100) and v12 (combined + deduplicated).
+- Outbound EDU `edu_type` key (0.4.44): federation `/send` transactions now key
+  each EDU by `edu_type` (per spec) instead of `type`. Synapse read
+  `edu["edu_type"]`, raised `KeyError: 'edu_type'`, and 500'd the entire
+  transaction, silently dropping all federated typing/receipt/presence/to-device
+  traffic. Both client-server EDU dispatch paths now share a unit-tested
+  `federation::build_edu_transaction_body` helper.
 - `createRoom` Matrix v1.18 conformance: `POST /_matrix/client/v3/createRoom`
   now emits the spec-ordered initial state chain, derives presets from
   `visibility`, persists `m.room.guest_access`, honours `room_version`,

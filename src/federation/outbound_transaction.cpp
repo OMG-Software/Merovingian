@@ -2,12 +2,17 @@
 
 #include "merovingian/federation/outbound_transaction.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <cmath>
+#include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace merovingian::federation
@@ -55,9 +60,9 @@ namespace
         // X-Matrix authorization header per the Matrix federation spec. The
         // signature is produced through the same primitive the inbound
         // verifier uses so the project speaks a single signing scheme.
-        auto signature = make_federation_signature(call.transaction.origin, call.transaction.destination,
-                                                   call.transaction.method, call.transaction.target,
-                                                   call.transaction.body, call.secret_key);
+        auto signature =
+            make_federation_signature(call.transaction.origin, call.transaction.destination, call.transaction.method,
+                                      call.transaction.target, call.transaction.body, call.secret_key);
         auto header = std::string{"X-Matrix origin=\""};
         header += call.transaction.origin;
         header += "\",destination=\"";
@@ -87,6 +92,38 @@ auto make_outbound_transaction(std::string_view destination, std::string_view me
     transaction.origin = origin;
     transaction.body = body;
     return transaction;
+}
+
+auto build_edu_transaction_body(std::string_view edu_type,
+                                std::string_view edu_content_json) -> std::optional<std::string>
+{
+    auto edu_value = canonicaljson::parse_lossless(edu_content_json);
+    if (edu_value.error != canonicaljson::ParseError::none)
+    {
+        return std::nullopt;
+    }
+
+    // Matrix federation transactions key each EDU by "edu_type" (not "type").
+    // Synapse reads edu["edu_type"] and raises KeyError otherwise, rejecting the
+    // entire transaction (PDUs included) with HTTP 500 — so the wrong key silently
+    // breaks all outbound typing/receipt/to-device delivery.
+    auto edu_obj = canonicaljson::Object{};
+    edu_obj.push_back(canonicaljson::make_member("edu_type", canonicaljson::Value{std::string{edu_type}}));
+    edu_obj.push_back(canonicaljson::make_member("content", std::move(edu_value.value)));
+
+    auto edus_array = canonicaljson::Array{};
+    edus_array.push_back(canonicaljson::Value{std::move(edu_obj)});
+
+    auto tx_root = canonicaljson::Object{};
+    tx_root.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Array{}}));
+    tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{std::move(edus_array)}));
+
+    auto const tx_body = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
+    if (tx_body.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return std::nullopt;
+    }
+    return tx_body.output;
 }
 
 auto compute_backoff(std::uint32_t retry_count) noexcept -> std::uint64_t
@@ -152,10 +189,12 @@ auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall con
     if (!destination_should_retry(destination, now_ts))
     {
         log_diagnostic("transaction.circuit_open",
-                       {{"destination",          call.transaction.destination,                         false},
-                        {"target",               call.transaction.target,                              false},
-                        {"consecutive_failures", std::to_string(destination.consecutive_failures),    false},
-                        {"retry_after_ts",       std::to_string(destination.retry_after_ts),          false}});
+                       {
+                           {"destination",          call.transaction.destination,                     false},
+                           {"target",               call.transaction.target,                          false},
+                           {"consecutive_failures", std::to_string(destination.consecutive_failures), false},
+                           {"retry_after_ts",       std::to_string(destination.retry_after_ts),       false}
+        });
         return OutboundTransactionResult{false, std::uint16_t{0U}, std::string{}, std::string{"circuit_open"}};
     }
 
@@ -172,22 +211,25 @@ auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall con
 
     if (result.sent && status_is_success(result.http_status))
     {
-        log_diagnostic("transaction.delivered",
-                       {{"destination", call.transaction.destination,              false},
-                        {"method",      call.transaction.method,                   false},
-                        {"target",      call.transaction.target,                   false},
-                        {"http_status", std::to_string(result.http_status),        false}});
+        log_diagnostic("transaction.delivered", {
+                                                    {"destination", call.transaction.destination,       false},
+                                                    {"method",      call.transaction.method,            false},
+                                                    {"target",      call.transaction.target,            false},
+                                                    {"http_status", std::to_string(result.http_status), false}
+        });
     }
     else
     {
         log_diagnostic("transaction.failed",
-                       {{"destination",    call.transaction.destination,                   false},
-                        {"method",         call.transaction.method,                        false},
-                        {"target",         call.transaction.target,                        false},
-                        {"http_status",    std::to_string(result.http_status),             false},
-                        {"error",          result.error,                                   false},
-                        {"response_body",  result.response_body,                           false},
-                        {"failures",       std::to_string(destination.consecutive_failures), false}});
+                       {
+                           {"destination",   call.transaction.destination,                     false},
+                           {"method",        call.transaction.method,                          false},
+                           {"target",        call.transaction.target,                          false},
+                           {"http_status",   std::to_string(result.http_status),               false},
+                           {"error",         result.error,                                     false},
+                           {"response_body", result.response_body,                             false},
+                           {"failures",      std::to_string(destination.consecutive_failures), false}
+        });
     }
 
     return result;

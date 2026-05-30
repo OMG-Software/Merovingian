@@ -702,12 +702,13 @@ SCENARIO("createRoom applies Matrix v1.18 preset and room-creation options",
                 REQUIRE(*string_member(history, "history_visibility") == "shared");
                 REQUIRE(int_member(power, "events_default") != nullptr);
                 REQUIRE(*int_member(power, "events_default") == 50);
+                // MSC4291: in room v12 the creator (@alice) and additional_creators (@bob, from the
+                // trusted_private_chat invite) hold implicit infinite power level and MUST NOT be
+                // listed in content.users — Synapse rejects the join otherwise.
                 auto const* users = object_member_as_object(power, "users");
                 REQUIRE(users != nullptr);
-                REQUIRE(int_member(*users, "@alice:example.org") != nullptr);
-                REQUIRE(*int_member(*users, "@alice:example.org") == 100);
-                REQUIRE(int_member(*users, "@bob:example.org") != nullptr);
-                REQUIRE(*int_member(*users, "@bob:example.org") == 100);
+                REQUIRE(int_member(*users, "@alice:example.org") == nullptr);
+                REQUIRE(int_member(*users, "@bob:example.org") == nullptr);
                 auto const* events = object_member_as_object(power, "events");
                 REQUIRE(events != nullptr);
                 REQUIRE(int_member(*events, "m.room.tombstone") != nullptr);
@@ -730,6 +731,186 @@ SCENARIO("createRoom applies Matrix v1.18 preset and room-creation options",
                 REQUIRE(*string_member(invite, "membership") == "invite");
                 REQUIRE(bool_member(invite, "is_direct") != nullptr);
                 REQUIRE(*bool_member(invite, "is_direct") == true);
+            }
+        }
+    }
+}
+
+SCENARIO("createRoom keeps the creator in power_levels users for pre-v12 rooms",
+         "[homeserver][client-server][create-room][room-version]")
+{
+    GIVEN("a started runtime with a logged-in creator")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client creates a room with room_version 11 (no implicit creator power)")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_version":"11"})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+
+            THEN("the creator is explicitly listed in m.room.power_levels users at level 100")
+            {
+                auto const power = content_for_state(runtime.homeserver.database.persistent_store, created_room_id,
+                                                     "m.room.power_levels");
+                auto const* users = object_member_as_object(power, "users");
+                REQUIRE(users != nullptr);
+                REQUIRE(int_member(*users, "@alice:example.org") != nullptr);
+                REQUIRE(*int_member(*users, "@alice:example.org") == 100);
+            }
+        }
+    }
+}
+
+SCENARIO("createRoom combines and deduplicates trusted_private_chat creators per the spec (MSC4289)",
+         "[homeserver][client-server][create-room][room-version][conformance]")
+{
+    GIVEN("a started runtime with a logged-in creator and a local invitee")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("a v12 trusted_private_chat supplies additional_creators in creation_content and an invite list")
+        {
+            // The spec (createRoom, Changed in v1.16) requires the server to COMBINE the
+            // creation_content additional_creators with the invite array and DEDUPLICATE.
+            // Here @bob appears in both inputs, @carol only in creation_content.
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/createRoom", token,
+                 R"({"preset":"trusted_private_chat","room_version":"12","invite":["@bob:example.org"],"creation_content":{"additional_creators":["@carol:example.org","@bob:example.org"]}})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+
+            THEN("additional_creators is the deduplicated union of both inputs and omits the sender")
+            {
+                auto const create = content_for_state(store, created_room_id, "m.room.create");
+                auto const* additional = object_member(create, "additional_creators");
+                REQUIRE(additional != nullptr);
+                auto const* additional_array = std::get_if<merovingian::canonicaljson::Array>(&additional->storage());
+                REQUIRE(additional_array != nullptr);
+                auto seen = std::vector<std::string>{};
+                for (auto const& entry : *additional_array)
+                {
+                    auto const* id = std::get_if<std::string>(&entry.storage());
+                    REQUIRE(id != nullptr);
+                    // The creator (sender) must never be repeated in additional_creators.
+                    REQUIRE(*id != "@alice:example.org");
+                    seen.push_back(*id);
+                }
+                REQUIRE(seen.size() == 2U); // @bob deduplicated despite appearing twice
+                REQUIRE(std::ranges::find(seen, "@bob:example.org") != seen.end());
+                REQUIRE(std::ranges::find(seen, "@carol:example.org") != seen.end());
+            }
+
+            AND_THEN("no creator appears in m.room.power_levels users")
+            {
+                auto const power = content_for_state(store, created_room_id, "m.room.power_levels");
+                auto const* users = object_member_as_object(power, "users");
+                REQUIRE(users != nullptr);
+                REQUIRE(int_member(*users, "@alice:example.org") == nullptr);
+                REQUIRE(int_member(*users, "@bob:example.org") == nullptr);
+                REQUIRE(int_member(*users, "@carol:example.org") == nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("createRoom does not emit additional_creators for pre-v12 trusted_private_chat rooms",
+         "[homeserver][client-server][create-room][room-version][conformance]")
+{
+    GIVEN("a started runtime with a logged-in creator and a local invitee")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client creates a room_version 11 trusted_private_chat with an invite")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/createRoom", token,
+                          R"({"preset":"trusted_private_chat","room_version":"11","invite":["@bob:example.org"]})"});
+            REQUIRE(response.response.status == 200U);
+            auto const created_room_id = room_id(response.response.body);
+            auto const& store = runtime.homeserver.database.persistent_store;
+
+            THEN("the create event carries no additional_creators (a pre-v12 concept)")
+            {
+                auto const create = content_for_state(store, created_room_id, "m.room.create");
+                REQUIRE(object_member(create, "additional_creators") == nullptr);
+            }
+
+            AND_THEN("the invitee is granted the creator's power level (100) in m.room.power_levels")
+            {
+                auto const power = content_for_state(store, created_room_id, "m.room.power_levels");
+                auto const* users = object_member_as_object(power, "users");
+                REQUIRE(users != nullptr);
+                REQUIRE(int_member(*users, "@alice:example.org") != nullptr);
+                REQUIRE(*int_member(*users, "@alice:example.org") == 100);
+                REQUIRE(int_member(*users, "@bob:example.org") != nullptr);
+                REQUIRE(*int_member(*users, "@bob:example.org") == 100);
             }
         }
     }

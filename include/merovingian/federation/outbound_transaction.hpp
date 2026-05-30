@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace merovingian::federation
@@ -53,13 +54,22 @@ struct OutboundCall final
 };
 
 [[nodiscard]] auto make_outbound_transaction(std::string_view destination, std::string_view method,
-                                             std::string_view target, std::string_view origin, std::string_view body)
-    -> OutboundTransaction;
+                                             std::string_view target, std::string_view origin,
+                                             std::string_view body) -> OutboundTransaction;
+
+// Builds the canonical-JSON body of a federation /send transaction carrying a
+// single EDU and no PDUs. Pure function; performs no network I/O. The EDU is
+// keyed by "edu_type" (per the Matrix federation spec, NOT "type") so receivers
+// such as Synapse do not reject the entire transaction with a missing-field
+// error. `edu_content_json` is parsed and re-serialized canonically; invalid
+// content or a serialization failure yields std::nullopt.
+[[nodiscard]] auto build_edu_transaction_body(std::string_view edu_type,
+                                              std::string_view edu_content_json) -> std::optional<std::string>;
 
 [[nodiscard]] auto compute_backoff(std::uint32_t retry_count) noexcept -> std::uint64_t;
 
-[[nodiscard]] auto destination_should_retry(FederationDestination const& destination, std::uint64_t now_ts) noexcept
-    -> bool;
+[[nodiscard]] auto destination_should_retry(FederationDestination const& destination,
+                                            std::uint64_t now_ts) noexcept -> bool;
 
 // Builds the OutboundRequest the HTTP client should send for the given call.
 // Pure function; performs no DNS, TLS, or network I/O. The returned request
@@ -81,7 +91,7 @@ auto apply_outbound_result(FederationDestination& destination, OutboundTransacti
 // `destination_should_retry` rejects the attempt. Otherwise calls
 // `client.perform()` and applies the result through `apply_outbound_result`.
 [[nodiscard]] auto perform_outbound_transaction(http::OutboundClient& client, OutboundCall const& call,
-                                                FederationDestination& destination, std::uint64_t now_ts)
-    -> OutboundTransactionResult;
+                                                FederationDestination& destination,
+                                                std::uint64_t now_ts) -> OutboundTransactionResult;
 
 } // namespace merovingian::federation

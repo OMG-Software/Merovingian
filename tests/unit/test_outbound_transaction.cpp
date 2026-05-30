@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "federation_signing_test_support.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/http/outbound_client.hpp"
-
-#include "federation_signing_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -28,6 +27,44 @@ SCENARIO("Outbound transaction creation captures destination and method", "[fede
                 REQUIRE(txn.origin == "origin.example.org");
                 REQUIRE(txn.body == R"({"pdus":[]})");
                 REQUIRE(txn.retry_count == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("EDU transaction bodies key each EDU by edu_type so Synapse accepts them", "[federation][outbound][edu]")
+{
+    GIVEN("an EDU type and its content JSON")
+    {
+        WHEN("a typing EDU transaction body is built")
+        {
+            auto const body = merovingian::federation::build_edu_transaction_body(
+                "m.typing", R"({"room_id":"!r:home","typing":true})");
+
+            THEN("the body carries the EDU under the spec-required edu_type key, never a bare type key")
+            {
+                REQUIRE(body.has_value());
+                // The federation spec (and Synapse) read edu["edu_type"]; a bare "type" key makes
+                // the receiver raise KeyError and 500 the whole transaction.
+                REQUIRE(body->find(R"("edu_type":"m.typing")") != std::string::npos);
+                REQUIRE(body->find(R"("type":"m.typing")") == std::string::npos);
+            }
+
+            AND_THEN("the EDU content is preserved and no PDUs are included")
+            {
+                REQUIRE(body->find(R"("typing":true)") != std::string::npos);
+                REQUIRE(body->find(R"("room_id":"!r:home")") != std::string::npos);
+                REQUIRE(body->find(R"("pdus":[])") != std::string::npos);
+            }
+        }
+
+        WHEN("the EDU content JSON is malformed")
+        {
+            auto const body = merovingian::federation::build_edu_transaction_body("m.receipt", "{not json");
+
+            THEN("no transaction body is produced")
+            {
+                REQUIRE_FALSE(body.has_value());
             }
         }
     }

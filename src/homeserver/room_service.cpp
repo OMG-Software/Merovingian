@@ -1062,14 +1062,55 @@ namespace
     upsert_object_member(create_content, canonicaljson::make_member("creator", canonicaljson::Value{*user_id}));
     upsert_object_member(create_content,
                          canonicaljson::make_member("room_version", canonicaljson::Value{options.room_version}));
-    if (options.preset == "trusted_private_chat" && !options.trusted_invitees.empty())
-    {
-        upsert_object_member(create_content,
-                             canonicaljson::make_member("additional_creators", string_array(options.trusted_invitees)));
-    }
 
     auto const* version_policy = rooms::find_room_version_policy(options.room_version);
     auto const create_defines_room_id = version_policy != nullptr && version_policy->create_event_is_room_id;
+    auto const supports_additional_creators = version_policy != nullptr && version_policy->privilege_room_creators;
+
+    // MSC4289 / Matrix v1.16: only room versions that privilege creators (v12+) support
+    // additional_creators. For the trusted_private_chat preset the server SHOULD append the
+    // invited users to additional_creators, combined with any additional_creators the client
+    // supplied in creation_content and deduplicated between the two. The sender is already a
+    // creator, so it is never repeated. Pre-v12 rooms have no additional_creators concept —
+    // there the preset instead grants invitees power level 100 in m.room.power_levels.
+    if (supports_additional_creators && options.preset == "trusted_private_chat")
+    {
+        auto combined_creators = std::vector<std::string>{};
+        auto const append_unique = [&combined_creators, &user_id](std::string_view candidate) {
+            if (candidate.empty() || candidate == *user_id)
+            {
+                return;
+            }
+            if (std::ranges::find(combined_creators, candidate) == combined_creators.end())
+            {
+                combined_creators.emplace_back(candidate);
+            }
+        };
+        if (auto const* existing = object_member(create_content, "additional_creators"); existing != nullptr)
+        {
+            if (auto const* existing_array = std::get_if<canonicaljson::Array>(&existing->storage());
+                existing_array != nullptr)
+            {
+                for (auto const& entry : *existing_array)
+                {
+                    if (auto const* additional_id = std::get_if<std::string>(&entry.storage());
+                        additional_id != nullptr)
+                    {
+                        append_unique(*additional_id);
+                    }
+                }
+            }
+        }
+        for (auto const& invitee : options.trusted_invitees)
+        {
+            append_unique(invitee);
+        }
+        if (!combined_creators.empty())
+        {
+            upsert_object_member(create_content,
+                                 canonicaljson::make_member("additional_creators", string_array(combined_creators)));
+        }
+    }
     auto room_id = std::string{};
     auto precomposed_create = std::optional<ComposedEvent>{};
     if (create_defines_room_id)
@@ -1157,19 +1198,66 @@ namespace
     power_levels.push_back(canonicaljson::make_member("kick", canonicaljson::Value{std::int64_t{50}}));
     power_levels.push_back(canonicaljson::make_member("redact", canonicaljson::Value{std::int64_t{50}}));
     power_levels.push_back(canonicaljson::make_member("state_default", canonicaljson::Value{std::int64_t{50}}));
-    auto power_users = canonicaljson::Object{};
-    power_users.push_back(canonicaljson::make_member(*user_id, canonicaljson::Value{std::int64_t{100}}));
-    if (options.preset == "trusted_private_chat")
+    // MSC4291: in room version 12+ the creator and any additional_creators hold an implicit,
+    // infinite power level and MUST NOT appear in m.room.power_levels content.users. Synapse and
+    // the room v12 auth rules reject a power_levels event that names a creator ("Creator user ...
+    // must not appear in content.users"), which previously blocked remote users from joining.
+    auto const creator_has_implicit_power_level = room_version_number(options.room_version) >= 12;
+    auto creator_ids = std::vector<std::string>{*user_id};
+    if (auto const* additional_value = object_member(create_content, "additional_creators");
+        additional_value != nullptr)
     {
-        for (auto const& invitee : options.trusted_invitees)
+        if (auto const* additional_array = std::get_if<canonicaljson::Array>(&additional_value->storage());
+            additional_array != nullptr)
         {
-            upsert_object_member(power_users,
-                                 canonicaljson::make_member(invitee, canonicaljson::Value{std::int64_t{100}}));
+            for (auto const& entry : *additional_array)
+            {
+                if (auto const* additional_id = std::get_if<std::string>(&entry.storage()); additional_id != nullptr)
+                {
+                    creator_ids.push_back(*additional_id);
+                }
+            }
+        }
+    }
+
+    auto power_users = canonicaljson::Object{};
+    if (!creator_has_implicit_power_level)
+    {
+        power_users.push_back(canonicaljson::make_member(*user_id, canonicaljson::Value{std::int64_t{100}}));
+        if (options.preset == "trusted_private_chat")
+        {
+            for (auto const& invitee : options.trusted_invitees)
+            {
+                upsert_object_member(power_users,
+                                     canonicaljson::make_member(invitee, canonicaljson::Value{std::int64_t{100}}));
+            }
         }
     }
     power_levels.push_back(canonicaljson::make_member("users", canonicaljson::Value{std::move(power_users)}));
     power_levels.push_back(canonicaljson::make_member("users_default", canonicaljson::Value{std::int64_t{0}}));
     merge_object_into(power_levels, options.power_level_content_override);
+    if (creator_has_implicit_power_level)
+    {
+        // A client may still send creators in power_level_content_override; strip them so the
+        // emitted event is always valid for v12 regardless of the override's contents.
+        if (auto const* users_value = object_member(power_levels, "users"); users_value != nullptr)
+        {
+            if (auto const* users_object = std::get_if<canonicaljson::Object>(&users_value->storage());
+                users_object != nullptr)
+            {
+                auto filtered_users = canonicaljson::Object{};
+                for (auto const& member : *users_object)
+                {
+                    if (std::ranges::find(creator_ids, member.key) == creator_ids.end())
+                    {
+                        filtered_users.push_back(canonicaljson::make_member(member.key, *member.value));
+                    }
+                }
+                upsert_object_member(
+                    power_levels, canonicaljson::make_member("users", canonicaljson::Value{std::move(filtered_users)}));
+            }
+        }
+    }
     if (options.preset == "trusted_private_chat" && room_version_number(options.room_version) >= 12)
     {
         auto state_default = std::int64_t{50};
@@ -1450,12 +1538,11 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         auto const candidates = join_candidate_servers(via_servers, room_id, our_server);
         if (candidates.empty())
         {
-            log_diagnostic("room.join.rejected",
-                           {
-                               {"actor",   *user_id,                                    false},
-                               {"room_id", std::string{room_id},                        false},
-                               {"status",  "404",                                       false},
-                               {"reason",  "no resident server (via required for v12)", false}
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                                    false},
+                                                     {"room_id", std::string{room_id},                        false},
+                                                     {"status",  "404",                                       false},
+                                                     {"reason",  "no resident server (via required for v12)", false}
             });
             return make_operation_result(false, {}, "unknown room: no resident server to join via", 404U);
         }
@@ -1479,8 +1566,9 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         auto make_ok = false;
         for (auto const& candidate : candidates)
         {
-            auto make_join_tx = federation::make_outbound_make_membership(
-                federation::FederationEndpoint::make_join, candidate, our_server, room_id, *user_id, supported_versions);
+            auto make_join_tx =
+                federation::make_outbound_make_membership(federation::FederationEndpoint::make_join, candidate,
+                                                          our_server, room_id, *user_id, supported_versions);
             log_diagnostic("room.join.remote.make_join", {
                                                              {"actor",         *user_id,             false},
                                                              {"room_id",       std::string{room_id}, false},
@@ -1500,12 +1588,11 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         }
         if (!make_ok)
         {
-            log_diagnostic("room.join.rejected",
-                           {
-                               {"actor",   *user_id,                              false},
-                               {"room_id", std::string{room_id},                  false},
-                               {"status",  "502",                                 false},
-                               {"reason",  "make_join failed via all candidates", false}
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                              false},
+                                                     {"room_id", std::string{room_id},                  false},
+                                                     {"status",  "502",                                 false},
+                                                     {"reason",  "make_join failed via all candidates", false}
             });
             return make_operation_result(false, {}, "make_join failed: " + make_body, 502U);
         }
