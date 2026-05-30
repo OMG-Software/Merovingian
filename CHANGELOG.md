@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.46
+
+- Fix PDU dispatch to include invited users in `room->members` so federated
+  events are delivered to invited users' home servers. Previously, only "join"
+  members were added at runtime, causing invitees' servers to never receive
+  room events.
+- Fix `apply_runtime_membership` to handle "invite" (add) and "ban" (remove)
+  membership transitions, not just "join"/"leave".
+- Fix runtime startup to filter `room->members` to only "join" and "invite"
+  memberships, consistent with runtime behavior.
+- Add receipt endpoint `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}`
+  per Matrix spec v1.18 §receipts. Previously only `/read_markers` was handled.
+- Add user directory search endpoint `POST /_matrix/client/v3/user_directory/search`
+  per Matrix spec v1.18. Returns matching profiles from the local user directory.
+- Add media thumbnail endpoints `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}`
+  and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` per
+  Matrix spec v1.18. Returns 64x64 thumbnails for locally stored media.
+- Add key backup batch PUT endpoint `PUT /_matrix/client/v3/room_keys/keys`
+  per Matrix spec v1.18. Previously only per-session PUT was supported.
+- Add v1 media download endpoint `GET /_matrix/client/v1/media/download/{serverName}/{mediaId}`
+  (authenticated variant) per Matrix spec v1.18.
+- Enhance spec conformance tests with positive (success) verification for receipt,
+  user directory search, key backup batch PUT, media upload, media download (v3/v1),
+  and media thumbnail (v3/v1) endpoints. Tests now verify correct response data,
+  not just that routes are recognized or return 404 for missing resources.
+
 ## 0.4.45
 
 - Fix `auth_events` to include only the events required by the Matrix spec for

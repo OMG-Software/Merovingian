@@ -476,6 +476,21 @@ namespace
         return true;
     }
 
+    [[nodiscard]] auto to_lower(std::string_view input) -> std::string
+    {
+        auto result = std::string{};
+        result.reserve(input.size());
+        for (auto ch : input)
+        {
+            if (ch >= 'A' && ch <= 'Z')
+            {
+                ch = static_cast<char>(ch - 'A' + 'a');
+            }
+            result.push_back(ch);
+        }
+        return result;
+    }
+
     [[nodiscard]] auto bearer_access_token(std::vector<http::Header> const& headers) -> std::string
     {
         auto constexpr bearer_prefix = std::string_view{"Bearer "};
@@ -1529,6 +1544,8 @@ namespace
         case auth::KeyApiEndpoint::put_room_key_backup:
         case auth::KeyApiEndpoint::delete_room_key_backup:
             return "{}";
+        case auth::KeyApiEndpoint::put_room_key_backup_batch:
+            return json_serialize(json_obj({json_member("version", json_str("1"))}));
         }
         return "{}";
     }
@@ -2506,6 +2523,51 @@ namespace
                                                               std::string{suffix.substr(0U, separator)},
                                                               std::string{suffix.substr(separator + 1U)}, req.body});
         }
+        case auth::KeyApiEndpoint::put_room_key_backup_batch: {
+            auto const body = canonicaljson::parse_lossless(req.body);
+            auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
+            if (body_obj == nullptr)
+            {
+                return false;
+            }
+            auto const* rooms = object_member_as_object(*body_obj, "rooms");
+            if (rooms == nullptr)
+            {
+                return false;
+            }
+            for (auto const& room : *rooms)
+            {
+                if (room.value == nullptr)
+                {
+                    continue;
+                }
+                auto const* room_obj = std::get_if<canonicaljson::Object>(&room.value->storage());
+                if (room_obj == nullptr)
+                {
+                    continue;
+                }
+                auto const* sessions = object_member_as_object(*room_obj, "sessions");
+                if (sessions == nullptr)
+                {
+                    continue;
+                }
+                for (auto const& session : *sessions)
+                {
+                    if (session.value == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const session_json = canonicaljson::serialize_canonical(*session.value);
+                    if (session_json.error != canonicaljson::CanonicalJsonError::none)
+                    {
+                        continue;
+                    }
+                    std::ignore = database::store_key_backup_session(
+                        store, {std::string{user}, "1", room.key, session.key, session_json.output});
+                }
+            }
+            return true;
+        }
         case auth::KeyApiEndpoint::delete_key_backup_version: {
             auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
             auto const version_str = route_suffix(req.target, prefix);
@@ -2566,6 +2628,7 @@ namespace
         case auth::KeyApiEndpoint::update_key_backup_version:
         case auth::KeyApiEndpoint::delete_key_backup_version:
         case auth::KeyApiEndpoint::put_room_key_backup:
+        case auth::KeyApiEndpoint::put_room_key_backup_batch:
         case auth::KeyApiEndpoint::delete_room_key_backup:
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req))
             {
@@ -3003,6 +3066,30 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
 
     auto constexpr media_download_prefix = std::string_view{"/_matrix/media/v3/download/"};
     if (req.method == "GET" && starts_with(req.target, media_download_prefix))
+    {
+        auto const r = call_local(req);
+        return r.status == 200U ? dispatch_resp(200U, r.body)
+                                : dispatch_err(r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
+    }
+
+    // GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}
+    // GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}
+    // Media thumbnail for locally stored content. Both the unauthenticated v3
+    // endpoint and the authenticated v1 endpoint delegate to the local router.
+    auto constexpr media_v3_thumbnail_prefix = std::string_view{"/_matrix/media/v3/thumbnail/"};
+    auto constexpr media_v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
+    if (req.method == "GET" && (starts_with(req.target, media_v3_thumbnail_prefix) ||
+                                starts_with(req.target, media_v1_thumbnail_prefix)))
+    {
+        auto const r = call_local(req);
+        return r.status == 200U ? dispatch_resp(200U, r.body)
+                                : dispatch_err(r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
+    }
+
+    // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
+    // Authenticated media download. Delegates to the local router.
+    auto constexpr media_v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
+    if (req.method == "GET" && starts_with(req.target, media_v1_download_prefix))
     {
         auto const r = call_local(req);
         return r.status == 200U ? dispatch_resp(200U, r.body)
@@ -3516,6 +3603,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto constexpr state_s = std::string_view{"/state"};
         auto constexpr leave_s = std::string_view{"/leave"};
         auto constexpr read_markers_s = std::string_view{"/read_markers"};
+        auto constexpr receipt_s = std::string_view{"/receipt/"};
         auto const suffix = std::string_view{req.target}.substr(room_prefix.size());
         if (req.method == "PUT")
         {
@@ -4027,6 +4115,127 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             }
             return dispatch_resp(200U, json_serialize(json_obj({})));
         }
+
+        // POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}
+        // Sets a receipt in a room per Matrix spec §receipts.
+        if (req.method == "POST" && suffix.size() > receipt_s.size())
+        {
+            auto const receipt_pos = suffix.find(receipt_s);
+            if (receipt_pos != std::string_view::npos)
+            {
+                auto const room_id =
+                    core::percent_decode_path_component(suffix.substr(0U, receipt_pos));
+                auto const after_receipt = suffix.substr(receipt_pos + receipt_s.size());
+                auto const slash_pos = after_receipt.find('/');
+                if (slash_pos != std::string_view::npos && slash_pos > 0U)
+                {
+                    auto const receipt_type = std::string{after_receipt.substr(0U, slash_pos)};
+                    auto const event_id = core::percent_decode_path_component(
+                        after_receipt.substr(slash_pos + 1U));
+                    if (!event_id.empty())
+                    {
+                        log_diagnostic("room.receipt.accepted", {
+                                                                     {"actor",        *user,          false},
+                                                                     {"room_id",      room_id,        false},
+                                                                     {"receipt_type", receipt_type,   false},
+                                                                     {"event_id",     event_id,       false}
+                        });
+                        auto const now_ts =
+                            static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                          std::chrono::system_clock::now().time_since_epoch())
+                                                          .count());
+                        auto const room_it =
+                            std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](auto const& r) {
+                                return r.room_id == room_id;
+                            });
+                        if (room_it != rt.homeserver.database.rooms.end())
+                        {
+                            auto receipt_content = canonicaljson::Object{};
+                            auto user_receipts = canonicaljson::Object{};
+                            user_receipts.push_back(canonicaljson::make_member(
+                                "event_ids",
+                                canonicaljson::Value{canonicaljson::Array{canonicaljson::Value{event_id}}}));
+                            user_receipts.push_back(
+                                canonicaljson::make_member("ts", canonicaljson::Value{now_ts}));
+                            auto read_type = canonicaljson::Object{};
+                            read_type.push_back(
+                                canonicaljson::make_member(*user, canonicaljson::Value{std::move(user_receipts)}));
+                            receipt_content.push_back(
+                                canonicaljson::make_member(room_id, canonicaljson::Value{std::move(read_type)}));
+                            auto const edu_content_result =
+                                canonicaljson::serialize_canonical(canonicaljson::Value{std::move(receipt_content)});
+                            if (edu_content_result.error == canonicaljson::CanonicalJsonError::none)
+                            {
+                                auto const enqueued = dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt",
+                                                                           edu_content_result.output);
+                                if (enqueued > 0U)
+                                {
+                                    log_diagnostic("room.receipt.dispatched",
+                                                   {
+                                                       {"actor",        *user,                    false},
+                                                       {"room_id",      room_id,                  false},
+                                                       {"destinations", std::to_string(enqueued), false}
+                                    });
+                                }
+                            }
+                        }
+                        auto existing_receipt =
+                            std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
+                                return r.room_id == room_id && r.user_id == *user;
+                            });
+                        if (existing_receipt != rt.homeserver.receipts.end())
+                        {
+                            existing_receipt->receipt_type = receipt_type;
+                            existing_receipt->event_id = std::string{event_id};
+                            existing_receipt->ts = static_cast<std::uint64_t>(now_ts);
+                        }
+                        else
+                        {
+                            rt.homeserver.receipts.push_back(
+                                {std::string{room_id}, receipt_type, std::string{*user}, std::string{event_id},
+                                 static_cast<std::uint64_t>(now_ts)});
+                        }
+                        rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+                        if (rt.sync_notifier != nullptr)
+                        {
+                            rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                                      rt.homeserver.database.persistent_store.next_sync_stream_id);
+                        }
+                        return dispatch_resp(200U, json_serialize(json_obj({})));
+                    }
+                }
+            }
+        }
+    }
+
+    // POST /_matrix/client/v3/user_directory/search
+    // Searches for users by display name or user ID per Matrix spec §user-directory.
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/user_directory/search")
+    {
+        auto const body = canonicaljson::parse_lossless(req.body);
+        auto const* body_obj = std::get_if<canonicaljson::Object>(&body.value.storage());
+        auto const* search_term = (body_obj != nullptr) ? string_member(*body_obj, "search_term") : nullptr;
+        auto results = canonicaljson::Array{};
+        if (search_term != nullptr && !search_term->empty())
+        {
+            auto const term_lower = to_lower(*search_term);
+            for (auto const& profile : rt.homeserver.database.persistent_store.profiles)
+            {
+                if (to_lower(profile.displayname).find(term_lower) != std::string::npos ||
+                    to_lower(profile.user_id).find(term_lower) != std::string::npos)
+                {
+                    auto user_obj = canonicaljson::Object{};
+                    user_obj.push_back(json_member("user_id", json_str(profile.user_id)));
+                    user_obj.push_back(json_member("display_name", json_str(profile.displayname)));
+                    user_obj.push_back(json_member("avatar_url", json_str(profile.avatar_url)));
+                    results.push_back(canonicaljson::Value{std::move(user_obj)});
+                }
+            }
+        }
+        return dispatch_resp(200U, json_serialize(json_obj({
+                                   json_member("results", json_arr(std::move(results))),
+                                   json_member("limited", json_bool(false)),
+                               })));
     }
 
     // PUT /_matrix/client/v3/presence/{userId}/status

@@ -182,5 +182,7 @@ struct SessionRefreshResult final
 [[nodiscard]] auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string;
 [[nodiscard]] auto admin_metrics_summary(HomeserverRuntime const& runtime) -> std::string;
 [[nodiscard]] auto admin_audit_summary(HomeserverRuntime const& runtime) -> std::string;
+auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
+                              std::string_view membership) -> void;
 
 } // namespace merovingian::homeserver

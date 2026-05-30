@@ -145,6 +145,10 @@ auto hydrate_local_database(LocalDatabase& database) -> void
 
     for (auto const& membership : database.persistent_store.memberships)
     {
+        if (membership.membership != "join" && membership.membership != "invite")
+        {
+            continue;
+        }
         auto room = std::ranges::find_if(database.rooms, [&membership](LocalRoom const& candidate) {
             return candidate.room_id == membership.room_id;
         });

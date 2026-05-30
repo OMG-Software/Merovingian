@@ -131,6 +131,40 @@ namespace
     return make_operation_result(true, result.content_type + "|" + result.bytes, {}, result.status);
 }
 
+[[nodiscard]] auto download_local_media_thumbnail(HomeserverRuntime& runtime, std::string_view server_name,
+                                                  std::string_view media_id) -> OperationResult
+{
+    if (server_name != runtime.config.server().server_name)
+    {
+        log_diagnostic("thumbnail.remote_rejected",
+                       {{"origin_server", std::string{server_name}, false},
+                        {"media_id",      std::string{media_id},    false},
+                        {"reason",        "remote media fetch disabled", false}});
+        return remote_media_fetch_disabled(runtime, server_name, media_id);
+    }
+
+    auto const* thumbnail = media::find_local_media_thumbnail(runtime.media_repository, media_id);
+    if (thumbnail == nullptr)
+    {
+        log_diagnostic("thumbnail.not_found",
+                       {{"media_id", std::string{media_id}, false},
+                        {"reason",   "thumbnail not found", false}});
+        return make_operation_result(false, {}, "thumbnail not found", 404U);
+    }
+    auto const* blob = media::find_local_media_blob(runtime.media_repository, thumbnail->storage_id);
+    if (blob == nullptr)
+    {
+        log_diagnostic("thumbnail.blob_missing",
+                       {{"media_id",   std::string{media_id},    false},
+                        {"storage_id", thumbnail->storage_id, false}});
+        return make_operation_result(false, {}, "thumbnail data not found", 404U);
+    }
+    log_diagnostic("thumbnail.accepted",
+                   {{"media_id",     std::string{media_id},    false},
+                    {"content_type", thumbnail->content_type,  false}});
+    return make_operation_result(true, thumbnail->content_type + "|" + blob->bytes, {}, 200U);
+}
+
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                                 std::string_view media_id, std::string_view reason) -> OperationResult
 {
