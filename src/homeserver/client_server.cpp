@@ -32,8 +32,6 @@
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
-#include <sodium.h>
-
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -52,6 +50,8 @@
 #include <utility>
 #include <variant>
 #include <vector>
+
+#include <sodium.h>
 
 namespace merovingian::homeserver
 {
@@ -89,8 +89,8 @@ namespace
         };
     }
 
-    [[nodiscard]] auto dispatch_err(std::uint16_t status, std::string_view errcode,
-                                    std::string_view error) -> DispatchResult
+    [[nodiscard]] auto dispatch_err(std::uint16_t status, std::string_view errcode, std::string_view error)
+        -> DispatchResult
     {
         return DispatchResult{
             DispatchResult::Status::complete, {status, matrix_error(errcode, error)},
@@ -100,8 +100,8 @@ namespace
 
     // Collect the unique remote server names that have members in a room,
     // excluding the local server. Used to federate outbound EDUs and PDUs.
-    [[nodiscard]] auto remote_servers_in_room(HomeserverRuntime const& runtime,
-                                              LocalRoom const& room) -> std::vector<std::string>
+    [[nodiscard]] auto remote_servers_in_room(HomeserverRuntime const& runtime, LocalRoom const& room)
+        -> std::vector<std::string>
     {
         auto const& server_name = runtime.config.server().server_name;
         auto servers = std::vector<std::string>{};
@@ -338,8 +338,14 @@ namespace
         std::string event_type{};
     };
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> canonicaljson::Value const*
+    struct RoomKeyBackupPathParts final
+    {
+        std::string room_id{};
+        std::optional<std::string> session_id{};
+    };
+
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -351,8 +357,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -372,8 +378,8 @@ namespace
         return std::get_if<bool>(&value->storage());
     }
 
-    [[nodiscard]] auto string_array_member(canonicaljson::Object const& object,
-                                           std::string_view key) -> std::vector<std::string>
+    [[nodiscard]] auto string_array_member(canonicaljson::Object const& object, std::string_view key)
+        -> std::vector<std::string>
     {
         auto const* value = object_member(object, key);
         auto const* array = value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
@@ -398,8 +404,8 @@ namespace
         return colon == std::string_view::npos ? std::string_view{} : user_id.substr(colon + 1U);
     }
 
-    [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store,
-                                         std::string_view event_id) -> std::optional<std::string>
+    [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store, std::string_view event_id)
+        -> std::optional<std::string>
     {
         auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
             return current.event_id == event_id;
@@ -509,8 +515,8 @@ namespace
         return {};
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
-                                               std::string_view key) noexcept -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -545,8 +551,8 @@ namespace
         return serialized.output;
     }
 
-    [[nodiscard]] auto serialized_object_member(canonicaljson::Object const& object,
-                                                std::string_view key) -> std::optional<std::string>
+    [[nodiscard]] auto serialized_object_member(canonicaljson::Object const& object, std::string_view key)
+        -> std::optional<std::string>
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -556,8 +562,8 @@ namespace
         return serialized_value(*value);
     }
 
-    [[nodiscard]] auto object_member_object(canonicaljson::Object const& object,
-                                            std::string_view key) noexcept -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         if (value == nullptr)
@@ -644,8 +650,8 @@ namespace
         return "@" + std::string{user} + ":" + std::string{server_name};
     }
 
-    [[nodiscard]] auto parse_login_body(std::string_view body,
-                                        std::string_view server_name) -> std::optional<MatrixLoginBody>
+    [[nodiscard]] auto parse_login_body(std::string_view body, std::string_view server_name)
+        -> std::optional<MatrixLoginBody>
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -867,8 +873,8 @@ namespace
         return true;
     }
 
-    [[nodiscard]] auto find_device(ClientServerRuntime& rt, std::string_view user,
-                                   std::string_view device) -> ClientDevice*
+    [[nodiscard]] auto find_device(ClientServerRuntime& rt, std::string_view user, std::string_view device)
+        -> ClientDevice*
     {
         auto const it = std::ranges::find_if(rt.devices, [user, device](ClientDevice const& d) {
             return d.user_id == user && d.device_id == device;
@@ -945,8 +951,8 @@ namespace
         return event_json_for_id(store, std::string{it->second});
     }
 
-    [[nodiscard]] auto event_content_string(std::string_view event_json,
-                                            std::string_view key) -> std::optional<std::string>
+    [[nodiscard]] auto event_content_string(std::string_view event_json, std::string_view key)
+        -> std::optional<std::string>
     {
         auto parsed = canonicaljson::parse_lossless(event_json);
         if (parsed.error != canonicaljson::ParseError::none)
@@ -971,8 +977,8 @@ namespace
 
     [[nodiscard]] auto room_state_string(database::PersistentStore const& store, StateIndex const& index,
                                          std::string_view room_id, std::string_view event_type,
-                                         std::string_view content_key,
-                                         std::string_view state_key = {}) -> std::optional<std::string>
+                                         std::string_view content_key, std::string_view state_key = {})
+        -> std::optional<std::string>
     {
         auto const event_json = state_event_json(store, index, room_id, event_type, state_key);
         if (!event_json.has_value())
@@ -1114,9 +1120,10 @@ namespace
         return events;
     }
 
-    [[nodiscard]] auto build_device_list_arrays(
-        database::PersistentStore const& store, std::string_view user, std::uint64_t since_sync_stream_id,
-        std::uint64_t& max_observed_stream_id) -> std::pair<canonicaljson::Array, canonicaljson::Array>
+    [[nodiscard]] auto build_device_list_arrays(database::PersistentStore const& store, std::string_view user,
+                                                std::uint64_t since_sync_stream_id,
+                                                std::uint64_t& max_observed_stream_id)
+        -> std::pair<canonicaljson::Array, canonicaljson::Array>
     {
         auto changed = canonicaljson::Array{};
         auto left = canonicaljson::Array{};
@@ -1144,8 +1151,8 @@ namespace
 
     [[nodiscard]] auto build_presence_events(database::PersistentStore const& store,
                                              sync::EventTypeFilter const& filter, std::string_view user,
-                                             std::uint64_t since_sync_stream_id,
-                                             std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
+                                             std::uint64_t since_sync_stream_id, std::uint64_t& max_observed_stream_id)
+        -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
         auto emitted = std::size_t{0U};
@@ -2292,6 +2299,32 @@ namespace
         return {};
     }
 
+    [[nodiscard]] auto room_key_backup_path_parts(std::string_view target) -> std::optional<RoomKeyBackupPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
+        auto const suffix = route_suffix(target, prefix);
+        auto const clean = suffix.substr(0U, suffix.find('?'));
+        if (clean.empty())
+        {
+            return std::nullopt;
+        }
+
+        auto const separator = clean.find('/');
+        if (separator == std::string_view::npos)
+        {
+            return RoomKeyBackupPathParts{core::percent_decode_path_component(clean), std::nullopt};
+        }
+        if (separator == 0U || separator + 1U >= clean.size())
+        {
+            return std::nullopt;
+        }
+
+        return RoomKeyBackupPathParts{
+            core::percent_decode_path_component(clean.substr(0U, separator)),
+            core::percent_decode_path_component(clean.substr(separator + 1U)),
+        };
+    }
+
     [[nodiscard]] auto parse_u64(std::string_view value) noexcept -> std::optional<std::uint64_t>
     {
         if (value.empty())
@@ -2309,8 +2342,8 @@ namespace
         return parsed;
     }
 
-    [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id,
-                                     std::string_view target) -> std::string
+    [[nodiscard]] auto messages_json(ClientServerRuntime const& rt, std::string_view room_id, std::string_view target)
+        -> std::string
     {
         auto const dir = messages_query_value(target, "dir");
         auto const backwards = dir != "f"; // both default and "b" walk backward
@@ -2518,18 +2551,13 @@ namespace
         case auth::KeyApiEndpoint::update_key_backup_version:
             return database::store_key_backup_version(store, {std::string{user}, "1", req.body});
         case auth::KeyApiEndpoint::put_room_key_backup: {
-            auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
-            auto const suffix = route_suffix(req.target, prefix);
-            // Strip query string so ?version=N is not included in the stored session_id.
-            auto const clean = suffix.substr(0U, suffix.find('?'));
-            auto const separator = clean.find('/');
-            if (separator == std::string_view::npos || separator == 0U || separator + 1U >= clean.size())
+            auto const path = room_key_backup_path_parts(req.target);
+            if (!path.has_value() || !path->session_id.has_value())
             {
                 return false;
             }
-            return database::store_key_backup_session(store, {std::string{user}, "1",
-                                                              std::string{clean.substr(0U, separator)},
-                                                              std::string{clean.substr(separator + 1U)}, req.body});
+            return database::store_key_backup_session(
+                store, {std::string{user}, "1", path->room_id, *path->session_id, req.body});
         }
         case auth::KeyApiEndpoint::put_room_key_backup_batch: {
             auto const body = canonicaljson::parse_lossless(req.body);
@@ -2680,6 +2708,33 @@ namespace
             return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj(std::move(rooms)))})));
         }
         case auth::KeyApiEndpoint::get_room_key_backup: {
+            if (auto const path = room_key_backup_path_parts(req.target); path.has_value())
+            {
+                if (!path->session_id.has_value())
+                {
+                    auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+                    auto sessions_obj = canonicaljson::Object{};
+                    for (auto const& s : all_sessions)
+                    {
+                        if (s.user_id == user && s.room_id == path->room_id)
+                        {
+                            sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
+                        }
+                    }
+                    return resp(200U,
+                                json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
+                }
+
+                auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+                auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
+                    return s.user_id == user && s.room_id == path->room_id && s.session_id == *path->session_id;
+                });
+                if (it == sessions.end())
+                {
+                    return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
+                }
+                return resp(200U, it->json);
+            }
             auto constexpr kbprefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
             auto const suffix = route_suffix(req.target, kbprefix);
             auto const clean = suffix.substr(0U, suffix.find('?'));
@@ -2797,8 +2852,8 @@ namespace
         return json_serialize(json_obj({json_member("reports", json_arr(std::move(reports)))}));
     }
 
-    [[nodiscard]] auto handle_safety_report(ClientServerRuntime& rt, std::string_view user,
-                                            LocalHttpRequest const& req) -> LocalHttpResponse
+    [[nodiscard]] auto handle_safety_report(ClientServerRuntime& rt, std::string_view user, LocalHttpRequest const& req)
+        -> LocalHttpResponse
     {
         auto const path = report_path_parts(req.target);
         auto const body = parse_safety_report_body(req.body);
@@ -3190,8 +3245,8 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // endpoint and the authenticated v1 endpoint delegate to the local router.
     auto constexpr media_v3_thumbnail_prefix = std::string_view{"/_matrix/media/v3/thumbnail/"};
     auto constexpr media_v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
-    if (req.method == "GET" && (starts_with(req.target, media_v3_thumbnail_prefix) ||
-                                starts_with(req.target, media_v1_thumbnail_prefix)))
+    if (req.method == "GET" &&
+        (starts_with(req.target, media_v3_thumbnail_prefix) || starts_with(req.target, media_v1_thumbnail_prefix)))
     {
         auto const r = call_local(req);
         return r.status == 200U ? dispatch_resp(200U, r.body)
@@ -3264,8 +3319,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         });
         // Spec §5.7.2: M_MISSING_TOKEN when no token is supplied;
         // M_UNKNOWN_TOKEN when a token is present but not recognised.
-        return dispatch_err(401U, req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN",
-                            "unauthenticated");
+        return dispatch_err(401U, req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN", "unauthenticated");
     }
     log_diagnostic("request.auth.accepted", {
                                                 {"method", req.method,                                       false},
@@ -4227,22 +4281,20 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             auto const receipt_pos = suffix.find(receipt_s);
             if (receipt_pos != std::string_view::npos)
             {
-                auto const room_id =
-                    core::percent_decode_path_component(suffix.substr(0U, receipt_pos));
+                auto const room_id = core::percent_decode_path_component(suffix.substr(0U, receipt_pos));
                 auto const after_receipt = suffix.substr(receipt_pos + receipt_s.size());
                 auto const slash_pos = after_receipt.find('/');
                 if (slash_pos != std::string_view::npos && slash_pos > 0U)
                 {
                     auto const receipt_type = std::string{after_receipt.substr(0U, slash_pos)};
-                    auto const event_id = core::percent_decode_path_component(
-                        after_receipt.substr(slash_pos + 1U));
+                    auto const event_id = core::percent_decode_path_component(after_receipt.substr(slash_pos + 1U));
                     if (!event_id.empty())
                     {
                         log_diagnostic("room.receipt.accepted", {
-                                                                     {"actor",        *user,          false},
-                                                                     {"room_id",      room_id,        false},
-                                                                     {"receipt_type", receipt_type,   false},
-                                                                     {"event_id",     event_id,       false}
+                                                                    {"actor",        *user,        false},
+                                                                    {"room_id",      room_id,      false},
+                                                                    {"receipt_type", receipt_type, false},
+                                                                    {"event_id",     event_id,     false}
                         });
                         auto const now_ts =
                             static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -4254,12 +4306,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                             });
                         if (room_it != rt.homeserver.database.rooms.end())
                         {
-                            auto const edu_content_opt = federation::build_receipt_edu_content(
-                                room_id, receipt_type, *user, event_id, now_ts);
+                            auto const edu_content_opt =
+                                federation::build_receipt_edu_content(room_id, receipt_type, *user, event_id, now_ts);
                             if (edu_content_opt.has_value())
                             {
-                                auto const enqueued = dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt",
-                                                                            *edu_content_opt);
+                                auto const enqueued =
+                                    dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt", *edu_content_opt);
                                 if (enqueued > 0U)
                                 {
                                     log_diagnostic("room.receipt.dispatched",
@@ -4271,10 +4323,9 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                 }
                             }
                         }
-                        auto existing_receipt =
-                            std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
-                                return r.room_id == room_id && r.user_id == *user;
-                            });
+                        auto existing_receipt = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
+                            return r.room_id == room_id && r.user_id == *user;
+                        });
                         if (existing_receipt != rt.homeserver.receipts.end())
                         {
                             existing_receipt->receipt_type = receipt_type;
@@ -4283,9 +4334,9 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                         }
                         else
                         {
-                            rt.homeserver.receipts.push_back(
-                                {std::string{room_id}, receipt_type, std::string{*user}, std::string{event_id},
-                                 static_cast<std::uint64_t>(now_ts)});
+                            rt.homeserver.receipts.push_back({std::string{room_id}, receipt_type, std::string{*user},
+                                                              std::string{event_id},
+                                                              static_cast<std::uint64_t>(now_ts)});
                         }
                         rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
                         if (rt.sync_notifier != nullptr)
@@ -4325,9 +4376,9 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
             }
         }
         return dispatch_resp(200U, json_serialize(json_obj({
-                                   json_member("results", json_arr(std::move(results))),
-                                   json_member("limited", json_bool(false)),
-                               })));
+                                       json_member("results", json_arr(std::move(results))),
+                                       json_member("limited", json_bool(false)),
+                                   })));
     }
 
     // PUT /_matrix/client/v3/presence/{userId}/status
