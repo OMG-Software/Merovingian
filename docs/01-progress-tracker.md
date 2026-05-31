@@ -651,6 +651,18 @@ a non-production environment.
   execution through `python build.py wsl`. Tooling tests pin both the Python
   forwarding and the shell-wrapper option handling, and the developer docs now
   show the supported WSL sanitizer invocations.
+- Fix (0.4.53): Room-key backup session lookup now percent-decodes Matrix path
+  components before matching stored backup rows. Real Megolm session IDs can
+  contain `/`, so clients call
+  `GET /room_keys/keys/{roomId}/{sessionId}?version=1` with `%2F` in the
+  `sessionId` path component after uploading the backup via batch `PUT
+  /room_keys/keys?version=1`. Merovingian previously looked up the still-encoded
+  path fragment against the decoded session ID stored from the JSON body,
+  returning 404 `M_NOT_FOUND` immediately after a successful upload. The
+  room-key backup path parser now decodes `room_id` and `session_id`
+  consistently for direct PUTs and GETs, and a v1.18 conformance regression
+  series now pins the batch-upload -> encoded room-level GET, batch-upload ->
+  encoded session-level GET, and direct encoded PUT -> GET round-trips.
 - Fix (0.4.51): `m.receipt` federation EDU content format — the receipt content
   was built as `{roomId:{userId:{event_ids,ts}}}` but the spec requires
   `{roomId:{receiptType:{userId:{event_ids,data:{ts}}}}}`. The missing
@@ -1037,9 +1049,9 @@ adapters.
 | Media | `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}`, `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` | `runtime-wired` | Thumbnail download returns 64x64 PNG thumbnails from the media repository for locally stored media. Returns 404 for missing thumbnails. Needs real image resampling, remote thumbnail fetch, and v1.18 conformance fixtures. |
 | Receipts | `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` | `runtime-wired` | Receipt endpoint parses `{receiptType}/{eventId}` from the path, federates `m.receipt` EDUs to remote servers in the room, updates local receipt state for `/sync`, and publishes sync notifications. Needs v1.18 conformance fixtures. |
 | User directory | `POST /_matrix/client/v3/user_directory/search` | `runtime-wired` | User directory search returns matching profiles with case-insensitive substring match on displayname and user_id. Returns empty results for empty search terms. Needs v1.18 conformance fixtures. |
-| E2EE keys | `PUT /_matrix/client/v3/room_keys/keys` | `runtime-wired` | Key backup batch PUT iterates `rooms` and `sessions` in the request body, stores each session individually, and returns `{"version":"1"}`. Matches before the per-session `PUT /room_keys/keys/{roomId}/{sessionId}` route. Needs v1.18 conformance fixtures. |
+| E2EE keys | `PUT /_matrix/client/v3/room_keys/keys` | `runtime-wired` | Key backup batch PUT iterates `rooms` and `sessions` in the request body, stores each session individually, and returns `{"version":"1"}`. Matches before the per-session `PUT /room_keys/keys/{roomId}/{sessionId}` route. Room-key backup path parsing now percent-decodes `room_id` and `session_id` so an encoded `GET /room_keys/keys/{roomId}/{sessionId}?version=1` can retrieve a session uploaded via batch PUT even when the Megolm session ID contains `/`. Needs v1.18 conformance fixtures. |
 | Reports | `POST /_matrix/client/v3/rooms/{roomId}/report/{eventId}` | `spec-covered` | Authenticated event reports are runtime-wired through the client-server adapter, validated by the trust-and-safety policy engine, appended to durable policy audit rows, and covered by the v1.18 fixture with optional `reason`, ignored legacy `score`, and malformed-body rejection. Needs richer report storage/query semantics and joined-room membership enforcement. |
-| E2EE keys | Device keys, one-time keys, fallback keys, cross-signing, backup APIs | `spec-covered` | Authenticated key API route shapes are runtime-wired through the client-server adapter with durable server-blind key storage, request-body-driven `/keys/query` and `/keys/claim`, one-time-key consumption, fallback-key reuse, backup rows, payload redaction, audit records, SQLite restart coverage, 64 KiB body limit, and v1.18 fixture coverage for upload/query/claim plus malformed upload/query/claim rejection. Needs Matrix device-list stream semantics, complete backup retrieval/deletion semantics, and full key-count behavior. |
+| E2EE keys | Device keys, one-time keys, fallback keys, cross-signing, backup APIs | `spec-covered` | Authenticated key API route shapes are runtime-wired through the client-server adapter with durable server-blind key storage, request-body-driven `/keys/query` and `/keys/claim`, one-time-key consumption, fallback-key reuse, backup rows, payload redaction, audit records, SQLite restart coverage, 64 KiB body limit, percent-decoded room-key backup path handling, and v1.18 fixture coverage for upload/query/claim plus malformed upload/query/claim rejection. Needs Matrix device-list stream semantics, complete backup retrieval/deletion semantics, and full key-count behavior. |
 | Capabilities/push rules | `GET /_matrix/client/v3/capabilities`, `GET /_matrix/client/v3/pushrules/` | `spec-covered` | Authenticated clients receive minimal stable capability and empty global push-rule responses, both covered by the v1.18 fixture. Needs real push-rule storage and richer capability negotiation. |
 | Profile | `GET /_matrix/client/v3/profile/{userId}` | `spec-covered` | Unauthenticated endpoint served before the access-token gate. Returns the stored displayname and avatar_url for the user, or 404 M_NOT_FOUND for unknown users. Covered by the v1.18 fixture including unknown-user 404 and post-update retrieval. |
 | Profile | `GET /_matrix/client/v3/profile/{userId}/{keyName}` | `spec-covered` | Unauthenticated `getProfileField`; returns only the requested field (`displayname` or `avatar_url`). An unset or unknown field returns 404 M_NOT_FOUND. Covered by the v1.18 fixture and integration tests. |

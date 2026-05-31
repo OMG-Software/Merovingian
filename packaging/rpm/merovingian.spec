@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.52
+Version:        0.4.53
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun May 31 2026 James Chapman <claude@ping.me.uk> - 0.4.53-1
+- Fix room-key backup session lookup for percent-encoded Matrix path components so clients can retrieve Megolm backup sessions whose session IDs contain `/` immediately after batch upload.
+
 * Sun May 31 2026 James Chapman <claude@ping.me.uk> - 0.4.52-1
 - Fix data race in outbound HTTP client: a single shared libcurl easy handle was driven from multiple threads, causing spurious network_error on federation key queries and breaking E2EE (m.room_key.withheld). perform() now uses a per-thread handle.
 

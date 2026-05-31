@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.4.53
+- Fix key-backup session lookup for percent-encoded Matrix path components.
+  Real Megolm session IDs can contain `/`, so clients encode the
+  `/{roomId}/{sessionId}` path as `%21room.../DDY%2F...` when calling
+  `GET /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}?version=1`.
+  Merovingian was storing batch-uploaded sessions under the decoded JSON
+  session ID but looking them up using the still-encoded path fragment, which
+  produced 404 `M_NOT_FOUND` immediately after a successful backup upload and
+  caused clients to keep retrying key backup/recovery during E2EE setup. Room
+  key backup path parsing now decodes `room_id` and `session_id` consistently
+  for direct PUTs and GETs, and a conformance regression series now covers the
+  v1.18 batch-PUT -> encoded room-level GET, batch-PUT -> encoded session-level
+  GET, and direct encoded PUT -> GET round-trips.
+
 ## 0.4.52
 
 - Fix a data race in the federation outbound HTTP client that intermittently
