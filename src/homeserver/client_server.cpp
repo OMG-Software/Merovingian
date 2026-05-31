@@ -1546,6 +1546,12 @@ namespace
             return "{}";
         case auth::KeyApiEndpoint::put_room_key_backup_batch:
             return json_serialize(json_obj({json_member("version", json_str("1"))}));
+        case auth::KeyApiEndpoint::get_key_backup_version_by_id:
+        case auth::KeyApiEndpoint::get_room_key_backup_batch:
+            return json_serialize(json_obj({json_member("rooms", json_obj({}))}));
+        case auth::KeyApiEndpoint::delete_room_key_backup_batch:
+            return json_serialize(json_obj({json_member("count", canonicaljson::Value{static_cast<std::int64_t>(0)}),
+                                            json_member("etag", json_str("1"))}));
         }
         return "{}";
     }
@@ -2514,14 +2520,16 @@ namespace
         case auth::KeyApiEndpoint::put_room_key_backup: {
             auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
             auto const suffix = route_suffix(req.target, prefix);
-            auto const separator = suffix.find('/');
-            if (separator == std::string_view::npos || separator == 0U || separator + 1U >= suffix.size())
+            // Strip query string so ?version=N is not included in the stored session_id.
+            auto const clean = suffix.substr(0U, suffix.find('?'));
+            auto const separator = clean.find('/');
+            if (separator == std::string_view::npos || separator == 0U || separator + 1U >= clean.size())
             {
                 return false;
             }
             return database::store_key_backup_session(store, {std::string{user}, "1",
-                                                              std::string{suffix.substr(0U, separator)},
-                                                              std::string{suffix.substr(separator + 1U)}, req.body});
+                                                              std::string{clean.substr(0U, separator)},
+                                                              std::string{clean.substr(separator + 1U)}, req.body});
         }
         case auth::KeyApiEndpoint::put_room_key_backup_batch: {
             auto const body = canonicaljson::parse_lossless(req.body);
@@ -2575,12 +2583,16 @@ namespace
                 return false;
             return database::delete_key_backup_version(store, user, version_str);
         }
+        case auth::KeyApiEndpoint::delete_room_key_backup_batch:
+            return database::delete_all_key_backup_sessions(store, user);
         case auth::KeyApiEndpoint::upload_keys:
         case auth::KeyApiEndpoint::query_keys:
         case auth::KeyApiEndpoint::claim_keys:
         case auth::KeyApiEndpoint::device_list_update:
         case auth::KeyApiEndpoint::get_key_backup_version:
+        case auth::KeyApiEndpoint::get_key_backup_version_by_id:
         case auth::KeyApiEndpoint::get_room_key_backup:
+        case auth::KeyApiEndpoint::get_room_key_backup_batch:
         case auth::KeyApiEndpoint::delete_room_key_backup:
             return true;
         }
@@ -2620,8 +2632,87 @@ namespace
                 return resp(200U, v.json);
             }
             return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-        case auth::KeyApiEndpoint::get_room_key_backup:
-            return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
+        case auth::KeyApiEndpoint::get_key_backup_version_by_id: {
+            auto constexpr vprefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
+            auto const vsuffix = route_suffix(req.target, vprefix);
+            auto const vid = vsuffix.substr(0U, vsuffix.find('?'));
+            if (vid.empty())
+            {
+                return err(400U, "M_UNRECOGNIZED", "missing version in path");
+            }
+            auto const& versions = rt.homeserver.database.persistent_store.key_backup_versions;
+            auto const vit = std::ranges::find_if(versions, [&](auto const& v) {
+                return v.user_id == user && v.version == vid;
+            });
+            if (vit == versions.end())
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+            }
+            auto parsed = canonicaljson::parse_lossless(vit->json);
+            if (parsed.error == canonicaljson::ParseError::none)
+            {
+                if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
+                {
+                    auto with_version = *obj;
+                    with_version.push_back(
+                        {"version", std::make_unique<canonicaljson::Value>(std::string{vit->version})});
+                    return resp(200U, json_serialize(canonicaljson::Value{std::move(with_version)}));
+                }
+            }
+            return resp(200U, vit->json);
+        }
+        case auth::KeyApiEndpoint::get_room_key_backup_batch: {
+            auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+            auto room_map = std::map<std::string, canonicaljson::Object>{};
+            for (auto const& s : all_sessions)
+            {
+                if (s.user_id == user)
+                {
+                    room_map[s.room_id].push_back(json_member(s.session_id, json_embed_raw(s.json)));
+                }
+            }
+            auto rooms = canonicaljson::Object{};
+            for (auto& [room_id, sess_obj] : room_map)
+            {
+                rooms.push_back(
+                    json_member(room_id, json_obj({json_member("sessions", json_obj(std::move(sess_obj)))})));
+            }
+            return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj(std::move(rooms)))})));
+        }
+        case auth::KeyApiEndpoint::get_room_key_backup: {
+            auto constexpr kbprefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
+            auto const suffix = route_suffix(req.target, kbprefix);
+            auto const clean = suffix.substr(0U, suffix.find('?'));
+            auto const separator = clean.find('/');
+            // No slash in clean suffix → room-level GET (/{roomId}), not session-level.
+            if (separator == std::string_view::npos || separator + 1U >= clean.size())
+            {
+                // Return all sessions for the room as {"sessions":{sessionId: data, ...}}.
+                auto const room_id = clean;
+                auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+                auto sessions_obj = canonicaljson::Object{};
+                for (auto const& s : all_sessions)
+                {
+                    if (s.user_id == user && s.room_id == room_id)
+                    {
+                        sessions_obj.push_back(json_member(s.session_id, json_embed_raw(s.json)));
+                    }
+                }
+                return resp(200U,
+                            json_serialize(json_obj({json_member("sessions", json_obj(std::move(sessions_obj)))})));
+            }
+            auto const room_id = clean.substr(0U, separator);
+            auto const session_id = clean.substr(separator + 1U);
+            auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+            auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
+                return s.user_id == user && s.room_id == room_id && s.session_id == session_id;
+            });
+            if (it == sessions.end())
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
+            }
+            return resp(200U, it->json);
+        }
         case auth::KeyApiEndpoint::upload_cross_signing_keys:
         case auth::KeyApiEndpoint::upload_signatures:
         case auth::KeyApiEndpoint::create_key_backup_version:
@@ -2630,6 +2721,7 @@ namespace
         case auth::KeyApiEndpoint::put_room_key_backup:
         case auth::KeyApiEndpoint::put_room_key_backup_batch:
         case auth::KeyApiEndpoint::delete_room_key_backup:
+        case auth::KeyApiEndpoint::delete_room_key_backup_batch:
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");

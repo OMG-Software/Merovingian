@@ -27,6 +27,9 @@ enum class KeyApiEndpoint
     put_room_key_backup_batch,
     get_room_key_backup,
     delete_room_key_backup,
+    get_key_backup_version_by_id,
+    get_room_key_backup_batch,
+    delete_room_key_backup_batch,
 };
 
 struct KeyApiRoute final

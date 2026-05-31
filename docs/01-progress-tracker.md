@@ -620,6 +620,15 @@ a non-production environment.
   per Matrix spec v1.18. Case-insensitive substring match on displayname and user_id.
 - Feature (0.4.46): Media thumbnail `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}`
   and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` per spec v1.18.
+- Fix (0.4.50): Key backup routing — `PUT /room_keys/keys?version=N` returned 404
+  because `match_key_api_route` compared path templates against the full target
+  including the query string. Fix strips the query portion before exact-match.
+  `PUT /room_keys/keys/{roomId}/{sessionId}` was also storing `?version=N` as
+  part of the `session_id`; fix strips query string from the path suffix before
+  splitting. `GET /room_keys/keys/{roomId}/{sessionId}` was returning a hardcoded
+  `{"rooms":{}}` stub; it now looks up the session in `persistent_store` and
+  returns 404 M_NOT_FOUND when the session is absent. Room-level GET
+  (`/{roomId}` without a session component) retains the existing stub.
 - Feature (0.4.46): Key backup batch PUT `PUT /room_keys/keys` per spec v1.18.
   Stores all sessions from request body, returns `{"version":"1"}`.
 - Feature (0.4.46): v1 media download endpoint `GET /_matrix/client/v1/media/download/{serverName}/{mediaId}`

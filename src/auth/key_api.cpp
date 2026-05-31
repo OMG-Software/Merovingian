@@ -76,6 +76,12 @@ auto key_api_endpoint_name(KeyApiEndpoint endpoint) noexcept -> char const*
         return "get_room_key_backup";
     case KeyApiEndpoint::delete_room_key_backup:
         return "delete_room_key_backup";
+    case KeyApiEndpoint::get_key_backup_version_by_id:
+        return "get_key_backup_version_by_id";
+    case KeyApiEndpoint::get_room_key_backup_batch:
+        return "get_room_key_backup_batch";
+    case KeyApiEndpoint::delete_room_key_backup_batch:
+        return "delete_room_key_backup_batch";
     }
 
     return "unknown";
@@ -98,6 +104,9 @@ auto key_api_routes() -> std::vector<KeyApiRoute>
         route("GET", "/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}", KeyApiEndpoint::get_room_key_backup),
         route("DELETE", "/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}",
               KeyApiEndpoint::delete_room_key_backup),
+        route("GET", "/_matrix/client/v3/room_keys/version/{version}", KeyApiEndpoint::get_key_backup_version_by_id),
+        route("GET", "/_matrix/client/v3/room_keys/keys", KeyApiEndpoint::get_room_key_backup_batch),
+        route("DELETE", "/_matrix/client/v3/room_keys/keys", KeyApiEndpoint::delete_room_key_backup_batch),
         route("PUT", "/_matrix/client/v3/devices/{deviceId}", KeyApiEndpoint::device_list_update),
     };
 }
@@ -110,7 +119,9 @@ auto match_key_api_route(std::string_view method, std::string_view target) -> Ke
         {
             continue;
         }
-        if (candidate.path_template == target)
+        // Strip query string so ?version=N doesn't prevent exact-path matching.
+        auto const path = target.substr(0U, target.find('?'));
+        if (candidate.path_template == path)
         {
             return {true, candidate, {}};
         }
@@ -213,6 +224,22 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
     case KeyApiEndpoint::delete_room_key_backup:
         return {
             {"key_api_delete_room_key_backup",
+             "DELETE FROM key_backup_sessions WHERE user_id = $1", {public_value(user_id)}}
+        };
+    case KeyApiEndpoint::get_key_backup_version_by_id:
+        return {
+            {"key_api_get_backup_version_by_id",
+             "SELECT version, json FROM key_backup_versions WHERE user_id = $1", {public_value(user_id)}}
+        };
+    case KeyApiEndpoint::get_room_key_backup_batch:
+        return {
+            {"key_api_get_room_key_backup_batch",
+             "SELECT room_id, session_id, json FROM key_backup_sessions WHERE user_id = $1",
+             {public_value(user_id)}}
+        };
+    case KeyApiEndpoint::delete_room_key_backup_batch:
+        return {
+            {"key_api_delete_room_key_backup_batch",
              "DELETE FROM key_backup_sessions WHERE user_id = $1", {public_value(user_id)}}
         };
     }

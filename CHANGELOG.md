@@ -2,6 +2,32 @@
 
 ## 0.4.50
 
+- Implement `GET /room_keys/version/{version}`: returns backup metadata for the
+  requested version, or 404 M_NOT_FOUND if absent.
+- Implement `GET /room_keys/keys` (bulk): returns all sessions grouped as
+  `{"rooms":{"roomId":{"sessions":{...}}}}`.
+- Implement `DELETE /room_keys/keys` (bulk): removes all key backup sessions
+  via `delete_all_key_backup_sessions`, returns `{"count":0,"etag":"1"}`.
+- Fix `GET /room_keys/keys/{roomId}` response format: was returning
+  `{"rooms":{}}` (wrong per spec); now returns `{"sessions":{sessionId:data,...}}`.
+- Add round-trip conformance tests: keys/upload→query, keys/upload OTK→claim
+  (OTK consumed), batch PUT→GET bulk (rooms structure), batch PUT→GET/{roomId}
+  (sessions structure), bulk DELETE→GET confirms empty.
+- Fix key backup routing: `PUT /room_keys/keys?version=N` was returning 404
+  because `match_key_api_route` compared the path template against the full
+  request target including the query string. The fix strips the query portion
+  before the exact-match comparison so real client requests reach the handler.
+- Fix `PUT /room_keys/keys/{roomId}/{sessionId}`: query string (`?version=N`)
+  was included in the stored `session_id`, making subsequent GETs unable to find
+  the session.
+- Fix `GET /room_keys/keys/{roomId}/{sessionId}`: was returning a hardcoded
+  `{"rooms":{}}` stub instead of the stored `KeyBackupData`. The handler now
+  looks up the session in `persistent_store.key_backup_sessions` and returns 404
+  M_NOT_FOUND when the session does not exist. Room-level GETs
+  (`/{roomId}` with no session component) continue to return the existing stub.
+- Add conformance tests: GET returns stored session fields, GET 404 for unknown
+  session, PUT with `?version` query param routes correctly.
+
 - Fix `send_join` response to return room state **prior to** the new join event,
   per spec §11.5.1. Previously we persisted the join event first then built state
   from the live store, so the joining user appeared as `membership=join` in the
