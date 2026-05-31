@@ -1052,6 +1052,21 @@ namespace
                 state = database::PersistentStateEvent{envelope.room_id, envelope.event_type, *envelope.state_key,
                                                        envelope.event_id};
             }
+            // Snapshot pre-join state IDs before persistence. The Matrix spec
+            // requires the send_join response state to reflect the room *prior
+            // to* the new join event. After store_event_with_state the store
+            // already contains the join, so we must capture the snapshot first.
+            auto pre_join_state_ids = std::vector<std::string>{};
+            if (endpoint == federation::FederationEndpoint::send_join)
+            {
+                for (auto const& s : store.state)
+                {
+                    if (s.room_id == room_id && !s.event_id.empty())
+                    {
+                        pre_join_state_ids.push_back(s.event_id);
+                    }
+                }
+            }
             if (!database::store_event_with_state(store, std::move(event), state))
             {
                 return {false, 500U, "event persistence failed", {}, {}};
@@ -1083,22 +1098,20 @@ namespace
             auto state_events = std::vector<std::string>{};
             if (endpoint == federation::FederationEndpoint::send_join)
             {
-                // Build auth_chain by walking auth_events from current state.
-                // Per Matrix spec, auth_chain is the set of events reachable
-                // by following auth_events links from the events in the
-                // current state. All auth_chain events are state events
-                // (they have state_key); including non-state events crashes
-                // Synapse which assumes every auth_chain entry has state_key.
+                // Build auth_chain by walking auth_events from PRE-JOIN state.
+                // Per Matrix spec §11.5.1 the state in the response must be the
+                // room state prior to the join event. We captured pre_join_state_ids
+                // before persisting, so the join event itself is never seeded here,
+                // preventing the circular auth_events reference Synapse warns about.
+                // All auth_chain events must be state events (have state_key);
+                // including non-state events crashes Synapse.
                 auto visited = std::unordered_set<std::string>{};
                 auto queue = std::vector<std::string>{};
-                for (auto const& s : store.state)
+                for (auto const& eid : pre_join_state_ids)
                 {
-                    if (s.room_id == room_id && !s.event_id.empty())
+                    if (visited.insert(eid).second)
                     {
-                        if (visited.insert(s.event_id).second)
-                        {
-                            queue.push_back(s.event_id);
-                        }
+                        queue.push_back(eid);
                     }
                 }
                 // Build a lookup from event_id to PersistentEvent for this room
@@ -1138,19 +1151,14 @@ namespace
                         auth_chain.push_back(store.events[it->second].json);
                     }
                 }
-                // State events (current state snapshot) built as before
-                for (auto const& s : store.state)
+                // State events: pre-join snapshot, resolved via the same
+                // event_by_id map built above.
+                for (auto const& eid : pre_join_state_ids)
                 {
-                    if (s.room_id == room_id)
+                    auto const it = event_by_id.find(eid);
+                    if (it != event_by_id.end() && !store.events[it->second].json.empty())
                     {
-                        for (auto const& evt : store.events)
-                        {
-                            if (evt.event_id == s.event_id && !evt.json.empty())
-                            {
-                                state_events.push_back(evt.json);
-                                break;
-                            }
-                        }
+                        state_events.push_back(store.events[it->second].json);
                     }
                 }
             }
