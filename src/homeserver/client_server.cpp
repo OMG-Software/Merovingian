@@ -2514,14 +2514,16 @@ namespace
         case auth::KeyApiEndpoint::put_room_key_backup: {
             auto constexpr prefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
             auto const suffix = route_suffix(req.target, prefix);
-            auto const separator = suffix.find('/');
-            if (separator == std::string_view::npos || separator == 0U || separator + 1U >= suffix.size())
+            // Strip query string so ?version=N is not included in the stored session_id.
+            auto const clean = suffix.substr(0U, suffix.find('?'));
+            auto const separator = clean.find('/');
+            if (separator == std::string_view::npos || separator == 0U || separator + 1U >= clean.size())
             {
                 return false;
             }
             return database::store_key_backup_session(store, {std::string{user}, "1",
-                                                              std::string{suffix.substr(0U, separator)},
-                                                              std::string{suffix.substr(separator + 1U)}, req.body});
+                                                              std::string{clean.substr(0U, separator)},
+                                                              std::string{clean.substr(separator + 1U)}, req.body});
         }
         case auth::KeyApiEndpoint::put_room_key_backup_batch: {
             auto const body = canonicaljson::parse_lossless(req.body);
@@ -2620,8 +2622,28 @@ namespace
                 return resp(200U, v.json);
             }
             return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
-        case auth::KeyApiEndpoint::get_room_key_backup:
-            return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
+        case auth::KeyApiEndpoint::get_room_key_backup: {
+            auto constexpr kbprefix = std::string_view{"/_matrix/client/v3/room_keys/keys/"};
+            auto const suffix = route_suffix(req.target, kbprefix);
+            auto const clean = suffix.substr(0U, suffix.find('?'));
+            auto const separator = clean.find('/');
+            // No slash in clean suffix → room-level GET (/{roomId}), not session-level.
+            if (separator == std::string_view::npos || separator + 1U >= clean.size())
+            {
+                return resp(200U, json_serialize(json_obj({json_member("rooms", json_obj({}))})));
+            }
+            auto const room_id = clean.substr(0U, separator);
+            auto const session_id = clean.substr(separator + 1U);
+            auto const& sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
+            auto const it = std::ranges::find_if(sessions, [&](auto const& s) {
+                return s.user_id == user && s.room_id == room_id && s.session_id == session_id;
+            });
+            if (it == sessions.end())
+            {
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup session not found"));
+            }
+            return resp(200U, it->json);
+        }
         case auth::KeyApiEndpoint::upload_cross_signing_keys:
         case auth::KeyApiEndpoint::upload_signatures:
         case auth::KeyApiEndpoint::create_key_backup_version:

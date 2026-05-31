@@ -2566,6 +2566,89 @@ SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} retrieves a backed-up session
     }
 }
 
+// --- GET /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId} (data fields) -
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keyskeysroomidsessionid
+//
+// MUST return the stored KeyBackupData fields, not an empty placeholder.
+SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} returns stored session data fields",
+         "[conformance][client-server][e2ee]")
+{
+    GIVEN("a logged-in user with a stored session key backup")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys/%21room2%3Aexample.org/sessZ", token,
+                 R"({"first_message_index":1,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"xyz","ephemeral":"efg","mac":"hij"}})"})
+                .response.status == 200U);
+
+        WHEN("the backed-up session is retrieved")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/room_keys/keys/%21room2%3Aexample.org/sessZ", token, {}});
+
+            THEN("the response contains the stored KeyBackupData fields")
+            {
+                // Spec MUST: 200 with first_message_index, forwarded_count, session_data.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(int_member(body, "first_message_index") != nullptr);
+                REQUIRE(int_member(body, "forwarded_count") != nullptr);
+                REQUIRE(object_member_as_object(body, "session_data") != nullptr);
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keyskeysroomidsessionid
+//
+// MUST return 404 M_NOT_FOUND when the session does not exist in the backup.
+SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} returns 404 for unknown session",
+         "[conformance][client-server][e2ee]")
+{
+    GIVEN("a logged-in user with a key backup version but no stored sessions")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+
+        WHEN("a non-existent session is requested")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/room_keys/keys/%21room3%3Aexample.org/no-such-session", token, {}});
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 when no matching session exists in the backup.
+                REQUIRE(response.response.status == 404U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
 // --- DELETE /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId} -----------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#delete_matrixclientv3room_keyskeysroomidsessionid
 //
@@ -2698,6 +2781,42 @@ SCENARIO("PUT /room_keys/keys with session data stores and returns version",
                 auto const* version = string_member(body, "version");
                 REQUIRE(version != nullptr);
                 REQUIRE(!version->empty());
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3room_keyskeys
+//
+// Real clients (Element, Hydrogen) append ?version=N to the path.  The router
+// MUST match the route on the path portion only, ignoring the query string.
+SCENARIO("PUT /room_keys/keys with ?version query param is routed correctly",
+         "[conformance][client-server][e2ee]")
+{
+    GIVEN("a logged-in user with an existing key backup version")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+
+        WHEN("PUT /room_keys/keys?version=1 is called with session data")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys?version=1", token,
+                 R"({"rooms":{"!roomQ:example.org":{"sessions":{"sessQ":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}}}}}})"});
+
+            THEN("the server returns 200, not 404 (route matches despite query string)")
+            {
+                // Spec MUST: query string must not prevent route matching.
+                REQUIRE(response.response.status == 200U);
             }
         }
     }

@@ -110,7 +110,9 @@ auto match_key_api_route(std::string_view method, std::string_view target) -> Ke
         {
             continue;
         }
-        if (candidate.path_template == target)
+        // Strip query string so ?version=N doesn't prevent exact-path matching.
+        auto const path = target.substr(0U, target.find('?'));
+        if (candidate.path_template == path)
         {
             return {true, candidate, {}};
         }
