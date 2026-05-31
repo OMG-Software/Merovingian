@@ -197,10 +197,12 @@ SCENARIO("POST /account/password without an access token returns 401",
             auto const response = merovingian::homeserver::handle_client_server_request(
                 rt, {"POST", "/_matrix/client/v3/account/password", {}, R"({"new_password":"NewHorse99!!"})"});
 
-            THEN("the server returns 401 M_UNKNOWN_TOKEN")
+            THEN("the server returns 401 M_MISSING_TOKEN")
             {
+                // Spec §5.7.2: M_MISSING_TOKEN when no bearer token is provided at all.
+                // M_UNKNOWN_TOKEN applies only when a token is present but not recognised.
                 REQUIRE(response.response.status == 401U);
-                REQUIRE(response.response.body.find("M_UNKNOWN_TOKEN") != std::string::npos);
+                REQUIRE(response.response.body.find("M_MISSING_TOKEN") != std::string::npos);
             }
         }
     }

@@ -8,6 +8,31 @@
   event's `auth_events`. Synapse asserts this and returns 500 to its joining
   client even though `send_join` returned 200. Gated via
   `RoomVersionPolicy::create_event_is_room_id`.
+- Fix `POST /register` to return `access_token` and `device_id` in the 200
+  response when `inhibit_login` is absent or false, as required by spec §5.5.1.
+  Previously only `user_id` was returned; clients that relied on the registration
+  token (e.g. Element) had to call `/login` immediately after registration.
+- Fix `401` responses for requests with no bearer token to return errcode
+  `M_MISSING_TOKEN` instead of `M_UNKNOWN_TOKEN`, as required by spec §5.7.2.
+  `M_UNKNOWN_TOKEN` now applies only when a token is present but unrecognised.
+- Strengthen spec conformance test coverage across five test files:
+  - `test_federation_invite_join`: replace `body.find()` substring checks with
+    parsed JSON navigation; add exact `depth = max(extremity) + 1` assertion;
+    add six new scenarios covering `room_version`, all event template fields,
+    `auth_events` completeness (`power_levels` + `join_rules` + invite, no
+    create), 404 for unknown room, 400 `M_INCOMPATIBLE_ROOM_VERSION`, and
+    `send_join` `origin`/`state`/`auth_chain` field validation.
+  - `test_client_server_conformance`: promote `access_token`/`device_id` checks
+    in register from comments to `REQUIRE`; add `body.empty()` to logout and
+    `keys/device_signing/upload`; add `user_id` value equality in whoami;
+    tighten 401 errcode to `M_MISSING_TOKEN`.
+  - `test_federation_conformance`: replace all `body.find()` in `make_join` and
+    `send_join` THEN blocks with JSON-parsed field checks.
+  - `test_federation_key_query`: full rewrite — all assertions were substring
+    matches; now navigate `device_keys`, `master_keys`, `self_signing_keys`,
+    `one_time_keys` by JSON key and verify `user_id` equality and array sizes.
+  - Integration tests updated to reflect the new register behaviour (two devices
+    and two tokens after register + login, one token revoked by logout).
 
 ## 0.4.48
 

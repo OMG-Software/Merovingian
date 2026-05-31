@@ -2975,9 +2975,29 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         }
         auto const result =
             register_local_user(rt.homeserver, body->localpart, body->password, body->registration_token);
-        return result.ok
-                   ? dispatch_resp(200U, json_serialize(json_obj({json_member("user_id", json_str(result.value))})))
-                   : dispatch_err(result.status, "M_FORBIDDEN", result.reason);
+        if (!result.ok)
+        {
+            return dispatch_err(result.status, "M_FORBIDDEN", result.reason);
+        }
+        // Spec §5.5.1: when inhibit_login is false (the default), the response
+        // MUST include access_token and device_id.  Create a session immediately
+        // so the client can act without a separate /login round trip.
+        auto const full_user_id = result.value;
+        auto const reg_device_id = std::string{body->localpart} + "_DEVICE";
+        auto const session = login_local_user(rt.homeserver, full_user_id, body->password, reg_device_id);
+        if (!session.ok)
+        {
+            // Session creation failed — return user_id only.
+            return dispatch_resp(200U, json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
+        }
+        // Note: we intentionally do NOT push to rt.devices here. The registration
+        // device is ephemeral; rt.devices is populated only by explicit /login calls
+        // so that /devices and device-count queries reflect user-chosen sessions.
+        return dispatch_resp(200U, json_serialize(json_obj({
+                                       json_member("access_token", json_str(session.value)),
+                                       json_member("user_id", json_str(full_user_id)),
+                                       json_member("device_id", json_str(reg_device_id)),
+                                   })));
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/login")
     {
@@ -3150,7 +3170,10 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                     {"status", "401",                                            false},
                                                     {"reason", "unauthenticated",                                false}
         });
-        return dispatch_err(401U, "M_UNKNOWN_TOKEN", "unauthenticated");
+        // Spec §5.7.2: M_MISSING_TOKEN when no token is supplied;
+        // M_UNKNOWN_TOKEN when a token is present but not recognised.
+        return dispatch_err(401U, req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN",
+                            "unauthenticated");
     }
     log_diagnostic("request.auth.accepted", {
                                                 {"method", req.method,                                       false},
