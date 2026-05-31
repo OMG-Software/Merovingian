@@ -126,6 +126,40 @@ auto build_edu_transaction_body(std::string_view edu_type,
     return tx_body.output;
 }
 
+auto build_receipt_edu_content(std::string_view room_id, std::string_view receipt_type,
+                               std::string_view user_id, std::string_view event_id,
+                               std::int64_t ts) -> std::optional<std::string>
+{
+    // Matrix spec receipt EDU content shape (per §receipts):
+    // { roomId: { receiptType: { userId: { event_ids: [eventId], data: { ts: N } } } } }
+    auto receipt_data = canonicaljson::Object{};
+    receipt_data.push_back(canonicaljson::make_member("ts", canonicaljson::Value{ts}));
+
+    auto user_obj = canonicaljson::Object{};
+    user_obj.push_back(canonicaljson::make_member("data", canonicaljson::Value{std::move(receipt_data)}));
+    user_obj.push_back(canonicaljson::make_member(
+        "event_ids", canonicaljson::Value{canonicaljson::Array{canonicaljson::Value{std::string{event_id}}}}));
+
+    auto receipt_type_users = canonicaljson::Object{};
+    receipt_type_users.push_back(
+        canonicaljson::make_member(std::string{user_id}, canonicaljson::Value{std::move(user_obj)}));
+
+    auto room_obj = canonicaljson::Object{};
+    room_obj.push_back(
+        canonicaljson::make_member(std::string{receipt_type}, canonicaljson::Value{std::move(receipt_type_users)}));
+
+    auto content = canonicaljson::Object{};
+    content.push_back(
+        canonicaljson::make_member(std::string{room_id}, canonicaljson::Value{std::move(room_obj)}));
+
+    auto const result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content)});
+    if (result.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return std::nullopt;
+    }
+    return result.output;
+}
+
 auto compute_backoff(std::uint32_t retry_count) noexcept -> std::uint64_t
 {
     if (retry_count == 0U)

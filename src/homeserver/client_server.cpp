@@ -4177,23 +4177,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                     });
                     if (room_it != rt.homeserver.database.rooms.end())
                     {
-                        // Build the receipt EDU content per Matrix spec.
-                        auto receipt_content = canonicaljson::Object{};
-                        auto user_receipts = canonicaljson::Object{};
-                        user_receipts.push_back(canonicaljson::make_member(
-                            "event_ids", canonicaljson::Value{canonicaljson::Array{canonicaljson::Value{event_id}}}));
-                        user_receipts.push_back(canonicaljson::make_member("ts", canonicaljson::Value{now_ts}));
-                        auto read_type = canonicaljson::Object{};
-                        read_type.push_back(
-                            canonicaljson::make_member(*user, canonicaljson::Value{std::move(user_receipts)}));
-                        receipt_content.push_back(
-                            canonicaljson::make_member(room_id, canonicaljson::Value{std::move(read_type)}));
-                        auto const edu_content_result =
-                            canonicaljson::serialize_canonical(canonicaljson::Value{std::move(receipt_content)});
-                        if (edu_content_result.error == canonicaljson::CanonicalJsonError::none)
+                        auto const edu_content_opt =
+                            federation::build_receipt_edu_content(room_id, "m.read", *user, event_id, now_ts);
+                        if (edu_content_opt.has_value())
                         {
                             auto const enqueued =
-                                dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt", edu_content_result.output);
+                                dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt", *edu_content_opt);
                             if (enqueued > 0U)
                             {
                                 log_diagnostic("room.read_markers.dispatched",
@@ -4265,24 +4254,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                             });
                         if (room_it != rt.homeserver.database.rooms.end())
                         {
-                            auto receipt_content = canonicaljson::Object{};
-                            auto user_receipts = canonicaljson::Object{};
-                            user_receipts.push_back(canonicaljson::make_member(
-                                "event_ids",
-                                canonicaljson::Value{canonicaljson::Array{canonicaljson::Value{event_id}}}));
-                            user_receipts.push_back(
-                                canonicaljson::make_member("ts", canonicaljson::Value{now_ts}));
-                            auto read_type = canonicaljson::Object{};
-                            read_type.push_back(
-                                canonicaljson::make_member(*user, canonicaljson::Value{std::move(user_receipts)}));
-                            receipt_content.push_back(
-                                canonicaljson::make_member(room_id, canonicaljson::Value{std::move(read_type)}));
-                            auto const edu_content_result =
-                                canonicaljson::serialize_canonical(canonicaljson::Value{std::move(receipt_content)});
-                            if (edu_content_result.error == canonicaljson::CanonicalJsonError::none)
+                            auto const edu_content_opt = federation::build_receipt_edu_content(
+                                room_id, receipt_type, *user, event_id, now_ts);
+                            if (edu_content_opt.has_value())
                             {
                                 auto const enqueued = dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt",
-                                                                           edu_content_result.output);
+                                                                            *edu_content_opt);
                                 if (enqueued > 0U)
                                 {
                                     log_diagnostic("room.receipt.dispatched",
