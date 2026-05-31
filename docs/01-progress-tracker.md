@@ -1027,6 +1027,18 @@ adapters.
 
 ## Completed capability notes
 
+### make_join create event excluded from auth_events (0.4.49)
+
+- `make_join` template no longer includes `m.room.create` in `auth_events`
+  for room version 12. In room v12 (MSC4291), the room ID is the reference
+  hash of the create event; including it in auth_events is forbidden. Synapse
+  asserts this at the Python level and returns 500 to its joining client even
+  though `send_join` returned 200, producing a second error after the 0.4.48
+  wire-format fixes. Gated via `RoomVersionPolicy::create_event_is_room_id`.
+- One new conformance test added to `test_federation_invite_join.cpp` verifying
+  the create event is absent from the template auth_events and the invite event
+  is still present.
+
 ### Federated join wire format (0.4.48)
 
 - `send_join` v2 response now includes the required `members_omitted: false`

@@ -587,3 +587,109 @@ SCENARIO("send_join response body includes the required members_omitted field",
         }
     }
 }
+
+// --- make_join auth_events must not contain create event for room v12 --------
+// Spec: Matrix Server-Server API v1.18 / MSC4291 (room version 12)
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+//
+// In room version 12, the room ID is the reference hash of the m.room.create
+// event, so the create event is NEVER listed in any event's auth_events.
+// Synapse enforces this with an AssertionError in auth_event_ids():
+//   assert create_event_id not in self._dict["auth_events"]
+//
+// If our make_join template includes the create event in auth_events, Synapse
+// copies it into the join PDU it sends via send_join. We echo the join event
+// back in the send_join response, and Synapse crashes with 500 processing it.
+SCENARIO("make_join template auth_events does not include m.room.create for room v12",
+         "[homeserver][federation][invite-join][make_join][spec]")
+{
+    GIVEN("a v12 room with a pending invite for a remote user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host6", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        // The default CreateRoomOptions uses room_version "12", so this room is v12.
+        // Find the create event ID so we can assert it is absent from auth_events.
+        auto const& store = runtime.database.persistent_store;
+        auto create_event_id = std::string{};
+        for (auto const& s : store.state)
+        {
+            if (s.room_id == room_id && s.event_type == "m.room.create")
+            {
+                create_event_id = s.event_id;
+                break;
+            }
+        }
+        REQUIRE(!create_event_id.empty());
+
+        auto const remote_user = std::string{"@frank:"} + remote_origin;
+        auto const invite_event_id = std::string{"$invite_frank:example.org"};
+        plant_invite_event(runtime, room_id, user.value, remote_user, invite_event_id);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        WHEN("the remote server calls make_join")
+        {
+            auto const target =
+                "/_matrix/federation/v1/make_join/" + room_id + "/" + remote_user + "?ver=12";
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime.federation, signed_get(target));
+
+            THEN("the template auth_events does not contain the create event ID")
+            {
+                // Spec MUST (MSC4291 / room v12): the create event must never
+                // appear in any event's auth_events. Synapse asserts this and
+                // crashes with 500 if the create event is listed. The room ID
+                // is the reference hash of the create event, so its presence
+                // in auth_events is redundant and forbidden.
+                // Do NOT remove — guards the v12 make_join create-event-in-auth
+                // bug that caused Synapse AssertionError on every join attempt.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const ev_it =
+                    std::ranges::find_if(*root, [](auto const& m) { return m.key == "event"; });
+                REQUIRE(ev_it != root->end());
+                auto const* ev_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&ev_it->value->storage());
+                REQUIRE(ev_obj != nullptr);
+                auto const auth_it =
+                    std::ranges::find_if(*ev_obj, [](auto const& m) { return m.key == "auth_events"; });
+                REQUIRE(auth_it != ev_obj->end());
+                auto const* auth_arr =
+                    std::get_if<merovingian::canonicaljson::Array>(&auth_it->value->storage());
+                REQUIRE(auth_arr != nullptr);
+                // The create event must not appear anywhere in auth_events
+                auto const has_create = std::any_of(auth_arr->begin(), auth_arr->end(),
+                    [&](auto const& v) {
+                        auto const* s = std::get_if<std::string>(&v.storage());
+                        return s != nullptr && *s == create_event_id;
+                    });
+                REQUIRE_FALSE(has_create);
+                // The invite event must still be present
+                auto const has_invite = std::any_of(auth_arr->begin(), auth_arr->end(),
+                    [&](auto const& v) {
+                        auto const* s = std::get_if<std::string>(&v.storage());
+                        return s != nullptr && *s == invite_event_id;
+                    });
+                REQUIRE(has_invite);
+            }
+        }
+    }
+}

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.49
+
+- Fix `make_join` template including `m.room.create` in `auth_events` for room
+  version 12. In room v12 (MSC4291) the room ID is the reference hash of the
+  create event, so the create event is implicit and must never appear in any
+  event's `auth_events`. Synapse asserts this and returns 500 to its joining
+  client even though `send_join` returned 200. Gated via
+  `RoomVersionPolicy::create_event_is_room_id`.
+
 ## 0.4.48
 
 - Fix federated join so Synapse users can successfully join rooms hosted on
