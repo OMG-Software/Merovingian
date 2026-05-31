@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.50
+Version:        0.4.51
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun May 31 2026 James Chapman <claude@ping.me.uk> - 0.4.51-1
+- Fix m.receipt federation EDU format: add missing receipt-type nesting and wrap ts in data object (was causing Synapse 500 on every outbound transaction)
+
 * Sun May 31 2026 James Chapman <claude@ping.me.uk> - 0.4.50-1
 - Fix send_join response to return pre-join state snapshot (prevented Synapse auth_events circular reference warning)
 

@@ -70,6 +70,53 @@ SCENARIO("EDU transaction bodies key each EDU by edu_type so Synapse accepts the
     }
 }
 
+// Spec: https://spec.matrix.org/v1.18/server-server-api/#receipts
+// Required shape: { roomId: { receiptType: { userId: { event_ids: [eventId], data: { ts: N } } } } }
+SCENARIO("receipt EDU content follows Matrix spec nested structure",
+         "[federation][outbound][edu][spec][receipt]")
+{
+    GIVEN("a room ID, receipt type, user ID, event ID and timestamp")
+    {
+        WHEN("build_receipt_edu_content is called with m.read")
+        {
+            auto const content = merovingian::federation::build_receipt_edu_content(
+                "!room:server", "m.read", "@user:server", "$event:server", std::int64_t{1234567890});
+
+            // canonicaljson sorts keys alphabetically and produces a single deterministic form,
+            // so we can assert the exact output. Any structural regression (missing nesting level,
+            // ts outside data, event_ids not an array, etc.) will break this assertion directly.
+            THEN("content matches the exact canonical JSON the spec requires")
+            {
+                REQUIRE(content.has_value());
+                REQUIRE(*content ==
+                        R"({"!room:server":{"m.read":{"@user:server":{"data":{"ts":1234567890},"event_ids":["$event:server"]}}}})");
+            }
+
+            AND_THEN("the content wraps into a valid m.receipt EDU transaction body with edu_type key")
+            {
+                REQUIRE(content.has_value());
+                auto const tx = merovingian::federation::build_edu_transaction_body("m.receipt", *content);
+                REQUIRE(tx.has_value());
+                REQUIRE(tx->find(R"("edu_type":"m.receipt")") != std::string::npos);
+                REQUIRE(tx->find(R"("type":"m.receipt")") == std::string::npos);
+            }
+        }
+
+        WHEN("build_receipt_edu_content is called with m.read.private")
+        {
+            auto const content = merovingian::federation::build_receipt_edu_content(
+                "!room:server", "m.read.private", "@user:server", "$event:server", std::int64_t{9000});
+
+            THEN("the receipt type key is preserved verbatim in the canonical output")
+            {
+                REQUIRE(content.has_value());
+                REQUIRE(*content ==
+                        R"({"!room:server":{"m.read.private":{"@user:server":{"data":{"ts":9000},"event_ids":["$event:server"]}}}})");
+            }
+        }
+    }
+}
+
 SCENARIO("Backoff computation increases exponentially with a cap", "[federation][outbound][backoff]")
 {
     GIVEN("consecutive failure counts")

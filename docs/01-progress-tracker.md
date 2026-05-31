@@ -620,6 +620,14 @@ a non-production environment.
   per Matrix spec v1.18. Case-insensitive substring match on displayname and user_id.
 - Feature (0.4.46): Media thumbnail `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}`
   and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` per spec v1.18.
+- Fix (0.4.51): `m.receipt` federation EDU content format — the receipt content
+  was built as `{roomId:{userId:{event_ids,ts}}}` but the spec requires
+  `{roomId:{receiptType:{userId:{event_ids,data:{ts}}}}}`. The missing
+  receipt-type nesting and `ts` outside `data` caused Synapse to 500 every
+  outbound transaction containing a receipt EDU, opening the circuit breaker and
+  blocking all subsequent federation (including E2EE to-device key exchange).
+  Extracted `build_receipt_edu_content` pure helper; used by both `/receipt/`
+  and `/read_markers` endpoints.
 - Fix (0.4.50): Key backup routing — `PUT /room_keys/keys?version=N` returned 404
   because `match_key_api_route` compared path templates against the full target
   including the query string. Fix strips the query portion before exact-match.

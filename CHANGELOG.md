@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.4.51
+
+- Fix `m.receipt` federation EDU content format: the receipt content was built
+  as `{roomId:{userId:{event_ids,ts}}}` but the Matrix spec requires
+  `{roomId:{receiptType:{userId:{event_ids,data:{ts}}}}}`. The missing
+  receipt-type nesting level and the `ts` being outside `data` caused Synapse to
+  return HTTP 500 "Error handing EDU of type m.receipt" for every outbound
+  transaction carrying a receipt EDU, opening the circuit breaker and blocking
+  all subsequent federation including to-device key-exchange messages (breaking
+  E2EE). Fix extracts a pure `build_receipt_edu_content` helper in
+  `outbound_transaction.cpp` used by both the `/receipt/` and `/read_markers`
+  endpoints.
+
 ## 0.4.50
 
 - Implement `GET /room_keys/version/{version}`: returns backup metadata for the

@@ -66,6 +66,14 @@ struct OutboundCall final
 [[nodiscard]] auto build_edu_transaction_body(std::string_view edu_type,
                                               std::string_view edu_content_json) -> std::optional<std::string>;
 
+// Builds the canonical-JSON *content* of an m.receipt EDU per Matrix spec
+// §receipts. Shape: { roomId: { receiptType: { userId: { event_ids: [eventId],
+// data: { ts: N } } } } }. Pure function; returns std::nullopt on serialization
+// failure.
+[[nodiscard]] auto build_receipt_edu_content(std::string_view room_id, std::string_view receipt_type,
+                                             std::string_view user_id, std::string_view event_id,
+                                             std::int64_t ts) -> std::optional<std::string>;
+
 [[nodiscard]] auto compute_backoff(std::uint32_t retry_count) noexcept -> std::uint64_t;
 
 [[nodiscard]] auto destination_should_retry(FederationDestination const& destination,
