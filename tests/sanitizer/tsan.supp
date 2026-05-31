@@ -1,0 +1,26 @@
+# ThreadSanitizer suppressions for Merovingian.
+#
+# Format: https://github.com/google/sanitizers/wiki/ThreadSanitizerSuppressions
+# Passed to the test binaries via TSAN_OPTIONS=suppressions=<this file> in the
+# `tsan` CI job (.github/workflows/sanitizers.yml).
+#
+# Scope discipline: entries here MUST target only third-party dependencies that
+# Merovingian links but does not own (OpenSSL, libpq, libsodium). Never suppress
+# a report whose stack runs through merovingian:: code or src/ — those are the
+# races this job exists to catch.
+#
+# These dependencies are linked as uninstrumented system shared objects (the
+# from-source subprojects — curl, SQLite, yyjson, Catch2 — ARE instrumented and
+# are never suppressed). `called_from_lib` matches a report whose racing access
+# lies entirely inside the named shared object, so these entries cannot hide a
+# race in our own instrumented code.
+#
+# A local full-suite run surfaced no third-party reports; these entries are a
+# conservative margin for CI environments whose OpenSSL/libsodium/libpq builds
+# carry the well-known benign internal races (e.g. OpenSSL RAND/refcount state).
+# If a run is clean without them, they simply never match.
+
+called_from_lib:libcrypto.so
+called_from_lib:libssl.so
+called_from_lib:libsodium.so
+called_from_lib:libpq.so

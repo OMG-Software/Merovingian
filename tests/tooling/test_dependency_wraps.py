@@ -15,6 +15,7 @@ WSL_SETUP_SCRIPT = REPO_ROOT / "scripts" / "wsl-setup.sh"
 WSL_BUILD_CMD = REPO_ROOT / "build-wsl.cmd"
 WSL_BUILD_WRAPPER = REPO_ROOT / "scripts" / "build-wsl.ps1"
 WSL_BUILD_SHELL_WRAPPER = REPO_ROOT / "scripts" / "build-wsl.sh"
+BUILD_PY = REPO_ROOT / "build.py"
 MAKE_SHIM = REPO_ROOT / "scripts" / "tool-shims" / "make"
 VALIDATE_PHASE1_SCRIPT = REPO_ROOT / "scripts" / "validate-phase1-config.sh"
 CURL_PACKAGEFILE = REPO_ROOT / "subprojects" / "packagefiles" / "curl" / "meson.build"
@@ -126,6 +127,57 @@ class DependencyWrapTests(unittest.TestCase):
         self.assertIn("if ([string]::IsNullOrWhiteSpace($Distro))", ps_wrapper)
         self.assertIn("sh ./scripts/build-wsl.sh", ps_wrapper)
         self.assertNotIn("build-linux.sh", ps_wrapper)
+
+    def test_build_py_wsl_exposes_and_forwards_profile_and_sanitizer_options(self) -> None:
+        # GIVEN build.py is the supported unified entrypoint for WSL builds.
+        self.assertTrue(BUILD_PY.is_file(), "build.py is missing")
+        build_py = BUILD_PY.read_text(encoding="utf-8")
+
+        # WHEN developers request sanitizer or profile-backed WSL builds.
+        # THEN the WSL subcommand exposes the same profile args as Linux/BSD and
+        # forwards them to scripts/build-wsl.sh.
+        self.assertIn("add_profile_args(wsl_parser)", build_py)
+        self.assertIn("if args.profile:", build_py)
+        self.assertIn('wsl_args += ["--profile", args.profile]', build_py)
+        self.assertIn("if args.buildtype:", build_py)
+        self.assertIn('wsl_args += ["--buildtype", args.buildtype]', build_py)
+        self.assertIn("if args.sanitize:", build_py)
+        self.assertIn('wsl_args += ["--sanitize", args.sanitize]', build_py)
+        self.assertIn("if args.coverage:", build_py)
+        self.assertIn('wsl_args.append("--coverage")', build_py)
+        self.assertIn("if args.build_fuzz:", build_py)
+        self.assertIn('wsl_args.append("--build-fuzz")', build_py)
+        self.assertIn("if args.hardening:", build_py)
+        self.assertIn('wsl_args.append("--hardening")', build_py)
+
+    def test_wsl_build_wrapper_accepts_profile_and_sanitizer_options(self) -> None:
+        # GIVEN the WSL wrapper receives arguments from build.py and the Windows
+        # launcher chain.
+        self.assertTrue(WSL_BUILD_SHELL_WRAPPER.is_file(), "build-wsl.sh is missing")
+        script = WSL_BUILD_SHELL_WRAPPER.read_text(encoding="utf-8")
+
+        # WHEN a developer requests ASan or TSan through the WSL entrypoint.
+        # THEN the wrapper parses the profile/sanitizer flags and maps them to
+        # the same Meson options used by the Linux wrapper.
+        self.assertIn("--profile <name>", script)
+        self.assertIn("--buildtype <type>", script)
+        self.assertIn("--sanitize <list>", script)
+        self.assertIn("--coverage", script)
+        self.assertIn("--build-fuzz", script)
+        self.assertIn("--hardening", script)
+        self.assertIn("profile=", script)
+        self.assertIn("buildtype=", script)
+        self.assertIn("sanitize=", script)
+        self.assertIn("coverage=false", script)
+        self.assertIn("build_fuzz=false", script)
+        self.assertIn("hardening=", script)
+        self.assertIn("case \"$profile\" in", script)
+        self.assertIn("sanitizer)", script)
+        self.assertIn('sanitize=address,undefined', script)
+        self.assertIn('meson_options="$meson_options --buildtype=$buildtype"', script)
+        self.assertIn('meson_options="$meson_options -Db_sanitize=$sanitize"', script)
+        self.assertIn('meson_options="$meson_options -Db_coverage=true"', script)
+        self.assertIn('meson_options="$meson_options -Dhardening=$hardening"', script)
 
     def test_wsl_build_wrapper_detects_stale_extracted_curl_packagefiles(self) -> None:
         # GIVEN the WSL wrapper must recover from previously extracted curl sources.

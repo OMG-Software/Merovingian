@@ -620,6 +620,37 @@ a non-production environment.
   per Matrix spec v1.18. Case-insensitive substring match on displayname and user_id.
 - Feature (0.4.46): Media thumbnail `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}`
   and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` per spec v1.18.
+- Fix (0.4.52): Data race in `OutboundClient` (federation outbound HTTP). The
+  client reused one libcurl easy handle per instance, but the runtime shares a
+  single instance across the dispatch-worker thread and the HTTP request-handler
+  thread pool. Concurrent `perform()` calls (e.g. a client `/keys/query`
+  federation proxy overlapping a dispatch-worker transaction to the same peer)
+  corrupted the handle and returned a spurious `network_error` in 0 ms; the
+  empty remote `device_keys` result then caused the client to emit
+  `m.room_key.withheld`, breaking E2EE. `perform()` now drives a per-thread easy
+  handle (lazily created, freed at thread exit), so one instance is safe to
+  share across threads. `OutboundClient` is now stateless. Added a BDD
+  concurrency regression test in `tests/unit/test_outbound_client.cpp`.
+- Infra (0.4.52): Added a ThreadSanitizer `tsan` job to
+  `.github/workflows/sanitizers.yml` (`-Db_sanitize=thread`) with a
+  dependency-scoped suppressions file at `tests/sanitizer/tsan.supp`. The prior
+  sanitizer job ran only ASan+UBSan, which cannot detect data races — the reason
+  the `OutboundClient` race went uncaught. Documented the concurrency-testing
+  expectation in `docs/testing-standards.md`.
+- Test (0.4.52): Added a workflow tooling guard in
+  `tests/tooling/test_security_workflows.py` that asserts the sanitizer matrix
+  keeps both the `asan-ubsan` and `tsan` jobs, and that the TSan job points at
+  `tests/sanitizer/tsan.supp`. This prevents the new race-detection coverage
+  from being removed silently by a later workflow edit.
+- Fix (0.4.52): The unified `build.py` WSL target now exposes the same
+  profile/sanitizer controls as the Linux and BSD targets and forwards them to
+  `scripts/build-wsl.sh`. The WSL wrapper now parses `--profile`,
+  `--buildtype`, `--sanitize`, `--coverage`, `--build-fuzz`, and
+  `--hardening`, maps the named profiles to the same Meson settings as
+  `build-linux.sh`, and therefore supports direct `asan`/`ubsan` and `tsan`
+  execution through `python build.py wsl`. Tooling tests pin both the Python
+  forwarding and the shell-wrapper option handling, and the developer docs now
+  show the supported WSL sanitizer invocations.
 - Fix (0.4.51): `m.receipt` federation EDU content format — the receipt content
   was built as `{roomId:{userId:{event_ids,ts}}}` but the spec requires
   `{roomId:{receiptType:{userId:{event_ids,data:{ts}}}}}`. The missing

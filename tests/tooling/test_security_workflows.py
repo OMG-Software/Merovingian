@@ -11,6 +11,7 @@ DEPENDENCY_TRIAGE_WORKFLOW = (
     REPO_ROOT / ".github" / "workflows" / "dependency-vulnerability-triage.yml"
 )
 SBOM_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sbom.yml"
+SANITIZERS_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "sanitizers.yml"
 GITLEAKS_CONFIG = REPO_ROOT / ".gitleaks.toml"
 DEPENDENCY_REVIEW_CONFIG = REPO_ROOT / ".github" / "dependency-review-config.yml"
 RELEASE_READINESS_SCRIPT = REPO_ROOT / "scripts" / "check-release-readiness.sh"
@@ -79,6 +80,19 @@ class SecurityWorkflowTests(unittest.TestCase):
         self.assertIn("format: cyclonedx-json", workflow)
         self.assertIn("artifact-name: merovingian-sbom-spdx", workflow)
         self.assertIn("artifact-name: merovingian-sbom-cyclonedx", workflow)
+
+    def test_sanitizer_workflow_runs_threadsanitizer_with_project_suppressions(self) -> None:
+        # GIVEN the repository sanitizer workflow.
+        self.assertTrue(SANITIZERS_WORKFLOW.is_file(), "sanitizers workflow is missing")
+        workflow = SANITIZERS_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN concurrency regressions are checked in CI.
+        # THEN the workflow keeps a dedicated ThreadSanitizer job wired to the
+        # repository suppressions file instead of relying only on ASan/UBSan.
+        self.assertIn("asan-ubsan:", workflow)
+        self.assertIn("tsan:", workflow)
+        self.assertIn("TSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/sanitizer/tsan.supp", workflow)
+        self.assertIn("sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread", workflow)
 
     def test_release_readiness_requires_security_workflow_assets(self) -> None:
         # GIVEN the release-readiness script.

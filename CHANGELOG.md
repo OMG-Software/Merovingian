@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.4.52
+
+- Fix a data race in the federation outbound HTTP client that intermittently
+  broke E2EE. `OutboundClient` reused a single libcurl easy handle for every
+  request, but the runtime shares one instance across the federation dispatch
+  worker thread and the HTTP request-handler thread pool. A libcurl easy handle
+  must never be driven by more than one thread at a time, so concurrent calls
+  (e.g. a client `/keys/query` federation proxy while the dispatch worker was
+  sending a transaction to the same peer) corrupted the handle and surfaced as a
+  spurious `network_error` returned in zero milliseconds. The failed remote key
+  query returned an empty `device_keys` set, so the client could not establish
+  Olm sessions with the remote devices and emitted `m.room_key.withheld`.
+  `perform()` now drives a per-thread easy handle (created lazily, freed at
+  thread exit), making a single `OutboundClient` safe to share across threads
+  while preserving per-thread connection and TLS-session reuse. `OutboundClient`
+  is now stateless (the per-instance pimpl was removed).
+- Add a ThreadSanitizer (`tsan`) job to the sanitizers CI workflow. The existing
+  sanitizer job only ran ASan+UBSan, neither of which detects data races, so the
+  `OutboundClient` race above could not have been caught by CI. The new job
+  builds and tests with `-Db_sanitize=thread` and uses a project suppressions
+  file (`tests/sanitizer/tsan.supp`) scoped to third-party dependencies only.
+  The new concurrency test in `tests/unit/test_outbound_client.cpp` is a
+  deterministic regression guard under this job.
+- Add a workflow tooling guard for the sanitizer matrix. The Python workflow
+  tests now assert that `.github/workflows/sanitizers.yml` retains both the
+  existing `asan-ubsan` job and the new `tsan` job wired to
+  `tests/sanitizer/tsan.supp`, so a future CI edit cannot silently drop the
+  race-detection coverage.
+- Fix the unified `build.py` WSL entrypoint so it can execute sanitizer builds
+  directly. Previously `python build.py wsl` ignored `--profile`, `--buildtype`,
+  `--sanitize`, `--coverage`, `--build-fuzz`, and `--hardening`, and the
+  `scripts/build-wsl.sh` wrapper could not parse those options either. WSL now
+  exposes the same profile/sanitizer controls as the Linux and BSD targets, so
+  `python build.py wsl --builddir build-tsan --buildtype debug --sanitize thread`
+  and `python build.py wsl --builddir build-asan --buildtype debug --sanitize address,undefined`
+  are first-class supported paths. Added tooling coverage and updated the
+  developer docs.
+
 ## 0.4.51
 
 - Fix `m.receipt` federation EDU content format: the receipt content was built
