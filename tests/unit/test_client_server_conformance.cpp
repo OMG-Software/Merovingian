@@ -510,6 +510,114 @@ SCENARIO("POST /keys/claim response contains one_time_keys and failures objects"
     }
 }
 
+// --- keys/upload → keys/query round-trip -------------------------------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysquery
+//
+// After uploading device keys, POST /keys/query MUST return those keys for
+// that user.  This round-trip verifies that the upload is actually stored and
+// retrievable, not just acknowledged.
+SCENARIO("POST /keys/upload then POST /keys/query returns the uploaded device keys",
+         "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("a logged-in device that has uploaded its device keys")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:DEVICE1":"base64+pubkey"},"signatures":{}},"one_time_keys":{}})"})
+                .response.status == 200U);
+
+        WHEN("the device queries keys for that user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/query", token,
+                 R"({"device_keys":{"@alice:example.org":[]}})"});
+
+            THEN("the response contains a device_keys entry for the user")
+            {
+                // Spec MUST: uploaded device keys MUST appear under the user ID.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* device_keys = object_member_as_object(body, "device_keys");
+                REQUIRE(device_keys != nullptr);
+                auto const* user_keys = object_member_as_object(*device_keys, "@alice:example.org");
+                REQUIRE(user_keys != nullptr);
+                REQUIRE(!user_keys->empty());
+            }
+        }
+    }
+}
+
+// --- keys/upload (OTKs) → keys/claim round-trip -----------------------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysclaim
+//
+// After uploading one-time keys, POST /keys/claim MUST return one key for the
+// claimed device and algorithm, and the key MUST be consumed (subsequent claim
+// returns empty unless a fallback key exists).
+SCENARIO("POST /keys/upload with OTKs then POST /keys/claim returns and consumes the key",
+         "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("a logged-in device that has uploaded a one-time key")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:DEVICE1":"pubkey1"},"signatures":{}},"one_time_keys":{"signed_curve25519:AAAAAAAA":{"key":"otk+base64+key","signatures":{}}}})"})
+                .response.status == 200U);
+
+        WHEN("another device claims a one-time key for DEVICE1")
+        {
+            auto const claim = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/claim", token,
+                 R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
+
+            THEN("the one-time key is returned for DEVICE1")
+            {
+                // Spec MUST: claimed key MUST be present under user → device.
+                REQUIRE(claim.response.status == 200U);
+                auto const body = parse_object(claim.response.body);
+                auto const* otks = object_member_as_object(body, "one_time_keys");
+                REQUIRE(otks != nullptr);
+                auto const* user_otks = object_member_as_object(*otks, "@alice:example.org");
+                REQUIRE(user_otks != nullptr);
+                REQUIRE(!user_otks->empty());
+            }
+
+            AND_THEN("a second claim returns empty (key was consumed)")
+            {
+                auto const claim2 = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"POST", "/_matrix/client/v3/keys/claim", token,
+                     R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
+                REQUIRE(claim2.response.status == 200U);
+                auto const body2 = parse_object(claim2.response.body);
+                auto const* otks2 = object_member_as_object(body2, "one_time_keys");
+                REQUIRE(otks2 != nullptr);
+                // No key was uploaded so no key should be returned.
+                auto const* user_otks2 = object_member_as_object(*otks2, "@alice:example.org");
+                // Either no user entry or an empty device map indicates consumption.
+                if (user_otks2 != nullptr)
+                {
+                    auto const* device_keys2 = object_member_as_object(*user_otks2, "DEVICE1");
+                    REQUIRE((device_keys2 == nullptr || device_keys2->empty()));
+                }
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/keys/device_signing/upload ----------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysdevice_signingupload
 //
@@ -2378,11 +2486,12 @@ SCENARIO("GET /keys/changes reflects device-key uploads made after the from toke
 
 // --- GET /_matrix/client/v3/room_keys/version/{version} ----------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keysversionversion
-// IMPLEMENTATION GAP: fetching a specific backup version by ID not yet implemented.
-SCENARIO("GET /room_keys/version/{version} returns 404 M_UNRECOGNIZED (implementation gap)",
+//
+// MUST return algorithm, auth_data, and version for the requested backup version.
+SCENARIO("GET /room_keys/version/{version} returns backup data for a specific version",
          "[conformance][client-server][e2ee]")
 {
-    GIVEN("a running client-server and a logged-in user with a backup")
+    GIVEN("a logged-in user with a key backup version created")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -2400,14 +2509,47 @@ SCENARIO("GET /room_keys/version/{version} returns 404 M_UNRECOGNIZED (implement
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/room_keys/version/1", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the response is 200 with algorithm, auth_data, and version")
             {
-                // IMPLEMENTATION GAP: per-version backup fetch not supported.
+                // Spec MUST: 200 with backup metadata for the requested version.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* algorithm = string_member(body, "algorithm");
+                REQUIRE(algorithm != nullptr);
+                REQUIRE(!algorithm->empty());
+                REQUIRE(object_member_as_object(body, "auth_data") != nullptr);
+                auto const* version = string_member(body, "version");
+                REQUIRE(version != nullptr);
+                REQUIRE(*version == "1");
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keysversionversion
+//
+// MUST return 404 M_NOT_FOUND for a version that does not exist.
+SCENARIO("GET /room_keys/version/{version} returns 404 for an unknown version",
+         "[conformance][client-server][e2ee]")
+{
+    GIVEN("a logged-in user with no key backup")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("GET /room_keys/version/99 is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/room_keys/version/99", token, {}});
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }
@@ -2694,10 +2836,11 @@ SCENARIO("DELETE /room_keys/keys/{roomId}/{sessionId} removes a backed-up sessio
 
 // --- GET /_matrix/client/v3/room_keys/keys ------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keyskeys
-// IMPLEMENTATION GAP: bulk room key backup retrieval not yet implemented.
-SCENARIO("GET /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][e2ee]")
+//
+// MUST return 200 with {"rooms":{}} when no sessions are backed up.
+SCENARIO("GET /room_keys/keys returns 200 with rooms object", "[conformance][client-server][e2ee]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a logged-in user with no key backup sessions")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -2708,14 +2851,59 @@ SCENARIO("GET /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)", 
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/room_keys/keys", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the response is 200 with a rooms object")
             {
-                // IMPLEMENTATION GAP: bulk room key retrieval not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: 200 with {"rooms":{...}} on success.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(object_member_as_object(body, "rooms") != nullptr);
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keyskeys
+//
+// After uploading sessions via batch PUT, GET /room_keys/keys MUST return the
+// sessions nested under their room in the rooms object.
+SCENARIO("GET /room_keys/keys returns stored sessions grouped by room",
+         "[conformance][client-server][e2ee]")
+{
+    GIVEN("a logged-in user who has uploaded a batch of session keys")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys", token,
+                 R"({"rooms":{"!batchroom:example.org":{"sessions":{"bsess1":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}}}}}})"})
+                .response.status == 200U);
+
+        WHEN("GET /room_keys/keys is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/room_keys/keys", token, {}});
+
+            THEN("the rooms object contains the uploaded room and session")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* room = object_member_as_object(*rooms, "!batchroom:example.org");
+                REQUIRE(room != nullptr);
+                auto const* sessions = object_member_as_object(*room, "sessions");
+                REQUIRE(sessions != nullptr);
+                REQUIRE(object_member_as_object(*sessions, "bsess1") != nullptr);
             }
         }
     }
@@ -2824,28 +3012,54 @@ SCENARIO("PUT /room_keys/keys with ?version query param is routed correctly",
 
 // --- DELETE /_matrix/client/v3/room_keys/keys ---------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#delete_matrixclientv3room_keyskeys
-// IMPLEMENTATION GAP: bulk room key backup deletion not yet implemented.
-SCENARIO("DELETE /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][e2ee]")
+//
+// MUST return 200 with count and etag.  After deletion GET /room_keys/keys
+// MUST return an empty rooms object.
+SCENARIO("DELETE /room_keys/keys removes all sessions and returns count",
+         "[conformance][client-server][e2ee]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a logged-in user with uploaded session backups")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys", token,
+                 R"({"rooms":{"!delroom:example.org":{"sessions":{"dsess1":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"x","ephemeral":"y","mac":"z"}}}}}})"})
+                .response.status == 200U);
+
         WHEN("DELETE /room_keys/keys is called")
         {
-            auto const response = merovingian::homeserver::handle_client_server_request(
+            auto const del = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"DELETE", "/_matrix/client/v3/room_keys/keys", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the response is 200 with count and etag fields")
             {
-                // IMPLEMENTATION GAP: bulk room key deletion not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                // Spec MUST: 200 with count (integer) and etag (string).
+                REQUIRE(del.response.status == 200U);
+                auto const body = parse_object(del.response.body);
+                REQUIRE(int_member(body, "count") != nullptr);
+                REQUIRE(string_member(body, "etag") != nullptr);
+            }
+
+            AND_THEN("GET /room_keys/keys returns an empty rooms object")
+            {
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/room_keys/keys", token, {}});
+                REQUIRE(get.response.status == 200U);
+                auto const body = parse_object(get.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(rooms->empty());
             }
         }
     }
@@ -2853,9 +3067,11 @@ SCENARIO("DELETE /room_keys/keys returns 404 M_UNRECOGNIZED (implementation gap)
 
 // --- GET /_matrix/client/v3/room_keys/keys/{roomId} --------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keyskeysroomid
-SCENARIO("GET /room_keys/keys/{roomId} returns room key backup data", "[conformance][client-server][e2ee]")
+//
+// MUST return {"sessions":{...}} — NOT a "rooms" wrapper.
+SCENARIO("GET /room_keys/keys/{roomId} returns a sessions object", "[conformance][client-server][e2ee]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a logged-in user with no sessions for the room")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -2866,12 +3082,56 @@ SCENARIO("GET /room_keys/keys/{roomId} returns room key backup data", "[conforma
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org", token, {}});
 
-            THEN("the server returns 200 with a rooms object")
+            THEN("the response is 200 with a sessions object (not rooms)")
+            {
+                // Spec MUST: room-level GET returns RoomKeyBackup {"sessions":{...}}.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(object_member_as_object(body, "sessions") != nullptr);
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keyskeysroomid
+//
+// After uploading sessions, GET /room_keys/keys/{roomId} MUST include those
+// sessions keyed by session ID under "sessions".
+SCENARIO("GET /room_keys/keys/{roomId} returns uploaded sessions for that room",
+         "[conformance][client-server][e2ee]")
+{
+    GIVEN("a logged-in user who has uploaded a session for a specific room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys/%21roomR%3Aexample.org/rsessX", token,
+                 R"({"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}})"})
+                .response.status == 200U);
+
+        WHEN("GET /room_keys/keys/{roomId} is called for that room")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/room_keys/keys/%21roomR%3Aexample.org", token, {}});
+
+            THEN("the sessions object contains the uploaded session")
             {
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* rooms = object_member_as_object(body, "rooms");
-                REQUIRE(rooms != nullptr);
+                auto const* sessions = object_member_as_object(body, "sessions");
+                REQUIRE(sessions != nullptr);
+                REQUIRE(object_member_as_object(*sessions, "rsessX") != nullptr);
             }
         }
     }

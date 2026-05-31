@@ -2,6 +2,17 @@
 
 ## 0.4.50
 
+- Implement `GET /room_keys/version/{version}`: returns backup metadata for the
+  requested version, or 404 M_NOT_FOUND if absent.
+- Implement `GET /room_keys/keys` (bulk): returns all sessions grouped as
+  `{"rooms":{"roomId":{"sessions":{...}}}}`.
+- Implement `DELETE /room_keys/keys` (bulk): removes all key backup sessions
+  via `delete_all_key_backup_sessions`, returns `{"count":0,"etag":"1"}`.
+- Fix `GET /room_keys/keys/{roomId}` response format: was returning
+  `{"rooms":{}}` (wrong per spec); now returns `{"sessions":{sessionId:data,...}}`.
+- Add round-trip conformance tests: keys/upload→query, keys/upload OTK→claim
+  (OTK consumed), batch PUT→GET bulk (rooms structure), batch PUT→GET/{roomId}
+  (sessions structure), bulk DELETE→GET confirms empty.
 - Fix key backup routing: `PUT /room_keys/keys?version=N` was returning 404
   because `match_key_api_route` compared the path template against the full
   request target including the query string. The fix strips the query portion
