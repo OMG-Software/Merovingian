@@ -1027,6 +1027,23 @@ adapters.
 
 ## Completed capability notes
 
+### send_join response uses pre-join state snapshot (0.4.50)
+
+- `send_join` response now returns room state **prior to** the new join event,
+  as required by spec §11.5.1. Previously the join event was persisted before
+  building `state` and `auth_chain`, so the joining user appeared as
+  `membership=join` in the state array. Synapse uses the returned state to
+  recalculate expected `auth_events` — finding the join event itself as the
+  current member state produces a circular reference: Synapse calculates the
+  join should reference itself, mismatches the claimed `auth_events`, and logs a
+  WARNING. The fix snapshots state IDs before `store_event_with_state` and uses
+  that pre-join snapshot for both arrays in the response. The join event itself
+  is returned separately in the `event` field (v2) and is never included in
+  `state` or `auth_chain`.
+- Existing test corrected: the scenario that asserted `membership=join` in the
+  `state` array was testing the wrong (buggy) behaviour. It now asserts
+  `membership=invite` and also verifies the join event ID is absent from `state`.
+
 ### make_join create event excluded from auth_events (0.4.49)
 
 - `make_join` template no longer includes `m.room.create` in `auth_events`

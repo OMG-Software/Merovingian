@@ -1113,13 +1113,20 @@ SCENARIO("send_join response includes origin, non-empty state, and non-empty aut
     }
 }
 
-// --- send_join state contains joining user's membership event ----------------
-// Spec: Matrix Server-Server API v1.18
+// --- send_join state is PRE-JOIN (invite visible, join event absent) ---------
+// Spec: Matrix Server-Server API v1.18 §11.5.1
 // URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
 //
-// The `state` returned represents the room state AFTER the join is processed.
-// It MUST include the joining user's m.room.member event with membership "join".
-SCENARIO("send_join state array contains the joining user m.room.member event with membership join",
+// The `state` field MUST represent the room state PRIOR TO the new join event.
+// The joining user's m.room.member event in state must therefore show
+// membership="invite" (not "join"), and the join event itself must NOT appear
+// anywhere in the state array.
+//
+// If state contains the post-join snapshot, Synapse uses it to recalculate
+// expected auth_events for the join, finds the join event as the current member
+// state, and calculates that the join should reference itself — a circular
+// dependency that triggers a Synapse WARNING and breaks auth chain validation.
+SCENARIO("send_join state array reflects pre-join room state with membership invite for joining user",
          "[homeserver][federation][send_join][spec]")
 {
     GIVEN("a room with a pending invite for a remote user")
@@ -1162,7 +1169,7 @@ SCENARIO("send_join state array contains the joining user m.room.member event wi
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime.federation, signed_put(target, join_body));
 
-            THEN("state contains an m.room.member event with state_key and membership=join for the remote user")
+            THEN("state shows the remote user as invited (pre-join) and the join event is absent from state")
             {
                 REQUIRE(response.status == 200U);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
@@ -1176,8 +1183,11 @@ SCENARIO("send_join state array contains the joining user m.room.member event wi
                     std::get_if<merovingian::canonicaljson::Array>(&state_val->storage());
                 REQUIRE(state_arr != nullptr);
 
-                // Spec MUST: state includes the joining user's m.room.member with membership=join
-                auto const has_join_member = std::any_of(
+                // Spec MUST: state is the room state PRIOR TO the join. The joining
+                // user's m.room.member event must show membership="invite", not "join".
+                // This prevents Synapse from recalculating the join event's auth_events
+                // as referencing itself (a circular dependency it logs as a WARNING).
+                auto const has_invite_member = std::any_of(
                     state_arr->begin(), state_arr->end(), [&](auto const& v) {
                         auto const* obj =
                             std::get_if<merovingian::canonicaljson::Object>(&v.storage());
@@ -1199,9 +1209,24 @@ SCENARIO("send_join state array contains the joining user m.room.member event wi
                         auto const* mem_val = json_get(*content_obj, std::string{"membership"});
                         if (mem_val == nullptr) return false;
                         auto const* mem_str = std::get_if<std::string>(&mem_val->storage());
-                        return mem_str != nullptr && *mem_str == std::string{"join"};
+                        return mem_str != nullptr && *mem_str == std::string{"invite"};
                     });
-                REQUIRE(has_join_member);
+                REQUIRE(has_invite_member);
+
+                // The join event itself must NOT be in the state array.
+                // If it were, Synapse calculates auth_events[m.room.member] = join event
+                // then expects the join to reference itself — the circular bug.
+                auto const join_in_state = std::any_of(
+                    state_arr->begin(), state_arr->end(), [&](auto const& v) {
+                        auto const* obj =
+                            std::get_if<merovingian::canonicaljson::Object>(&v.storage());
+                        if (obj == nullptr) return false;
+                        auto const* eid_val = json_get(*obj, std::string{"event_id"});
+                        if (eid_val == nullptr) return false;
+                        auto const* eid_str = std::get_if<std::string>(&eid_val->storage());
+                        return eid_str != nullptr && *eid_str == join_event_id;
+                    });
+                REQUIRE_FALSE(join_in_state);
             }
         }
     }

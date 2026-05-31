@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.49
+Version:        0.4.50
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun May 31 2026 James Chapman <claude@ping.me.uk> - 0.4.50-1
+- Fix send_join response to return pre-join state snapshot (prevented Synapse auth_events circular reference warning)
+
 * Sun May 31 2026 James Chapman <claude@ping.me.uk> - 0.4.49-1
 - Fix make_join template including m.room.create in auth_events for room v12 (caused Synapse AssertionError on join)
 

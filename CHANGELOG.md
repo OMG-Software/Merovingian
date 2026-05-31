@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.4.50
+
+- Fix `send_join` response to return room state **prior to** the new join event,
+  per spec §11.5.1. Previously we persisted the join event first then built state
+  from the live store, so the joining user appeared as `membership=join` in the
+  state snapshot. Synapse uses the returned state to recalculate expected
+  `auth_events` for the join — finding the join event itself as the member state
+  creates a circular reference that triggers a Synapse WARNING and causes
+  `auth_events` mismatch errors. The fix snapshots state IDs before persistence
+  and uses that pre-join snapshot for both `state` and `auth_chain` in the
+  response. Updated the existing `send_join` state test (which had the spec
+  backwards: was asserting `membership=join`, now correctly asserts
+  `membership=invite`) and added an assertion that the join event ID itself is
+  absent from the returned state array.
+
 ## 0.4.49
 
 - Fix `make_join` template including `m.room.create` in `auth_events` for room
