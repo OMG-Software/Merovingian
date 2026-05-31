@@ -1280,7 +1280,7 @@ SCENARIO("POST /logout/all returns 200 with empty JSON object", "[conformance][c
                 REQUIRE(response.response.status == 200U);
                 // Body must parse as an object (spec shows {}).
                 auto const body = parse_object(response.response.body);
-                (void)body;
+                std::ignore = body;
             }
         }
     }
@@ -1688,7 +1688,7 @@ SCENARIO("POST /account/password returns 200 with empty JSON object", "[conforma
                 // Spec MUST: 200 on successful password change.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                (void)body;
+                std::ignore = body;
             }
         }
     }
@@ -2295,7 +2295,7 @@ SCENARIO("PUT /devices/{deviceId} returns 200 with empty JSON object", "[conform
                 // Spec MUST: 200 on successful device display name update.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                (void)body;
+                std::ignore = body;
             }
         }
     }
@@ -2348,7 +2348,7 @@ SCENARIO("DELETE /devices/{deviceId} returns 200 with empty JSON object", "[conf
                 // Spec MUST: 200 on successful device deletion.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                (void)body;
+                std::ignore = body;
             }
         }
     }
@@ -2587,7 +2587,7 @@ SCENARIO("PUT /room_keys/version/{version} returns 200 after updating backup met
                 // Spec MUST: 200 on successful backup version update.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                (void)body;
+                std::ignore = body;
             }
         }
     }
@@ -2623,7 +2623,7 @@ SCENARIO("DELETE /room_keys/version/{version} returns 200 after deleting a backu
                 // Spec MUST: 200 on successful backup version deletion.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                (void)body;
+                std::ignore = body;
             }
         }
     }
@@ -2660,7 +2660,7 @@ SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} stores a session key backup",
                 // Spec MUST: 200 on successful session key backup storage.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                (void)body;
+                std::ignore = body;
             }
         }
     }
@@ -2702,7 +2702,7 @@ SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} retrieves a backed-up session
                 // Spec MUST: 200 with session backup data.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                (void)body;
+                std::ignore = body;
             }
         }
     }
@@ -2828,7 +2828,7 @@ SCENARIO("DELETE /room_keys/keys/{roomId}/{sessionId} removes a backed-up sessio
                 // Spec MUST: 200 on successful session key deletion.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                (void)body;
+                std::ignore = body;
             }
         }
     }
