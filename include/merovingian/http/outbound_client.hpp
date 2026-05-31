@@ -3,7 +3,6 @@
 
 #include <cstddef>
 #include <cstdint>
-#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -109,11 +108,12 @@ struct SystemCaTrust final
 
 // Federation outbound HTTP client.
 //
-// A single OutboundClient instance may be reused across calls. perform() is
-// not internally synchronized and callers must not invoke it concurrently
-// from multiple threads on the same instance. Construction may throw
-// std::bad_alloc; all other operations are noexcept-friendly and return
-// errors through OutboundResult.
+// A single OutboundClient instance may be reused across calls and shared
+// across threads: perform() drives a per-thread transport handle, so the
+// runtime can hand one instance to both the federation dispatch worker and the
+// HTTP request-handler thread pool without locking or risking cross-thread
+// corruption. The client holds no per-instance state; all operations are
+// noexcept-friendly and return errors through OutboundResult.
 class OutboundClient final
 {
 public:
@@ -128,11 +128,8 @@ public:
     // Performs the request and returns the result. Fails closed when request
     // invariants are violated or when the underlying transport reports an
     // error. Pre-network validation runs before any DNS, TLS, or socket I/O.
+    // Safe to call concurrently from multiple threads on the same instance.
     [[nodiscard]] auto perform(OutboundRequest const& request) -> OutboundResult;
-
-private:
-    struct Impl;
-    std::unique_ptr<Impl> impl_;
 };
 
 } // namespace merovingian::http

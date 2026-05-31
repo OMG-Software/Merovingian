@@ -5,6 +5,8 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <curl/curl.h>
+
 #include <algorithm>
 #include <array>
 #include <charconv>
@@ -12,15 +14,12 @@
 #include <cstdint>
 #include <filesystem>
 #include <limits>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
-
-#include <curl/curl.h>
 
 namespace merovingian::http
 {
@@ -75,6 +74,51 @@ namespace
     {
         static auto const guard = CurlGlobalGuard{};
         return guard.initialized();
+    }
+
+    // Owns one libcurl easy handle for the lifetime of a single thread. A curl
+    // easy handle must never be driven by more than one thread at a time, so
+    // each thread gets its own. The handle is freed when the thread exits.
+    class ThreadCurlHandle final
+    {
+    public:
+        ThreadCurlHandle() noexcept
+        {
+            if (ensure_curl_initialized())
+            {
+                handle_ = curl_easy_init();
+            }
+        }
+        ~ThreadCurlHandle()
+        {
+            if (handle_ != nullptr)
+            {
+                curl_easy_cleanup(handle_);
+            }
+        }
+        ThreadCurlHandle(ThreadCurlHandle const&) = delete;
+        auto operator=(ThreadCurlHandle const&) -> ThreadCurlHandle& = delete;
+        ThreadCurlHandle(ThreadCurlHandle&&) noexcept = delete;
+        auto operator=(ThreadCurlHandle&&) noexcept -> ThreadCurlHandle& = delete;
+
+        [[nodiscard]] auto get() const noexcept -> CURL*
+        {
+            return handle_;
+        }
+
+    private:
+        CURL* handle_{nullptr};
+    };
+
+    // Returns the calling thread's dedicated easy handle, creating it on first
+    // use. Because every perform() resets the handle before configuring it, the
+    // handle can be reused across calls — and across OutboundClient instances on
+    // the same thread — without leaking state between requests, while still
+    // benefiting from libcurl's per-handle connection and TLS-session reuse.
+    [[nodiscard]] auto thread_curl_handle() noexcept -> CURL*
+    {
+        thread_local ThreadCurlHandle handle{};
+        return handle.get();
     }
 
     [[nodiscard]] auto is_known_method(std::string_view method) noexcept -> bool
@@ -323,31 +367,6 @@ namespace
 
 } // namespace
 
-struct OutboundClient::Impl final
-{
-    CURL* handle{nullptr};
-
-    Impl() noexcept
-    {
-        if (!ensure_curl_initialized())
-        {
-            return;
-        }
-        handle = curl_easy_init();
-    }
-    ~Impl()
-    {
-        if (handle != nullptr)
-        {
-            curl_easy_cleanup(handle);
-        }
-    }
-    Impl(Impl const&) = delete;
-    auto operator=(Impl const&) -> Impl& = delete;
-    Impl(Impl&&) noexcept = delete;
-    auto operator=(Impl&&) noexcept -> Impl& = delete;
-};
-
 auto outbound_error_name(OutboundError error) noexcept -> std::string_view
 {
     switch (error)
@@ -443,10 +462,7 @@ auto validate_outbound_request(OutboundRequest const& request) noexcept -> Outbo
     return OutboundError::none;
 }
 
-OutboundClient::OutboundClient()
-    : impl_(std::make_unique<Impl>())
-{
-}
+OutboundClient::OutboundClient() = default;
 
 OutboundClient::~OutboundClient() = default;
 
@@ -458,7 +474,11 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
         return fail(validation, std::string{outbound_error_name(validation)});
     }
 
-    if (impl_->handle == nullptr)
+    // Each thread drives its own easy handle; a single OutboundClient instance
+    // is therefore safe to share across the dispatch worker and the request
+    // handler pool without locking.
+    auto* handle = thread_curl_handle();
+    if (handle == nullptr)
     {
         return fail(OutboundError::network_error, "curl handle unavailable");
     }
@@ -469,7 +489,6 @@ auto OutboundClient::perform(OutboundRequest const& request) -> OutboundResult
         return fail(OutboundError::invalid_url, std::string{outbound_error_name(OutboundError::invalid_url)});
     }
 
-    auto* handle = impl_->handle;
     curl_easy_reset(handle);
 
     if (!configure_security_options(handle))

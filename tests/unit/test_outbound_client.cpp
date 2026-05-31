@@ -4,8 +4,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <atomic>
 #include <filesystem>
 #include <string>
+#include <thread>
+#include <vector>
 
 SCENARIO("System CA trust detection locates the host trust store", "[http][outbound][tls]")
 {
@@ -206,6 +209,80 @@ SCENARIO("Outbound HTTP client rejects unsafe requests before any network I/O", 
                 REQUIRE_FALSE(result.ok);
                 REQUIRE(result.error == merovingian::http::OutboundError::invalid_method);
                 REQUIRE(result.response.status == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("A single OutboundClient serves concurrent perform() calls without cross-thread corruption",
+         "[http][outbound][concurrency]")
+{
+    // The runtime shares one OutboundClient across the federation dispatch
+    // worker thread and the HTTP request-handler thread pool. perform() must
+    // therefore tolerate concurrent invocation on the same instance: each call
+    // owns its own transport state so no caller can corrupt another's request.
+    // This is the regression guard for the shared-curl-handle data race that
+    // surfaced as spurious network_error failures on federation key queries.
+    GIVEN("one OutboundClient shared by many threads")
+    {
+        auto client = merovingian::http::OutboundClient{};
+
+        // A request that passes pre-network validation and therefore drives the
+        // underlying transport handle. The pinned address points the URL host
+        // at a closed local port so each call returns quickly with a transport
+        // failure instead of touching any real federation peer.
+        auto make_request = []() {
+            auto request = merovingian::http::OutboundRequest{};
+            request.method = "GET";
+            request.url = "https://concurrency.test.invalid:1/_matrix/key/v2/server";
+            request.pinned_addresses = {"127.0.0.1"};
+            request.connect_timeout_seconds = 2U;
+            request.total_timeout_seconds = 2U;
+            return request;
+        };
+
+        WHEN("many threads each call perform() repeatedly on the shared instance")
+        {
+            constexpr auto thread_count = std::size_t{8U};
+            constexpr auto calls_per_thread = std::size_t{16U};
+
+            auto start = std::atomic<bool>{false};
+            auto well_formed_results = std::atomic<std::size_t>{0U};
+            auto threads = std::vector<std::thread>{};
+            threads.reserve(thread_count);
+
+            for (auto t = std::size_t{0U}; t < thread_count; ++t)
+            {
+                threads.emplace_back([&] {
+                    // Spin until released so the calls overlap as much as
+                    // possible, maximising the chance of catching a race.
+                    while (!start.load(std::memory_order_acquire))
+                    {
+                    }
+                    for (auto c = std::size_t{0U}; c < calls_per_thread; ++c)
+                    {
+                        auto const result = client.perform(make_request());
+                        // A fail-closed result with no status and no body is the
+                        // only correct outcome for a refused connection. Any
+                        // bleed-over from another thread's request would show up
+                        // as a success, a populated body, or a non-zero status.
+                        if (!result.ok && result.response.status == 0U && result.response.body.empty())
+                        {
+                            well_formed_results.fetch_add(1U, std::memory_order_relaxed);
+                        }
+                    }
+                });
+            }
+
+            start.store(true, std::memory_order_release);
+            for (auto& thread : threads)
+            {
+                thread.join();
+            }
+
+            THEN("every concurrent call returns its own well-formed, fail-closed result")
+            {
+                REQUIRE(well_formed_results.load() == thread_count * calls_per_thread);
             }
         }
     }

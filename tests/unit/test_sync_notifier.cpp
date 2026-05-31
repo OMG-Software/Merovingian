@@ -122,16 +122,20 @@ SCENARIO("SyncNotifier wait returns false on timeout when nothing publishes", "[
 SCENARIO("An external mutex is releasable while a sync wait is parked",
          "[sync][notifier][lock-release]")
 {
-    GIVEN("a unique_lock holding a mutex and a SyncNotifier at counters 0,0")
+    GIVEN("a mutex a client holds across a sync wait and a SyncNotifier at counters 0,0")
     {
         auto notifier = merovingian::sync::SyncNotifier{};
         auto mtx = std::timed_mutex{};
-        auto lock = std::unique_lock<std::timed_mutex>{mtx};
 
         WHEN("a waiter thread unlocks the mutex, calls wait_for_change, then re-locks")
         {
             auto waiter_done = std::atomic<bool>{false};
             auto waiter = std::thread{[&] {
+                // The full lock lifecycle stays on this thread: a
+                // std::timed_mutex must be unlocked by the same thread that
+                // locked it, so acquiring it here (not on the test thread)
+                // keeps lock/unlock/re-lock ownership consistent.
+                auto lock = std::unique_lock<std::timed_mutex>{mtx};
                 lock.unlock();
                 std::ignore = notifier.wait_for_change(0U, 0U, std::chrono::milliseconds{2000});
                 lock.lock();

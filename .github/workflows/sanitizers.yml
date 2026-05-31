@@ -37,3 +37,40 @@ jobs:
 
       - name: Build and test with sanitizers
         run: sh scripts/build-linux.sh --builddir build --buildtype debug --sanitize address,undefined
+
+  tsan:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+      # ThreadSanitizer is the only sanitizer that detects data races. Point it
+      # at the project suppressions file so benign reports from uninstrumented
+      # third-party dependencies do not mask races in our own code.
+      TSAN_OPTIONS: suppressions=${{ github.workspace }}/tests/sanitizer/tsan.supp history_size=7 second_deadlock_stack=1
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            bison \
+            clang \
+            catch2 \
+            flex \
+            libpq-dev \
+            libsodium-dev \
+            libssl-dev \
+            m4 \
+            perl \
+            pkg-config
+          python -m pip install --upgrade pip
+          python -m pip install --upgrade meson ninja
+
+      - name: Build and test with ThreadSanitizer
+        run: sh scripts/build-linux.sh --builddir build-tsan --buildtype debug --sanitize thread

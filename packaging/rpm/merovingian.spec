@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.51
+Version:        0.4.52
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun May 31 2026 James Chapman <claude@ping.me.uk> - 0.4.52-1
+- Fix data race in outbound HTTP client: a single shared libcurl easy handle was driven from multiple threads, causing spurious network_error on federation key queries and breaking E2EE (m.room_key.withheld). perform() now uses a per-thread handle.
+
 * Sun May 31 2026 James Chapman <claude@ping.me.uk> - 0.4.51-1
 - Fix m.receipt federation EDU format: add missing receipt-type nesting and wrap ts in data object (was causing Synapse 500 on every outbound transaction)
 

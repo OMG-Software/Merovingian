@@ -49,9 +49,20 @@ Not implemented yet:
 
 The public surface comprises `OutboundRequest`, `OutboundResponse`,
 `OutboundResult`, `OutboundError`, the pure `validate_outbound_request`
-helper, and the `OutboundClient` class itself. Construction may throw
-`std::bad_alloc`; all other operations report failures through
+helper, and the `OutboundClient` class itself. The client is stateless and
+holds no per-instance resources; operations report failures through
 `OutboundResult` rather than exceptions.
+
+A single `OutboundClient` instance is safe to share across threads. The
+runtime hands one instance to both the federation dispatch-worker thread and
+the HTTP request-handler thread pool. A libcurl easy handle must never be
+driven by more than one thread at a time, so `perform()` uses a per-thread
+handle: each thread lazily creates its own handle on first use and frees it at
+thread exit. Because every call resets the handle before configuring it, the
+handle is reused across calls (preserving per-thread connection and
+TLS-session reuse) without leaking state between requests. Sharing a single
+handle across threads previously caused intermittent `network_error` failures
+on federation key queries that broke E2EE.
 
 The validator enforces the security invariants that hold regardless of
 backend choice:

@@ -51,6 +51,18 @@ def run_wsl(args: argparse.Namespace, extra: list[str]) -> int:
     wsl_args += ["--cc", args.cc]
     wsl_args += ["--cxx", args.cxx]
     wsl_args += ["--wrap-mode", args.wrap_mode]
+    if args.profile:
+        wsl_args += ["--profile", args.profile]
+    if args.buildtype:
+        wsl_args += ["--buildtype", args.buildtype]
+    if args.sanitize:
+        wsl_args += ["--sanitize", args.sanitize]
+    if args.coverage:
+        wsl_args.append("--coverage")
+    if args.build_fuzz:
+        wsl_args.append("--build-fuzz")
+    if args.hardening:
+        wsl_args.append("--hardening")
     if args.no_tests:
         wsl_args.append("--no-tests")
     if args.setup_only:
@@ -223,6 +235,7 @@ examples:
     wsl_parser = subparsers.add_parser("wsl",
                                         help="WSL (Windows Subsystem for Linux) build")
     add_common_dev_args(wsl_parser, "build-wsl")
+    add_profile_args(wsl_parser)
     wsl_parser.add_argument("--distro", default="",
                              help="WSL distro name (default: system default)")
     wsl_parser.add_argument("--clean", action="store_true",

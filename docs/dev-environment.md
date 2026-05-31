@@ -150,6 +150,12 @@ python build.py bsd
 
 # WSL (Windows Subsystem for Linux)
 python build.py wsl
+
+# AddressSanitizer + UBSan through WSL
+python build.py wsl --builddir build-asan --buildtype debug --sanitize address,undefined
+
+# ThreadSanitizer through WSL
+python build.py wsl --builddir build-tsan --buildtype debug --sanitize thread
 ```
 
 ### Packaging targets
@@ -169,6 +175,9 @@ python build.py linux --builddir build-dev
 
 # Use a hardened build profile
 python build.py linux --profile hardened
+
+# Use the named sanitizer profile on WSL (defaults to address,undefined)
+python build.py wsl --profile sanitizer
 
 # Skip tests (compile only)
 python build.py wsl --no-tests
