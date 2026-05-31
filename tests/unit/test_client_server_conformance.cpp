@@ -176,12 +176,8 @@ SCENARIO("GET /versions returns required spec fields", "[conformance][client-ser
 //   access_token - non-empty bearer token (required when inhibit_login is false)
 //   device_id    - non-empty device identifier (required when inhibit_login is false)
 //
-// IMPLEMENTATION GAP: the server currently returns only user_id from /register.
 // The spec requires access_token and device_id when inhibit_login is absent/false.
-// Clients that rely on the registration token (e.g. Element) work around this
-// by calling /login immediately after /register, but the gap is a spec violation.
-// TODO: extend register_local_user to create a session and return access_token
-//       + device_id, then promote those checks from comments to REQUIRE assertions.
+// Clients read access_token from /register to avoid a separate /login round trip.
 SCENARIO("POST /register success response contains required spec fields", "[conformance][client-server][register]")
 {
     GIVEN("a running client-server with registration enabled")
@@ -209,10 +205,15 @@ SCENARIO("POST /register success response contains required spec fields", "[conf
                 REQUIRE(user_id->find(':') != std::string::npos);
 
                 // Spec MUST (when inhibit_login is false): access_token and
-                // device_id must be present. Promote to REQUIRE when the server
-                // is updated to create a session during registration.
-                // REQUIRE(string_member(body, "access_token") != nullptr);
-                // REQUIRE(string_member(body, "device_id") != nullptr);
+                // device_id must be present and non-empty.
+                // Do NOT remove — clients use the access_token from /register
+                // to avoid a separate /login round trip (spec §5.5.1).
+                auto const* access_token = string_member(body, "access_token");
+                REQUIRE(access_token != nullptr);
+                REQUIRE(!access_token->empty());
+                auto const* reg_device_id = string_member(body, "device_id");
+                REQUIRE(reg_device_id != nullptr);
+                REQUIRE(!reg_device_id->empty());
             }
         }
     }
@@ -344,8 +345,11 @@ SCENARIO("POST /logout returns 200 with empty JSON object", "[conformance][clien
                 // Spec MUST: 200 on successful logout.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                // Spec: success response must not be an error object.
+                // Spec MUST: success body is an empty JSON object {}.
+                // Do NOT remove — a non-empty body indicates spurious fields that
+                // will confuse strict Matrix clients parsing the logout response.
                 REQUIRE(object_member(body, "errcode") == nullptr);
+                REQUIRE(body.empty());
             }
         }
     }
@@ -375,12 +379,15 @@ SCENARIO("GET /whoami returns required spec fields", "[conformance][client-serve
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
 
-                // Spec MUST: "user_id" is present and fully-qualified.
+                // Spec MUST: "user_id" is present, fully-qualified, and matches the
+                // authenticated user.  Do NOT remove — a mismatch means the server
+                // is returning the wrong identity for the token.
                 auto const* user_id = string_member(body, "user_id");
                 REQUIRE(user_id != nullptr);
                 REQUIRE(user_id->starts_with("@"));
+                REQUIRE(*user_id == "@alice:example.org");
 
-                // Spec MUST: "device_id" is present.
+                // Spec MUST: "device_id" is present and non-empty.
                 auto const* device_id = string_member(body, "device_id");
                 REQUIRE(device_id != nullptr);
                 REQUIRE(!device_id->empty());
@@ -523,12 +530,15 @@ SCENARIO("POST /keys/device_signing/upload returns 200 with a valid JSON object"
                 {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
                  R"({"master_key":{"keys":{"ed25519:master":"base64key"},"usage":["master"]},"self_signing_key":{"keys":{"ed25519:self":"base64key"},"usage":["self_signing"]},"user_signing_key":{"keys":{"ed25519:user":"base64key"},"usage":["user_signing"]}})"});
 
-            THEN("the response is 200 and the body is a valid JSON object with no errcode")
+            THEN("the response is 200 and the body is an empty JSON object")
             {
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                // Spec: success response must not be an error object.
+                // Spec MUST: success body is an empty JSON object {}.
+                // Do NOT remove — clients assume {} on success; extra fields indicate
+                // a UIA challenge or error that requires different handling.
                 REQUIRE(object_member(body, "errcode") == nullptr);
+                REQUIRE(body.empty());
             }
         }
     }
@@ -1054,7 +1064,11 @@ SCENARIO("Unauthenticated requests return 401 with a Matrix error object", "[con
                 // prompt for re-authentication. An absent errcode breaks that logic.
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(!errcode->empty());
+                // Spec MUST: errcode is M_MISSING_TOKEN when no bearer token is provided.
+                // Do NOT remove — clients check this specific code to distinguish
+                // "please log in" from other 401 causes (e.g. M_UNKNOWN_TOKEN for
+                // an expired token, which requires a different recovery path).
+                REQUIRE(*errcode == "M_MISSING_TOKEN");
 
                 // Spec MUST: "error" is a human-readable string.
                 auto const* error = string_member(body, "error");

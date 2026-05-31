@@ -960,18 +960,23 @@ namespace
             {
                 tmpl.membership = "knock";
             }
-            // Populate auth_events: m.room.create, m.room.join_rules,
-            // m.room.power_levels, and the joining user's current membership
-            // (e.g. their invite event). Without this the remote server signs
-            // a join PDU with empty auth_events that remote homeservers reject
-            // with "403: You are not invited to this room".
+            // Populate auth_events: m.room.join_rules, m.room.power_levels, and
+            // the joining user's current membership (e.g. their invite event).
+            // For room versions < 12, m.room.create is also included per spec.
+            // In room version 12 (MSC4291 / create_event_is_room_id) the create
+            // event is the room ID itself and MUST NOT appear in any event's
+            // auth_events — Synapse asserts this and crashes with 500 if it does.
+            auto const* version_policy = rooms::find_room_version_policy(room_version);
+            auto const include_create_in_auth =
+                version_policy == nullptr || !version_policy->create_event_is_room_id;
             for (auto const& s : store.state)
             {
                 if (s.room_id != room_id || s.event_id.empty())
                 {
                     continue;
                 }
-                if (s.event_type == "m.room.create" || s.event_type == "m.room.join_rules" ||
+                if ((include_create_in_auth && s.event_type == "m.room.create") ||
+                    s.event_type == "m.room.join_rules" ||
                     s.event_type == "m.room.power_levels" ||
                     (s.event_type == "m.room.member" && s.state_key == user_id))
                 {

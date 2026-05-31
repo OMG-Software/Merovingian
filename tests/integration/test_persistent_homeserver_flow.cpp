@@ -12,6 +12,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <string>
@@ -139,7 +140,8 @@ SCENARIO("SQLite-backed homeserver runtime survives restart with users sessions 
                 REQUIRE(state.response.status == 200U);
                 REQUIRE(state.response.body.find("m.room.create") != std::string::npos);
                 REQUIRE(restarted_runtime.homeserver.database.persistent_store.users.size() == 1U);
-                REQUIRE(restarted_runtime.homeserver.database.persistent_store.access_tokens.size() == 1U);
+                // Register creates one token (alice_DEVICE); login creates a second (RESTART1).
+                REQUIRE(restarted_runtime.homeserver.database.persistent_store.access_tokens.size() == 2U);
                 REQUIRE(restarted_runtime.homeserver.database.persistent_store.rooms.size() == 1U);
                 // createRoom now persists the full preset chain, including
                 // guest_access and m.room.encryption (for private_chat preset),
@@ -348,11 +350,22 @@ SCENARIO("Persistent homeserver store records the client-server flow",
                 REQUIRE(logout.response.status == 200U);
                 REQUIRE(valid_store.valid);
                 REQUIRE(runtime.homeserver.database.persistent_store.users.size() == 1U);
-                REQUIRE(runtime.homeserver.database.persistent_store.devices.size() == 1U);
-                REQUIRE(runtime.homeserver.database.persistent_store.access_tokens.size() == 1U);
-                REQUIRE(runtime.homeserver.database.persistent_store.access_tokens.front().token_hash.find(
-                            "token-hash:v2:") == 0U);
-                REQUIRE(runtime.homeserver.database.persistent_store.access_tokens.front().revoked);
+                // Spec §5.5.1: /register creates one device (alice_DEVICE) when
+                // inhibit_login is absent. /login creates a second device (DEVICE1).
+                REQUIRE(runtime.homeserver.database.persistent_store.devices.size() == 2U);
+                // Two access tokens: one from the implicit registration session and
+                // one from the explicit /login. /logout revokes the login token only.
+                auto const& all_tokens = runtime.homeserver.database.persistent_store.access_tokens;
+                REQUIRE(all_tokens.size() == 2U);
+                // Exactly one token must be revoked (the one used for /logout).
+                auto const revoked = std::count_if(all_tokens.begin(), all_tokens.end(),
+                                                   [](auto const& t) { return t.revoked; });
+                REQUIRE(revoked == 1U);
+                // Both tokens must use the v2 hash format.
+                auto const all_v2 = std::all_of(all_tokens.begin(), all_tokens.end(), [](auto const& t) {
+                    return t.token_hash.find("token-hash:v2:") == 0U;
+                });
+                REQUIRE(all_v2);
                 REQUIRE(runtime.homeserver.database.persistent_store.rooms.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.memberships.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.events.size() == 8U);

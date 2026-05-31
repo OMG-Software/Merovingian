@@ -961,13 +961,13 @@ adapters.
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Authentication | `POST /_matrix/client/v3/register` | `spec-covered` | Matrix JSON body is parsed, registration-token UI auth is enforced from the configured token file. When the `auth` field is absent the server returns 401 with the `m.login.registration_token` flow, `params`, and a `session` token per Matrix UI-auth. Public registration creates non-admin users, local registration is reachable through the client listener, SQLite-backed local users survive restart, and happy-path and UI-auth challenge cases are covered by the v1.18 fixture. Needs PostgreSQL coverage. |
+| Authentication | `POST /_matrix/client/v3/register` | `spec-covered` | Matrix JSON body is parsed, registration-token UI auth is enforced from the configured token file. When the `auth` field is absent the server returns 401 with the `m.login.registration_token` flow, `params`, and a `session` token per Matrix UI-auth. When `inhibit_login` is absent or false the 200 response now includes `access_token` and `device_id` per spec §5.5.1. Public registration creates non-admin users, local registration is reachable through the client listener, SQLite-backed local users survive restart, and happy-path and UI-auth challenge cases are covered by the v1.18 fixture. Needs PostgreSQL coverage. |
 | Authentication | `GET`/`POST /_matrix/client/v3/login` | `spec-covered` | Password login works for local users with LibSodium-backed hashes, token hashes are SQLite-persisted, GET login returns password-flow discovery, restart-survival is tested, and the v1.18 fixture covers password login with and without requested refresh-token support plus missing-type and empty-body edge cases. Fixed: INSERT SQL for device and access-token rows was missing parentheses (broke all logins). Needs PostgreSQL coverage. |
 | Authentication | `POST /_matrix/client/v3/logout` | `spec-covered` | Local bearer-token logout works through the client listener, revokes the current token through the persistent store, and is covered by the v1.18 fixture with stale-token rejection. |
 | Authentication | `POST /_matrix/client/v3/logout/all` | `spec-covered` | Runtime global logout revokes all user access and refresh tokens, marks active sessions revoked, appends durable auth audit, and is covered by the v1.18 client-server fixture. |
 | Authentication | `POST /_matrix/client/v3/refresh` | `spec-covered` | Login issues a refresh token, `/refresh` rotates refresh/access tokens through persisted token hashes, revokes the old device access tokens, and is covered by the v1.18 client-server fixture with missing/reused refresh-token rejection. |
 | Account | `GET /_matrix/client/v3/account/whoami` | `spec-covered` | Local token identity works through the client listener, is covered after SQLite restart, and is covered by the v1.18 fixture. |
-| Account | `POST /_matrix/client/v3/account/password` | `spec-covered` | Authenticated password change validates the new value, hashes with Argon2id, and writes through to the in-memory runtime and the persistent store. Returns 401 without auth, 400 for weak passwords, and 200 on success. Covered by the v1.18 fixture and integration tests. Needs UI-auth re-authentication and `logout_devices` handling. |
+| Account | `POST /_matrix/client/v3/account/password` | `spec-covered` | Authenticated password change validates the new value, hashes with Argon2id, and writes through to the in-memory runtime and the persistent store. Returns 401 without auth (`M_MISSING_TOKEN` when no bearer token is supplied, `M_UNKNOWN_TOKEN` when the token is present but unrecognised, per spec §5.7.2), 400 for weak passwords, and 200 on success. Covered by the v1.18 fixture and integration tests. Needs UI-auth re-authentication and `logout_devices` handling. |
 | Devices | `GET /_matrix/client/v3/devices` | `spec-covered` | Device listing works through the client listener, is hydrated from SQLite devices, and is covered by the v1.18 client-server fixture. Needs Matrix device-list stream semantics. |
 | Devices | `GET /_matrix/client/v3/devices/{deviceId}` | `spec-covered` | Runtime single-device fetch returns the Matrix device object or `M_NOT_FOUND` and is covered by the v1.18 client-server fixture. |
 | Devices | `PUT /_matrix/client/v3/devices/{deviceId}` | `spec-covered` | Display-name update persists through the persistent store, updates the runtime mirror, appends durable audit, and is covered by the v1.18 client-server fixture with malformed-body rejection. |
@@ -1026,6 +1026,18 @@ adapters.
 | Debug logging | Redaction-aware diagnostic summaries | `partial` | HTTP dispatch, client-server auth/routing, room joins/events, event auth, persistent-store writes, and federation decisions emit structured debug diagnostics. `merovingian-server --debug` enables console diagnostics and `--log-file <path>` writes file diagnostics. `docs/debug-logging.md` documents join-failure triage and the redaction boundary. Needs production log-format contract and request trace correlation IDs. |
 
 ## Completed capability notes
+
+### make_join create event excluded from auth_events (0.4.49)
+
+- `make_join` template no longer includes `m.room.create` in `auth_events`
+  for room version 12. In room v12 (MSC4291), the room ID is the reference
+  hash of the create event; including it in auth_events is forbidden. Synapse
+  asserts this at the Python level and returns 500 to its joining client even
+  though `send_join` returned 200, producing a second error after the 0.4.48
+  wire-format fixes. Gated via `RoomVersionPolicy::create_event_is_room_id`.
+- One new conformance test added to `test_federation_invite_join.cpp` verifying
+  the create event is absent from the template auth_events and the invite event
+  is still present.
 
 ### Federated join wire format (0.4.48)
 

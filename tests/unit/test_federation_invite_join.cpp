@@ -149,6 +149,45 @@ auto plant_invite_event(merovingian::homeserver::HomeserverRuntime& runtime, std
 
 } // namespace
 
+namespace
+{
+
+// Navigate a JSON object and return a raw pointer to the Value for `key`.
+// Returns nullptr if the key is absent.
+[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj, std::string const& key)
+    -> merovingian::canonicaljson::Value const*
+{
+    for (auto const& m : obj)
+        if (m.key == key) return &(*m.value);
+    return nullptr;
+}
+
+// Extract the auth_events Array from a make_join response root object.
+// Returns nullptr on any navigation failure.
+[[nodiscard]] auto extract_auth_events(merovingian::canonicaljson::Object const& root)
+    -> merovingian::canonicaljson::Array const*
+{
+    auto const* ev_val = json_get(root, "event");
+    if (ev_val == nullptr) return nullptr;
+    auto const* ev_obj = std::get_if<merovingian::canonicaljson::Object>(&ev_val->storage());
+    if (ev_obj == nullptr) return nullptr;
+    auto const* auth_val = json_get(*ev_obj, "auth_events");
+    if (auth_val == nullptr) return nullptr;
+    return std::get_if<merovingian::canonicaljson::Array>(&auth_val->storage());
+}
+
+// Return true if `arr` (an array of JSON strings) contains `target`.
+[[nodiscard]] auto array_contains_string(merovingian::canonicaljson::Array const& arr,
+                                          std::string const& target) -> bool
+{
+    return std::any_of(arr.begin(), arr.end(), [&](auto const& v) {
+        auto const* s = std::get_if<std::string>(&v.storage());
+        return s != nullptr && *s == target;
+    });
+}
+
+} // namespace
+
 // --- make_join auth_events ---------------------------------------------------
 // Spec: Matrix Server-Server API v1.18
 // URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
@@ -205,8 +244,14 @@ SCENARIO("make_join template includes the invite event in auth_events for an inv
                 // Do NOT remove — removing this test hides the root cause of
                 // "403: You are not invited to this room" on federated joins.
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find(invite_event_id) != std::string::npos);
-                REQUIRE(response.body.find(R"("auth_events")") != std::string::npos);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* auth_arr = extract_auth_events(*root);
+                REQUIRE(auth_arr != nullptr);
+                REQUIRE(array_contains_string(*auth_arr, invite_event_id));
             }
         }
     }
@@ -279,8 +324,28 @@ SCENARIO("send_join auth_chain includes the invite event when the join PDU refer
                 // appear so Synapse can validate the join authorization.
                 // Do NOT remove — this test guards the auth_event_ids copy fix.
                 REQUIRE(response.status == 200U);
-                REQUIRE(response.body.find(invite_event_id) != std::string::npos);
-                REQUIRE(response.body.find(R"("auth_chain")") != std::string::npos);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* chain_val = json_get(*root, std::string{"auth_chain"});
+                REQUIRE(chain_val != nullptr);
+                auto const* chain_arr =
+                    std::get_if<merovingian::canonicaljson::Array>(&chain_val->storage());
+                REQUIRE(chain_arr != nullptr);
+                // Find invite event in auth_chain by looking at each PDU's event_id field
+                auto const has_invite = std::any_of(chain_arr->begin(), chain_arr->end(),
+                    [&](auto const& v) {
+                        auto const* obj =
+                            std::get_if<merovingian::canonicaljson::Object>(&v.storage());
+                        if (obj == nullptr) return false;
+                        auto const* eid_val = json_get(*obj, std::string{"event_id"});
+                        if (eid_val == nullptr) return false;
+                        auto const* eid = std::get_if<std::string>(&eid_val->storage());
+                        return eid != nullptr && *eid == invite_event_id;
+                    });
+                REQUIRE(has_invite);
             }
         }
     }
@@ -397,6 +462,8 @@ SCENARIO("make_join template has depth greater than zero when the room already h
                                                  [](auto const& a, auto const& b) { return a.depth < b.depth; });
         REQUIRE(max_stored != store.events.end());
         REQUIRE(max_stored->depth > 0U);
+        // Capture before make_join so we have the expected template depth.
+        auto const max_depth_before = max_stored->depth;
 
         merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
 
@@ -410,7 +477,7 @@ SCENARIO("make_join template has depth greater than zero when the room already h
 
             THEN("the template event has depth > 0")
             {
-                // Spec MUST: depth must reflect the room's forward extremity depth.
+                // Spec MUST: depth must be exactly max(forward-extremity depths) + 1.
                 // depth=0 makes Synapse produce a join event at depth=0 which is
                 // rejected during state resolution → 500 on the client join call.
                 // Do NOT remove — guards the bug where tmpl.depth was never set.
@@ -420,19 +487,19 @@ SCENARIO("make_join template has depth greater than zero when the room already h
                 auto const* root =
                     std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
-                auto const ev_it =
-                    std::ranges::find_if(*root, [](auto const& m) { return m.key == "event"; });
-                REQUIRE(ev_it != root->end());
+                auto const* ev_val = json_get(*root, std::string{"event"});
+                REQUIRE(ev_val != nullptr);
                 auto const* ev_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&ev_it->value->storage());
+                    std::get_if<merovingian::canonicaljson::Object>(&ev_val->storage());
                 REQUIRE(ev_obj != nullptr);
-                auto const depth_it =
-                    std::ranges::find_if(*ev_obj, [](auto const& m) { return m.key == "depth"; });
-                REQUIRE(depth_it != ev_obj->end());
                 auto const* depth_val =
-                    std::get_if<std::int64_t>(&depth_it->value->storage());
+                    json_get(*ev_obj, std::string{"depth"});
                 REQUIRE(depth_val != nullptr);
-                REQUIRE(*depth_val > 0);
+                auto const* depth_int = std::get_if<std::int64_t>(&depth_val->storage());
+                REQUIRE(depth_int != nullptr);
+                // Spec MUST: depth = max(forward-extremity depths) + 1.
+                // After a linear create_room chain, the single extremity is at max_depth_before.
+                REQUIRE(*depth_int == static_cast<std::int64_t>(max_depth_before) + 1);
             }
         }
     }
@@ -583,6 +650,558 @@ SCENARIO("send_join response body includes the required members_omitted field",
                 auto const* mo_val = std::get_if<bool>(&mo_it->value->storage());
                 REQUIRE(mo_val != nullptr);
                 REQUIRE(*mo_val == false);
+            }
+        }
+    }
+}
+
+// --- make_join auth_events must not contain create event for room v12 --------
+// Spec: Matrix Server-Server API v1.18 / MSC4291 (room version 12)
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+//
+// In room version 12, the room ID is the reference hash of the m.room.create
+// event, so the create event is NEVER listed in any event's auth_events.
+// Synapse enforces this with an AssertionError in auth_event_ids():
+//   assert create_event_id not in self._dict["auth_events"]
+//
+// If our make_join template includes the create event in auth_events, Synapse
+// copies it into the join PDU it sends via send_join. We echo the join event
+// back in the send_join response, and Synapse crashes with 500 processing it.
+SCENARIO("make_join template auth_events does not include m.room.create for room v12",
+         "[homeserver][federation][invite-join][make_join][spec]")
+{
+    GIVEN("a v12 room with a pending invite for a remote user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host6", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        // The default CreateRoomOptions uses room_version "12", so this room is v12.
+        // Find the create event ID so we can assert it is absent from auth_events.
+        auto const& store = runtime.database.persistent_store;
+        auto create_event_id = std::string{};
+        for (auto const& s : store.state)
+        {
+            if (s.room_id == room_id && s.event_type == "m.room.create")
+            {
+                create_event_id = s.event_id;
+                break;
+            }
+        }
+        REQUIRE(!create_event_id.empty());
+
+        auto const remote_user = std::string{"@frank:"} + remote_origin;
+        auto const invite_event_id = std::string{"$invite_frank:example.org"};
+        plant_invite_event(runtime, room_id, user.value, remote_user, invite_event_id);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        WHEN("the remote server calls make_join")
+        {
+            auto const target =
+                "/_matrix/federation/v1/make_join/" + room_id + "/" + remote_user + "?ver=12";
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime.federation, signed_get(target));
+
+            THEN("the template auth_events does not contain the create event ID")
+            {
+                // Spec MUST (MSC4291 / room v12): the create event must never
+                // appear in any event's auth_events. Synapse asserts this and
+                // crashes with 500 if the create event is listed. The room ID
+                // is the reference hash of the create event, so its presence
+                // in auth_events is redundant and forbidden.
+                // Do NOT remove — guards the v12 make_join create-event-in-auth
+                // bug that caused Synapse AssertionError on every join attempt.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* auth_arr = extract_auth_events(*root);
+                REQUIRE(auth_arr != nullptr);
+                REQUIRE_FALSE(array_contains_string(*auth_arr, create_event_id));
+                REQUIRE(array_contains_string(*auth_arr, invite_event_id));
+            }
+        }
+    }
+}
+
+// --- make_join response required top-level and event template fields ---------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+//
+// A 200 response MUST contain:
+//   room_version  — the room version string matching the room
+//   event         — object with:
+//     type                 == "m.room.member"
+//     state_key            == the joining user ID
+//     sender               == the joining user ID
+//     room_id              == the target room ID
+//     origin_server_ts     — integer timestamp
+//     content.membership   == "join"
+SCENARIO("make_join response contains all required top-level and event template fields",
+         "[homeserver][federation][make_join][spec]")
+{
+    GIVEN("a v12 room and a remote server requesting a join template")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host7", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+        auto const remote_user = std::string{"@grace:"} + remote_origin;
+
+        WHEN("the remote server calls make_join")
+        {
+            auto const target =
+                "/_matrix/federation/v1/make_join/" + room_id + "/" + remote_user + "?ver=12";
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime.federation, signed_get(target));
+
+            THEN("the response body has room_version and a well-formed event template")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                // Spec MUST: room_version present and matches the room
+                auto const* rv_val = json_get(*root, std::string{"room_version"});
+                REQUIRE(rv_val != nullptr);
+                auto const* rv_str = std::get_if<std::string>(&rv_val->storage());
+                REQUIRE(rv_str != nullptr);
+                REQUIRE(*rv_str == std::string{"12"});
+
+                auto const* ev_val = json_get(*root, std::string{"event"});
+                REQUIRE(ev_val != nullptr);
+                auto const* ev_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&ev_val->storage());
+                REQUIRE(ev_obj != nullptr);
+
+                // Spec MUST: event.type == "m.room.member"
+                auto const* type_val = json_get(*ev_obj, std::string{"type"});
+                REQUIRE(type_val != nullptr);
+                REQUIRE(*std::get_if<std::string>(&type_val->storage()) == std::string{"m.room.member"});
+
+                // Spec MUST: event.state_key == joining user
+                auto const* sk_val = json_get(*ev_obj, std::string{"state_key"});
+                REQUIRE(sk_val != nullptr);
+                REQUIRE(*std::get_if<std::string>(&sk_val->storage()) == remote_user);
+
+                // Spec MUST: event.sender == joining user
+                auto const* sender_val = json_get(*ev_obj, std::string{"sender"});
+                REQUIRE(sender_val != nullptr);
+                REQUIRE(*std::get_if<std::string>(&sender_val->storage()) == remote_user);
+
+                // Spec MUST: event.room_id == target room
+                auto const* rid_val = json_get(*ev_obj, std::string{"room_id"});
+                REQUIRE(rid_val != nullptr);
+                REQUIRE(*std::get_if<std::string>(&rid_val->storage()) == room_id);
+
+                // Spec MUST: event.origin_server_ts present and numeric
+                auto const* ts_val = json_get(*ev_obj, std::string{"origin_server_ts"});
+                REQUIRE(ts_val != nullptr);
+                REQUIRE(std::get_if<std::int64_t>(&ts_val->storage()) != nullptr);
+
+                // Spec MUST: event.content.membership == "join"
+                auto const* content_val = json_get(*ev_obj, std::string{"content"});
+                REQUIRE(content_val != nullptr);
+                auto const* content_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&content_val->storage());
+                REQUIRE(content_obj != nullptr);
+                auto const* mem_val = json_get(*content_obj, std::string{"membership"});
+                REQUIRE(mem_val != nullptr);
+                REQUIRE(*std::get_if<std::string>(&mem_val->storage()) == std::string{"join"});
+            }
+        }
+    }
+}
+
+// --- make_join auth_events completeness for v12 --------------------------------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+//
+// For a v12 room where the joining user has a pending invite, auth_events MUST:
+//   - include the m.room.power_levels event ID
+//   - include the m.room.join_rules event ID
+//   - include the m.room.member (invite) event ID for the joining user
+//   - NOT include the m.room.create event ID (forbidden in v12 / MSC4291)
+SCENARIO("make_join auth_events includes power_levels and join_rules alongside the invite for v12",
+         "[homeserver][federation][make_join][spec]")
+{
+    GIVEN("a v12 room with power_levels, join_rules, and a pending invite in state")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host8", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        auto const& store = runtime.database.persistent_store;
+        auto pl_event_id = std::string{};
+        auto jr_event_id = std::string{};
+        auto create_event_id = std::string{};
+        for (auto const& s : store.state)
+        {
+            if (s.room_id != room_id) continue;
+            if (s.event_type == std::string{"m.room.power_levels"}) pl_event_id = s.event_id;
+            else if (s.event_type == std::string{"m.room.join_rules"}) jr_event_id = s.event_id;
+            else if (s.event_type == std::string{"m.room.create"}) create_event_id = s.event_id;
+        }
+        REQUIRE(!pl_event_id.empty());
+        REQUIRE(!jr_event_id.empty());
+        REQUIRE(!create_event_id.empty());
+
+        auto const remote_user = std::string{"@henry:"} + remote_origin;
+        auto const invite_event_id = std::string{"$invite_henry:example.org"};
+        plant_invite_event(runtime, room_id, user.value, remote_user, invite_event_id);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        WHEN("the remote server calls make_join for the invited user")
+        {
+            auto const target =
+                "/_matrix/federation/v1/make_join/" + room_id + "/" + remote_user + "?ver=12";
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime.federation, signed_get(target));
+
+            THEN("auth_events contains power_levels and join_rules but not create")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* auth_arr = extract_auth_events(*root);
+                REQUIRE(auth_arr != nullptr);
+
+                // Spec MUST: power_levels in auth_events
+                REQUIRE(array_contains_string(*auth_arr, pl_event_id));
+                // Spec MUST: join_rules in auth_events
+                REQUIRE(array_contains_string(*auth_arr, jr_event_id));
+                // Spec MUST: invite in auth_events
+                REQUIRE(array_contains_string(*auth_arr, invite_event_id));
+                // Spec MUST NOT (v12/MSC4291): create not in auth_events
+                REQUIRE_FALSE(array_contains_string(*auth_arr, create_event_id));
+            }
+        }
+    }
+}
+
+// --- make_join returns 404 for unknown room -----------------------------------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+//
+// If the room is not known to the resident server it MUST return 404.
+SCENARIO("make_join returns 404 when the room does not exist on this server",
+         "[homeserver][federation][make_join][spec]")
+{
+    GIVEN("a started runtime with no rooms created")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        WHEN("the remote server calls make_join for a non-existent room")
+        {
+            auto const remote_user = std::string{"@ivan:"} + remote_origin;
+            auto const target =
+                std::string{"/_matrix/federation/v1/make_join/!nonexistent:example.org/"} +
+                remote_user + "?ver=12";
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime.federation, signed_get(target));
+
+            THEN("the response status is 404")
+            {
+                // Spec MUST: return 404 when the room is not known.
+                REQUIRE(response.status == 404U);
+            }
+        }
+    }
+}
+
+// --- make_join returns 400 M_INCOMPATIBLE_ROOM_VERSION -----------------------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+//
+// If the room version is not listed in the `ver` query parameters, the server
+// MUST return 400 with errcode M_INCOMPATIBLE_ROOM_VERSION and a room_version
+// field set to the actual room version.
+SCENARIO("make_join returns 400 M_INCOMPATIBLE_ROOM_VERSION when the room version is not supported",
+         "[homeserver][federation][make_join][spec]")
+{
+    GIVEN("a v12 room and a remote server that only supports room version 1")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host9", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        WHEN("the remote server calls make_join advertising only ver=1")
+        {
+            auto const remote_user = std::string{"@julia:"} + remote_origin;
+            auto const target =
+                "/_matrix/federation/v1/make_join/" + room_id + "/" + remote_user + "?ver=1";
+            auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime.federation, signed_get(target));
+
+            THEN("the response is 400 with M_INCOMPATIBLE_ROOM_VERSION and room_version field")
+            {
+                // Spec MUST: 400 M_INCOMPATIBLE_ROOM_VERSION when room version not
+                // listed in ver parameters.  room_version field MUST be present.
+                REQUIRE(response.status == 400U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* errcode_val = json_get(*root, std::string{"errcode"});
+                REQUIRE(errcode_val != nullptr);
+                auto const* errcode = std::get_if<std::string>(&errcode_val->storage());
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == std::string{"M_INCOMPATIBLE_ROOM_VERSION"});
+                auto const* rv_val = json_get(*root, std::string{"room_version"});
+                REQUIRE(rv_val != nullptr);
+                auto const* rv = std::get_if<std::string>(&rv_val->storage());
+                REQUIRE(rv != nullptr);
+                REQUIRE(*rv == std::string{"12"});
+            }
+        }
+    }
+}
+
+// --- send_join response required fields: origin, state, auth_chain -----------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+//
+// The send_join v2 response MUST include:
+//   origin        — the resident server name
+//   state         — non-empty array of current room state PDUs
+//   auth_chain    — non-empty array of auth events
+//   members_omitted — boolean (already guarded by earlier scenario)
+SCENARIO("send_join response includes origin, non-empty state, and non-empty auth_chain",
+         "[homeserver][federation][send_join][spec]")
+{
+    GIVEN("a room with a pending invite for a remote user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host10", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        auto const remote_user = std::string{"@kate:"} + remote_origin;
+        auto const invite_event_id = std::string{"$invite_kate:example.org"};
+        plant_invite_event(runtime, room_id, user.value, remote_user, invite_event_id);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        auto const join_event_id = std::string{"$join_kate:remote.example.org"};
+        auto const join_body =
+            std::string{R"({"type":"m.room.member","room_id":")"} + room_id +
+            R"(","sender":")" + remote_user + R"(","state_key":")" + remote_user +
+            R"(","content":{"membership":"join"},"depth":6,)" +
+            R"("hashes":{"sha256":"x"},"origin_server_ts":2000,)" +
+            R"("prev_events":[],"auth_events":[")" + invite_event_id +
+            R"("],"signatures":{"remote.example.org":{"ed25519:auto":"aaaa"}}})";
+
+        WHEN("the remote server calls send_join")
+        {
+            auto const target =
+                "/_matrix/federation/v2/send_join/" + room_id + "/" + join_event_id;
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime.federation, signed_put(target, join_body));
+
+            THEN("the response contains origin, non-empty state, and non-empty auth_chain")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                // Spec MUST: origin == resident server name
+                auto const* origin_val = json_get(*root, std::string{"origin"});
+                REQUIRE(origin_val != nullptr);
+                auto const* origin_str = std::get_if<std::string>(&origin_val->storage());
+                REQUIRE(origin_str != nullptr);
+                REQUIRE(*origin_str == std::string{local_server});
+
+                // Spec MUST: state array, non-empty
+                auto const* state_val = json_get(*root, std::string{"state"});
+                REQUIRE(state_val != nullptr);
+                auto const* state_arr =
+                    std::get_if<merovingian::canonicaljson::Array>(&state_val->storage());
+                REQUIRE(state_arr != nullptr);
+                REQUIRE(!state_arr->empty());
+
+                // Spec MUST: auth_chain array, non-empty for a non-trivial room
+                auto const* chain_val = json_get(*root, std::string{"auth_chain"});
+                REQUIRE(chain_val != nullptr);
+                auto const* chain_arr =
+                    std::get_if<merovingian::canonicaljson::Array>(&chain_val->storage());
+                REQUIRE(chain_arr != nullptr);
+                REQUIRE(!chain_arr->empty());
+            }
+        }
+    }
+}
+
+// --- send_join state contains joining user's membership event ----------------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+//
+// The `state` returned represents the room state AFTER the join is processed.
+// It MUST include the joining user's m.room.member event with membership "join".
+SCENARIO("send_join state array contains the joining user m.room.member event with membership join",
+         "[homeserver][federation][send_join][spec]")
+{
+    GIVEN("a room with a pending invite for a remote user")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "host11", "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login =
+            merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+        auto const room_result = merovingian::homeserver::create_room(runtime, login.value);
+        REQUIRE(room_result.ok);
+        auto const room_id = room_result.value;
+
+        auto const remote_user = std::string{"@liam:"} + remote_origin;
+        auto const invite_event_id = std::string{"$invite_liam:example.org"};
+        plant_invite_event(runtime, room_id, user.value, remote_user, invite_event_id);
+
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        auto const join_event_id = std::string{"$join_liam:remote.example.org"};
+        auto const join_body =
+            std::string{R"({"type":"m.room.member","room_id":")"} + room_id +
+            R"(","sender":")" + remote_user + R"(","state_key":")" + remote_user +
+            R"(","content":{"membership":"join"},"depth":6,)" +
+            R"("hashes":{"sha256":"x"},"origin_server_ts":2000,)" +
+            R"("prev_events":[],"auth_events":[")" + invite_event_id +
+            R"("],"signatures":{"remote.example.org":{"ed25519:auto":"aaaa"}}})";
+
+        WHEN("the remote server calls send_join")
+        {
+            auto const target =
+                "/_matrix/federation/v2/send_join/" + room_id + "/" + join_event_id;
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime.federation, signed_put(target, join_body));
+
+            THEN("state contains an m.room.member event with state_key and membership=join for the remote user")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* state_val = json_get(*root, std::string{"state"});
+                REQUIRE(state_val != nullptr);
+                auto const* state_arr =
+                    std::get_if<merovingian::canonicaljson::Array>(&state_val->storage());
+                REQUIRE(state_arr != nullptr);
+
+                // Spec MUST: state includes the joining user's m.room.member with membership=join
+                auto const has_join_member = std::any_of(
+                    state_arr->begin(), state_arr->end(), [&](auto const& v) {
+                        auto const* obj =
+                            std::get_if<merovingian::canonicaljson::Object>(&v.storage());
+                        if (obj == nullptr) return false;
+                        auto const* type_val = json_get(*obj, std::string{"type"});
+                        if (type_val == nullptr) return false;
+                        auto const* type_str = std::get_if<std::string>(&type_val->storage());
+                        if (type_str == nullptr || *type_str != std::string{"m.room.member"})
+                            return false;
+                        auto const* sk_val = json_get(*obj, std::string{"state_key"});
+                        if (sk_val == nullptr) return false;
+                        auto const* sk_str = std::get_if<std::string>(&sk_val->storage());
+                        if (sk_str == nullptr || *sk_str != remote_user) return false;
+                        auto const* content_val = json_get(*obj, std::string{"content"});
+                        if (content_val == nullptr) return false;
+                        auto const* content_obj =
+                            std::get_if<merovingian::canonicaljson::Object>(&content_val->storage());
+                        if (content_obj == nullptr) return false;
+                        auto const* mem_val = json_get(*content_obj, std::string{"membership"});
+                        if (mem_val == nullptr) return false;
+                        auto const* mem_str = std::get_if<std::string>(&mem_val->storage());
+                        return mem_str != nullptr && *mem_str == std::string{"join"};
+                    });
+                REQUIRE(has_join_member);
             }
         }
     }

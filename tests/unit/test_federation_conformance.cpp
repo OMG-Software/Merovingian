@@ -21,6 +21,8 @@
 // +-------------------------------------------------------------------------+
 
 #include "federation_signing_test_support.hpp"
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
@@ -107,6 +109,15 @@ auto const origin = std::string{"remote.example.org"};
 auto const key_id = std::string{"ed25519:auto"};
 auto const key_seed = std::string{"conformance-test-seed"};
 
+// Navigate a JSON object and return a pointer to the Value for `key`.
+[[nodiscard]] auto json_get(merovingian::canonicaljson::Object const& obj, std::string const& key)
+    -> merovingian::canonicaljson::Value const*
+{
+    for (auto const& m : obj)
+        if (m.key == key) return &(*m.value);
+    return nullptr;
+}
+
 } // namespace
 
 // --- make_join ---------------------------------------------------------------
@@ -150,17 +161,37 @@ SCENARIO("make_join returns room version and event template for a remote user", 
                 // Spec MUST: HTTP 200 for a valid make_join request.
                 REQUIRE(response.status == 200U);
                 REQUIRE(*template_invoked);
-                // Spec: the origin field was removed from events in room version 4
-                // (hash-based event IDs replaced server-name-based IDs). Room
-                // versions 10/11/12 use reference-hash event IDs, so the template
-                // MUST NOT include origin in the event object.
-                // Do NOT remove — if this fails, the template is including a field
-                // that the joining server must strip before signing per v1.18 spec.
-                REQUIRE(response.body.find(R"("origin":"local.example.org")") == std::string::npos);
-                // Spec MUST: the returned template event carries origin_server_ts.
-                // Do NOT remove - if the resident server omits it, the joining
-                // server must reject the template as malformed.
-                REQUIRE(response.body.find(R"("origin_server_ts":)") != std::string::npos);
+
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                // Spec MUST: room_version is present and equals the room's version.
+                auto const* rv_val = json_get(*root, std::string{"room_version"});
+                REQUIRE(rv_val != nullptr);
+                auto const* rv_str = std::get_if<std::string>(&rv_val->storage());
+                REQUIRE(rv_str != nullptr);
+                REQUIRE(*rv_str == std::string{"12"});
+
+                // Spec MUST: event is an object.
+                auto const* ev_val = json_get(*root, std::string{"event"});
+                REQUIRE(ev_val != nullptr);
+                auto const* ev_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&ev_val->storage());
+                REQUIRE(ev_obj != nullptr);
+
+                // Spec MUST: event.origin_server_ts is present and is an integer.
+                // Do NOT remove — a joining server rejects a template without this field.
+                auto const* ts_val = json_get(*ev_obj, std::string{"origin_server_ts"});
+                REQUIRE(ts_val != nullptr);
+                REQUIRE(std::get_if<std::int64_t>(&ts_val->storage()) != nullptr);
+
+                // Spec (room v4+): origin MUST NOT appear in the event object.
+                // Do NOT remove — if this fails, the joining server must strip it
+                // before signing, which it cannot do automatically.
+                REQUIRE(json_get(*ev_obj, std::string{"origin"}) == nullptr);
             }
         }
     }
@@ -226,30 +257,43 @@ SCENARIO("send_join persists membership and returns auth chain and state", "[fed
                 REQUIRE(response.status == 200U);
                 REQUIRE(*accept_invoked);
 
-                // Spec MUST: room_version present.
-                // Do NOT remove - a joining server uses this to select the correct
-                // event format and auth rules. An absent room_version breaks the join.
-                REQUIRE(response.body.find("\"room_version\"") != std::string::npos);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
 
-                // Spec SHOULD (v2): origin present.
-                REQUIRE(response.body.find("\"origin\"") != std::string::npos);
+                // Spec MUST: room_version is present and is a string.
+                // Do NOT remove — a joining server uses this to select auth rules.
+                auto const* rv_val = json_get(*root, std::string{"room_version"});
+                REQUIRE(rv_val != nullptr);
+                REQUIRE(std::get_if<std::string>(&rv_val->storage()) != nullptr);
 
-                // Spec MUST: auth_chain present.
-                // Do NOT remove - the joining server needs the auth chain to
-                // validate the join event. An absent auth_chain causes the join to fail.
-                REQUIRE(response.body.find("\"auth_chain\"") != std::string::npos);
+                // Spec MUST (v2): origin is present and is a string.
+                // Do NOT remove — the joining server validates the resident's identity.
+                auto const* origin_val = json_get(*root, std::string{"origin"});
+                REQUIRE(origin_val != nullptr);
+                auto const* origin_str = std::get_if<std::string>(&origin_val->storage());
+                REQUIRE(origin_str != nullptr);
+                REQUIRE(!origin_str->empty());
 
-                // Spec MUST: state present.
-                // Do NOT remove - the joining server needs the room state to
-                // build its local copy of the room. An absent state breaks the join.
-                REQUIRE(response.body.find("\"state\"") != std::string::npos);
+                // Spec MUST: auth_chain is an array.
+                // Do NOT remove — the joining server uses this to validate the join.
+                auto const* ac_val = json_get(*root, std::string{"auth_chain"});
+                REQUIRE(ac_val != nullptr);
+                REQUIRE(std::get_if<merovingian::canonicaljson::Array>(&ac_val->storage()) != nullptr);
 
-                // Spec MUST (v2): event present - the accepted join PDU echoed back.
-                // Do NOT remove - the spec requires the resident server to return the
-                // event as it was accepted. Synapse and other servers validate this field.
-                // If this fails, fix handle_send_membership in inbound_request.cpp,
-                // not this assertion.
-                REQUIRE(response.body.find("\"event\"") != std::string::npos);
+                // Spec MUST: state is an array.
+                // Do NOT remove — the joining server builds its local room copy from this.
+                auto const* state_val = json_get(*root, std::string{"state"});
+                REQUIRE(state_val != nullptr);
+                REQUIRE(std::get_if<merovingian::canonicaljson::Array>(&state_val->storage()) != nullptr);
+
+                // Spec MUST (v2): event is the accepted join PDU as an object.
+                // Do NOT remove — Synapse validates this field on every join.
+                auto const* event_val = json_get(*root, std::string{"event"});
+                REQUIRE(event_val != nullptr);
+                REQUIRE(std::get_if<merovingian::canonicaljson::Object>(&event_val->storage()) != nullptr);
             }
         }
     }
