@@ -465,6 +465,11 @@ namespace
         if (route.endpoint == FederationEndpoint::send_join)
         {
             response.push_back(canonicaljson::make_member("origin", canonicaljson::Value{runtime.config.server_name}));
+            // Spec §11.5.1 (PUT /send_join): members_omitted is a REQUIRED field.
+            // Without it Synapse raises a parse error and returns 500 to its
+            // joining client, causing an infinite make_join/send_join retry loop.
+            // We always include full member events so the value is always false.
+            response.push_back(canonicaljson::make_member("members_omitted", canonicaljson::Value{false}));
         }
         response.push_back(canonicaljson::make_member("auth_chain", build_array_value(acceptance.auth_chain_json)));
         response.push_back(canonicaljson::make_member("state", build_array_value(acceptance.state_json)));

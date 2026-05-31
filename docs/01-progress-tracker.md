@@ -1027,6 +1027,23 @@ adapters.
 
 ## Completed capability notes
 
+### Federated join wire format (0.4.48)
+
+- `send_join` v2 response now includes the required `members_omitted: false`
+  field. The Matrix spec marks this field as required; Synapse raises a
+  `KeyError` when it is absent, returning `500 Internal Server Error` to its
+  joining client and triggering an infinite `make_join`/`send_join` retry loop.
+- `make_join` template `depth` is now set to `max(forward-extremity depths) + 1`
+  instead of defaulting to `0`. Synapse used the template depth verbatim,
+  producing join events at `depth=0` which fail state resolution.
+- `make_join` template `prev_events` now contains only the room's current
+  forward extremities (events not yet referenced as another event's
+  `prev_events`), not all room events. The old bug inflated the state snapshot
+  returned in every `send_join` response and caused incorrect state resolution
+  at the joining server.
+- Three new conformance tests added to `test_federation_invite_join.cpp` to
+  guard all three bugs, covering response shape as well as processing side-effects.
+
 ### Federated invite-join auth chain (0.4.47)
 
 - `membership_template_provider` now populates `auth_events` in `make_join`
