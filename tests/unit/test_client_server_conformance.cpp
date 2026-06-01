@@ -292,6 +292,75 @@ SCENARIO("POST /register with an empty JSON object returns a UIA challenge", "[c
     }
 }
 
+// Spec §5.5.1: when auth dict is present but credentials are incomplete, the
+// homeserver MUST return 401 with the UIA challenge again — not proceed and
+// fail with 403.  Clients in the UIA flow submit type+session first, then the
+// stage-specific parameter (token) on the next attempt.
+SCENARIO("POST /register with auth type but missing token returns 401 UIA challenge",
+         "[conformance][client-server][register]")
+{
+    GIVEN("a running client-server with token-gated registration enabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("a registration request with auth type but no token is submitted")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 R"({"username":"bob","password":"CorrectHorse7!","auth":{"type":"m.login.registration_token"}})"});
+
+            THEN("the response is 401 with registration-token UIA flow metadata")
+            {
+                REQUIRE(response.response.status == 401U);
+                auto const body = parse_object(response.response.body);
+                auto const* flows = object_member_as_array(body, "flows");
+                REQUIRE(flows != nullptr);
+                REQUIRE(flows->size() == 1U);
+                auto const* first_flow =
+                    std::get_if<merovingian::canonicaljson::Object>(&flows->front().storage());
+                REQUIRE(first_flow != nullptr);
+                auto const* stages = object_member_as_array(*first_flow, "stages");
+                REQUIRE(stages != nullptr);
+                auto const* first_stage = std::get_if<std::string>(&stages->front().storage());
+                REQUIRE(first_stage != nullptr);
+                REQUIRE(*first_stage == "m.login.registration_token");
+            }
+        }
+    }
+}
+
+SCENARIO("POST /register with wrong auth type returns 401 UIA challenge",
+         "[conformance][client-server][register]")
+{
+    GIVEN("a running client-server with token-gated registration enabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("a registration request with an unsupported auth type is submitted")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
+                 R"({"username":"bob","password":"CorrectHorse7!","auth":{"type":"m.login.dummy"}})"});
+
+            THEN("the response is 401 with registration-token UIA flow metadata")
+            {
+                REQUIRE(response.response.status == 401U);
+                auto const body = parse_object(response.response.body);
+                auto const* flows = object_member_as_array(body, "flows");
+                REQUIRE(flows != nullptr);
+            }
+        }
+    }
+}
+
 //
 // Success MUST return a JSON object with:
 //   user_id      - fully-qualified Matrix ID (@localpart:server)

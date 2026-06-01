@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.57
+Version:        0.4.58
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,7 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Sun Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.57-1
+* Sun Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.58-1
+- Fix registration UIAuth: incomplete auth credentials (missing token or wrong auth.type) now return 401 UIA challenge instead of 403
+
+* Sun Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.58-1
 - Tighten Matrix v1.18 /sync conformance: assert full envelope shape including rooms.knock
 - Implement registration discovery routes (register/available, registration_token/validity, email/requestToken, msisdn/requestToken)
 - Fix register UIA probing for empty JSON bodies to return 401 challenge instead of 400 M_BAD_JSON

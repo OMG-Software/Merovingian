@@ -3937,16 +3937,30 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             return dispatch_err(400U, "M_BAD_JSON", "registration body must be Matrix JSON");
         }
-        // Matrix UI-auth: if no auth object is present, return 401 with the available flow.
-        if (object_member_object(*registration_object, "auth") == nullptr)
+        // Matrix UI-auth: the auth dict must contain a recognized type with all
+        // required parameters.  Per spec v1.18 §5.5.1, incomplete credentials MUST
+        // receive 401 with the challenge — not proceed to registration and fail 403.
+        auto const uia_challenge = json_obj({
+            json_member("flows",
+                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.registration_token")}))})})),
+            json_member("params", json_obj({})),
+            json_member("session", json_str("merovingian-ui-auth")),
+        });
+        auto const* auth = object_member_object(*registration_object, "auth");
+        if (auth == nullptr)
         {
-            return dispatch_resp(
-                401U, json_serialize(json_obj({
-                          json_member("flows", json_arr({json_obj({json_member(
-                                                   "stages", json_arr({json_str("m.login.registration_token")}))})})),
-                          json_member("params", json_obj({})),
-                          json_member("session", json_str("merovingian-ui-auth")),
-                      })));
+            return dispatch_resp(401U, json_serialize(uia_challenge));
+        }
+        // Validate that auth.type is the expected stage and that the required
+        // parameter (token) is present.  Unknown or incomplete types get 401.
+        auto const* auth_type = string_member(*auth, "type");
+        if (auth_type == nullptr || *auth_type != "m.login.registration_token")
+        {
+            return dispatch_resp(401U, json_serialize(uia_challenge));
+        }
+        if (string_member(*auth, "token") == nullptr)
+        {
+            return dispatch_resp(401U, json_serialize(uia_challenge));
         }
         auto const body = parse_register_body(req.body);
         if (!body.has_value())
