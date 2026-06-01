@@ -89,7 +89,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Sun Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.56-1
+* Mon Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.56-1
 - Fix outbound federation transaction IDs for E2EE to-device delivery so restarts don't reuse IDs that remote servers deduplicate as replays.
 - Fix federated profile query for local users missing a stored profile row; returns spec-shaped empty profile instead of "user not found".
 - Fix inbound m.direct_to_device EDU parsing to use canonical JSON instead of raw brace searches, preserving nested encrypted payloads.
