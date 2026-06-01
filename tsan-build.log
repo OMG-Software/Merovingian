@@ -1,0 +1,381 @@
++ env 'PATH=/mnt/c/dev/Merovingian/scripts/tool-shims:/home/retro/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/usr/lib/wsl/lib:/mnt/c/Program Files/LLVM/bin:/mnt/c/Users/retro/bin:/mnt/c/Program Files/Git/mingw64/bin:/mnt/c/Program Files/Git/usr/local/bin:/mnt/c/Program Files/Git/usr/bin:/mnt/c/Program Files/Git/usr/bin:/mnt/c/Program Files/Git/mingw64/bin:/mnt/c/Program Files/Git/usr/bin:/mnt/c/Users/retro/bin:/mnt/c/WINDOWS/system32:/mnt/c/WINDOWS:/mnt/c/WINDOWS/System32/Wbem:/mnt/c/WINDOWS/System32/WindowsPowerShell/v1.0:/mnt/c/WINDOWS/System32/OpenSSH:/mnt/c/Python314/Scripts:/mnt/c/Python314:/mnt/c/Program Files/dotnet:/mnt/c/Program Files/Git/cmd:/mnt/c/Program Files (x86)/NVIDIA Corporation/PhysX/Common:/mnt/c/Program Files (x86)/Windows Kits/10/Windows Performance Toolkit:/mnt/c/Program Files/Microsoft Visual Studio/18/Community/VC/Tools/Llvm/x64/bin:/mnt/c/Program Files/nodejs:/mnt/c/ProgramData/chocolatey/bin:/mnt/c/Program Files/Go/bin:/mnt/c/bin/bazel:/mnt/c/dev/vcpkg:/mnt/c/Program Files/GitHub CLI:/mnt/c/Program Files/CMake/bin:/mnt/c/Program Files/TortoiseGit/bin:/mnt/c/Program Files/LLVM/bin:/mnt/c/Users/retro/.cargo/bin:/mnt/c/Users/retro/AppData/Local/Microsoft/WindowsApps:/mnt/c/Users/retro/AppData/Local/Microsoft/WinGet/Packages/LibreHardwareMonitor.LibreHardwareMonitor_Microsoft.Winget.Source_8wekyb3d8bbwe:/mnt/c/Users/retro/AppData/Local/Microsoft/WinGet/Packages/gsass1.NTop_Microsoft.Winget.Source_8wekyb3d8bbwe:/mnt/c/Users/retro/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1-full_build/bin:/mnt/c/Program Files/JetBrains/CLion 2026.1/bin:/mnt/c/Program Files/JetBrains/PyCharm 2026.1/bin:/mnt/c/Users/retro/AppData/Local/Microsoft/WinGet/Links:/mnt/c/Users/retro/AppData/Local/Programs/Microsoft VS Code/bin:/mnt/c/Users/retro/AppData/Local/Programs/Ollama:/mnt/c/Users/retro/.local/bin:/mnt/c/Users/retro/AppData/Local/Python/bin:/mnt/c/Users/retro/AppData/Roaming/npm:/mnt/c/Users/retro/.lmstudio/bin:/mnt/c/Users/retro/AppData/Local/Microsoft/WinGet/Packages/ggml.llamacpp_Microsoft.Winget.Source_8wekyb3d8bbwe:/mnt/c/Users/retro/go/bin:/mnt/c/Users/retro/AppData/Local/Microsoft/WinGet/Packages/Bazel.Bazelisk_Microsoft.Winget.Source_8wekyb3d8bbwe:/mnt/c/Users/retro/AppData/Roaming/Python/Python314/Scripts:/mnt/c/Users/retro/AppData/Local/Programs/Python/Python313:/mnt/c/Program Files/nodejs:/mnt/c/Python314:/mnt/c/Program Files/Git/mingw64/bin:/mnt/c/Program Files/Git/usr/bin/vendor_perl:/mnt/c/Program Files/Git/usr/bin/core_perl:/snap/bin' CC=clang CXX=clang++ meson setup build-tsan -Dbuild_tests=true -Dbuild_fuzz=false --wrap-mode=forcefallback --buildtype=debug -Db_sanitize=thread
+The Meson build system
+Version: 1.11.1
+Source dir: /mnt/c/dev/Merovingian
+Build dir: /mnt/c/dev/Merovingian/build-tsan
+Build type: native build
+Project name: merovingian
+Project version: 0.4.52
+C compiler for the host machine: clang (clang 18.1.3 "Ubuntu clang version 18.1.3 (1ubuntu1)")
+C linker for the host machine: clang ld.bfd 2.42
+C++ compiler for the host machine: clang++ (clang 18.1.3 "Ubuntu clang version 18.1.3 (1ubuntu1)")
+C++ linker for the host machine: clang++ ld.bfd 2.42
+Host machine cpu family: x86_64
+Host machine cpu: x86_64
+Run-time dependency threads found: YES
+Found pkg-config: YES (/usr/bin/pkg-config) 1.8.1
+Run-time dependency libsodium found: YES 1.0.18
+Run-time dependency openssl found: YES 3.0.13
+Run-time dependency libpq found: YES 16.14
+Library pgcommon_shlib found: NO
+Library pgcommon found: NO
+Library pgport_shlib found: NO
+Library pgport found: NO
+Looking for a fallback subproject for the dependency sqlite3 because:
+Use of fallback dependencies is forced.
+
+Executing subproject sqlite3 
+
+sqlite3| Project name: sqlite3
+sqlite3| Project version: 3.53.1
+sqlite3| C compiler for the host machine: clang (clang 18.1.3 "Ubuntu clang version 18.1.3 (1ubuntu1)")
+sqlite3| C linker for the host machine: clang ld.bfd 2.42
+sqlite3| Run-time dependency dl found: YES
+sqlite3| Library m found: YES
+sqlite3| Dependency threads for host machine found: YES unknown (cached)
+sqlite3| Has header "inttypes.h" : YES
+sqlite3| Has header "malloc.h" : YES
+sqlite3| Has header "stdint.h" : YES
+sqlite3| Checking for type "int8_t" : YES
+sqlite3| Checking for type "int16_t" : YES
+sqlite3| Checking for type "int32_t" : YES
+sqlite3| Checking for type "uint8_t" : YES
+sqlite3| Checking for type "uint16_t" : YES
+sqlite3| Checking for type "uint32_t" : YES
+sqlite3| Checking for function "malloc_usable_size" : YES
+sqlite3| Checking for function "posix_fallocate" : YES
+sqlite3| Checking for function "strchrnul" : YES
+sqlite3| Checking for function "strerror_r" : YES
+sqlite3| Checking for function "isnan" with dependency -lm: YES
+sqlite3| Found pkg-config: YES (/usr/bin/pkg-config) 1.8.1
+sqlite3| Build targets in project: 1
+sqlite3| Subproject sqlite3 finished.
+
+Dependency sqlite3 for host machine found: YES 3.53.1 (overridden)
+Looking for a fallback subproject for the dependency yyjson because:
+Use of fallback dependencies is forced.
+
+Executing subproject yyjson 
+
+yyjson| Project name: yyjson
+yyjson| Project version: 0.12.0
+yyjson| C compiler for the host machine: clang (clang 18.1.3 "Ubuntu clang version 18.1.3 (1ubuntu1)")
+yyjson| C linker for the host machine: clang ld.bfd 2.42
+yyjson| Build targets in project: 2
+yyjson| Subproject yyjson finished.
+
+Dependency yyjson for host machine from subproject subprojects/yyjson found: YES 0.12.0
+Looking for a fallback subproject for the dependency libcurl because:
+Use of fallback dependencies is forced.
+
+Executing subproject curl 
+
+curl| Project name: curl-wrap
+curl| Project version: undefined
+curl| C compiler for the host machine: clang (clang 18.1.3 "Ubuntu clang version 18.1.3 (1ubuntu1)")
+curl| C linker for the host machine: clang ld.bfd 2.42
+curl| subprojects/curl-8.20.0/meson.build:3: WARNING: Module External build system has no backwards or forwards compatibility and might not exist in future releases.
+curl| Program /mnt/c/dev/Merovingian/subprojects/curl-8.20.0/configure found: YES (/mnt/c/dev/Merovingian/subprojects/curl-8.20.0/configure)
+curl| Program make found: YES (/mnt/c/dev/Merovingian/scripts/tool-shims/make)
+curl| External project curl-8.20.0: configure
+curl| Build targets in project: 3
+curl| Subproject curl finished.
+
+Dependency libcurl for host machine found: YES undefined (overridden)
+Library resolv found: YES
+Compiler for C++ supports arguments -Wall: YES 
+Compiler for C++ supports arguments -Wextra: YES 
+Compiler for C++ supports arguments -Wpedantic: YES 
+Compiler for C++ supports arguments -Wconversion: YES 
+Compiler for C++ supports arguments -Wsign-conversion: YES 
+Compiler for C++ supports arguments -Wshadow: YES 
+Compiler for C++ supports arguments -Wnon-virtual-dtor: YES 
+Compiler for C++ supports arguments -Wold-style-cast: YES 
+Compiler for C++ supports arguments -Wcast-align: YES 
+Compiler for C++ supports arguments -Wunused: YES 
+Compiler for C++ supports arguments -Woverloaded-virtual: YES 
+Compiler for C++ supports arguments -Wnull-dereference: YES 
+Compiler for C++ supports arguments -Wdouble-promotion: YES 
+Compiler for C++ supports arguments -Wformat=2: YES 
+Compiler for C++ supports arguments -Wimplicit-fallthrough: YES 
+Compiler for C++ supports arguments -Wno-c2y-extensions: NO 
+meson.build:94: WARNING: Consider using the built-in warning_level option instead of using "-Wall".
+meson.build:94: WARNING: Consider using the built-in warning_level option instead of using "-Wextra".
+Compiler for C++ supports arguments -fstack-protector-strong: YES 
+Compiler for C++ supports arguments -fPIE: YES 
+Compiler for C++ supports arguments -fvisibility=hidden: YES 
+Compiler for C++ supports arguments -ftrivial-auto-var-init=zero: YES 
+Compiler for C++ supports arguments -fstack-clash-protection: YES 
+Compiler for C++ supports arguments -fcf-protection=full: YES 
+Compiler for C++ supports link arguments -Wl,-z,noexecstack: YES 
+Program sh found: YES (/usr/bin/sh)
+Program python3 found: YES (/usr/bin/python3)
+Looking for a fallback subproject for the dependency catch2 because:
+Use of fallback dependencies is forced.
+
+Executing subproject catch2 
+
+catch2| Project name: catch2
+catch2| Project version: 3.14.0
+catch2| C++ compiler for the host machine: clang++ (clang 18.1.3 "Ubuntu clang version 18.1.3 (1ubuntu1)")
+catch2| C++ linker for the host machine: clang++ ld.bfd 2.42
+catch2| Configuring catch_user_config.hpp using configuration
+catch2| Build targets in project: 24
+catch2| Subproject catch2 finished.
+
+Dependency catch2 for host machine from subproject subprojects/catch2 found: YES 3.14.0
+Program sh found: YES (/usr/bin/sh)
+Build targets in project: 26
+tests/meson.build:200: WARNING: Trying to use ['thread'] sanitizer on Clang with b_lundef.
+This will probably not work.
+Try setting b_lundef to false instead.
+
+sqlite3 3.53.1
+
+  Extensions
+    carray    : NO
+    fts34     : YES
+    fts5      : YES
+    geopoly   : NO
+    percentile: NO
+    rbu       : NO
+    rtree     : NO
+    session   : NO
+
+merovingian 0.4.52
+
+  Subprojects
+    catch2     : YES
+    curl       : YES 1 warnings
+    sqlite3    : YES
+    yyjson     : YES
+
+  User defined options
+    b_sanitize : thread
+    build_fuzz : false
+    build_tests: true
+    buildtype  : debug
+    wrap_mode  : forcefallback
+
+Found ninja-1.13.0.git.kitware.jobserver-pipe-1 at /home/retro/.local/bin/ninja
++ meson compile -C build-tsan
+ninja: Entering directory `/mnt/c/dev/Merovingian/build-tsan'
+[0/301] Generating external project subprojects/curl-8.20.0/curl-8.20.0
+[194/301] Linking target src/merovingian-db-migrate
+[196/301] Compiling C++ object src/http/libmerovingian-http.a.p/connection_guard.cpp.o
+[197/301] Compiling C++ object src/http/libmerovingian-http.a.p/request_limits.cpp.o
+[198/301] Compiling C++ object src/http/libmerovingian-http.a.p/request.cpp.o
+[199/301] Compiling C++ object src/http/libmerovingian-http.a.p/rate_limit.cpp.o
+[200/301] Compiling C++ object src/http/libmerovingian-http.a.p/outbound_client.cpp.o
+[201/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/inbound_ingestion.cpp.o
+[202/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/event_query.cpp.o
+[203/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/dispatch_worker.cpp.o
+[204/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/key_query.cpp.o
+[205/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/membership_endpoints.cpp.o
+[206/301] Linking static target src/http/libmerovingian-http.a
+[207/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/outbound_membership.cpp.o
+[208/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/outbound_transaction.cpp.o
+[209/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/inbound_request.cpp.o
+[210/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/runtime_federation.cpp.o
+[211/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/security.cpp.o
+[212/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/transactions.cpp.o
+[213/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/remote_key_cache.cpp.o
+[214/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_main.cpp.o
+[215/301] Compiling C++ object src/federation/libmerovingian-federation.a.p/server_discovery.cpp.o
+[216/301] Linking static target src/federation/libmerovingian-federation.a
+[217/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_auth_client_server_api.cpp.o
+[218/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_auth_session.cpp.o
+[219/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_auth.cpp.o
+[220/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_canonicaljson_parser.cpp.o
+[221/301] Compiling C++ object src/merovingian-server.p/main.cpp.o
+[222/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_canonicaljson_serializer.cpp.o
+[223/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_config_defaults.cpp.o
+[224/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_config_media_timeout.cpp.o
+[225/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_config_reload_policy.cpp.o
+[226/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_config_parser.cpp.o
+[227/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_config_reload_plan.cpp.o
+[228/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_crypto.cpp.o
+[229/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_database_backend_config.cpp.o
+[230/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_client_server.cpp.o
+[231/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_event_authorization.cpp.o
+[232/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_event_auth_rules.cpp.o
+[233/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_database_persistence.cpp.o
+[234/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_dispatch_worker.cpp.o
+[235/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_federation_conformance.cpp.o
+[236/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_events.cpp.o
+[237/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_client_server_conformance.cpp.o
+[238/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_federation_event_query.cpp.o
+[239/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_federation_inbound_request.cpp.o
+[240/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_federation_key_query.cpp.o
+[241/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_file_descriptor.cpp.o
+[242/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_federation_security.cpp.o
+[243/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_federation_transactions.cpp.o
+[244/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_x_matrix_auth_parsing.cpp.o
+[245/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_federation_membership_endpoints.cpp.o
+[246/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_federation_runtime_callbacks.cpp.o
+[247/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_file_metadata.cpp.o
+[248/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_federation_invite_join.cpp.o
+[249/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_outbound_dispatch.cpp.o
+[250/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_hardening_self_check.cpp.o
+[251/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_http_connection_guard.cpp.o
+[252/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_http_rate_limit.cpp.o
+[253/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_http_request.cpp.o
+[254/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_http_request_limits.cpp.o
+[255/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_inbound_ingestion.cpp.o
+[256/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_key_api.cpp.o
+[257/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_join_routing.cpp.o
+[258/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_media_repository.cpp.o
+[259/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_not_null.cpp.o
+[260/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_media_security.cpp.o
+[261/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_homeserver_vertical_slice.cpp.o
+[262/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_observability.cpp.o
+[263/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_outbound_client.cpp.o
+[264/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_outbound_transaction.cpp.o
+[265/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_query_params.cpp.o
+[266/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_room_encryption_policy.cpp.o
+[267/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_runtime_config.cpp.o
+[268/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_remote_key_cache.cpp.o
+[269/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_runtime_database.cpp.o
+[270/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_runtime_federation.cpp.o
+[271/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_runtime_listeners.cpp.o
+[272/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_runtime_hardening.cpp.o
+[273/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_runtime_media.cpp.o
+[274/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_server_discovery.cpp.o
+[275/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_secret_buffer.cpp.o
+[276/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_review_regressions.cpp.o
+[277/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_shutdown_signal.cpp.o
+[278/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_stream_token.cpp.o
+[279/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_sync_filter.cpp.o
+[280/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_state_resolution.cpp.o
+[281/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_tcp_acceptor.cpp.o
+[282/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_sync_notifier.cpp.o
+[283/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_thread_pool.cpp.o
+[284/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_trust_safety_policy.cpp.o
+[285/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_main.cpp.o
+[286/301] Compiling C++ object tests/merovingian-unit-tests.p/unit_test_sync_handler.cpp.o
+[287/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_federation_outbound_flow.cpp.o
+[288/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_client_server_flow.cpp.o
+[289/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_federation_inbound_flow.cpp.o
+[290/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_observability_flow.cpp.o
+[291/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_homeserver_vertical_slice_flow.cpp.o
+[292/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_media_repository_security.cpp.o
+[293/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_runtime_hardening_flow.cpp.o
+[294/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_postgresql_persistence_flow.cpp.o
+[295/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_http_server_listener_flow.cpp.o
+[296/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_trust_safety_policy_flow.cpp.o
+[297/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_persistent_homeserver_flow.cpp.o
+[298/301] Compiling C++ object tests/merovingian-integration-tests.p/integration_test_sync_complement_fixture.cpp.o
+[299/301] Linking target src/merovingian-server
+[300/301] Linking target tests/merovingian-integration-tests
+[301/301] Linking target tests/merovingian-unit-tests
+INFO: autodetecting backend as ninja
+INFO: calculating backend command to run: /home/retro/.local/bin/ninja -C /mnt/c/dev/Merovingian/build-tsan
++ meson test -C build-tsan --print-errorlogs
+ninja: Entering directory `/mnt/c/dev/Merovingian/build-tsan'
+ninja: no work to do.
+ 1/46 merovingian:unit-test-registration                                OK               0.08s
+ 2/46 merovingian:example-config-tooling                                OK               0.09s
+ 3/46 merovingian:ci-workflow-tooling                                   OK               0.11s
+ 4/46 merovingian:release-workflow-tooling                              OK               0.12s
+ 5/46 merovingian:packages-workflow-tooling                             OK               0.13s
+ 6/46 merovingian:live-integration-tooling                              OK               0.14s
+ 7/46 merovingian:security-workflow-tooling                             OK               0.17s
+ 8/46 merovingian:server-admin-bootstrap-help-smoke-test                OK               0.07s
+ 9/46 merovingian:dependency-wrap-tooling                               OK               0.31s
+10/46 merovingian:setup-dev-env-help-smoke-test                         OK               0.02s
+11/46 merovingian:setup-dev-env-linux-dry-run-smoke-test                OK               0.03s
+12/46 merovingian:build-linux-help-smoke-test                           OK               0.02s
+13/46 merovingian:build-linux-dry-run-smoke-test                        OK               0.02s
+14/46 merovingian:server-help-smoke-test                                OK               0.24s
+15/46 merovingian:server-debug-help-smoke-test                          OK               0.14s
+16/46 merovingian:setup-dev-env-freebsd-dry-run-smoke-test              OK               0.03s
+17/46 merovingian:setup-dev-env-openbsd-dry-run-smoke-test              OK               0.03s
+18/46 merovingian:rewrite-merovingian-includes                          OK               0.41s
+19/46 merovingian:setup-dev-env-netbsd-dry-run-smoke-test               OK               0.03s
+20/46 merovingian:server-version-smoke-test                             OK               0.07s
+21/46 merovingian:server-invalid-arguments-smoke-test                   OK               0.07s
+22/46 merovingian:server-startup-version-log-smoke-test                 OK               0.06s
+23/46 merovingian:server-bootstrap-smoke-test                           OK               0.07s
+24/46 merovingian:server-config-validation-smoke-test                   OK               0.07s
+25/46 merovingian:server-default-summary-smoke-test                     OK               0.06s
+26/46 merovingian:server-check-config-smoke-test                        OK               0.06s
+27/46 merovingian:server-check-invalid-config-smoke-test                OK               0.07s
+28/46 merovingian:server-check-config-does-not-start-runtime-smoke-test OK               0.08s
+29/46 merovingian:server-plan-config-reload-noop-smoke-test             OK               0.08s
+30/46 merovingian:server-plan-config-reload-reloadable-smoke-test       OK               0.09s
+31/46 merovingian:server-hardening-self-check-smoke-test                OK               0.15s
+32/46 merovingian:server-plan-config-reload-invalid-next-smoke-test     OK               0.07s
+33/46 merovingian:server-plan-config-reload-restart-required-smoke-test OK               0.08s
+34/46 merovingian:server-valid-config-file-smoke-test                   OK               0.04s
+35/46 merovingian:server-plan-config-reload-invalid-current-smoke-test  OK               0.08s
+36/46 merovingian:server-example-config-summary-smoke-test              OK               0.06s
+37/46 merovingian:server-invalid-config-file-smoke-test                 OK               0.06s
+38/46 merovingian:server-example-config-smoke-test                      OK               0.08s
+39/46 merovingian:server-oversized-config-file-smoke-test               OK               0.07s
+40/46 merovingian:server-unsafe-config-permissions-smoke-test           OK               0.06s
+41/46 merovingian:server-unsafe-existing-secret-file-smoke-test         OK               0.06s
+42/46 merovingian:server-secure-existing-secret-file-smoke-test         OK               0.08s
+43/46 merovingian:server-database-summary-redaction-smoke-test          OK               0.10s
+44/46 merovingian:integration-tests                                     OK               4.59s
+45/46 merovingian:catch2-bdd-tests                                      OK              12.05s
+46/46 merovingian:unit-tests                                            FAIL            46.47s   killed by signal 6 SIGABRT
+>>> ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1 UBSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 MALLOC_PERTURB_=144 MESON_TEST_ITERATION=1 LD_LIBRARY_PATH=/mnt/c/dev/Merovingian/build-tsan/subprojects/curl-8.20.0/dist/usr/local/lib/x86_64-linux-gnu MSAN_OPTIONS=halt_on_error=1:abort_on_error=1:print_summary=1:print_stacktrace=1 /mnt/c/dev/Merovingian/build-tsan/tests/merovingian-unit-tests
+――――――――――――――――――――――――――――――――――――― ✀  ―――――――――――――――――――――――――――――――――――――
+stdout:
+Randomness seeded to: 3479323188
+===============================================================================
+All tests passed (7594 assertions in 786 test cases)
+
+stderr:
+/usr/bin/llvm-symbolizer-18: error: '[stack]': No such file or directory
+==================
+WARNING: ThreadSanitizer: unlock of an unlocked mutex (or by a wrong thread) (pid=26173)
+    #0 pthread_mutex_unlock <null> (merovingian-unit-tests+0xdc84e) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #1 __gthread_mutex_unlock(pthread_mutex_t*) /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/x86_64-linux-gnu/c++/13/bits/gthr-default.h:779:12 (merovingian-unit-tests+0x736b03) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #2 std::timed_mutex::unlock() /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/mutex:281:7 (merovingian-unit-tests+0x737679) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #3 std::unique_lock<std::timed_mutex>::unlock() /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/bits/unique_lock.h:200:17 (merovingian-unit-tests+0x73760a) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #4 CATCH2_INTERNAL_TEST_25()::$_0::operator()() const /mnt/c/dev/Merovingian/build-tsan/../tests/unit/test_sync_notifier.cpp:135:22 (merovingian-unit-tests+0x7369a2) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #5 void std::__invoke_impl<void, CATCH2_INTERNAL_TEST_25()::$_0>(std::__invoke_other, CATCH2_INTERNAL_TEST_25()::$_0&&) /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/bits/invoke.h:61:14 (merovingian-unit-tests+0x736935) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #6 std::__invoke_result<CATCH2_INTERNAL_TEST_25()::$_0>::type std::__invoke<CATCH2_INTERNAL_TEST_25()::$_0>(CATCH2_INTERNAL_TEST_25()::$_0&&) /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/bits/invoke.h:96:14 (merovingian-unit-tests+0x7368a5) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #7 void std::thread::_Invoker<std::tuple<CATCH2_INTERNAL_TEST_25()::$_0>>::_M_invoke<0ul>(std::_Index_tuple<0ul>) /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/bits/std_thread.h:292:13 (merovingian-unit-tests+0x73684d) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #8 std::thread::_Invoker<std::tuple<CATCH2_INTERNAL_TEST_25()::$_0>>::operator()() /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/bits/std_thread.h:299:11 (merovingian-unit-tests+0x7367f5) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #9 std::thread::_State_impl<std::thread::_Invoker<std::tuple<CATCH2_INTERNAL_TEST_25()::$_0>>>::_M_run() /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/bits/std_thread.h:244:13 (merovingian-unit-tests+0x73669d) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #10 <null> <null> (libstdc++.so.6+0xecdb3) (BuildId: 753c6c8608b61d4e67be8f0c890e03e0aa046b8b)
+
+  Location is stack of main thread.
+
+  Location is global '??' at 0x7ffffffc1000 ([stack]+0x3bb38)
+
+  Mutex M0 (0x7fffffffcb38) created at:
+    #0 pthread_mutex_lock <null> (merovingian-unit-tests+0xdc36e) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #1 __gthread_mutex_lock(pthread_mutex_t*) /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/x86_64-linux-gnu/c++/13/bits/gthr-default.h:749:12 (merovingian-unit-tests+0x7364a3) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #2 std::timed_mutex::lock() /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/mutex:250:17 (merovingian-unit-tests+0x737540) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #3 std::unique_lock<std::timed_mutex>::lock() /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/bits/unique_lock.h:141:17 (merovingian-unit-tests+0x7374c9) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #4 std::unique_lock<std::timed_mutex>::unique_lock(std::timed_mutex&) /usr/bin/../lib/gcc/x86_64-linux-gnu/13/../../../../include/c++/13/bits/unique_lock.h:71:2 (merovingian-unit-tests+0x737392) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #5 CATCH2_INTERNAL_TEST_25() /mnt/c/dev/Merovingian/build-tsan/../tests/unit/test_sync_notifier.cpp:129:21 (merovingian-unit-tests+0x7347c6) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #6 Catch::(anonymous namespace)::TestInvokerAsFunction::invoke() const /mnt/c/dev/Merovingian/build-tsan/../subprojects/catch2/src/catch2/internal/catch_test_registry.cpp:60:44 (merovingian-unit-tests+0xeb3817) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #7 Catch::TestCaseHandle::invoke() const /mnt/c/dev/Merovingian/build-tsan/../subprojects/catch2/src/catch2/catch_test_case_info.hpp:124:24 (merovingian-unit-tests+0xf93c3b) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #8 Catch::RunContext::invokeActiveTestCase() /mnt/c/dev/Merovingian/build-tsan/../subprojects/catch2/src/catch2/internal/catch_run_context.cpp:789:27 (merovingian-unit-tests+0xf90883) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #9 Catch::RunContext::runCurrentTest() /mnt/c/dev/Merovingian/build-tsan/../subprojects/catch2/src/catch2/internal/catch_run_context.cpp:747:17 (merovingian-unit-tests+0xf8d79e) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #10 Catch::RunContext::runTest(Catch::TestCaseHandle const&) /mnt/c/dev/Merovingian/build-tsan/../subprojects/catch2/src/catch2/internal/catch_run_context.cpp:398:13 (merovingian-unit-tests+0xf8cfb6) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #11 Catch::(anonymous namespace)::TestGroup::execute() /mnt/c/dev/Merovingian/build-tsan/../subprojects/catch2/src/catch2/catch_session.cpp:110:45 (merovingian-unit-tests+0xf01ee8) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #12 Catch::Session::runInternal() /mnt/c/dev/Merovingian/build-tsan/../subprojects/catch2/src/catch2/catch_session.cpp:379:39 (merovingian-unit-tests+0xf00795) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #13 Catch::Session::run() /mnt/c/dev/Merovingian/build-tsan/../subprojects/catch2/src/catch2/catch_session.cpp:306:24 (merovingian-unit-tests+0xf0017b) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #14 int Catch::Session::run<char>(int, char const* const*) /mnt/c/dev/Merovingian/build-tsan/../subprojects/catch2/src/catch2/catch_session.hpp:49:30 (merovingian-unit-tests+0x15aefe) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+    #15 main /mnt/c/dev/Merovingian/build-tsan/../tests/unit/test_main.cpp:7:29 (merovingian-unit-tests+0x15ad5f) (BuildId: d79332784c406bfb33e94972740d49fef195fed0)
+
+SUMMARY: ThreadSanitizer: unlock of an unlocked mutex (or by a wrong thread) (/mnt/c/dev/Merovingian/build-tsan/tests/merovingian-unit-tests+0xdc84e) (BuildId: d79332784c406bfb33e94972740d49fef195fed0) in pthread_mutex_unlock
+==================
+ThreadSanitizer: reported 1 warnings
+――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――――
+
+
+Summary of Failures:
+
+46/46 merovingian:unit-tests                                            FAIL            46.47s   killed by signal 6 SIGABRT
+
+Ok:                45  
+Fail:              1   
+
+Full log written to /mnt/c/dev/Merovingian/build-tsan/meson-logs/testlog.txt
+EXIT=0

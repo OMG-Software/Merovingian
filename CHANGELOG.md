@@ -19,6 +19,8 @@
   target maps. Federated to-device messages now traverse canonical JSON instead,
   preserving the full per-device payload that `/sync` must expose in
   `to_device.events`.
+
+## 0.4.55
 - Fix Matrix v1.18 fallback-key claim semantics for E2EE session setup.
   `POST /_matrix/federation/v1/user/keys/claim` now returns a matching fallback
   key when no one-time key remains, instead of incorrectly returning no key at
