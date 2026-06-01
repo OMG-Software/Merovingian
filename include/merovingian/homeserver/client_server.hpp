@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,6 +46,17 @@ struct ClientKeyApiRecord final
     std::size_t statement_count{0U};
 };
 
+struct RegistrationValidationSession final
+{
+    std::string sid{};
+    std::string medium{};
+    std::string address{};
+    std::string client_secret{};
+    std::optional<std::string> country{};
+    std::optional<std::string> next_link{};
+    std::uint64_t send_attempt{0U};
+};
+
 struct ClientApiLimits final
 {
     // 64 KiB covers real Matrix API calls including keys/upload (device keys +
@@ -63,6 +75,7 @@ struct ClientServerRuntime final
     ClientApiLimits limits{};
     std::vector<ClientDevice> devices{};
     std::vector<ClientKeyApiRecord> key_api_records{};
+    std::vector<RegistrationValidationSession> registration_validation_sessions{};
     std::vector<ClientRateLimitCounter> rate_limits{};
     std::uint64_t request_clock{0U};
     // Owning pointer to the long-poll notifier. SyncNotifier holds a mutex
@@ -82,10 +95,10 @@ struct ClientServerRuntime final
 // Sync surface mutators. Each enqueues the row through the persistent
 // store and bumps the SyncNotifier so a parked /sync request can wake.
 // Returns true on success, false if the store rejected the row.
-[[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime,
-                                          database::PersistentToDeviceMessage message) -> bool;
-[[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime,
-                                             database::PersistentDeviceListChange change) -> bool;
+[[nodiscard]] auto push_to_device_message(ClientServerRuntime& runtime, database::PersistentToDeviceMessage message)
+    -> bool;
+[[nodiscard]] auto record_device_list_change(ClientServerRuntime& runtime, database::PersistentDeviceListChange change)
+    -> bool;
 [[nodiscard]] auto set_presence(ClientServerRuntime& runtime, database::PersistentPresence state) -> bool;
 [[nodiscard]] auto set_account_data(ClientServerRuntime& runtime, database::PersistentAccountData data) -> bool;
 
@@ -100,8 +113,7 @@ struct ClientServerStartResult final
 [[nodiscard]] auto matrix_error(std::string_view errcode, std::string_view message) -> std::string;
 [[nodiscard]] auto is_matrix_error_response(LocalHttpResponse const& response) noexcept -> bool;
 [[nodiscard]] auto handle_client_server_request(ClientServerRuntime& runtime, LocalHttpRequest const& request,
-                                                bool can_wait = true)
-    -> DispatchResult;
+                                                bool can_wait = true) -> DispatchResult;
 [[nodiscard]] auto handle_client_server_http_request(ClientServerRuntime& runtime, std::string_view raw_request)
     -> LocalHttpResponse;
 [[nodiscard]] auto device_count(ClientServerRuntime const& runtime, std::string_view user_id) noexcept -> std::size_t;

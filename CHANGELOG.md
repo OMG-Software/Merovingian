@@ -1,6 +1,41 @@
 # Changelog
 
-## 0.4.56
+## 0.4.57
+- Tighten Matrix v1.18 `/sync` conformance coverage. The client-server
+  conformance suite now asserts the full top-level `/sync` envelope
+  (`rooms`, `presence`, `account_data`, `to_device`, `device_lists`,
+  `device_one_time_keys_count`, and `device_unused_fallback_key_types`)
+  as well as the joined/invited/left room category object shapes.
+- Fix the `/sync` room envelope to always include `rooms.knock`, matching the
+  v1.18 response shape even when the homeserver has no knocked rooms to report.
+- Implement the remaining Matrix v1.18 registration discovery and validation
+  routes. `GET /_matrix/client/v3/register/available` now reports availability
+  with `M_USER_IN_USE` and `M_INVALID_USERNAME` rejections, and
+  `GET /_matrix/client/v1/register/m.login.registration_token/validity` now
+  reports whether the configured registration token is usable.
+- Implement homeserver-managed registration validation sessions for
+  `POST /_matrix/client/v3/register/email/requestToken` and
+  `POST /_matrix/client/v3/register/msisdn/requestToken`. Both routes now
+  accept spec-shaped request bodies and return opaque `sid` values, with
+  repeat requests for the same validation triple reusing the same session.
+- Tighten `POST /_matrix/client/v3/register` error conformance by rejecting
+  invalid localparts with `M_INVALID_USERNAME` before attempting account
+  creation.
+- Fix Matrix registration UIA probing for empty JSON bodies. Matrix clients
+  often begin account creation with `POST /_matrix/client/v3/register` and an
+  empty `{}` body to discover the required interactive-auth stages. Merovingian
+  was validating `username` and `password` first and incorrectly returning
+  `400 M_BAD_JSON`; it now returns the expected `401` UIA challenge with
+  `flows`, `params`, and `session`.
+- Fix Matrix v1.18 push-rule discovery for authenticated clients. Merovingian
+  now returns the spec-defined server-default ruleset from
+  `GET /_matrix/client/v3/pushrules/`, exposes the same ruleset through
+  `GET /_matrix/client/v3/pushrules/global/`, and serves built-in rule lookups
+  plus their `actions` and `enabled` views for the implemented GET endpoints.
+- Fix stable unauthenticated OIDC discovery probing.
+  `GET /_matrix/client/v1/auth_metadata` now returns the same pre-auth
+  `404 M_UNRECOGNIZED` as the unsupported MSC2965 discovery namespace instead
+  of falling through to the access-token gate and producing a misleading `401`.
 - Fix outbound federation transaction IDs for E2EE to-device delivery.
   Merovingian was deriving `/send/{txnId}` from the local `next_session_id`
   counter, which resets on restart. That let a fresh `m.direct_to_device` EDU

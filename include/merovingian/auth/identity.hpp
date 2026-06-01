@@ -36,6 +36,7 @@ struct LoginPolicyDecision final
 };
 
 [[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool;
+[[nodiscard]] auto localpart_is_valid(std::string_view localpart) noexcept -> bool;
 [[nodiscard]] auto user_id_is_valid(std::string_view user_id) noexcept -> bool;
 [[nodiscard]] auto device_id_is_valid(std::string_view device_id) noexcept -> bool;
 [[nodiscard]] auto password_is_acceptable(std::string_view password) noexcept -> bool;
