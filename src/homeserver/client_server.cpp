@@ -9,6 +9,7 @@
 #include "merovingian/homeserver/client_server.hpp"
 
 #include "local_services.hpp"
+#include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/key_api.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -242,6 +243,248 @@ namespace
         return std::move(result.value);
     }
 
+    [[nodiscard]] auto push_action_set_tweak(std::string_view tweak) -> canonicaljson::Value
+    {
+        return json_obj({json_member("set_tweak", json_str(tweak))});
+    }
+
+    [[nodiscard]] auto push_action_set_tweak(std::string_view tweak, std::string_view value) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("set_tweak", json_str(tweak)),
+            json_member("value", json_str(value)),
+        });
+    }
+
+    [[nodiscard]] auto push_action_set_tweak(std::string_view tweak, bool value) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("set_tweak", json_str(tweak)),
+            json_member("value", json_bool(value)),
+        });
+    }
+
+    [[nodiscard]] auto push_condition_event_match(std::string_view key, std::string_view pattern)
+        -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("key", json_str(key)),
+            json_member("kind", json_str("event_match")),
+            json_member("pattern", json_str(pattern)),
+        });
+    }
+
+    [[nodiscard]] auto push_condition_event_property_is(std::string_view key, std::string_view value)
+        -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("key", json_str(key)),
+            json_member("kind", json_str("event_property_is")),
+            json_member("value", json_str(value)),
+        });
+    }
+
+    [[nodiscard]] auto push_condition_event_property_is(std::string_view key, bool value) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("key", json_str(key)),
+            json_member("kind", json_str("event_property_is")),
+            json_member("value", json_bool(value)),
+        });
+    }
+
+    [[nodiscard]] auto push_condition_event_property_contains(std::string_view key, std::string_view value)
+        -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("key", json_str(key)),
+            json_member("kind", json_str("event_property_contains")),
+            json_member("value", json_str(value)),
+        });
+    }
+
+    [[nodiscard]] auto push_condition_room_member_count(std::string_view member_count) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("is", json_str(member_count)),
+            json_member("kind", json_str("room_member_count")),
+        });
+    }
+
+    [[nodiscard]] auto push_condition_sender_notification_permission(std::string_view key) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("key", json_str(key)),
+            json_member("kind", json_str("sender_notification_permission")),
+        });
+    }
+
+    [[nodiscard]] auto push_rule(std::string_view rule_id, bool enabled, canonicaljson::Array conditions,
+                                 canonicaljson::Array actions) -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("actions", json_arr(std::move(actions))),
+            json_member("conditions", json_arr(std::move(conditions))),
+            json_member("default", json_bool(true)),
+            json_member("enabled", json_bool(enabled)),
+            json_member("rule_id", json_str(rule_id)),
+        });
+    }
+
+    [[nodiscard]] auto default_push_ruleset(std::string_view user_id) -> canonicaljson::Object
+    {
+        auto override_rules = canonicaljson::Array{};
+        override_rules.push_back(push_rule(".m.rule.master", false, {}, {}));
+        override_rules.push_back(
+            push_rule(".m.rule.suppress_notices", true,
+                      canonicaljson::Array{push_condition_event_match("content.msgtype", "m.notice")}, {}));
+        override_rules.push_back(push_rule(".m.rule.invite_for_me", true,
+                                           canonicaljson::Array{
+                                               push_condition_event_match("type", "m.room.member"),
+                                               push_condition_event_match("content.membership", "invite"),
+                                               push_condition_event_match("state_key", user_id),
+                                           },
+                                           canonicaljson::Array{
+                                               json_str("notify"),
+                                               push_action_set_tweak("sound", std::string_view{"default"}),
+                                               push_action_set_tweak("highlight", false),
+                                           }));
+        override_rules.push_back(push_rule(".m.rule.member_event", true,
+                                           canonicaljson::Array{push_condition_event_match("type", "m.room.member")},
+                                           {}));
+        override_rules.push_back(push_rule(
+            ".m.rule.is_user_mention", true,
+            canonicaljson::Array{push_condition_event_property_contains("content.m\\.mentions.user_ids", user_id)},
+            canonicaljson::Array{
+                json_str("notify"),
+                push_action_set_tweak("sound", std::string_view{"default"}),
+                push_action_set_tweak("highlight"),
+            }));
+        override_rules.push_back(push_rule(".m.rule.is_room_mention", true,
+                                           canonicaljson::Array{
+                                               push_condition_event_property_is("content.m\\.mentions.room", true),
+                                               push_condition_sender_notification_permission("room"),
+                                           },
+                                           canonicaljson::Array{
+                                               json_str("notify"),
+                                               push_action_set_tweak("highlight"),
+                                           }));
+        override_rules.push_back(push_rule(".m.rule.tombstone", true,
+                                           canonicaljson::Array{
+                                               push_condition_event_match("type", "m.room.tombstone"),
+                                               push_condition_event_match("state_key", ""),
+                                           },
+                                           canonicaljson::Array{
+                                               json_str("notify"),
+                                               push_action_set_tweak("highlight"),
+                                           }));
+        override_rules.push_back(push_rule(".m.rule.reaction", true,
+                                           canonicaljson::Array{push_condition_event_match("type", "m.reaction")}, {}));
+        override_rules.push_back(push_rule(".m.rule.room.server_acl", true,
+                                           canonicaljson::Array{
+                                               push_condition_event_match("type", "m.room.server_acl"),
+                                               push_condition_event_match("state_key", ""),
+                                           },
+                                           {}));
+        override_rules.push_back(push_rule(".m.rule.suppress_edits", true,
+                                           canonicaljson::Array{push_condition_event_property_is(
+                                               "content.m\\.relates_to.rel_type", std::string_view{"m.replace"})},
+                                           {}));
+
+        auto underride_rules = canonicaljson::Array{};
+        underride_rules.push_back(push_rule(".m.rule.call", true,
+                                            canonicaljson::Array{push_condition_event_match("type", "m.call.invite")},
+                                            canonicaljson::Array{
+                                                json_str("notify"),
+                                                push_action_set_tweak("sound", std::string_view{"ring"}),
+                                                push_action_set_tweak("highlight", false),
+                                            }));
+        underride_rules.push_back(push_rule(".m.rule.encrypted_room_one_to_one", true,
+                                            canonicaljson::Array{
+                                                push_condition_room_member_count("2"),
+                                                push_condition_event_match("type", "m.room.encrypted"),
+                                            },
+                                            canonicaljson::Array{
+                                                json_str("notify"),
+                                                push_action_set_tweak("sound", std::string_view{"default"}),
+                                                push_action_set_tweak("highlight", false),
+                                            }));
+        underride_rules.push_back(push_rule(".m.rule.room_one_to_one", true,
+                                            canonicaljson::Array{
+                                                push_condition_room_member_count("2"),
+                                                push_condition_event_match("type", "m.room.message"),
+                                            },
+                                            canonicaljson::Array{
+                                                json_str("notify"),
+                                                push_action_set_tweak("sound", std::string_view{"default"}),
+                                                push_action_set_tweak("highlight", false),
+                                            }));
+        underride_rules.push_back(push_rule(".m.rule.message", true,
+                                            canonicaljson::Array{push_condition_event_match("type", "m.room.message")},
+                                            canonicaljson::Array{
+                                                json_str("notify"),
+                                                push_action_set_tweak("highlight", false),
+                                            }));
+        underride_rules.push_back(push_rule(
+            ".m.rule.encrypted", true, canonicaljson::Array{push_condition_event_match("type", "m.room.encrypted")},
+            canonicaljson::Array{
+                json_str("notify"),
+                push_action_set_tweak("highlight", false),
+            }));
+
+        return canonicaljson::Object{
+            json_member("content", json_arr({})),
+            json_member("override", json_arr(std::move(override_rules))),
+            json_member("room", json_arr({})),
+            json_member("sender", json_arr({})),
+            json_member("underride", json_arr(std::move(underride_rules))),
+        };
+    }
+
+    [[nodiscard]] auto push_rule_array(canonicaljson::Object const& ruleset, std::string_view kind)
+        -> canonicaljson::Array const*
+    {
+        auto const value = std::ranges::find_if(ruleset, [kind](canonicaljson::ObjectMember const& member) {
+            return member.key == kind;
+        });
+        if (value == ruleset.end())
+        {
+            return nullptr;
+        }
+        return std::get_if<canonicaljson::Array>(&value->value->storage());
+    }
+
+    [[nodiscard]] auto push_rule_object(canonicaljson::Object const& ruleset, std::string_view kind,
+                                        std::string_view rule_id) -> canonicaljson::Object const*
+    {
+        auto const* rules = push_rule_array(ruleset, kind);
+        if (rules == nullptr)
+        {
+            return nullptr;
+        }
+        for (auto const& rule : *rules)
+        {
+            auto const* rule_object = std::get_if<canonicaljson::Object>(&rule.storage());
+            if (rule_object == nullptr)
+            {
+                continue;
+            }
+            auto const member = std::ranges::find_if(*rule_object, [](canonicaljson::ObjectMember const& current) {
+                return current.key == "rule_id";
+            });
+            if (member == rule_object->end())
+            {
+                continue;
+            }
+            auto const* current_rule_id = std::get_if<std::string>(&member->value->storage());
+            if (current_rule_id != nullptr && *current_rule_id == rule_id)
+            {
+                return rule_object;
+            }
+        }
+        return nullptr;
+    }
+
     // Convert a stored persistent event to a client-facing event value.
     // Parses the stored signed event JSON and injects the event_id field
     // (room v3+ events do not carry event_id in the wire format, but
@@ -286,6 +529,23 @@ namespace
         std::string localpart{};
         std::string password{};
         std::string registration_token{};
+    };
+
+    struct MatrixRegisterEmailRequestBody final
+    {
+        std::string client_secret{};
+        std::string email{};
+        std::optional<std::string> next_link{};
+        std::uint64_t send_attempt{0U};
+    };
+
+    struct MatrixRegisterMsisdnRequestBody final
+    {
+        std::string client_secret{};
+        std::string country{};
+        std::string phone_number{};
+        std::optional<std::string> next_link{};
+        std::uint64_t send_attempt{0U};
     };
 
     struct MatrixLoginBody final
@@ -385,6 +645,17 @@ namespace
             return nullptr;
         }
         return std::get_if<bool>(&value->storage());
+    }
+
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
+    {
+        auto const* value = object_member(object, key);
+        if (value == nullptr)
+        {
+            return nullptr;
+        }
+        return std::get_if<std::int64_t>(&value->storage());
     }
 
     [[nodiscard]] auto string_array_member(canonicaljson::Object const& object, std::string_view key)
@@ -610,10 +881,187 @@ namespace
         return MatrixRegisterBody{*username, *password, token == nullptr ? std::string{} : *token};
     }
 
-    [[nodiscard]] auto has_auth_field(std::string_view body) -> bool
+    [[nodiscard]] auto query_param_value(std::string_view target, std::string_view key) -> std::optional<std::string>
+    {
+        auto const query_pos = target.find('?');
+        if (query_pos == std::string_view::npos || query_pos + 1U >= target.size())
+        {
+            return std::nullopt;
+        }
+
+        auto query = target.substr(query_pos + 1U);
+        while (!query.empty())
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            auto const equals = pair.find('=');
+            auto const current_key = pair.substr(0U, equals);
+            if (current_key == key)
+            {
+                auto const encoded_value =
+                    equals == std::string_view::npos ? std::string_view{} : pair.substr(equals + 1U);
+                return core::percent_decode(encoded_value);
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query.remove_prefix(amp + 1U);
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] auto client_secret_is_valid(std::string_view client_secret) noexcept -> bool
+    {
+        return !client_secret.empty() && client_secret.size() <= 255U &&
+               std::ranges::all_of(client_secret, [](char const value) {
+                   return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'z') ||
+                          (value >= 'A' && value <= 'Z') || value == '.' || value == '=' || value == '_' ||
+                          value == '-';
+               });
+    }
+
+    [[nodiscard]] auto email_address_is_valid(std::string_view email) noexcept -> bool
+    {
+        auto const at = email.find('@');
+        return !email.empty() && email.size() <= 255U && at != std::string_view::npos && at != 0U &&
+               at + 1U < email.size() && email.find(' ') == std::string_view::npos;
+    }
+
+    [[nodiscard]] auto country_code_is_valid(std::string_view country) noexcept -> bool
+    {
+        return country.size() == 2U && std::ranges::all_of(country, [](char const value) {
+                   return value >= 'A' && value <= 'Z';
+               });
+    }
+
+    [[nodiscard]] auto phone_number_is_valid(std::string_view phone_number) noexcept -> bool
+    {
+        return !phone_number.empty() && phone_number.size() <= 32U;
+    }
+
+    [[nodiscard]] auto generate_registration_session_id() -> std::string
+    {
+        std::ignore = sodium_init();
+        auto bytes = std::array<unsigned char, 16U>{};
+        randombytes_buf(bytes.data(), bytes.size());
+        return lowercase_hex(bytes.data(), bytes.size());
+    }
+
+    [[nodiscard]] auto find_registration_validation_session(ClientServerRuntime& rt, std::string_view medium,
+                                                            std::string_view address, std::string_view client_secret,
+                                                            std::optional<std::string_view> country = std::nullopt)
+        -> RegistrationValidationSession*
+    {
+        auto const iterator = std::ranges::find_if(
+            rt.registration_validation_sessions, [&](RegistrationValidationSession const& session) {
+                if (session.medium != medium || session.address != address || session.client_secret != client_secret)
+                {
+                    return false;
+                }
+                if (country.has_value())
+                {
+                    return session.country.has_value() && *session.country == *country;
+                }
+                return !session.country.has_value();
+            });
+        return iterator == rt.registration_validation_sessions.end() ? nullptr : &(*iterator);
+    }
+
+    [[nodiscard]] auto ensure_registration_validation_session(ClientServerRuntime& rt, std::string_view medium,
+                                                              std::string_view address, std::string_view client_secret,
+                                                              std::uint64_t send_attempt,
+                                                              std::optional<std::string> next_link = std::nullopt,
+                                                              std::optional<std::string> country = std::nullopt)
+        -> RegistrationValidationSession&
+    {
+        auto* existing = find_registration_validation_session(
+            rt, medium, address, client_secret,
+            country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt);
+        if (existing != nullptr)
+        {
+            existing->send_attempt = std::max(existing->send_attempt, send_attempt);
+            existing->next_link = next_link;
+            return *existing;
+        }
+
+        rt.registration_validation_sessions.push_back({generate_registration_session_id(), std::string{medium},
+                                                       std::string{address}, std::string{client_secret},
+                                                       std::move(country), std::move(next_link), send_attempt});
+        return rt.registration_validation_sessions.back();
+    }
+
+    [[nodiscard]] auto parse_register_email_request_body(std::string_view body)
+        -> std::optional<MatrixRegisterEmailRequestBody>
     {
         auto const object = parsed_json_object(body);
-        return object.has_value() && object_member_object(*object, "auth") != nullptr;
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* client_secret = string_member(*object, "client_secret");
+        auto const* email = string_member(*object, "email");
+        auto const* send_attempt = integer_member(*object, "send_attempt");
+        if (client_secret == nullptr || email == nullptr || send_attempt == nullptr || *send_attempt < 1)
+        {
+            return std::nullopt;
+        }
+        auto const* next_link = string_member(*object, "next_link");
+        return MatrixRegisterEmailRequestBody{*client_secret, *email,
+                                              next_link == nullptr ? std::optional<std::string>{}
+                                                                   : std::optional<std::string>{*next_link},
+                                              static_cast<std::uint64_t>(*send_attempt)};
+    }
+
+    [[nodiscard]] auto parse_register_msisdn_request_body(std::string_view body)
+        -> std::optional<MatrixRegisterMsisdnRequestBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* client_secret = string_member(*object, "client_secret");
+        auto const* country = string_member(*object, "country");
+        auto const* phone_number = string_member(*object, "phone_number");
+        auto const* send_attempt = integer_member(*object, "send_attempt");
+        if (client_secret == nullptr || country == nullptr || phone_number == nullptr || send_attempt == nullptr ||
+            *send_attempt < 1)
+        {
+            return std::nullopt;
+        }
+        auto const* next_link = string_member(*object, "next_link");
+        return MatrixRegisterMsisdnRequestBody{
+            *client_secret,
+            *country,
+            *phone_number,
+            next_link == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*next_link},
+            static_cast<std::uint64_t>(*send_attempt),
+        };
+    }
+
+    [[nodiscard]] auto user_exists(ClientServerRuntime const& rt, std::string_view user_id) noexcept -> bool
+    {
+        return std::ranges::any_of(rt.homeserver.database.users, [user_id](LocalUser const& current) {
+            return current.user_id == user_id;
+        });
+    }
+
+    [[nodiscard]] auto registration_error_code(std::uint16_t status, std::string_view reason) -> std::string_view
+    {
+        if (reason == "user already exists")
+        {
+            return "M_USER_IN_USE";
+        }
+        if (reason == "invalid user id")
+        {
+            return "M_INVALID_USERNAME";
+        }
+        if (status == 403U)
+        {
+            return "M_FORBIDDEN";
+        }
+        return "M_UNKNOWN";
     }
 
     [[nodiscard]] auto configured_registration_token(config::Config const& config) -> std::string
@@ -1483,6 +1931,7 @@ namespace
                                      json_member("join", json_obj(std::move(join_members))),
                                      json_member("invite", json_obj(std::move(invite_members))),
                                      json_member("leave", json_obj(std::move(leave_members))),
+                                     json_member("knock", json_obj({})),
                                  })),
             json_member("presence", json_obj({json_member("events", json_arr(std::move(presence_events)))})),
             json_member("account_data", json_obj({json_member("events", json_arr(std::move(global_account_data)))})),
@@ -3402,15 +3851,94 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                    })));
     }
 
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/register/available")
+    {
+        auto const username = query_param_value(req.target, "username");
+        if (!username.has_value() || username->empty())
+        {
+            return dispatch_err(400U, "M_MISSING_PARAM", "username is required");
+        }
+        if (!auth::localpart_is_valid(*username))
+        {
+            return dispatch_err(400U, "M_INVALID_USERNAME", "desired username is not valid");
+        }
+        auto const user_id = matrix_user_id(rt.homeserver.config.server().server_name, *username);
+        if (user_exists(rt, user_id))
+        {
+            return dispatch_err(400U, "M_USER_IN_USE", "desired username is already taken");
+        }
+        return dispatch_resp(200U, json_serialize(json_obj({json_member("available", canonicaljson::Value{true})})));
+    }
+
+    if (req.method == "GET" && request_path == "/_matrix/client/v1/register/m.login.registration_token/validity")
+    {
+        auto const token = query_param_value(req.target, "token");
+        if (!token.has_value() || token->empty())
+        {
+            return dispatch_err(400U, "M_MISSING_PARAM", "token is required");
+        }
+        auto const configured_token = configured_registration_token(rt.homeserver.config);
+        auto const valid = !configured_token.empty() && configured_token == *token;
+        return dispatch_resp(200U, json_serialize(json_obj({json_member("valid", canonicaljson::Value{valid})})));
+    }
+
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/register/email/requestToken")
+    {
+        auto const body = parse_register_email_request_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(400U, "M_BAD_JSON",
+                                "email validation body must contain client_secret, email, and send_attempt");
+        }
+        if (!client_secret_is_valid(body->client_secret))
+        {
+            return dispatch_err(400U, "M_BAD_JSON", "client_secret must match the Matrix grammar");
+        }
+        if (!email_address_is_valid(body->email))
+        {
+            return dispatch_err(400U, "M_BAD_JSON", "email must be a plausible address");
+        }
+        auto& session = ensure_registration_validation_session(rt, "email", body->email, body->client_secret,
+                                                               body->send_attempt, body->next_link);
+        return dispatch_resp(200U, json_serialize(json_obj({json_member("sid", json_str(session.sid))})));
+    }
+
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/register/msisdn/requestToken")
+    {
+        auto const body = parse_register_msisdn_request_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(
+                400U, "M_BAD_JSON",
+                "msisdn validation body must contain client_secret, country, phone_number, and send_attempt");
+        }
+        if (!client_secret_is_valid(body->client_secret))
+        {
+            return dispatch_err(400U, "M_BAD_JSON", "client_secret must match the Matrix grammar");
+        }
+        if (!country_code_is_valid(body->country))
+        {
+            return dispatch_err(400U, "M_BAD_JSON", "country must be a two-letter uppercase code");
+        }
+        if (!phone_number_is_valid(body->phone_number))
+        {
+            return dispatch_err(400U, "M_BAD_JSON", "phone_number must not be empty");
+        }
+        auto const address = body->country + ":" + body->phone_number;
+        auto& session = ensure_registration_validation_session(rt, "msisdn", address, body->client_secret,
+                                                               body->send_attempt, body->next_link, body->country);
+        return dispatch_resp(200U, json_serialize(json_obj({json_member("sid", json_str(session.sid))})));
+    }
+
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register")
     {
-        auto const body = parse_register_body(req.body);
-        if (!body.has_value())
+        auto const registration_object = parsed_json_object(req.body);
+        if (!registration_object.has_value())
         {
             return dispatch_err(400U, "M_BAD_JSON", "registration body must be Matrix JSON");
         }
         // Matrix UI-auth: if no auth object is present, return 401 with the available flow.
-        if (!has_auth_field(req.body))
+        if (object_member_object(*registration_object, "auth") == nullptr)
         {
             return dispatch_resp(
                 401U, json_serialize(json_obj({
@@ -3420,11 +3948,20 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                           json_member("session", json_str("merovingian-ui-auth")),
                       })));
         }
+        auto const body = parse_register_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(400U, "M_BAD_JSON", "registration body must contain username and password");
+        }
+        if (!auth::localpart_is_valid(body->localpart))
+        {
+            return dispatch_err(400U, "M_INVALID_USERNAME", "desired username is not valid");
+        }
         auto const result =
             register_local_user(rt.homeserver, body->localpart, body->password, body->registration_token);
         if (!result.ok)
         {
-            return dispatch_err(result.status, "M_FORBIDDEN", result.reason);
+            return dispatch_err(result.status, registration_error_code(result.status, result.reason), result.reason);
         }
         // Spec §5.5.1: when inhibit_login is false (the default), the response
         // MUST include access_token and device_id.  Create a session immediately
@@ -3527,6 +4064,10 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // OIDC, so return 404 for the whole msc2965 namespace before the
     // access-token gate, otherwise the probes produce a misleading 401.
     if (req.method == "GET" && starts_with(req.target, "/_matrix/client/unstable/org.matrix.msc2965/"))
+    {
+        return dispatch_err(404U, "M_UNRECOGNIZED", "OIDC not supported");
+    }
+    if (req.method == "GET" && request_path == "/_matrix/client/v1/auth_metadata")
     {
         return dispatch_err(404U, "M_UNRECOGNIZED", "OIDC not supported");
     }
@@ -3741,19 +4282,74 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                       })),
                       }))})));
     }
-    // Clients fetch /pushrules/ immediately after login to load notification
-    // rules. Push infrastructure is not yet implemented; return an empty
-    // global ruleset so clients can proceed to open their sync connection.
-    if (req.method == "GET" && req.target == "/_matrix/client/v3/pushrules/")
+    // Clients fetch /pushrules immediately after login to load the
+    // server-default rules defined by Matrix v1.18.
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/pushrules/")
     {
-        return dispatch_resp(200U,
-                             json_serialize(json_obj({json_member("global", json_obj({
-                                                                                json_member("content", json_arr({})),
-                                                                                json_member("override", json_arr({})),
-                                                                                json_member("room", json_arr({})),
-                                                                                json_member("sender", json_arr({})),
-                                                                                json_member("underride", json_arr({})),
-                                                                            }))})));
+        auto const ruleset = default_push_ruleset(*user);
+        return dispatch_resp(200U, json_serialize(json_obj({json_member("global", json_obj(ruleset))})));
+    }
+    auto constexpr pushrules_global_prefix = std::string_view{"/_matrix/client/v3/pushrules/global/"};
+    if (req.method == "GET" && request_path == pushrules_global_prefix)
+    {
+        auto const ruleset = default_push_ruleset(*user);
+        return dispatch_resp(200U, json_serialize(json_obj(ruleset)));
+    }
+    if (req.method == "GET" && starts_with(request_path, pushrules_global_prefix))
+    {
+        auto const suffix = request_path.substr(pushrules_global_prefix.size());
+        auto const first_separator = suffix.find('/');
+        if (first_separator == std::string_view::npos)
+        {
+            return dispatch_err(404U, "M_NOT_FOUND", "push rule not found");
+        }
+        auto const kind = suffix.substr(0U, first_separator);
+        auto const remainder = suffix.substr(first_separator + 1U);
+        auto const action_suffix = std::string_view{"/actions"};
+        auto const enabled_suffix = std::string_view{"/enabled"};
+        auto const is_actions = remainder.size() > action_suffix.size() && ends_with(remainder, action_suffix);
+        auto const is_enabled =
+            !is_actions && remainder.size() > enabled_suffix.size() && ends_with(remainder, enabled_suffix);
+        auto const rule_segment =
+            is_actions ? remainder.substr(0U, remainder.size() - action_suffix.size())
+                       : (is_enabled ? remainder.substr(0U, remainder.size() - enabled_suffix.size()) : remainder);
+        auto const rule_id = core::percent_decode_path_component(rule_segment);
+        auto const ruleset = default_push_ruleset(*user);
+        auto const* rule = push_rule_object(ruleset, kind, rule_id);
+        if (rule == nullptr)
+        {
+            return dispatch_err(404U, "M_NOT_FOUND", "push rule not found");
+        }
+        if (is_actions)
+        {
+            auto const action_member = std::ranges::find_if(*rule, [](canonicaljson::ObjectMember const& member) {
+                return member.key == "actions";
+            });
+            if (action_member == rule->end())
+            {
+                return dispatch_err(500U, "M_UNKNOWN", "push rule actions missing");
+            }
+            auto const* actions = std::get_if<canonicaljson::Array>(&action_member->value->storage());
+            return actions == nullptr
+                       ? dispatch_err(500U, "M_UNKNOWN", "push rule actions missing")
+                       : dispatch_resp(
+                             200U, json_serialize(json_obj({json_member("actions", canonicaljson::Value{*actions})})));
+        }
+        if (is_enabled)
+        {
+            auto const enabled_member = std::ranges::find_if(*rule, [](canonicaljson::ObjectMember const& member) {
+                return member.key == "enabled";
+            });
+            if (enabled_member == rule->end())
+            {
+                return dispatch_err(500U, "M_UNKNOWN", "push rule enabled flag missing");
+            }
+            auto const* enabled = std::get_if<bool>(&enabled_member->value->storage());
+            return enabled == nullptr
+                       ? dispatch_err(500U, "M_UNKNOWN", "push rule enabled flag missing")
+                       : dispatch_resp(200U, json_serialize(json_obj({json_member("enabled", json_bool(*enabled))})));
+        }
+        return dispatch_resp(200U, json_serialize(json_obj(*rule)));
     }
     // PUT /_matrix/client/v3/profile/{userId}/displayname
     // PUT /_matrix/client/v3/profile/{userId}/avatar_url

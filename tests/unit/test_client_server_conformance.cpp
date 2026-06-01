@@ -120,6 +120,25 @@ using namespace merovingian::tests;
     return *token;
 }
 
+[[nodiscard]] auto push_rule_by_id(merovingian::canonicaljson::Array const& rules, std::string_view rule_id)
+    -> merovingian::canonicaljson::Object const*
+{
+    for (auto const& rule : rules)
+    {
+        auto const* rule_object = std::get_if<merovingian::canonicaljson::Object>(&rule.storage());
+        if (rule_object == nullptr)
+        {
+            continue;
+        }
+        auto const* current_rule_id = string_member(*rule_object, "rule_id");
+        if (current_rule_id != nullptr && *current_rule_id == rule_id)
+        {
+            return rule_object;
+        }
+    }
+    return nullptr;
+}
+
 auto constexpr remote_origin = "remote.example.org";
 auto constexpr remote_key_id = "ed25519:auto";
 auto constexpr remote_key_seed = "client-server-conformance-remote-seed";
@@ -233,6 +252,46 @@ SCENARIO("GET /versions returns required spec fields", "[conformance][client-ser
 
 // --- POST /_matrix/client/v3/register ----------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3register
+//
+// Matrix clients send an empty registration probe first when the homeserver
+// requires interactive authentication for registration.
+SCENARIO("POST /register with an empty JSON object returns a UIA challenge", "[conformance][client-server][register]")
+{
+    GIVEN("a running client-server with token-gated registration enabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("an empty registration probe is submitted")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/register", {}, "{}"});
+
+            THEN("the response is 401 with registration-token UIA flow metadata")
+            {
+                REQUIRE(response.response.status == 401U);
+                auto const body = parse_object(response.response.body);
+                auto const* flows = object_member_as_array(body, "flows");
+                auto const* params = object_member_as_object(body, "params");
+                auto const* session = string_member(body, "session");
+                REQUIRE(flows != nullptr);
+                REQUIRE(flows->size() == 1U);
+                auto const* first_flow = std::get_if<merovingian::canonicaljson::Object>(&flows->front().storage());
+                REQUIRE(first_flow != nullptr);
+                auto const* stages = object_member_as_array(*first_flow, "stages");
+                REQUIRE(stages != nullptr);
+                REQUIRE(stages->size() == 1U);
+                auto const* first_stage = std::get_if<std::string>(&stages->front().storage());
+                REQUIRE(first_stage != nullptr);
+                REQUIRE(*first_stage == "m.login.registration_token");
+                REQUIRE(params != nullptr);
+                REQUIRE(session != nullptr);
+                REQUIRE(!session->empty());
+            }
+        }
+    }
+}
+
 //
 // Success MUST return a JSON object with:
 //   user_id      - fully-qualified Matrix ID (@localpart:server)
@@ -1093,6 +1152,155 @@ SCENARIO("GET /sync returns required spec fields", "[conformance][client-server]
 //       so clients can determine the room version.
 // MUST: rooms created without an explicit room_version default to the server's
 //       latest supported version (currently "12").
+SCENARIO("GET /sync returns the full top-level v1.18 sync envelope", "[conformance][client-server][sync][surfaces]")
+{
+    GIVEN("a logged-in user with populated sync surfaces")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const user_id = std::string{"@alice:example.org"};
+        REQUIRE(merovingian::homeserver::set_account_data(
+            started.runtime, {user_id, std::string{}, "m.tag", R"({"tags":{"u.fav":{}}})"}));
+        REQUIRE(merovingian::homeserver::push_to_device_message(
+            started.runtime, {0U, "@bob:example.org", user_id, "DEVICE1", "m.room_key", R"({"session":"abc"})"}));
+        REQUIRE(merovingian::homeserver::record_device_list_change(started.runtime,
+                                                                   {0U, user_id, "@bob:example.org", "changed"}));
+        REQUIRE(merovingian::homeserver::record_device_list_change(started.runtime,
+                                                                   {0U, user_id, "@carol:example.org", "left"}));
+        REQUIRE(merovingian::homeserver::set_presence(started.runtime,
+                                                      {0U, "@dave:example.org", "online", "Coding!", 1000U, true}));
+        REQUIRE(
+            merovingian::database::store_one_time_key(started.runtime.homeserver.database.persistent_store,
+                                                      {user_id, "DEVICE1", "signed_curve25519:AAA", R"({"key":"x"})"}));
+        REQUIRE(
+            merovingian::database::store_one_time_key(started.runtime.homeserver.database.persistent_store,
+                                                      {user_id, "DEVICE1", "signed_curve25519:BBB", R"({"key":"y"})"}));
+        REQUIRE(merovingian::database::store_fallback_key(
+            started.runtime.homeserver.database.persistent_store,
+            {user_id, "DEVICE1", "signed_curve25519:FALL", R"({"key":"z"})"}));
+
+        WHEN("an initial sync is performed")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("every top-level sync section is present with the expected container type")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(string_member(body, "next_batch") != nullptr);
+                REQUIRE(object_member_as_object(body, "rooms") != nullptr);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                REQUIRE(object_member_as_object(*rooms, "join") != nullptr);
+                REQUIRE(object_member_as_object(*rooms, "invite") != nullptr);
+                REQUIRE(object_member_as_object(*rooms, "leave") != nullptr);
+                REQUIRE(object_member_as_object(*rooms, "knock") != nullptr);
+
+                auto const* presence = object_member_as_object(body, "presence");
+                REQUIRE(presence != nullptr);
+                REQUIRE(object_member_as_array(*presence, "events") != nullptr);
+
+                auto const* account_data = object_member_as_object(body, "account_data");
+                REQUIRE(account_data != nullptr);
+                REQUIRE(object_member_as_array(*account_data, "events") != nullptr);
+
+                auto const* to_device = object_member_as_object(body, "to_device");
+                REQUIRE(to_device != nullptr);
+                REQUIRE(object_member_as_array(*to_device, "events") != nullptr);
+
+                auto const* device_lists = object_member_as_object(body, "device_lists");
+                REQUIRE(device_lists != nullptr);
+                REQUIRE(object_member_as_array(*device_lists, "changed") != nullptr);
+                REQUIRE(object_member_as_array(*device_lists, "left") != nullptr);
+
+                auto const* otk_counts = object_member_as_object(body, "device_one_time_keys_count");
+                REQUIRE(otk_counts != nullptr);
+                REQUIRE(int_member(*otk_counts, "signed_curve25519") != nullptr);
+
+                REQUIRE(object_member_as_array(body, "device_unused_fallback_key_types") != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /sync returns spec-shaped room category objects", "[conformance][client-server][sync][rooms]")
+{
+    GIVEN("joined invited and left room state for local users")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const joined_room_id = create_room(started.runtime, alice);
+        auto const invited_room = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(invited_room.response.status == 200U);
+        auto const invited_room_body = parse_object(invited_room.response.body);
+        auto const* invited_room_id = string_member(invited_room_body, "room_id");
+        REQUIRE(invited_room_id != nullptr);
+        auto const left_room_id = create_room(started.runtime, alice);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + left_room_id + "/leave", alice, "{}"})
+                    .response.status == 200U);
+
+        WHEN("Alice syncs with include_leave and Bob syncs for the pending invite")
+        {
+            auto const alice_sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", R"json(/_matrix/client/v3/sync?filter={"room":{"include_leave":true}})json", alice, {}});
+            auto const bob_sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+
+            THEN("joined invited and left room objects match the expected response envelope")
+            {
+                REQUIRE(alice_sync.response.status == 200U);
+                auto const alice_body = parse_object(alice_sync.response.body);
+                auto const* alice_rooms = object_member_as_object(alice_body, "rooms");
+                REQUIRE(alice_rooms != nullptr);
+                auto const* alice_join = object_member_as_object(*alice_rooms, "join");
+                auto const* alice_leave = object_member_as_object(*alice_rooms, "leave");
+                auto const* alice_knock = object_member_as_object(*alice_rooms, "knock");
+                REQUIRE(alice_join != nullptr);
+                REQUIRE(alice_leave != nullptr);
+                REQUIRE(alice_knock != nullptr);
+
+                auto const* joined_room = object_member_as_object(*alice_join, joined_room_id);
+                REQUIRE(joined_room != nullptr);
+                REQUIRE(object_member_as_object(*joined_room, "timeline") != nullptr);
+                REQUIRE(object_member_as_object(*joined_room, "state") != nullptr);
+                REQUIRE(object_member_as_object(*joined_room, "account_data") != nullptr);
+                REQUIRE(object_member_as_object(*joined_room, "ephemeral") != nullptr);
+                auto const* joined_timeline = object_member_as_object(*joined_room, "timeline");
+                REQUIRE(joined_timeline != nullptr);
+                REQUIRE(object_member_as_array(*joined_timeline, "events") != nullptr);
+
+                auto const* left_room = object_member_as_object(*alice_leave, left_room_id);
+                REQUIRE(left_room != nullptr);
+                auto const* left_timeline = object_member_as_object(*left_room, "timeline");
+                REQUIRE(left_timeline != nullptr);
+                REQUIRE(object_member_as_array(*left_timeline, "events") != nullptr);
+
+                REQUIRE(bob_sync.response.status == 200U);
+                auto const bob_body = parse_object(bob_sync.response.body);
+                auto const* bob_rooms = object_member_as_object(bob_body, "rooms");
+                REQUIRE(bob_rooms != nullptr);
+                auto const* bob_invite = object_member_as_object(*bob_rooms, "invite");
+                auto const* bob_knock = object_member_as_object(*bob_rooms, "knock");
+                REQUIRE(bob_invite != nullptr);
+                REQUIRE(bob_knock != nullptr);
+                auto const* invited_room_obj = object_member_as_object(*bob_invite, *invited_room_id);
+                REQUIRE(invited_room_obj != nullptr);
+                auto const* invite_state = object_member_as_object(*invited_room_obj, "invite_state");
+                REQUIRE(invite_state != nullptr);
+                REQUIRE(object_member_as_array(*invite_state, "events") != nullptr);
+            }
+        }
+    }
+}
+
 SCENARIO("GET /sync returns full event content and correct room version in state",
          "[conformance][client-server][sync][room-version]")
 {
@@ -1478,24 +1686,24 @@ SCENARIO("POST /logout/all returns 200 with empty JSON object", "[conformance][c
 
 // --- GET /_matrix/client/v1/auth_metadata ------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv1auth_metadata
-// IMPLEMENTATION GAP: OIDC/auth metadata not yet implemented.
-SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED (implementation gap)",
+// OIDC discovery is optional; unsupported servers should answer this
+// unauthenticated probe cleanly so clients do not mistake lack of OIDC for an
+// authentication failure.
+SCENARIO("GET /v1/auth_metadata returns an unauthenticated 404 M_UNRECOGNIZED when OIDC is unsupported",
          "[conformance][client-server][session]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /_matrix/client/v1/auth_metadata is called")
+        WHEN("GET /_matrix/client/v1/auth_metadata is called without a token")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v1/auth_metadata", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/auth_metadata", {}, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until OIDC is implemented")
+            THEN("the server returns 404 M_UNRECOGNIZED instead of 401")
             {
-                // IMPLEMENTATION GAP: OIDC discovery not supported.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
@@ -2227,29 +2435,67 @@ SCENARIO("POST /account/password/msisdn/requestToken returns 404 M_UNRECOGNIZED 
 
 // --- GET /_matrix/client/v3/register/available --------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3registeravailable
-// IMPLEMENTATION GAP: username availability check not yet implemented.
-SCENARIO("GET /register/available returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
+//
+// MUST return 200 with:
+//   available - boolean true when the username can be registered
+//
+// MUST return 400 when the username is already taken or invalid.
+SCENARIO("GET /register/available reports spec-shaped availability and validation errors",
+         "[conformance][client-server][account][register]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /register/available?username=alice is called")
+        WHEN("an unused username is queried")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/register/available?username=alice", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/register/available?username=charlie", {}, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the response is 200 with available true")
             {
-                // IMPLEMENTATION GAP: username availability check not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* available = bool_member(body, "available");
+                REQUIRE(available != nullptr);
+                REQUIRE(*available);
+            }
+        }
+
+        WHEN("an already-registered username is queried")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        started.runtime, {"POST",
+                                          "/_matrix/client/v3/register",
+                                          {},
+                                          merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                        .response.status == 200U);
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/register/available?username=alice", {}, {}});
+
+            THEN("the response is 400 with M_USER_IN_USE")
+            {
+                REQUIRE(response.response.status == 400U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_USER_IN_USE");
+            }
+        }
+
+        WHEN("an invalid username is queried")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/register/available?username=Bad!Name", {}, {}});
+
+            THEN("the response is 400 with M_INVALID_USERNAME")
+            {
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_USERNAME");
             }
         }
     }
@@ -2257,30 +2503,50 @@ SCENARIO("GET /register/available returns 404 M_UNRECOGNIZED (implementation gap
 
 // --- GET /_matrix/client/v1/register/m.login.registration_token/validity -----
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv1registermloginregistration_tokenvalidity
-// IMPLEMENTATION GAP: registration token validity check not yet implemented.
-SCENARIO("GET /v1/register/m.login.registration_token/validity returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
+//
+// MUST return 200 with:
+//   valid - boolean indicating whether the supplied token can be used
+SCENARIO("GET /v1/register/m.login.registration_token/validity reports token validity",
+         "[conformance][client-server][account][register]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server with token registration enabled")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /v1/register/m.login.registration_token/validity is called")
+        WHEN("the configured registration token is queried")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET", "/_matrix/client/v1/register/m.login.registration_token/validity?token=tok", token, {}});
+                {"GET",
+                 std::string{"/_matrix/client/v1/register/m.login.registration_token/validity?token="} +
+                     std::string{merovingian::tests::registration_token},
+                 {},
+                 {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the response is 200 with valid true")
             {
-                // IMPLEMENTATION GAP: registration token validity check not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* valid = bool_member(body, "valid");
+                REQUIRE(valid != nullptr);
+                REQUIRE(*valid);
+            }
+        }
+
+        WHEN("an unknown registration token is queried")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v1/register/m.login.registration_token/validity?token=wrong-token", {}, {}});
+
+            THEN("the response is 200 with valid false")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* valid = bool_member(body, "valid");
+                REQUIRE(valid != nullptr);
+                REQUIRE(!*valid);
             }
         }
     }
@@ -2288,30 +2554,42 @@ SCENARIO("GET /v1/register/m.login.registration_token/validity returns 404 M_UNR
 
 // --- POST /_matrix/client/v3/register/email/requestToken --------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3registeremailrequesttoken
-// IMPLEMENTATION GAP: registration email token not yet implemented.
-SCENARIO("POST /register/email/requestToken returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
+//
+// MUST return 200 with:
+//   sid - opaque validation session identifier
+//
+// submit_url is optional when the homeserver completes validation without
+// requiring the client to POST the token to a separate endpoint.
+SCENARIO("POST /register/email/requestToken returns a spec-shaped validation session",
+         "[conformance][client-server][account][register]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /register/email/requestToken is called")
+        WHEN("an email validation request is submitted")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/register/email/requestToken", token,
-                                  R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/register/email/requestToken",
+                 {},
+                 R"({"client_secret":"secret123","email":"user@example.org","next_link":"https://example.org/next","send_attempt":1})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the response is 200 with a valid sid")
             {
-                // IMPLEMENTATION GAP: registration email token not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* sid = string_member(body, "sid");
+                REQUIRE(sid != nullptr);
+                REQUIRE(!sid->empty());
+                REQUIRE(sid->size() <= 255U);
+                REQUIRE(std::ranges::all_of(*sid, [](char const value) {
+                    return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'z') ||
+                           (value >= 'A' && value <= 'Z') || value == '.' || value == '=' || value == '_' ||
+                           value == '-';
+                }));
             }
         }
     }
@@ -2319,31 +2597,39 @@ SCENARIO("POST /register/email/requestToken returns 404 M_UNRECOGNIZED (implemen
 
 // --- POST /_matrix/client/v3/register/msisdn/requestToken -------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3registermsisdnrequesttoken
-// IMPLEMENTATION GAP: registration MSISDN token not yet implemented.
-SCENARIO("POST /register/msisdn/requestToken returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
+//
+// MUST return 200 with:
+//   sid - opaque validation session identifier
+SCENARIO("POST /register/msisdn/requestToken returns a spec-shaped validation session",
+         "[conformance][client-server][account][register]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /register/msisdn/requestToken is called")
+        WHEN("an MSISDN validation request is submitted")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/register/msisdn/requestToken", token,
-                 R"({"client_secret":"s","country":"GB","phone_number":"07700000000","send_attempt":1})"});
+                {"POST",
+                 "/_matrix/client/v3/register/msisdn/requestToken",
+                 {},
+                 R"({"client_secret":"secret123","country":"GB","next_link":"https://example.org/next","phone_number":"07700000000","send_attempt":1})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the response is 200 with a valid sid")
             {
-                // IMPLEMENTATION GAP: registration MSISDN token not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* sid = string_member(body, "sid");
+                REQUIRE(sid != nullptr);
+                REQUIRE(!sid->empty());
+                REQUIRE(sid->size() <= 255U);
+                REQUIRE(std::ranges::all_of(*sid, [](char const value) {
+                    return (value >= '0' && value <= '9') || (value >= 'a' && value <= 'z') ||
+                           (value >= 'A' && value <= 'Z') || value == '.' || value == '=' || value == '_' ||
+                           value == '-';
+                }));
             }
         }
     }
@@ -6076,13 +6362,27 @@ SCENARIO("GET /pushrules/ returns a global push rules object", "[conformance][cl
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/pushrules/", token, {}});
 
-            THEN("the server returns 200 with a global push rules object")
+            THEN("the server returns 200 with the spec-defined default ruleset")
             {
-                // Spec MUST: 200 with a global object containing push rule arrays.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
                 auto const* global = object_member_as_object(body, "global");
                 REQUIRE(global != nullptr);
+                auto const* override_rules = object_member_as_array(*global, "override");
+                auto const* underride_rules = object_member_as_array(*global, "underride");
+                auto const* room_rules = object_member_as_array(*global, "room");
+                auto const* sender_rules = object_member_as_array(*global, "sender");
+                auto const* content_rules = object_member_as_array(*global, "content");
+                REQUIRE(override_rules != nullptr);
+                REQUIRE(underride_rules != nullptr);
+                REQUIRE(room_rules != nullptr);
+                REQUIRE(sender_rules != nullptr);
+                REQUIRE(content_rules != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.master") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.is_user_mention") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.tombstone") != nullptr);
+                REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.call") != nullptr);
+                REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.encrypted") != nullptr);
             }
         }
     }
@@ -6090,8 +6390,7 @@ SCENARIO("GET /pushrules/ returns a global push rules object", "[conformance][cl
 
 // --- GET /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId} ----------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3pushrulesscopekindruleid
-// IMPLEMENTATION GAP: individual push rule retrieval not yet implemented.
-SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId} returns a server-default push rule",
          "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -6100,20 +6399,28 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (imp
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /pushrules/global/content/.m.rule.contains_user_name is called")
+        WHEN("GET /pushrules/global/override/.m.rule.master is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/pushrules/global/override/.m.rule.master", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns the rule object")
             {
-                // IMPLEMENTATION GAP: individual push rule GET not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* rule_id = string_member(body, "rule_id");
+                auto const* is_default = bool_member(body, "default");
+                auto const* enabled = bool_member(body, "enabled");
+                auto const* conditions = object_member_as_array(body, "conditions");
+                auto const* actions = object_member_as_array(body, "actions");
+                REQUIRE(rule_id != nullptr);
+                REQUIRE(*rule_id == ".m.rule.master");
+                REQUIRE(is_default != nullptr);
+                REQUIRE(*is_default);
+                REQUIRE(enabled != nullptr);
+                REQUIRE(*enabled == false);
+                REQUIRE(conditions != nullptr);
+                REQUIRE(actions != nullptr);
             }
         }
     }
@@ -6182,8 +6489,7 @@ SCENARIO("DELETE /pushrules/{scope}/{kind}/{ruleId} returns 404 M_UNRECOGNIZED (
 
 // --- GET /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId}/actions ---------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3pushrulesscopekindruleidactions
-// IMPLEMENTATION GAP: push rule actions retrieval not yet implemented.
-SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/actions returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/actions returns the rule actions",
          "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -6192,20 +6498,19 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/actions returns 404 M_UNRECOGNI
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /pushrules/global/content/.m.rule.contains_user_name/actions is called")
+        WHEN("GET /pushrules/global/underride/.m.rule.call/actions is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions", token, {}});
+                {"GET", "/_matrix/client/v3/pushrules/global/underride/.m.rule.call/actions", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns the action array")
             {
-                // IMPLEMENTATION GAP: push rule actions GET not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* actions = object_member_as_array(body, "actions");
+                REQUIRE(actions != nullptr);
+                REQUIRE(actions->size() == 3U);
             }
         }
     }
@@ -6245,8 +6550,7 @@ SCENARIO("PUT /pushrules/{scope}/{kind}/{ruleId}/actions returns 404 M_UNRECOGNI
 
 // --- GET /_matrix/client/v3/pushrules/{scope}/{kind}/{ruleId}/enabled ---------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3pushrulesscopekindruleidenabled
-// IMPLEMENTATION GAP: push rule enabled state retrieval not yet implemented.
-SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/enabled returns the rule enabled state",
          "[conformance][client-server][push]")
 {
     GIVEN("a running client-server and a logged-in user")
@@ -6255,20 +6559,19 @@ SCENARIO("GET /pushrules/{scope}/{kind}/{ruleId}/enabled returns 404 M_UNRECOGNI
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /pushrules/global/content/.m.rule.contains_user_name/enabled is called")
+        WHEN("GET /pushrules/global/override/.m.rule.master/enabled is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled", token, {}});
+                {"GET", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns the enabled flag")
             {
-                // IMPLEMENTATION GAP: push rule enabled GET not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* enabled = bool_member(body, "enabled");
+                REQUIRE(enabled != nullptr);
+                REQUIRE(*enabled == false);
             }
         }
     }
@@ -6657,13 +6960,12 @@ SCENARIO("GET /pushrules/global/ conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/pushrules/global/", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns the global ruleset")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(object_member_as_array(body, "override") != nullptr);
+                REQUIRE(object_member_as_array(body, "underride") != nullptr);
             }
         }
     }
@@ -6677,19 +6979,18 @@ SCENARIO("GET /pushrules/global/{kind}/{ruleId} conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /pushrules/global/content/.m.rule.contains_user_name is called")
+        WHEN("GET /pushrules/global/override/.m.rule.master is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/pushrules/global/override/.m.rule.master", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns the rule object")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* rule_id = string_member(body, "rule_id");
+                REQUIRE(rule_id != nullptr);
+                REQUIRE(*rule_id == ".m.rule.master");
             }
         }
     }
@@ -6755,19 +7056,19 @@ SCENARIO("GET /pushrules/global/{kind}/{ruleId}/actions conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /pushrules/global/content/.m.rule.contains_user_name/actions is called")
+        WHEN("GET /pushrules/global/underride/.m.rule.call/actions is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/actions", token, {}});
+                {"GET", "/_matrix/client/v3/pushrules/global/underride/.m.rule.call/actions", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns the actions array")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* actions = object_member_as_array(body, "actions");
+                REQUIRE(actions != nullptr);
+                REQUIRE(actions->size() == 3U);
             }
         }
     }
@@ -6808,19 +7109,19 @@ SCENARIO("GET /pushrules/global/{kind}/{ruleId}/enabled conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /pushrules/global/content/.m.rule.contains_user_name/enabled is called")
+        WHEN("GET /pushrules/global/override/.m.rule.master/enabled is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET", "/_matrix/client/v3/pushrules/global/content/.m.rule.contains_user_name/enabled", token, {}});
+                {"GET", "/_matrix/client/v3/pushrules/global/override/.m.rule.master/enabled", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns the enabled flag")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* enabled = bool_member(body, "enabled");
+                REQUIRE(enabled != nullptr);
+                REQUIRE(*enabled == false);
             }
         }
     }

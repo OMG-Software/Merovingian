@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.56
+Version:        0.4.57
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,17 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.57-1
+- Tighten Matrix v1.18 /sync conformance: assert full envelope shape including rooms.knock
+- Implement registration discovery routes (register/available, registration_token/validity, email/requestToken, msisdn/requestToken)
+- Fix register UIA probing for empty JSON bodies to return 401 challenge instead of 400 M_BAD_JSON
+- Fix push-rule discovery for authenticated clients (server-default ruleset, global, actions/enabled views)
+- Fix stable unauthenticated OIDC discovery probing (auth_metadata returns 404 M_UNRECOGNIZED)
+- Fix outbound federation transaction IDs for E2EE to-device delivery
+- Fix federated profile query for local users missing stored profile row
+- Fix inbound m.direct_to_device EDU parsing for encrypted payloads
+- Tighten register error conformance (M_INVALID_USERNAME for invalid localparts)
+
 * Mon Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.56-1
 - Fix outbound federation transaction IDs for E2EE to-device delivery so restarts don't reuse IDs that remote servers deduplicate as replays.
 - Fix federated profile query for local users missing a stored profile row; returns spec-shaped empty profile instead of "user not found".

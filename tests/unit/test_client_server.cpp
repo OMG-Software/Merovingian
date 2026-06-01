@@ -120,8 +120,8 @@ using namespace merovingian::tests;
 }
 
 [[nodiscard]] auto content_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
-                                     std::string_view event_type,
-                                     std::string_view state_key = {}) -> merovingian::canonicaljson::Object
+                                     std::string_view event_type, std::string_view state_key = {})
+    -> merovingian::canonicaljson::Object
 {
     auto const event = parse_object(event_json_for_state(store, room_id, event_type, state_key));
     auto const* content = object_member_as_object(event, "content");
@@ -422,6 +422,129 @@ SCENARIO("Client-server GET login returns password flow discovery response", "[h
                 // Do NOT remove - clients enumerate flows to pick the right login method
                 REQUIRE(resp.response.body.find("\"flows\"") != std::string::npos);
                 REQUIRE(resp.response.body.find("\"m.login.password\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server register returns a UIA challenge for an empty JSON probe", "[homeserver][client-server]")
+{
+    GIVEN("a running client-server homeserver with token-gated registration")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("an unauthenticated client posts an empty object to /register")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/register", {}, "{}"});
+
+            THEN("the server returns a 401 UIA flow instead of a 400 parse error")
+            {
+                REQUIRE(resp.response.status == 401U);
+                REQUIRE(resp.response.body.find("\"flows\"") != std::string::npos);
+                REQUIRE(resp.response.body.find("m.login.registration_token") != std::string::npos);
+                REQUIRE(resp.response.body.find("\"session\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server registration discovery endpoints track availability token validity and validation sessions",
+         "[homeserver][client-server][register]")
+{
+    GIVEN("a running client-server homeserver with token-gated registration")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the registration discovery and requestToken endpoints are exercised")
+        {
+            auto const available_before = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/register/available?username=alice", {}, {}});
+            auto const valid_token = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          std::string{"/_matrix/client/v1/register/m.login.registration_token/validity?token="} +
+                              std::string{merovingian::tests::registration_token},
+                          {},
+                          {}});
+            auto const invalid_token = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v1/register/m.login.registration_token/validity?token=wrong-token", {}, {}});
+            auto const email_request_first = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register/email/requestToken",
+                          {},
+                          R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+            auto const email_request_second = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register/email/requestToken",
+                          {},
+                          R"({"client_secret":"secret123","email":"user@example.org","send_attempt":2})"});
+            auto const msisdn_request_first = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/register/msisdn/requestToken",
+                 {},
+                 R"({"client_secret":"secret123","country":"GB","phone_number":"07700000000","send_attempt":1})"});
+            auto const msisdn_request_second = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/register/msisdn/requestToken",
+                 {},
+                 R"({"client_secret":"secret123","country":"GB","phone_number":"07700000000","send_attempt":2})"});
+            auto const registered = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+            auto const available_after = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/register/available?username=alice", {}, {}});
+
+            THEN("availability and validation state evolve consistently")
+            {
+                REQUIRE(available_before.response.status == 200U);
+                auto const available_before_body = parse_object(available_before.response.body);
+                auto const* available = bool_member(available_before_body, "available");
+                REQUIRE(available != nullptr);
+                REQUIRE(*available);
+
+                REQUIRE(valid_token.response.status == 200U);
+                REQUIRE(invalid_token.response.status == 200U);
+                auto const valid_token_body = parse_object(valid_token.response.body);
+                auto const invalid_token_body = parse_object(invalid_token.response.body);
+                auto const* valid_true = bool_member(valid_token_body, "valid");
+                auto const* valid_false = bool_member(invalid_token_body, "valid");
+                REQUIRE(valid_true != nullptr);
+                REQUIRE(valid_false != nullptr);
+                REQUIRE(*valid_true);
+                REQUIRE(!*valid_false);
+
+                REQUIRE(email_request_first.response.status == 200U);
+                REQUIRE(email_request_second.response.status == 200U);
+                auto const email_first_body = parse_object(email_request_first.response.body);
+                auto const email_second_body = parse_object(email_request_second.response.body);
+                auto const* email_sid_first = string_member(email_first_body, "sid");
+                auto const* email_sid_second = string_member(email_second_body, "sid");
+                REQUIRE(email_sid_first != nullptr);
+                REQUIRE(email_sid_second != nullptr);
+                REQUIRE(*email_sid_first == *email_sid_second);
+
+                REQUIRE(msisdn_request_first.response.status == 200U);
+                REQUIRE(msisdn_request_second.response.status == 200U);
+                auto const msisdn_first_body = parse_object(msisdn_request_first.response.body);
+                auto const msisdn_second_body = parse_object(msisdn_request_second.response.body);
+                auto const* msisdn_sid_first = string_member(msisdn_first_body, "sid");
+                auto const* msisdn_sid_second = string_member(msisdn_second_body, "sid");
+                REQUIRE(msisdn_sid_first != nullptr);
+                REQUIRE(msisdn_sid_second != nullptr);
+                REQUIRE(*msisdn_sid_first == *msisdn_sid_second);
+
+                REQUIRE(registered.response.status == 200U);
+                REQUIRE(available_after.response.status == 400U);
+                REQUIRE(available_after.response.body.find("M_USER_IN_USE") != std::string::npos);
             }
         }
     }
@@ -2179,7 +2302,7 @@ SCENARIO("Capabilities endpoint returns server feature flags for authenticated c
     }
 }
 
-SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated clients",
+SCENARIO("Push rules endpoint returns the spec default global ruleset for authenticated clients",
          "[homeserver][client-server][pushrules]")
 {
     GIVEN("a started runtime with a registered and logged-in user")
@@ -2209,10 +2332,18 @@ SCENARIO("Push rules endpoint returns an empty global ruleset for authenticated 
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/pushrules/", token, {}});
 
-            THEN("the response is 200 with a global ruleset")
+            THEN("the response is 200 with the default override and underride rules")
             {
                 REQUIRE(response.response.status == 200U);
-                REQUIRE(response.response.body.find("global") != std::string::npos);
+                auto const body = merovingian::tests::parse_object(response.response.body);
+                auto const* global = merovingian::tests::object_member_as_object(body, "global");
+                REQUIRE(global != nullptr);
+                auto const* override_rules = merovingian::tests::object_member_as_array(*global, "override");
+                auto const* underride_rules = merovingian::tests::object_member_as_array(*global, "underride");
+                REQUIRE(override_rules != nullptr);
+                REQUIRE(underride_rules != nullptr);
+                REQUIRE(!override_rules->empty());
+                REQUIRE(!underride_rules->empty());
             }
         }
 
@@ -2298,6 +2429,17 @@ SCENARIO("OIDC discovery endpoints return 404 without authentication", "[homeser
             {
                 // We do not implement OIDC; the endpoint must be absent (404) rather
                 // than access-denied (401) so clients can probe and fall back gracefully.
+                REQUIRE(response.response.status == 404U);
+            }
+        }
+
+        WHEN("GET /_matrix/client/v1/auth_metadata is called without a token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v1/auth_metadata", {}, {}});
+
+            THEN("the stable probe also returns 404, not 401")
+            {
                 REQUIRE(response.response.status == 404U);
             }
         }
@@ -2933,8 +3075,7 @@ SCENARIO("public_chat preset does not auto-emit m.room.encryption",
 // "You are not invited" join failures.
 [[nodiscard]] auto auth_event_ids_for_state(merovingian::database::PersistentStore const& store,
                                             std::string_view room_id, std::string_view event_type,
-                                            std::string_view state_key = {})
-    -> std::vector<std::string>
+                                            std::string_view state_key = {}) -> std::vector<std::string>
 {
     auto const state = std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
         return row.room_id == room_id && row.event_type == event_type && row.state_key == state_key;
@@ -2948,7 +3089,7 @@ SCENARIO("public_chat preset does not auto-emit m.room.encryption",
 }
 
 [[nodiscard]] auto state_event_id(merovingian::database::PersistentStore const& store, std::string_view room_id,
-                                   std::string_view event_type, std::string_view state_key = {}) -> std::string
+                                  std::string_view event_type, std::string_view state_key = {}) -> std::string
 {
     auto const state = std::ranges::find_if(store.state, [&](merovingian::database::PersistentStateEvent const& row) {
         return row.room_id == room_id && row.event_type == event_type && row.state_key == state_key;
@@ -3033,8 +3174,7 @@ SCENARIO("non-member events exclude join_rules from auth_events per spec v1.18",
             }
             AND_THEN("m.room.member invite includes join_rules in auth_events")
             {
-                auto const ids = auth_event_ids_for_state(store, created_room_id, "m.room.member",
-                                                           "@bob:example.org");
+                auto const ids = auth_event_ids_for_state(store, created_room_id, "m.room.member", "@bob:example.org");
                 REQUIRE(std::ranges::find(ids, join_rules_id) != ids.end());
             }
         }

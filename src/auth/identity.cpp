@@ -165,6 +165,11 @@ auto server_name_is_valid(std::string_view server_name) noexcept -> bool
     return hostname_is_valid(hostname) && port_is_valid(port);
 }
 
+auto localpart_is_valid(std::string_view localpart) noexcept -> bool
+{
+    return !localpart.empty() && localpart.size() <= 255U && std::ranges::all_of(localpart, is_localpart_character);
+}
+
 auto user_id_is_valid(std::string_view user_id) noexcept -> bool
 {
     if (user_id.size() < 4U || user_id.size() > 255U || user_id.front() != '@')
@@ -180,7 +185,7 @@ auto user_id_is_valid(std::string_view user_id) noexcept -> bool
 
     auto const localpart = user_id.substr(1U, separator - 1U);
     auto const server_name = user_id.substr(separator + 1U);
-    return std::ranges::all_of(localpart, is_localpart_character) && server_name_is_valid(server_name);
+    return localpart_is_valid(localpart) && server_name_is_valid(server_name);
 }
 
 auto device_id_is_valid(std::string_view device_id) noexcept -> bool
@@ -230,8 +235,10 @@ auto login_policy(UserIdentity const& user) -> LoginPolicyDecision
         return {true, {}};
     }();
     log_diagnostic(result.allowed ? "login_policy.allowed" : "login_policy.denied",
-                   {{"user_id", user.user_id, false},
-                    {"reason",  result.reason, false}});
+                   {
+                       {"user_id", user.user_id,  false},
+                       {"reason",  result.reason, false}
+    });
     return result;
 }
 
