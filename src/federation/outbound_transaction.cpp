@@ -99,7 +99,7 @@ auto make_outbound_transaction(std::string_view destination, std::string_view me
 
 auto make_federation_transaction_id() -> std::string
 {
-    static_cast<void>(sodium_init());
+    if (sodium_init() < 0) { return {}; }
     auto bytes = std::array<unsigned char, 16U>{};
     randombytes_buf(bytes.data(), bytes.size());
     auto output = std::string(bytes.size() * 2U + 1U, '\0');
