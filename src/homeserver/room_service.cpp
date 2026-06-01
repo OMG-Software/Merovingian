@@ -50,8 +50,8 @@ namespace
         LOG_DEBUG(observability::diagnostic_log_summary("rooms", event, std::move(fields)));
     }
 
-    [[nodiscard]] auto json_object_member(canonicaljson::Object const& object,
-                                          std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto json_object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -63,8 +63,8 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto json_string_member(canonicaljson::Object const& object,
-                                          std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto json_string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = json_object_member(object, key);
         if (value == nullptr)
@@ -74,8 +74,8 @@ namespace
         return std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto json_integer_member(canonicaljson::Object const& object,
-                                           std::string_view key) noexcept -> std::int64_t const*
+    [[nodiscard]] auto json_integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
     {
         auto const* value = json_object_member(object, key);
         if (value == nullptr)
@@ -202,8 +202,8 @@ namespace
         {
         }
 
-        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/,
-                                std::string_view message) -> crypto::SignatureResult override
+        [[nodiscard]] auto sign(crypto::Ed25519SecretKeyHandle const& /*key*/, std::string_view message)
+            -> crypto::SignatureResult override
         {
             auto signature = std::string(crypto_sign_BYTES, '\0');
             if (crypto_sign_detached(reinterpret_cast<unsigned char*>(signature.data()), nullptr,
@@ -234,8 +234,8 @@ namespace
         std::array<unsigned char, crypto_sign_SECRETKEYBYTES> secret_key_{};
     };
 
-    [[nodiscard]] auto object_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> canonicaljson::Value const*
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
     {
         for (auto const& member : object)
         {
@@ -247,15 +247,15 @@ namespace
         return nullptr;
     }
 
-    [[nodiscard]] auto string_member(canonicaljson::Object const& object,
-                                     std::string_view key) noexcept -> std::string const*
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
-    [[nodiscard]] auto integer_member(canonicaljson::Object const& object,
-                                      std::string_view key) noexcept -> std::int64_t const*
+    [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::int64_t const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
@@ -323,14 +323,14 @@ namespace
         return error == std::errc{} && ptr == room_version.data() + room_version.size() ? parsed : 0;
     }
 
-    [[nodiscard]] auto full_room_alias(config::ServerConfig const& server,
-                                       std::string_view room_alias_name) -> std::string
+    [[nodiscard]] auto full_room_alias(config::ServerConfig const& server, std::string_view room_alias_name)
+        -> std::string
     {
         return "#" + std::string{room_alias_name} + ":" + server.server_name;
     }
 
-    [[nodiscard]] auto copy_member_or_empty_object(canonicaljson::Object const& object,
-                                                   std::string_view key) -> canonicaljson::Value
+    [[nodiscard]] auto copy_member_or_empty_object(canonicaljson::Object const& object, std::string_view key)
+        -> canonicaljson::Value
     {
         auto const* value = object_member(object, key);
         auto const* member_object = value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -349,8 +349,8 @@ namespace
         return canonicaljson::Value{std::move(array)};
     }
 
-    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object,
-                                               std::string_view key) noexcept -> canonicaljson::Object const*
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Object const*
     {
         auto const* value = object_member(object, key);
         return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
@@ -409,8 +409,8 @@ namespace
         return {true, {}, room_version_str == nullptr ? std::string{"1"} : *room_version_str, *event_object};
     }
 
-    [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store,
-                                                std::string_view room_id) -> std::vector<std::string>
+    [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store, std::string_view room_id)
+        -> std::vector<std::string>
     {
         for (auto iterator = store.events.rbegin(); iterator != store.events.rend(); ++iterator)
         {
@@ -491,8 +491,8 @@ namespace
         return event_ids;
     }
 
-    [[nodiscard]] auto next_depth_for_room(database::PersistentStore const& store,
-                                           std::string_view room_id) noexcept -> std::uint64_t
+    [[nodiscard]] auto next_depth_for_room(database::PersistentStore const& store, std::string_view room_id) noexcept
+        -> std::uint64_t
     {
         auto depth = std::uint64_t{0U};
         for (auto const& event : store.events)
@@ -515,8 +515,8 @@ namespace
         }
     }
 
-    [[nodiscard]] auto find_event_json(database::PersistentStore const& store,
-                                       std::string_view event_id) -> canonicaljson::Value
+    [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
+        -> canonicaljson::Value
     {
         for (auto const& event : store.events)
         {
@@ -570,8 +570,8 @@ namespace
 
     // Returns the room_version string from the room's m.room.create event, or "10"
     // as a safe fallback for rooms that pre-date initial-state generation.
-    [[nodiscard]] auto room_version_for_room(database::PersistentStore const& store,
-                                             std::string_view room_id) -> std::string
+    [[nodiscard]] auto room_version_for_room(database::PersistentStore const& store, std::string_view room_id)
+        -> std::string
     {
         for (auto const& state : store.state)
         {
@@ -606,8 +606,8 @@ namespace
     }
 
     [[nodiscard]] auto compose_signed_event(HomeserverRuntime& runtime, std::string_view room_id,
-                                            std::string_view sender,
-                                            std::string_view client_event_json) -> std::optional<ComposedEvent>
+                                            std::string_view sender, std::string_view client_event_json)
+        -> std::optional<ComposedEvent>
     {
         auto const parsed = canonicaljson::parse_lossless(client_event_json);
         auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
@@ -663,9 +663,8 @@ namespace
         auto const create_defines_room_id = policy->create_event_is_room_id;
         auto const omit_room_id = event_type == "m.room.create" && create_defines_room_id;
         auto const prev_events = previous_events_for_room(runtime.database.persistent_store, room_id);
-        auto const auth_events =
-            auth_events_for_room(runtime.database.persistent_store, room_id,
-                                  event_type, event_state_key.value_or(""), sender, create_defines_room_id);
+        auto const auth_events = auth_events_for_room(runtime.database.persistent_store, room_id, event_type,
+                                                      event_state_key.value_or(""), sender, create_defines_room_id);
         auto const depth = next_depth_for_room(runtime.database.persistent_store, room_id);
         auto const now_ms = static_cast<std::int64_t>(
             std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
@@ -1397,10 +1396,22 @@ namespace
         {
             continue;
         }
-        if (*type_str == "m.room.join_rules") { client_provided_join_rules = true; }
-        else if (*type_str == "m.room.history_visibility") { client_provided_history_visibility = true; }
-        else if (*type_str == "m.room.guest_access") { client_provided_guest_access = true; }
-        else if (*type_str == "m.room.encryption") { client_provided_encryption = true; }
+        if (*type_str == "m.room.join_rules")
+        {
+            client_provided_join_rules = true;
+        }
+        else if (*type_str == "m.room.history_visibility")
+        {
+            client_provided_history_visibility = true;
+        }
+        else if (*type_str == "m.room.guest_access")
+        {
+            client_provided_guest_access = true;
+        }
+        else if (*type_str == "m.room.encryption")
+        {
+            client_provided_encryption = true;
+        }
     }
 
     if (!client_provided_join_rules && !emit_state("m.room.join_rules", std::move(join_rules)))
@@ -2272,7 +2283,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{canonicaljson::Array{}}));
             auto const tx_body_result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(tx_root)});
             auto const& tx_body = tx_body_result.output;
-            auto tx_id = std::to_string(runtime.database.next_session_id++);
+            auto const tx_id = federation::make_federation_transaction_id();
             for (auto const& destination : remote_servers)
             {
                 auto target = "/_matrix/federation/v1/send/" + tx_id;

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.4.56
+- Fix outbound federation transaction IDs for E2EE to-device delivery.
+  Merovingian was deriving `/send/{txnId}` from the local `next_session_id`
+  counter, which resets on restart. That let a fresh `m.direct_to_device` EDU
+  reuse an older transaction ID and be deduplicated by the remote homeserver as
+  a replay. Federation transaction IDs are now generated independently of local
+  session state, and `PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}`
+  now preserves the client `{txnId}` as the outbound EDU `message_id`.
+- Fix federated `GET /_matrix/federation/v1/query/profile` for existing local
+  users missing a stored profile row. The route now returns a spec-shaped empty
+  profile object for a known local user instead of treating the absent
+  `profiles` row as "user not found". Added signed-route regression coverage for
+  the full `X-Matrix` path through `handle_federation_http_request`.
+- Fix inbound federated `m.direct_to_device` parsing for encrypted payloads.
+  Merovingian previously scanned the EDU content with raw brace searches in
+  `local_http_router.cpp`, which broke nested encrypted payloads and multi-device
+  target maps. Federated to-device messages now traverse canonical JSON instead,
+  preserving the full per-device payload that `/sync` must expose in
+  `to_device.events`.
+
 ## 0.4.55
 - Fix Matrix v1.18 fallback-key claim semantics for E2EE session setup.
   `POST /_matrix/federation/v1/user/keys/claim` now returns a matching fallback
@@ -27,6 +47,10 @@
   `GET /_matrix/key/v2/server`.
 - Add regression coverage for both client-server and federation key-claim
   paths, including mixed fallback-key algorithms and fallback-key reuse.
+- Add federated E2EE delivery coverage for inbound `m.direct_to_device`:
+  nested encrypted payloads now have a conformance test that reaches
+  `/sync to_device.events`, and a second test verifies one federated EDU can
+  fan out to multiple local target devices without dropping later entries.
 
 ## 0.4.54
 - Fix Matrix v1.18 room-key backup metadata and update responses. Merovingian

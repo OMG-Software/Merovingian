@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
@@ -116,6 +117,33 @@ private:
     auto const value_end = body.find('"', value_start);
     REQUIRE(value_end != std::string::npos);
     return body.substr(value_start, value_end - value_start);
+}
+
+[[nodiscard]] auto remote_runtime(std::string const& origin, std::string const& key_id, std::string const& key_seed)
+    -> merovingian::federation::FederationRemoteRuntime
+{
+    auto remote = merovingian::federation::FederationRemoteRuntime{};
+    remote.server_name = origin;
+    remote.signing_key = {origin, key_id, 4102444800000U,
+                          merovingian::federation::test::keypair_from_seed(key_seed).public_key};
+    remote.discovery.server_name = origin;
+    remote.discovery.well_known_host = origin;
+    remote.discovery.resolved_host = origin;
+    remote.discovery.resolved_addresses = {"203.0.113.10"};
+    remote.discovery.tls_required = true;
+    remote.trust.reputation_score = 100U;
+    return remote;
+}
+
+[[nodiscard]] auto x_matrix_authorization(std::string_view origin, std::string_view key_id, std::string_view key_seed,
+                                          std::string_view destination, std::string_view method,
+                                          std::string_view target, std::string_view body) -> std::string
+{
+    auto const signature = merovingian::federation::make_federation_signature(
+        origin, destination, method, target, body,
+        merovingian::federation::test::keypair_from_seed(key_seed).secret_key);
+    return std::string{"X-Matrix origin=\""} + std::string{origin} + "\",key=\"" + std::string{key_id} + "\",sig=\"" +
+           signature + "\",destination=\"" + std::string{destination} + "\"";
 }
 
 class BlockingDiscoveryNetwork final : public merovingian::federation::ServerDiscoveryNetwork
@@ -311,6 +339,53 @@ SCENARIO("Federation auth failures do not surface as client-style 401s", "[homes
                 // access token and turns into an automatic logout.
                 REQUIRE(response.status == 502U);
                 REQUIRE(response.body == "malformed federation authorization");
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound federation query/profile answers existing local users even without a stored profile row",
+         "[homeserver][federation][query-profile][review][regression]")
+{
+    GIVEN("a started client-server runtime with a registered local user and a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const register_response = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(register_response.response.status == 200U);
+
+        std::erase_if(runtime.homeserver.database.persistent_store.profiles,
+                      [](merovingian::database::PersistentProfile const& profile) {
+                          return profile.user_id == "@alice:example.org";
+                      });
+
+        auto constexpr remote_origin = "matrix.example.org";
+        auto constexpr remote_key_id = "ed25519:auto";
+        auto constexpr remote_key_seed = "query-profile-review-seed";
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+
+        WHEN("the remote homeserver sends a signed federation query/profile request")
+        {
+            auto const target = std::string{"/_matrix/federation/v1/query/profile?user_id=%40alice%3Aexample.org"};
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver, {"GET",
+                                     target,
+                                     x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed,
+                                                            "example.org", "GET", target, ""),
+                                     {}});
+
+            THEN("the route returns an empty but spec-shaped profile object instead of failing upstream")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find(R"("displayname":"")") != std::string::npos);
+                REQUIRE(response.body.find(R"("avatar_url":"")") != std::string::npos);
             }
         }
     }

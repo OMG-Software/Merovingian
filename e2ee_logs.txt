@@ -1,0 +1,115 @@
+# E2EE-relevant log lines — 2026-05-31 18:56
+# Filtered from combined Merovingian + Synapse logs.
+# Key failure chain: remote key query → network_error → truncated response (99B vs 7899B)
+#                   → circuit breaker open → m.room_key.withheld sent to remote devices.
+
+# --- Key query: first two succeed, third fails ---
+
+2026-05-31 18:56:12.884 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.query_keys actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=47]
+2026-05-31 18:56:12.892 +0000  <DEBUG>  rooms event=signing_key.loaded server_name=pong.ping.me.uk key_id=ed25519:51b700c4 public_key=UbcAxKQYYK6dJ+lMl8EUyk33chvpkypvTDi+732qybk secret_size=<redacted>
+2026-05-31 18:56:12.929 +0000  <DEBUG>  federation event=signature.signing origin=pong.ping.me.uk destination=matrix.ping.me.uk method=POST target=/_matrix/federation/v1/user/keys/query embedded_pk=UbcAxKQYYK6dJ+lMl8EUyk33chvpkypvTDi+732qybk payload_bytes=183
+2026-05-31 18:56:13.203 +0000  <DEBUG>  outbound_client event=request.success url=https://matrix.ping.me.uk:8448/_matrix/federation/v1/user/keys/query method=POST http_status=200
+2026-05-31 18:56:13.204 +0000  <DEBUG>  http_server event=request.completed method=POST target=/_matrix/client/v3/keys/query status=200 response_bytes=7899
+
+2026-05-31 18:56:16.238 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.query_keys actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=47]
+2026-05-31 18:56:16.275 +0000  <DEBUG>  federation event=signature.signing origin=pong.ping.me.uk destination=matrix.ping.me.uk method=POST target=/_matrix/federation/v1/user/keys/query embedded_pk=UbcAxKQYYK6dJ+lMl8EUyk33chvpkypvTDi+732qybk payload_bytes=183
+2026-05-31 18:56:16.303 +0000  <DEBUG>  outbound_client event=request.success url=https://matrix.ping.me.uk:8448/_matrix/federation/v1/user/keys/query method=POST http_status=200
+2026-05-31 18:56:16.304 +0000  <DEBUG>  http_server event=request.completed method=POST target=/_matrix/client/v3/keys/query status=200 response_bytes=7899
+
+# --- THIRD KEY QUERY: federation network_error → truncated response (99B vs 7899B) ---
+
+2026-05-31 18:56:16.482 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.query_keys actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=47]
+2026-05-31 18:56:16.487 +0000  <DEBUG>  rooms event=signing_key.loaded server_name=pong.ping.me.uk key_id=ed25519:51b700c4 public_key=UbcAxKQYYK6dJ+lMl8EUyk33chvpkypvTDi+732qybk secret_size=<redacted>
+2026-05-31 18:56:16.532 +0000  <DEBUG>  federation event=signature.signing origin=pong.ping.me.uk destination=matrix.ping.me.uk method=POST target=/_matrix/federation/v1/user/keys/query embedded_pk=UbcAxKQYYK6dJ+lMl8EUyk33chvpkypvTDi+732qybk payload_bytes=183
+2026-05-31 18:56:16.532 +0000  <DEBUG>  outbound_client event=request.error url=https://matrix.ping.me.uk:8448/_matrix/federation/v1/user/keys/query method=POST error=network_error
+2026-05-31 18:56:16.532 +0000  <DEBUG>  outbound_transaction event=transaction.failed destination=matrix.ping.me.uk method=POST target=/_matrix/federation/v1/user/keys/query http_status=0 error=network_error response_body=<redacted> failures=1
+2026-05-31 18:56:16.532 +0000  <DEBUG>  rooms event=key_query.remote destination=matrix.ping.me.uk http_status=0 reason=network_error
+2026-05-31 18:56:16.532 +0000  <DEBUG>  http_server event=request.completed method=POST target=/_matrix/client/v3/keys/query status=200 response_bytes=99
+
+# --- Invite delivery failure (timeout) — federation to matrix.ping.me.uk unreliable ---
+
+2026-05-31 18:56:16.553 +0000  <DEBUG>  outbound_client event=request.error url=https://matrix.ping.me.uk:8448/_matrix/federation/v2/invite/%213sMf6c4NIb3QlS6K1toLfYeCMwyE-NzKK3HwPVrBXYc/%24ylev5Z07NHdZwemguLTZ1qBGQ_LYo_i0z2cH9x5r3Kc method=PUT error=timeout
+2026-05-31 18:56:16.553 +0000  <DEBUG>  outbound_transaction event=transaction.failed destination=matrix.ping.me.uk method=PUT target=/_matrix/federation/v2/invite/%213sMf6c4NIb3QlS6K1toLfYeCMwyE-NzKK3HwPVrBXYc/%24ylev5Z07NHdZwemguLTZ1qBGQ_LYo_i0z2cH9x5r3Kc http_status=0 error=timeout response_body=<redacted> failures=1
+
+# --- Circuit breaker opens: subsequent PDU sends to matrix.ping.me.uk blocked ---
+
+2026-05-31 18:56:16.761 +0000  <DEBUG>  outbound_transaction event=transaction.circuit_open destination=matrix.ping.me.uk target=/_matrix/federation/v1/send/3 consecutive_failures=1 retry_after_ts=1780253780438
+2026-05-31 18:56:16.762 +0000  <DEBUG>  dispatch_worker event=transaction.circuit_open transaction_id=3 destination=matrix.ping.me.uk retry_count=0
+2026-05-31 18:56:16.875 +0000  <DEBUG>  outbound_transaction event=transaction.circuit_open destination=matrix.ping.me.uk target=/_matrix/federation/v1/send/4 consecutive_failures=1 retry_after_ts=1780253780438
+2026-05-31 18:56:16.875 +0000  <DEBUG>  dispatch_worker event=transaction.circuit_open transaction_id=4 destination=matrix.ping.me.uk retry_count=0
+
+# --- m.room.encrypted event sent locally (depth 9, @james:pong.ping.me.uk → room) ---
+
+2026-05-31 18:56:16.717 +0000  <DEBUG>  client_server event=room.send_event.dispatch actor=@james:pong.ping.me.uk room_id=!3sMf6c4NIb3QlS6K1toLfYeCMwyE-NzKK3HwPVrBXYc event_type=m.room.encrypted
+2026-05-31 18:56:16.718 +0000  <DEBUG>  event_signer event=sign_event.accepted server_name=pong.ping.me.uk key_id=ed25519:51b700c4 payload_bytes=413 signing_payload={"auth_events":["$Vu4n2Oq_H4GttGnn5Xz1dj202DceV6zTvHH1b36xzBg","$7N_pW7H18_wZ1guhYZG_nT9U11FXgilzjQumt1KbUvw"],"content":{},"depth":9,...,"type":"m.room.encrypted"} ...
+2026-05-31 18:56:16.727 +0000  <DEBUG>  persistent_store event=event_state.persisted event_id=$6zV_ptVPqAUUiW0un1hBiBCWdRk242_Z02_tLLuH2xc room_id=!3sMf6c4NIb3QlS6K1toLfYeCMwyE-NzKK3HwPVrBXYc sender=@james:pong.ping.me.uk depth=9 stream_ordering=10 has_state=false
+2026-05-31 18:56:16.732 +0000  <DEBUG>  rooms event=room.event.accepted actor=@james:pong.ping.me.uk room_id=!3sMf6c4NIb3QlS6K1toLfYeCMwyE-NzKK3HwPVrBXYc event_id=$6zV_ptVPqAUUiW0un1hBiBCWdRk242_Z02_tLLuH2xc event_type=m.room.encrypted depth=9 prev_events=1 auth_events=2
+2026-05-31 18:56:16.738 +0000  <DEBUG>  rooms event=room.event.dispatched room_id=!3sMf6c4NIb3QlS6K1toLfYeCMwyE-NzKK3HwPVrBXYc event_id=$6zV_ptVPqAUUiW0un1hBiBCWdRk242_Z02_tLLuH2xc destinations=1
+
+# --- Key backup activity (client retrying backups, consistent with decryption failures) ---
+
+2026-05-31 18:56:20.486 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.put_room_key_backup_batch actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=936]
+2026-05-31 18:56:21.543 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.put_room_key_backup_batch actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=936]
+2026-05-31 18:56:23.587 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.put_room_key_backup_batch actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=936]
+2026-05-31 18:56:27.656 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.put_room_key_backup_batch actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=936]
+2026-05-31 18:56:35.731 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.put_room_key_backup_batch actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=936]
+
+# --- Key backup GET returns 404: session key not found in backup ---
+
+2026-05-31 18:56:30.393 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.get_room_key_backup actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:empty]
+2026-05-31 18:56:30.398 +0000  <DEBUG>  http_server event=request.completed method=GET target=/_matrix/client/v3/room_keys/keys/!3sMf6c4NIb3QlS6K1toLfYeCMwyE-NzKK3HwPVrBXYc/YiEJTW6kA%2FP%2BsaNue6kvyU0LsGNNYrGfj7hwuyLL6Ms?version=1 status=404 response_bytes=64
+
+# --- OTK claim for remote user (pong → matrix.ping.me.uk: claims Merovingian's OTK) ---
+
+2026-05-31 18:56:29.965 +0000  <DEBUG>  key_query event=otk_claim.accepted users=1
+2026-05-31 18:56:29,975 - synapse.handlers.e2e_keys - 818 - INFO - POST-41682 - Claimed one-time-keys: signed_curve25519:AAAAAAAAAA0 for @james:pong.ping.me.uk:MEROVINGIAN
+
+# --- OTK claims by pong server for all matrix.ping.me.uk devices ---
+
+2026-05-31 18:56:34.700 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.claim_keys actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=493]
+2026-05-31 18:56:34.707 +0000  <DEBUG>  rooms event=signing_key.loaded server_name=pong.ping.me.uk key_id=ed25519:51b700c4 public_key=UbcAxKQYYK6dJ+lMl8EUyk33chvpkypvTDi+732qybk secret_size=<redacted>
+2026-05-31 18:56:34.737 +0000  <DEBUG>  federation event=signature.signing origin=pong.ping.me.uk destination=matrix.ping.me.uk method=POST target=/_matrix/federation/v1/user/keys/claim embedded_pk=UbcAxKQYYK6dJ+lMl8EUyk33chvpkypvTDi+732qybk payload_bytes=613
+2026-05-31 18:56:34.772 +0000  <DEBUG>  outbound_transaction event=transaction.delivered destination=matrix.ping.me.uk method=POST target=/_matrix/federation/v1/user/keys/claim http_status=200
+2026-05-31 18:56:34.773 +0000  <DEBUG>  http_server event=request.completed method=POST target=/_matrix/client/v3/keys/claim status=200 response_bytes=3123
+2026-05-31 18:56:34,768 - synapse.federation.federation_server - 1083 - INFO - POST-41709 - Claimed one-time-keys: signed_curve25519:AAAAAAAAAA0 for @james:pong.ping.me.uk:MEROVINGIAN (12 devices total for @james:matrix.ping.me.uk)
+
+# --- CRITICAL: m.room_key.withheld sent — Merovingian could not share session key with remote devices ---
+
+2026-05-31 18:56:34.851 +0000  <DEBUG>  client_server event=request.auth.accepted method=PUT target=/_matrix/client/v3/sendToDevice/m.room_key.withheld/1ea54cd2acf7403e82cc898c75a28dfb actor=@james:pong.ping.me.uk
+2026-05-31 18:56:34.859 +0000  <DEBUG>  http_server event=request.completed method=PUT target=/_matrix/client/v3/sendToDevice/m.room_key.withheld/1ea54cd2acf7403e82cc898c75a28dfb status=200 response_bytes=2
+
+# --- m.room.encrypted to-device message (Olm key share to remote devices, delivered via federation) ---
+
+2026-05-31 18:56:34.918 +0000  <DEBUG>  client_server event=request.auth.accepted method=PUT target=/_matrix/client/v3/sendToDevice/m.room.encrypted/aafa72391c684e7985e4b6dce6a6094a actor=@james:pong.ping.me.uk
+2026-05-31 18:56:34.939 +0000  <DEBUG>  http_server event=request.completed method=PUT target=/_matrix/client/v3/sendToDevice/m.room.encrypted/aafa72391c684e7985e4b6dce6a6094a status=200 response_bytes=2
+2026-05-31 18:56:34.973 +0000  <DEBUG>  federation event=signature.signing origin=pong.ping.me.uk destination=matrix.ping.me.uk method=PUT target=/_matrix/federation/v1/send/9 embedded_pk=UbcAxKQYYK6dJ+lMl8EUyk33chvpkypvTDi+732qybk payload_bytes=25020
+2026-05-31 18:56:34.989 +0000  <DEBUG>  outbound_transaction event=transaction.delivered destination=matrix.ping.me.uk method=PUT target=/_matrix/federation/v1/send/9 http_status=200
+
+# --- Synapse: "Unexpectedly did not have cached prev group" — state tracking gap, can break E2EE device list tracking ---
+
+2026-05-31 18:56:30,291 - synapse.federation.sender - 652 - INFO - process_event_queue_for_federation-175 - Unexpectedly did not have cached prev group for $dPbI0brbRsqkQW3_TyOU_kHp_cKf5urPYEsVGVPCvME
+2026-05-31 18:56:32,242 - synapse.federation.sender - 652 - INFO - process_event_queue_for_federation-176 - Unexpectedly did not have cached prev group for $0euhQqTwS1Ngj7nCh1QrUTa6ECf4nut8L2gRkjol_Do
+
+# --- Keys upload (client re-uploads OTKs, likely after exhaustion during key claims) ---
+
+2026-05-31 18:56:30.437 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.upload_keys actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=277]
+2026-05-31 18:56:30.447 +0000  <DEBUG>  http_server event=request.completed method=POST target=/_matrix/client/v3/keys/upload status=200 response_bytes=48
+
+# --- Fourth key query (after circuit recovery): succeeds again ---
+
+2026-05-31 18:56:32.075 +0000  <DEBUG>  local_services event=audit.append category=auth event_type=key_api.query_keys actor=@james:pong.ping.me.uk target=MEROVINGIAN reason=[key-payload:redacted:length=47]
+2026-05-31 18:56:32.116 +0000  <DEBUG>  federation event=signature.signing origin=pong.ping.me.uk destination=matrix.ping.me.uk method=POST target=/_matrix/federation/v1/user/keys/query embedded_pk=UbcAxKQYYK6dJ+lMl8EUyk33chvpkypvTDi+732qybk payload_bytes=183
+2026-05-31 18:56:32.145 +0000  <DEBUG>  outbound_client event=request.success url=https://matrix.ping.me.uk:8448/_matrix/federation/v1/user/keys/query method=POST http_status=200
+2026-05-31 18:56:32.146 +0000  <DEBUG>  http_server event=request.completed method=POST target=/_matrix/client/v3/keys/query status=200 response_bytes=7899
+
+# --- Summary of failure chain ---
+# 18:56:16.532  Federation key query to matrix.ping.me.uk failed (network_error)
+#               → /keys/query returned 99B instead of 7899B (incomplete device key data)
+# 18:56:16.553  Invite PUT to matrix.ping.me.uk timed out
+# 18:56:16.761  Circuit breaker opened for matrix.ping.me.uk (transactions 3 and 4 dropped)
+# 18:56:30.398  Key backup GET 404 — session not yet in backup at time of retrieval
+# 18:56:34.859  m.room_key.withheld sent — local client explicitly withheld the Megolm session
+#               from one or more remote devices (likely those whose keys were missing from the
+#               truncated /keys/query response at 18:56:16)
+# 18:56:32,242  Synapse missing cached prev group for two m.room.encrypted PDUs —
+#               indicates a state tracking gap on the remote homeserver side

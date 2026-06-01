@@ -30,9 +30,9 @@
 #include <string>
 #include <string_view>
 #include <thread>
-#include <utility>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -431,6 +431,70 @@ namespace
         return starts_with(target, prefix) ? target.substr(prefix.size()) : std::string_view{};
     }
 
+    [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key)
+        -> canonicaljson::Object const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&value->storage());
+    }
+
+    [[nodiscard]] auto object_member_as_string(canonicaljson::Object const& object, std::string_view key)
+        -> std::string const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+    }
+
+    auto enqueue_direct_to_device_messages(HomeserverRuntime& runtime, std::string_view content_json) -> void
+    {
+        auto const parsed = canonicaljson::parse_lossless(std::string{content_json});
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return;
+        }
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            return;
+        }
+        auto const* sender = object_member_as_string(*root, "sender");
+        auto const* message_type = object_member_as_string(*root, "type");
+        auto const* messages = object_member_as_object(*root, "messages");
+        if (sender == nullptr || message_type == nullptr || messages == nullptr)
+        {
+            return;
+        }
+
+        for (auto const& user_entry : *messages)
+        {
+            auto const* device_map = std::get_if<canonicaljson::Object>(&user_entry.value->storage());
+            if (device_map == nullptr)
+            {
+                continue;
+            }
+            for (auto const& device_entry : *device_map)
+            {
+                if (device_entry.value == nullptr)
+                {
+                    continue;
+                }
+                auto const serialized = canonicaljson::serialize_canonical(*device_entry.value);
+                if (serialized.error != canonicaljson::CanonicalJsonError::none)
+                {
+                    continue;
+                }
+                auto message = database::PersistentToDeviceMessage{};
+                message.sender_user_id = *sender;
+                message.target_user_id = user_entry.key;
+                message.target_device_id = device_entry.key;
+                message.message_type = *message_type;
+                message.content_json = serialized.output;
+                std::ignore =
+                    database::enqueue_to_device_message(runtime.database.persistent_store, std::move(message));
+            }
+        }
+    }
+
     [[nodiscard]] auto local_media_download_parts(std::string_view suffix)
         -> std::optional<std::array<std::string_view, 2U>>
     {
@@ -725,120 +789,7 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::direct_to_device: {
-                // content: { sender, type, message_id?, messages: { <user_id>: { <device_id>: content } } }
-                auto const& content = envelope.content_json;
-                auto sender = std::string{};
-                auto msg_type = std::string{};
-                auto sender_pos = content.find("\"sender\"");
-                if (sender_pos != std::string::npos)
-                {
-                    auto val_start = content.find('"', content.find(':', sender_pos));
-                    if (val_start != std::string::npos)
-                    {
-                        auto val_end = content.find('"', val_start + 1U);
-                        if (val_end != std::string::npos)
-                        {
-                            sender = content.substr(val_start + 1U, val_end - val_start - 1U);
-                        }
-                    }
-                }
-                auto type_pos = content.find("\"type\"");
-                if (type_pos != std::string::npos)
-                {
-                    auto val_start = content.find('"', content.find(':', type_pos));
-                    if (val_start != std::string::npos)
-                    {
-                        auto val_end = content.find('"', val_start + 1U);
-                        if (val_end != std::string::npos)
-                        {
-                            msg_type = content.substr(val_start + 1U, val_end - val_start - 1U);
-                        }
-                    }
-                }
-                // Enumerate messages: { user_id: { device_id: content } }
-                auto messages_pos = content.find("\"messages\"");
-                if (messages_pos != std::string::npos && !sender.empty() && !msg_type.empty())
-                {
-                    auto messages_obj_start = content.find('{', messages_pos);
-                    if (messages_obj_start != std::string::npos)
-                    {
-                        auto scan = messages_obj_start + 1U;
-                        while (scan < content.size())
-                        {
-                            auto target_user_start = content.find('"', scan);
-                            if (target_user_start == std::string::npos)
-                            {
-                                break;
-                            }
-                            auto target_user_end = content.find('"', target_user_start + 1U);
-                            if (target_user_end == std::string::npos)
-                            {
-                                break;
-                            }
-                            auto target_user_id =
-                                content.substr(target_user_start + 1U, target_user_end - target_user_start - 1U);
-                            // Find the device map for this user
-                            auto device_obj_start = content.find('{', target_user_end);
-                            if (device_obj_start == std::string::npos)
-                            {
-                                break;
-                            }
-                            auto device_obj_end = content.find('}', device_obj_start);
-                            if (device_obj_end == std::string::npos)
-                            {
-                                break;
-                            }
-                            // Enumerate devices within this user's object
-                            auto dev_scan = device_obj_start + 1U;
-                            while (dev_scan < device_obj_end)
-                            {
-                                auto dev_key_start = content.find('"', dev_scan);
-                                if (dev_key_start == std::string::npos || dev_key_start >= device_obj_end)
-                                {
-                                    break;
-                                }
-                                auto dev_key_end = content.find('"', dev_key_start + 1U);
-                                if (dev_key_end == std::string::npos || dev_key_end >= device_obj_end)
-                                {
-                                    break;
-                                }
-                                auto target_device_id =
-                                    content.substr(dev_key_start + 1U, dev_key_end - dev_key_start - 1U);
-                                // The value is the content JSON object
-                                auto content_start = content.find('{', dev_key_end);
-                                if (content_start == std::string::npos || content_start >= device_obj_end)
-                                {
-                                    break;
-                                }
-                                // Find matching closing brace
-                                auto depth = 1U;
-                                auto content_end = content_start + 1U;
-                                while (content_end < content.size() && depth > 0U)
-                                {
-                                    if (content[content_end] == '{')
-                                    {
-                                        ++depth;
-                                    }
-                                    else if (content[content_end] == '}')
-                                    {
-                                        --depth;
-                                    }
-                                    ++content_end;
-                                }
-                                auto msg = database::PersistentToDeviceMessage{};
-                                msg.sender_user_id = sender;
-                                msg.target_user_id = target_user_id;
-                                msg.target_device_id = target_device_id;
-                                msg.message_type = msg_type;
-                                msg.content_json = content.substr(content_start, content_end - content_start);
-                                std::ignore =
-                                    database::enqueue_to_device_message(rt->database.persistent_store, std::move(msg));
-                                dev_scan = content_end;
-                            }
-                            scan = device_obj_end + 1U;
-                        }
-                    }
-                }
+                enqueue_direct_to_device_messages(*rt, envelope.content_json);
                 if (rt->sync_notifier != nullptr)
                 {
                     rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
@@ -967,8 +918,7 @@ namespace
             // event is the room ID itself and MUST NOT appear in any event's
             // auth_events — Synapse asserts this and crashes with 500 if it does.
             auto const* version_policy = rooms::find_room_version_policy(room_version);
-            auto const include_create_in_auth =
-                version_policy == nullptr || !version_policy->create_event_is_room_id;
+            auto const include_create_in_auth = version_policy == nullptr || !version_policy->create_event_is_room_id;
             for (auto const& s : store.state)
             {
                 if (s.room_id != room_id || s.event_id.empty())
@@ -976,8 +926,7 @@ namespace
                     continue;
                 }
                 if ((include_create_in_auth && s.event_type == "m.room.create") ||
-                    s.event_type == "m.room.join_rules" ||
-                    s.event_type == "m.room.power_levels" ||
+                    s.event_type == "m.room.join_rules" || s.event_type == "m.room.power_levels" ||
                     (s.event_type == "m.room.member" && s.state_key == user_id))
                 {
                     tmpl.auth_events.push_back(s.event_id);
@@ -1226,7 +1175,8 @@ namespace
                 invite_pdu.json = *signed_event;
                 invite_pdu.stream_ordering = stream_ordering;
                 auto invite_state = std::optional<database::PersistentStateEvent>{
-                    database::PersistentStateEvent{invite.room_id, "m.room.member", *target_user, invite.event_id}};
+                    database::PersistentStateEvent{invite.room_id, "m.room.member", *target_user, invite.event_id}
+                };
                 if (!database::store_event_with_state(rt->database.persistent_store, std::move(invite_pdu),
                                                       std::move(invite_state)))
                 {
@@ -1266,11 +1216,15 @@ namespace
 
         runtime.federation.profile_query_provider = [rt](std::string_view user_id) -> federation::FederationProfile {
             auto const profile = database::find_profile(rt->database.persistent_store, user_id);
-            if (!profile.has_value())
+            if (profile.has_value())
             {
-                return {};
+                return {true, profile->displayname, profile->avatar_url};
             }
-            return {true, profile->displayname, profile->avatar_url};
+            auto const user_exists = std::ranges::any_of(rt->database.persistent_store.users,
+                                                         [user_id](database::PersistentUser const& user) {
+                                                             return user.user_id == user_id;
+                                                         });
+            return user_exists ? federation::FederationProfile{true, {}, {}} : federation::FederationProfile{};
         };
 
         runtime.federation.device_keys_query_provider = [rt](std::string_view body) -> std::string {
@@ -1603,9 +1557,10 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     {
         auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - join_suffix.size()));
         auto const via_servers = parse_join_via_servers(request_query);
-        log_diagnostic("room.join.dispatch", {
-                                                 {"room_id",   room_id,                            false},
-                                                 {"via_count", std::to_string(via_servers.size()), false}
+        log_diagnostic("room.join.dispatch",
+                       {
+                           {"room_id",   room_id,                            false},
+                           {"via_count", std::to_string(via_servers.size()), false}
         });
         guard.unlock();
         auto result = join_room(runtime, request.access_token, room_id, via_servers);
