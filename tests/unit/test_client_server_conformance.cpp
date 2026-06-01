@@ -24,11 +24,16 @@
 // |  in test_client_server.cpp and test_auth_client_server_api.cpp.         |
 // +-------------------------------------------------------------------------+
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
+#include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -97,6 +102,64 @@ using namespace merovingian::tests;
     auto const* tok = string_member(body, "access_token");
     REQUIRE(tok != nullptr);
     return *tok;
+}
+
+[[nodiscard]] auto login_existing_user(merovingian::homeserver::ClientServerRuntime& runtime,
+                                       std::string const& localpart, std::string const& device_id) -> std::string
+{
+    auto const body =
+        std::string{"{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"@"} + localpart +
+        ":example.org\"},\"password\":\"CorrectHorse7!\",\"device_id\":\"" + device_id + "\"}";
+    auto const login =
+        merovingian::homeserver::handle_client_server_request(runtime, {"POST", "/_matrix/client/v3/login", {}, body});
+    REQUIRE(login.response.status == 200U);
+    auto const response_body = parse_object(login.response.body);
+    auto const* token = string_member(response_body, "access_token");
+    REQUIRE(token != nullptr);
+    REQUIRE(!token->empty());
+    return *token;
+}
+
+auto constexpr remote_origin = "remote.example.org";
+auto constexpr remote_key_id = "ed25519:auto";
+auto constexpr remote_key_seed = "client-server-conformance-remote-seed";
+
+[[nodiscard]] auto remote_for_conformance() -> merovingian::federation::FederationRemoteRuntime
+{
+    auto remote = merovingian::federation::FederationRemoteRuntime{};
+    remote.server_name = remote_origin;
+    remote.signing_key = {remote_origin, remote_key_id, 2000U,
+                          merovingian::federation::test::keypair_from_seed(remote_key_seed).public_key};
+    remote.discovery.server_name = remote_origin;
+    remote.discovery.well_known_host = remote_origin;
+    remote.discovery.resolved_host = remote_origin;
+    remote.discovery.resolved_addresses = {"203.0.113.10"};
+    remote.discovery.tls_required = true;
+    remote.trust.reputation_score = 100U;
+    return remote;
+}
+
+[[nodiscard]] auto federation_fixture_auth(std::string_view method, std::string_view target, std::string_view body)
+    -> std::string
+{
+    auto const signature = merovingian::federation::make_federation_signature(
+        remote_origin, "example.org", method, target, body,
+        merovingian::federation::test::keypair_from_seed(remote_key_seed).secret_key);
+    return std::string{remote_origin} + "|" + remote_key_id + "|" + signature + "|example.org|1000|canonical";
+}
+
+auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRuntime& runtime, std::string txn_id,
+                                        std::string const& edu_content_json) -> void
+{
+    merovingian::federation::upsert_remote(runtime.homeserver.federation, remote_for_conformance());
+    auto const transaction_body =
+        merovingian::federation::build_edu_transaction_body("m.direct_to_device", edu_content_json);
+    REQUIRE(transaction_body.has_value());
+    auto const target = "/_matrix/federation/v1/send/" + std::move(txn_id);
+    auto const response = merovingian::homeserver::handle_federation_http_request(
+        runtime.homeserver,
+        {"PUT", target, federation_fixture_auth("PUT", target, *transaction_body), *transaction_body});
+    REQUIRE(response.status == 200U);
 }
 
 // Creates a room for the logged-in user and returns the room_id.
@@ -7398,6 +7461,113 @@ SCENARIO("PUT /sendToDevice delivers the message to the recipient's /sync to_dev
                 auto const* sender = string_member(*evt, "sender");
                 REQUIRE(sender != nullptr);
                 REQUIRE(*sender == "@alice:example.org");
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/server-server-api/#sending-to-device-messages
+// and https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+SCENARIO("Federated m.direct_to_device with nested encrypted content reaches /sync to_device.events",
+         "[conformance][client-server][federation][e2ee][send-to-device]")
+{
+    GIVEN("a running homeserver with a logged-in local device and a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+
+        WHEN("the remote homeserver sends an encrypted to-device EDU with nested ciphertext objects")
+        {
+            deliver_federated_direct_to_device(
+                started.runtime, "txn-fed-td-1",
+                R"({"sender":"@bob:remote.example.org","type":"m.room.encrypted","messages":{"@alice:example.org":{"DEVICE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:remote","ciphertext":{"curve25519:DEVICE1":{"body":"ciphertext-body","type":0}}}}}})");
+
+            THEN("the next /sync exposes the encrypted to-device event intact")
+            {
+                auto const sync = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+                REQUIRE(sync.response.status == 200U);
+                auto const body = parse_object(sync.response.body);
+                auto const* to_device = object_member_as_object(body, "to_device");
+                REQUIRE(to_device != nullptr);
+                auto const* events = object_member_as_array(*to_device, "events");
+                REQUIRE(events != nullptr);
+                REQUIRE(events->size() == 1U);
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&(*events)[0].storage());
+                REQUIRE(event != nullptr);
+                auto const* type = string_member(*event, "type");
+                REQUIRE(type != nullptr);
+                REQUIRE(*type == "m.room.encrypted");
+                auto const* sender = string_member(*event, "sender");
+                REQUIRE(sender != nullptr);
+                REQUIRE(*sender == "@bob:remote.example.org");
+                auto const* content = object_member_as_object(*event, "content");
+                REQUIRE(content != nullptr);
+                auto const* ciphertext = object_member_as_object(*content, "ciphertext");
+                REQUIRE(ciphertext != nullptr);
+                auto const* recipient_ciphertext = object_member_as_object(*ciphertext, "curve25519:DEVICE1");
+                REQUIRE(recipient_ciphertext != nullptr);
+                auto const* cipher_body = string_member(*recipient_ciphertext, "body");
+                REQUIRE(cipher_body != nullptr);
+                REQUIRE(*cipher_body == "ciphertext-body");
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/server-server-api/#sending-to-device-messages
+SCENARIO("Federated m.direct_to_device fans out to every targeted local device",
+         "[conformance][client-server][federation][e2ee][send-to-device]")
+{
+    GIVEN("a local user logged in on two devices")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const device1 = logged_in_token(started.runtime);
+        auto const device2 = login_existing_user(started.runtime, "alice", "DEVICE2");
+
+        WHEN("the remote homeserver targets both devices in one encrypted to-device EDU")
+        {
+            deliver_federated_direct_to_device(
+                started.runtime, "txn-fed-td-2",
+                R"({"sender":"@bob:remote.example.org","type":"m.room.encrypted","messages":{"@alice:example.org":{"DEVICE1":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:remote","ciphertext":{"curve25519:DEVICE1":{"body":"ciphertext-one","type":0}}},"DEVICE2":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:remote","ciphertext":{"curve25519:DEVICE2":{"body":"ciphertext-two","type":0}}}}}})");
+
+            THEN("each device receives exactly its own to-device payload on /sync")
+            {
+                auto const sync1 = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", device1, {}});
+                REQUIRE(sync1.response.status == 200U);
+                auto const body1 = parse_object(sync1.response.body);
+                auto const* to_device1 = object_member_as_object(body1, "to_device");
+                REQUIRE(to_device1 != nullptr);
+                auto const* events1 = object_member_as_array(*to_device1, "events");
+                REQUIRE(events1 != nullptr);
+                REQUIRE(events1->size() == 1U);
+                auto const* event1 = std::get_if<merovingian::canonicaljson::Object>(&(*events1)[0].storage());
+                REQUIRE(event1 != nullptr);
+                auto const* content1 = object_member_as_object(*event1, "content");
+                REQUIRE(content1 != nullptr);
+                auto const* ciphertext1 = object_member_as_object(*content1, "ciphertext");
+                REQUIRE(ciphertext1 != nullptr);
+                REQUIRE(object_member_as_object(*ciphertext1, "curve25519:DEVICE1") != nullptr);
+
+                auto const sync2 = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", device2, {}});
+                REQUIRE(sync2.response.status == 200U);
+                auto const body2 = parse_object(sync2.response.body);
+                auto const* to_device2 = object_member_as_object(body2, "to_device");
+                REQUIRE(to_device2 != nullptr);
+                auto const* events2 = object_member_as_array(*to_device2, "events");
+                REQUIRE(events2 != nullptr);
+                REQUIRE(events2->size() == 1U);
+                auto const* event2 = std::get_if<merovingian::canonicaljson::Object>(&(*events2)[0].storage());
+                REQUIRE(event2 != nullptr);
+                auto const* content2 = object_member_as_object(*event2, "content");
+                REQUIRE(content2 != nullptr);
+                auto const* ciphertext2 = object_member_as_object(*content2, "ciphertext");
+                REQUIRE(ciphertext2 != nullptr);
+                REQUIRE(object_member_as_object(*ciphertext2, "curve25519:DEVICE2") != nullptr);
             }
         }
     }

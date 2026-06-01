@@ -9,11 +9,14 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <array>
 #include <cmath>
 #include <optional>
 #include <string>
 #include <utility>
 #include <vector>
+
+#include <sodium.h>
 
 namespace merovingian::federation
 {
@@ -94,8 +97,19 @@ auto make_outbound_transaction(std::string_view destination, std::string_view me
     return transaction;
 }
 
-auto build_edu_transaction_body(std::string_view edu_type,
-                                std::string_view edu_content_json) -> std::optional<std::string>
+auto make_federation_transaction_id() -> std::string
+{
+    static_cast<void>(sodium_init());
+    auto bytes = std::array<unsigned char, 16U>{};
+    randombytes_buf(bytes.data(), bytes.size());
+    auto output = std::string(bytes.size() * 2U + 1U, '\0');
+    std::ignore = sodium_bin2hex(output.data(), output.size(), bytes.data(), bytes.size());
+    output.pop_back();
+    return output;
+}
+
+auto build_edu_transaction_body(std::string_view edu_type, std::string_view edu_content_json)
+    -> std::optional<std::string>
 {
     auto edu_value = canonicaljson::parse_lossless(edu_content_json);
     if (edu_value.error != canonicaljson::ParseError::none)
@@ -126,9 +140,8 @@ auto build_edu_transaction_body(std::string_view edu_type,
     return tx_body.output;
 }
 
-auto build_receipt_edu_content(std::string_view room_id, std::string_view receipt_type,
-                               std::string_view user_id, std::string_view event_id,
-                               std::int64_t ts) -> std::optional<std::string>
+auto build_receipt_edu_content(std::string_view room_id, std::string_view receipt_type, std::string_view user_id,
+                               std::string_view event_id, std::int64_t ts) -> std::optional<std::string>
 {
     // Matrix spec receipt EDU content shape (per §receipts):
     // { roomId: { receiptType: { userId: { event_ids: [eventId], data: { ts: N } } } } }
@@ -149,8 +162,7 @@ auto build_receipt_edu_content(std::string_view room_id, std::string_view receip
         canonicaljson::make_member(std::string{receipt_type}, canonicaljson::Value{std::move(receipt_type_users)}));
 
     auto content = canonicaljson::Object{};
-    content.push_back(
-        canonicaljson::make_member(std::string{room_id}, canonicaljson::Value{std::move(room_obj)}));
+    content.push_back(canonicaljson::make_member(std::string{room_id}, canonicaljson::Value{std::move(room_obj)}));
 
     auto const result = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content)});
     if (result.error != canonicaljson::CanonicalJsonError::none)

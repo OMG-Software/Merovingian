@@ -146,7 +146,7 @@ namespace
             return 0U;
         }
         auto const& tx_body = *tx_body_opt;
-        auto tx_id = std::to_string(runtime.database.next_session_id++);
+        auto const tx_id = federation::make_federation_transaction_id();
         auto enqueued = std::size_t{0U};
         for (auto const& destination : destinations)
         {
@@ -344,6 +344,7 @@ namespace
     struct SendToDevicePathParts final
     {
         std::string event_type{};
+        std::string txn_id{};
     };
 
     struct RoomKeyBackupPathParts final
@@ -2237,7 +2238,7 @@ namespace
             return false;
         }
         auto const& server_name = runtime.config.server().server_name;
-        auto tx_id = std::to_string(runtime.database.next_session_id++);
+        auto const tx_id = federation::make_federation_transaction_id();
         auto target = "/_matrix/federation/v1/send/" + tx_id;
         auto transaction =
             federation::make_outbound_transaction(std::string{destination}, "PUT", target, server_name, *tx_body);
@@ -2246,8 +2247,8 @@ namespace
     }
 
     // PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}
-    // Parses the event type from the path; the txnId is accepted but not used
-    // for idempotency at this layer (clients use it to deduplicate retries).
+    // Parses the event type and client txnId from the path so the same token
+    // can be preserved in the outbound federation EDU message_id.
     [[nodiscard]] auto send_to_device_path_parts(std::string_view target) -> std::optional<SendToDevicePathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/sendToDevice/"};
@@ -2263,11 +2264,13 @@ namespace
             return std::nullopt;
         }
         auto const event_type = rest.substr(0U, slash);
-        if (event_type.empty())
+        auto const txn_id = rest.substr(slash + 1U);
+        if (event_type.empty() || txn_id.empty() || txn_id.find('/') != std::string_view::npos)
         {
             return std::nullopt;
         }
-        return SendToDevicePathParts{core::percent_decode_path_component(event_type)};
+        return SendToDevicePathParts{core::percent_decode_path_component(event_type),
+                                     core::percent_decode_path_component(txn_id)};
     }
 
     // Deliver a to-device message to every named target user/device pair.
@@ -2275,7 +2278,8 @@ namespace
     // are grouped by destination server and sent as m.direct_to_device EDUs
     // via the federation dispatch worker.
     [[nodiscard]] auto handle_send_to_device(ClientServerRuntime& rt, std::string_view event_type,
-                                             std::string_view sender, std::string_view body) -> LocalHttpResponse
+                                             std::string_view txn_id, std::string_view sender, std::string_view body)
+        -> LocalHttpResponse
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -2331,7 +2335,6 @@ namespace
         // Send m.direct_to_device EDUs to remote servers.
         if (!remote_messages.empty())
         {
-            auto const txn_id = std::to_string(rt.homeserver.database.next_session_id + 1U);
             for (auto& [server, user_map] : remote_messages)
             {
                 auto messages_obj = canonicaljson::Object{};
@@ -2345,7 +2348,7 @@ namespace
                     messages_obj.push_back(json_member(uid, json_obj(std::move(devices_obj))));
                 }
                 auto edu_content = canonicaljson::Object{};
-                edu_content.push_back(json_member("message_id", json_str(txn_id)));
+                edu_content.push_back(json_member("message_id", json_str(std::string{txn_id})));
                 edu_content.push_back(json_member("sender", json_str(std::string{sender})));
                 edu_content.push_back(json_member("type", json_str(std::string{event_type})));
                 edu_content.push_back(json_member("messages", json_obj(std::move(messages_obj))));
@@ -3898,7 +3901,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     {
         if (auto const path = send_to_device_path_parts(req.target); path.has_value())
         {
-            return complete(handle_send_to_device(rt, path->event_type, *user, req.body));
+            return complete(handle_send_to_device(rt, path->event_type, path->txn_id, *user, req.body));
         }
     }
     // GET /_matrix/client/v3/keys/changes[?from=...&to=...]
@@ -4027,7 +4030,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 auto transaction =
                     federation::make_outbound_invite(invitee_server, rt.homeserver.config.server().server_name, room_id,
                                                      invite_state->event_id, room_version, *invite_json, {});
-                transaction.transaction_id = std::to_string(rt.homeserver.database.next_session_id++);
+                transaction.transaction_id = federation::make_federation_transaction_id();
                 std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
             }
         }
