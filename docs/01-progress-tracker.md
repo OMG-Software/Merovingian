@@ -663,6 +663,15 @@ a non-production environment.
   consistently for direct PUTs and GETs, and a v1.18 conformance regression
   series now pins the batch-upload -> encoded room-level GET, batch-upload ->
   encoded session-level GET, and direct encoded PUT -> GET round-trips.
+- Fix (0.4.54): Matrix v1.18 room-key backup metadata and update responses now
+  include the required `count` and `etag` fields. `GET /room_keys/version` and
+  `GET /room_keys/version/{version}` now return backup metadata with session
+  count and opaque etag, while batch and direct room-key backup writes/deletes
+  return `RoomKeysUpdateResponse` instead of placeholder `{"version":"1"}`
+  bodies. The backup etag is derived from the stored session set so it changes
+  when an existing backup entry is overwritten without changing the total key
+  count. `DELETE /room_keys/keys/{roomId}/{sessionId}` now actually removes the
+  stored session instead of returning a no-op 200 response.
 - Fix (0.4.51): `m.receipt` federation EDU content format — the receipt content
   was built as `{roomId:{userId:{event_ids,ts}}}` but the spec requires
   `{roomId:{receiptType:{userId:{event_ids,data:{ts}}}}}`. The missing

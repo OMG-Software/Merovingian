@@ -1401,8 +1401,8 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id,
-                                             std::string_view version) -> bool
+[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
+    -> bool
 {
     auto const existing =
         std::ranges::find_if(store.key_backup_versions, [user_id, version](PersistentKeyBackupVersion const& v) {
@@ -1414,8 +1414,8 @@ namespace
     }
     if (!record_and_persist(store,
                             record_statement("delete_key_backup_version",
-                                            "DELETE FROM key_backup_versions WHERE user_id = $1 AND version = $2",
-                                            {public_value(user_id), public_value(version)})))
+                                             "DELETE FROM key_backup_versions WHERE user_id = $1 AND version = $2",
+                                             {public_value(user_id), public_value(version)})))
     {
         return false;
     }
@@ -1455,16 +1455,42 @@ namespace
     return true;
 }
 
-[[nodiscard]] auto delete_all_key_backup_sessions(PersistentStore& store, std::string_view user_id) -> bool
+[[nodiscard]] auto delete_key_backup_session(PersistentStore& store, std::string_view user_id, std::string_view version,
+                                             std::string_view room_id, std::string_view session_id) -> bool
 {
+    auto const existing = std::ranges::find_if(
+        store.key_backup_sessions, [user_id, version, room_id, session_id](PersistentKeyBackupSession const& session) {
+            return session.user_id == user_id && session.version == version && session.room_id == room_id &&
+                   session.session_id == session_id;
+        });
+    if (existing == store.key_backup_sessions.end())
+    {
+        return true;
+    }
     if (!record_and_persist(store,
-                            record_statement("delete_all_key_backup_sessions",
-                                            "DELETE FROM key_backup_sessions WHERE user_id = $1",
-                                            {public_value(user_id)})))
+                            record_statement("delete_key_backup_session",
+                                             "DELETE FROM key_backup_sessions WHERE user_id = $1 AND version = $2 AND "
+                                             "room_id = $3 AND session_id = $4",
+                                             {public_value(user_id), public_value(version), public_value(room_id),
+                                              public_value(session_id)})))
     {
         return false;
     }
-    std::erase_if(store.key_backup_sessions, [user_id](auto const& s) { return s.user_id == user_id; });
+    store.key_backup_sessions.erase(existing);
+    return true;
+}
+
+[[nodiscard]] auto delete_all_key_backup_sessions(PersistentStore& store, std::string_view user_id) -> bool
+{
+    if (!record_and_persist(store, record_statement("delete_all_key_backup_sessions",
+                                                    "DELETE FROM key_backup_sessions WHERE user_id = $1",
+                                                    {public_value(user_id)})))
+    {
+        return false;
+    }
+    std::erase_if(store.key_backup_sessions, [user_id](auto const& s) {
+        return s.user_id == user_id;
+    });
     return true;
 }
 
