@@ -25,6 +25,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
+#include "merovingian/federation/key_query.hpp"
 #include "merovingian/federation/membership_endpoints.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 
@@ -104,6 +105,25 @@ namespace
     return request;
 }
 
+[[nodiscard]] auto signed_post_request(std::string const& origin, std::string const& key_id,
+                                       std::string const& key_seed, std::string const& target, std::string const& body)
+    -> merovingian::federation::SignedFederationRequest
+{
+    auto request = merovingian::federation::SignedFederationRequest{};
+    request.method = "POST";
+    request.target = target;
+    request.origin = origin;
+    request.destination = "local.example.org";
+    request.key_id = key_id;
+    request.now_ts = 1000U;
+    request.canonical_json_verified = true;
+    request.body = body;
+    request.signature = merovingian::federation::make_federation_signature(
+        origin, request.destination, request.method, target, body,
+        merovingian::federation::test::keypair_from_seed(key_seed).secret_key);
+    return request;
+}
+
 auto constexpr room_id = std::string_view{"!conformance:local.example.org"};
 auto const origin = std::string{"remote.example.org"};
 auto const key_id = std::string{"ed25519:auto"};
@@ -114,8 +134,23 @@ auto const key_seed = std::string{"conformance-test-seed"};
     -> merovingian::canonicaljson::Value const*
 {
     for (auto const& m : obj)
-        if (m.key == key) return &(*m.value);
+        if (m.key == key)
+            return &(*m.value);
     return nullptr;
+}
+
+[[nodiscard]] auto store_with_alice_e2ee_keys() -> merovingian::database::PersistentStore
+{
+    auto store = merovingian::database::PersistentStore{};
+    store.device_keys.push_back(
+        {"@alice:remote.example.org", "DEVICE1", R"({"device_id":"DEVICE1","keys":{"ed25519:DEVICE1":"key-one"}})"});
+    store.device_keys.push_back(
+        {"@alice:remote.example.org", "DEVICE2", R"({"device_id":"DEVICE2","keys":{"ed25519:DEVICE2":"key-two"}})"});
+    store.cross_signing_keys.push_back(
+        {"@alice:remote.example.org", "master", R"({"usage":["master"],"keys":{"ed25519:master":"mk"}})"});
+    store.cross_signing_keys.push_back(
+        {"@alice:remote.example.org", "self_signing", R"({"usage":["self_signing"],"keys":{"ed25519:ssk":"sk"}})"});
+    return store;
 }
 
 } // namespace
@@ -164,8 +199,7 @@ SCENARIO("make_join returns room version and event template for a remote user", 
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: room_version is present and equals the room's version.
@@ -178,8 +212,7 @@ SCENARIO("make_join returns room version and event template for a remote user", 
                 // Spec MUST: event is an object.
                 auto const* ev_val = json_get(*root, std::string{"event"});
                 REQUIRE(ev_val != nullptr);
-                auto const* ev_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&ev_val->storage());
+                auto const* ev_obj = std::get_if<merovingian::canonicaljson::Object>(&ev_val->storage());
                 REQUIRE(ev_obj != nullptr);
 
                 // Spec MUST: event.origin_server_ts is present and is an integer.
@@ -259,8 +292,7 @@ SCENARIO("send_join persists membership and returns auth chain and state", "[fed
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: room_version is present and is a string.
@@ -545,6 +577,177 @@ SCENARIO("key publishing is served via the local HTTP router, not federation han
                 // Architectural invariant: the federation handler must not serve /_matrix/key/*.
                 // Do NOT change to 200 - if this fires the routing table has regressed.
                 REQUIRE(response.status == 404U);
+            }
+        }
+    }
+}
+
+// --- user/keys/query --------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: POST /_matrix/federation/v1/user/keys/query
+// https://spec.matrix.org/v1.18/server-server-api/#post_matrixfederationv1userkeysquery
+SCENARIO("signed federation user/keys/query returns device and cross-signing maps",
+         "[federation][conformance][e2ee_keys]")
+{
+    GIVEN("a runtime whose query provider publishes local device and cross-signing keys")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        auto const store = store_with_alice_e2ee_keys();
+        runtime.device_keys_query_provider = [store](std::string_view body) {
+            return merovingian::federation::build_device_keys_query_response(store, body);
+        };
+
+        WHEN("a signed user/keys/query request is dispatched")
+        {
+            auto const request = signed_post_request(origin, key_id, key_seed, "/_matrix/federation/v1/user/keys/query",
+                                                     R"({"device_keys":{"@alice:remote.example.org":[]}})");
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the response is 200 with the required key maps")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* device_keys = json_get(*root, std::string{"device_keys"});
+                REQUIRE(device_keys != nullptr);
+                REQUIRE(std::get_if<merovingian::canonicaljson::Object>(&device_keys->storage()) != nullptr);
+                auto const* master_keys = json_get(*root, std::string{"master_keys"});
+                REQUIRE(master_keys != nullptr);
+                REQUIRE(std::get_if<merovingian::canonicaljson::Object>(&master_keys->storage()) != nullptr);
+                auto const* self_signing_keys = json_get(*root, std::string{"self_signing_keys"});
+                REQUIRE(self_signing_keys != nullptr);
+                REQUIRE(std::get_if<merovingian::canonicaljson::Object>(&self_signing_keys->storage()) != nullptr);
+            }
+        }
+
+        WHEN("the provider reports a malformed request body")
+        {
+            auto const request =
+                signed_post_request(origin, key_id, key_seed, "/_matrix/federation/v1/user/keys/query", "{}");
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the route returns 400 instead of a partial response")
+            {
+                REQUIRE(response.status == 400U);
+            }
+        }
+    }
+}
+
+// --- user/keys/claim --------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: POST /_matrix/federation/v1/user/keys/claim
+// https://spec.matrix.org/v1.18/server-server-api/#post_matrixfederationv1userkeysclaim
+SCENARIO("signed federation user/keys/claim returns the claimed nested one-time key map",
+         "[federation][conformance][e2ee_keys]")
+{
+    GIVEN("a runtime whose claim provider serves a stored one-time key")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        auto store = merovingian::database::PersistentStore{};
+        store.one_time_keys.push_back(
+            {"@alice:remote.example.org", "DEVICE1", "signed_curve25519:AAAABBBB", R"({"key":"otk-payload"})"});
+        runtime.one_time_keys_claim_provider = [store](std::string_view body) mutable {
+            return merovingian::federation::build_one_time_keys_claim_response(store, body);
+        };
+
+        WHEN("a signed user/keys/claim request is dispatched")
+        {
+            auto const request = signed_post_request(
+                origin, key_id, key_seed, "/_matrix/federation/v1/user/keys/claim",
+                R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":"signed_curve25519"}}})");
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the response is 200 with one_time_keys nested by user and device")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* one_time_keys = json_get(*root, std::string{"one_time_keys"});
+                REQUIRE(one_time_keys != nullptr);
+                auto const* otk_obj = std::get_if<merovingian::canonicaljson::Object>(&one_time_keys->storage());
+                REQUIRE(otk_obj != nullptr);
+                auto const* alice = json_get(*otk_obj, std::string{"@alice:remote.example.org"});
+                REQUIRE(alice != nullptr);
+                auto const* alice_obj = std::get_if<merovingian::canonicaljson::Object>(&alice->storage());
+                REQUIRE(alice_obj != nullptr);
+                REQUIRE(json_get(*alice_obj, std::string{"DEVICE1"}) != nullptr);
+            }
+        }
+
+        WHEN("the claim provider reports a malformed request body")
+        {
+            auto const request =
+                signed_post_request(origin, key_id, key_seed, "/_matrix/federation/v1/user/keys/claim", "{}");
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the route returns 400 instead of an empty 200 body")
+            {
+                REQUIRE(response.status == 400U);
+            }
+        }
+    }
+}
+
+// --- user/devices -----------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: GET /_matrix/federation/v1/user/devices/{userId}
+// https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1userdevicesuserid
+SCENARIO("signed federation user/devices percent-decodes the user id and returns published devices",
+         "[federation][conformance][e2ee_keys]")
+{
+    GIVEN("a runtime whose user-devices provider publishes Alice's devices")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        auto const store = store_with_alice_e2ee_keys();
+        runtime.user_devices_provider = [store](std::string_view user_id) {
+            return merovingian::federation::build_user_devices_response(store, user_id);
+        };
+
+        WHEN("a signed user/devices request carries a percent-encoded Matrix user id")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed,
+                                            "/_matrix/federation/v1/user/devices/%40alice%3Aremote.example.org"));
+
+            THEN("the response is 200 with the decoded user id and a devices array")
+            {
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* user_id_value = json_get(*root, std::string{"user_id"});
+                REQUIRE(user_id_value != nullptr);
+                auto const* user_id_string = std::get_if<std::string>(&user_id_value->storage());
+                REQUIRE(user_id_string != nullptr);
+                REQUIRE(*user_id_string == "@alice:remote.example.org");
+                auto const* devices_value = json_get(*root, std::string{"devices"});
+                REQUIRE(devices_value != nullptr);
+                REQUIRE(std::get_if<merovingian::canonicaljson::Array>(&devices_value->storage()) != nullptr);
+            }
+        }
+
+        WHEN("the queried user has no published devices")
+        {
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed,
+                                            "/_matrix/federation/v1/user/devices/%40nobody%3Aremote.example.org"));
+
+            THEN("the route returns 404 M_NOT_FOUND")
+            {
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
     }

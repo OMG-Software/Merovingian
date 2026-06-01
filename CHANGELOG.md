@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.55
+- Fix Matrix v1.18 fallback-key claim semantics for E2EE session setup.
+  `POST /_matrix/federation/v1/user/keys/claim` now returns a matching fallback
+  key when no one-time key remains, instead of incorrectly returning no key at
+  all. This aligns the federation responder with the v1.18 requirement that
+  fallback keys are reused until replaced.
+- Fix fallback-key lookup to match the requested algorithm. Merovingian
+  previously returned no key if the first stored fallback for a device used a
+  different algorithm, even when a later matching fallback key existed. Client
+  `POST /_matrix/client/v3/keys/claim` and federated claims now both select the
+  correct fallback key.
+- Fix Matrix v1.18 signature publication and room-level key-backup behavior.
+  Uploaded signatures from `POST /_matrix/client/v3/keys/signatures/upload`
+  now appear in subsequent `POST /_matrix/client/v3/keys/query` responses for
+  both device keys and cross-signing keys. Room-level backup routes
+  `PUT /_matrix/client/v3/room_keys/keys/{roomId}` and
+  `DELETE /_matrix/client/v3/room_keys/keys/{roomId}` now persist and remove
+  only the targeted room's sessions instead of failing with a 500 path.
+- Add Matrix v1.18 conformance coverage for the remaining encryption/signing
+  endpoints on this surface: `POST /keys/device_signing/upload`,
+  `POST /keys/signatures/upload`, room-level `GET`/`PUT`/`DELETE /room_keys/keys/{roomId}`,
+  signed federation `POST /_matrix/federation/v1/user/keys/query`,
+  `POST /_matrix/federation/v1/user/keys/claim`,
+  `GET /_matrix/federation/v1/user/devices/{userId}`, and
+  `GET /_matrix/key/v2/server`.
+- Add regression coverage for both client-server and federation key-claim
+  paths, including mixed fallback-key algorithms and fallback-key reuse.
+
 ## 0.4.54
 - Fix Matrix v1.18 room-key backup metadata and update responses. Merovingian
   was returning incomplete JSON for key-backup metadata and key-storage update

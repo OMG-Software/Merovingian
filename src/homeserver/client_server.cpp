@@ -1538,6 +1538,70 @@ namespace
         object.push_back(json_member(std::string{key}, std::move(value)));
     }
 
+    [[nodiscard]] auto first_key_id_in_key_object(canonicaljson::Object const& object) -> std::optional<std::string>
+    {
+        auto const* keys = object_member_as_object(object, "keys");
+        if (keys == nullptr || keys->empty())
+        {
+            return std::nullopt;
+        }
+        return keys->front().key;
+    }
+
+    auto merge_signature_members(canonicaljson::Object& target_signatures,
+                                 canonicaljson::Object const& source_signatures) -> void
+    {
+        for (auto const& signer_member : source_signatures)
+        {
+            auto signer_signatures = canonicaljson::Object{};
+            if (auto const* existing_signer = object_member_as_object(target_signatures, signer_member.key);
+                existing_signer != nullptr)
+            {
+                signer_signatures = *existing_signer;
+            }
+            auto const* source_signer = std::get_if<canonicaljson::Object>(&signer_member.value->storage());
+            if (source_signer == nullptr)
+            {
+                continue;
+            }
+            for (auto const& signature_member : *source_signer)
+            {
+                set_object_member(signer_signatures, signature_member.key, *signature_member.value);
+            }
+            set_object_member(target_signatures, signer_member.key, json_obj(std::move(signer_signatures)));
+        }
+    }
+
+    auto merge_uploaded_signatures(canonicaljson::Object& target_object, database::PersistentStore const& store,
+                                   std::string_view target_user_id, std::string_view target_key_id) -> void
+    {
+        auto signatures = canonicaljson::Object{};
+        if (auto const* existing_signatures = object_member_as_object(target_object, "signatures");
+            existing_signatures != nullptr)
+        {
+            signatures = *existing_signatures;
+        }
+        for (auto const& stored_signature : store.key_signatures)
+        {
+            if (stored_signature.target_user_id != target_user_id || stored_signature.target_device_id != target_key_id)
+            {
+                continue;
+            }
+            auto const parsed = parsed_json_object(stored_signature.json);
+            if (!parsed.has_value())
+            {
+                continue;
+            }
+            auto const* uploaded_signatures = object_member_as_object(*parsed, "signatures");
+            if (uploaded_signatures == nullptr)
+            {
+                continue;
+            }
+            merge_signature_members(signatures, *uploaded_signatures);
+        }
+        set_object_member(target_object, "signatures", json_obj(std::move(signatures)));
+    }
+
     [[nodiscard]] auto key_backup_version_for_user(database::PersistentStore const& store, std::string_view user_id,
                                                    std::optional<std::string_view> version = std::nullopt)
         -> database::PersistentKeyBackupVersion const*
@@ -1678,6 +1742,8 @@ namespace
         case auth::KeyApiEndpoint::update_key_backup_version:
         case auth::KeyApiEndpoint::delete_key_backup_version:
         case auth::KeyApiEndpoint::put_room_key_backup:
+        case auth::KeyApiEndpoint::put_room_key_backup_room:
+        case auth::KeyApiEndpoint::delete_room_key_backup_room:
         case auth::KeyApiEndpoint::delete_room_key_backup:
             return "{}";
         case auth::KeyApiEndpoint::put_room_key_backup_batch:
@@ -1800,12 +1866,6 @@ namespace
                     })));
     }
 
-    [[nodiscard]] auto key_id_matches_algorithm(std::string_view key_id, std::string_view algorithm) -> bool
-    {
-        return key_id.size() > algorithm.size() && key_id.substr(0U, algorithm.size()) == algorithm &&
-               key_id[algorithm.size()] == ':';
-    }
-
     [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view body) -> LocalHttpResponse
     {
         auto const object = parsed_json_object(body);
@@ -1851,7 +1911,14 @@ namespace
                 {
                     if (key.user_id == user_request.key)
                     {
-                        devices.push_back(json_member(key.device_id, json_embed_raw(key.json)));
+                        auto value = parsed_json_object(key.json);
+                        if (!value.has_value())
+                        {
+                            continue;
+                        }
+                        auto device_object = *value;
+                        merge_uploaded_signatures(device_object, store, user_request.key, key.device_id);
+                        devices.push_back(json_member(key.device_id, json_obj(std::move(device_object))));
                     }
                 }
             }
@@ -1867,7 +1934,14 @@ namespace
                     auto const key = database::find_device_key(store, user_request.key, *requested_device_id);
                     if (key.has_value())
                     {
-                        devices.push_back(json_member(*requested_device_id, json_embed_raw(key->json)));
+                        auto value = parsed_json_object(key->json);
+                        if (!value.has_value())
+                        {
+                            continue;
+                        }
+                        auto device_object = *value;
+                        merge_uploaded_signatures(device_object, store, user_request.key, *requested_device_id);
+                        devices.push_back(json_member(*requested_device_id, json_obj(std::move(device_object))));
                     }
                 }
             }
@@ -1887,15 +1961,45 @@ namespace
                 }
                 if (cskey.key_type == "master")
                 {
-                    master_keys.push_back(json_member(user_request.key, json_embed_raw(cskey.json)));
+                    auto value = parsed_json_object(cskey.json);
+                    if (!value.has_value())
+                    {
+                        continue;
+                    }
+                    auto key_object = *value;
+                    if (auto const key_id = first_key_id_in_key_object(key_object); key_id.has_value())
+                    {
+                        merge_uploaded_signatures(key_object, store, user_request.key, *key_id);
+                    }
+                    master_keys.push_back(json_member(user_request.key, json_obj(std::move(key_object))));
                 }
                 else if (cskey.key_type == "self_signing")
                 {
-                    self_signing_keys.push_back(json_member(user_request.key, json_embed_raw(cskey.json)));
+                    auto value = parsed_json_object(cskey.json);
+                    if (!value.has_value())
+                    {
+                        continue;
+                    }
+                    auto key_object = *value;
+                    if (auto const key_id = first_key_id_in_key_object(key_object); key_id.has_value())
+                    {
+                        merge_uploaded_signatures(key_object, store, user_request.key, *key_id);
+                    }
+                    self_signing_keys.push_back(json_member(user_request.key, json_obj(std::move(key_object))));
                 }
                 else if (cskey.key_type == "user_signing")
                 {
-                    user_signing_keys.push_back(json_member(user_request.key, json_embed_raw(cskey.json)));
+                    auto value = parsed_json_object(cskey.json);
+                    if (!value.has_value())
+                    {
+                        continue;
+                    }
+                    auto key_object = *value;
+                    if (auto const key_id = first_key_id_in_key_object(key_object); key_id.has_value())
+                    {
+                        merge_uploaded_signatures(key_object, store, user_request.key, *key_id);
+                    }
+                    user_signing_keys.push_back(json_member(user_request.key, json_obj(std::move(key_object))));
                 }
             }
         }
@@ -2039,8 +2143,9 @@ namespace
                 }
                 else
                 {
-                    auto const fallback = database::find_fallback_key(store, user_request.key, device_request.key);
-                    if (fallback.has_value() && key_id_matches_algorithm(fallback->key_id, *algorithm))
+                    auto const fallback =
+                        database::find_fallback_key(store, user_request.key, device_request.key, *algorithm);
+                    if (fallback.has_value())
                     {
                         keys.push_back(json_member(fallback->key_id, json_embed_raw(fallback->json)));
                     }
@@ -2630,7 +2735,7 @@ namespace
     }
 
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
-                                             std::string_view user, std::string_view device_id,
+                                             std::string_view user, std::string_view /*device_id*/,
                                              LocalHttpRequest const& req) -> bool
     {
         auto& store = rt.homeserver.database.persistent_store;
@@ -2673,9 +2778,38 @@ namespace
             }
             return stored;
         }
-        case auth::KeyApiEndpoint::upload_signatures:
-            return database::store_key_signature(
-                store, {std::string{user}, std::string{user}, std::string{device_id}, req.body});
+        case auth::KeyApiEndpoint::upload_signatures: {
+            auto const parsed = parsed_json_object(req.body);
+            if (!parsed.has_value())
+            {
+                return false;
+            }
+            auto stored = true;
+            for (auto const& user_member : *parsed)
+            {
+                auto const* signed_keys = std::get_if<canonicaljson::Object>(&user_member.value->storage());
+                if (signed_keys == nullptr)
+                {
+                    stored = false;
+                    continue;
+                }
+                for (auto const& key_member : *signed_keys)
+                {
+                    auto const serialized = canonicaljson::serialize_canonical(*key_member.value);
+                    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+                    {
+                        stored = false;
+                        continue;
+                    }
+                    if (!database::store_key_signature(
+                            store, {std::string{user}, user_member.key, key_member.key, serialized.output}))
+                    {
+                        stored = false;
+                    }
+                }
+            }
+            return stored;
+        }
         case auth::KeyApiEndpoint::create_key_backup_version:
         case auth::KeyApiEndpoint::update_key_backup_version:
             return database::store_key_backup_version(store, {std::string{user}, "1", req.body});
@@ -2687,6 +2821,39 @@ namespace
             }
             return database::store_key_backup_session(
                 store, {std::string{user}, "1", path->room_id, *path->session_id, req.body});
+        }
+        case auth::KeyApiEndpoint::put_room_key_backup_room: {
+            auto const path = room_key_backup_path_parts(req.target);
+            if (!path.has_value() || path->session_id.has_value())
+            {
+                return false;
+            }
+            auto const body = parsed_json_object(req.body);
+            if (!body.has_value())
+            {
+                return false;
+            }
+            auto const* sessions = object_member_as_object(*body, "sessions");
+            if (sessions == nullptr)
+            {
+                return false;
+            }
+            auto stored = true;
+            for (auto const& session : *sessions)
+            {
+                auto const serialized = canonicaljson::serialize_canonical(*session.value);
+                if (serialized.error != canonicaljson::CanonicalJsonError::none)
+                {
+                    stored = false;
+                    continue;
+                }
+                if (!database::store_key_backup_session(
+                        store, {std::string{user}, "1", path->room_id, session.key, serialized.output}))
+                {
+                    stored = false;
+                }
+            }
+            return stored;
         }
         case auth::KeyApiEndpoint::put_room_key_backup_batch: {
             auto const body = canonicaljson::parse_lossless(req.body);
@@ -2747,6 +2914,14 @@ namespace
                 return false;
             }
             return database::delete_key_backup_session(store, user, "1", path->room_id, *path->session_id);
+        }
+        case auth::KeyApiEndpoint::delete_room_key_backup_room: {
+            auto const path = room_key_backup_path_parts(req.target);
+            if (!path.has_value() || path->session_id.has_value())
+            {
+                return false;
+            }
+            return database::delete_key_backup_room_sessions(store, user, "1", path->room_id);
         }
         case auth::KeyApiEndpoint::delete_room_key_backup_batch:
             return database::delete_all_key_backup_sessions(store, user);
@@ -2894,7 +3069,9 @@ namespace
             }
             return resp(200U, key_api_success_body(route.endpoint));
         case auth::KeyApiEndpoint::put_room_key_backup:
+        case auth::KeyApiEndpoint::put_room_key_backup_room:
         case auth::KeyApiEndpoint::put_room_key_backup_batch:
+        case auth::KeyApiEndpoint::delete_room_key_backup_room:
         case auth::KeyApiEndpoint::delete_room_key_backup:
         case auth::KeyApiEndpoint::delete_room_key_backup_batch:
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req))

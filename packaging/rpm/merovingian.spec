@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.54
+Version:        0.4.55
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.55-1
+- Fix Matrix v1.18 fallback-key claim semantics so federation /user/keys/claim returns a matching fallback key after one-time keys are exhausted.
+- Fix fallback-key lookup to filter by requested algorithm so mixed fallback uploads still satisfy client and federation /keys/claim requests.
+
 * Mon Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.54-1
 - Fix Matrix v1.18 room-key backup metadata and update responses: add required count and etag fields, return RoomKeysUpdateResponse for room-key writes/deletes, and make single-session backup deletion actually remove the stored session.
 

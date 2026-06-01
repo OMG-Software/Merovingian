@@ -120,6 +120,7 @@ if get_option ('build_tests')
       'unit/test_inbound_ingestion.cpp',
       'unit/test_join_routing.cpp',
       'unit/test_key_api.cpp',
+      'unit/test_key_publication_conformance.cpp',
       'unit/test_media_repository.cpp',
       'unit/test_media_security.cpp',
       'unit/test_not_null.cpp',

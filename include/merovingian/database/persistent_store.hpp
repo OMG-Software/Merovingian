@@ -457,14 +457,16 @@ enum class MembershipStoreResult
 [[nodiscard]] auto claim_one_time_key(PersistentStore& store, std::string_view user_id, std::string_view device_id,
                                       std::string_view algorithm = {}) -> std::optional<PersistentOneTimeKey>;
 [[nodiscard]] auto store_fallback_key(PersistentStore& store, PersistentFallbackKey key) -> bool;
-[[nodiscard]] auto find_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id)
-    -> std::optional<PersistentFallbackKey>;
+[[nodiscard]] auto find_fallback_key(PersistentStore const& store, std::string_view user_id, std::string_view device_id,
+                                     std::string_view algorithm = {}) -> std::optional<PersistentFallbackKey>;
 [[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool;
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool;
 [[nodiscard]] auto store_key_backup_version(PersistentStore& store, PersistentKeyBackupVersion version) -> bool;
 [[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
     -> bool;
 [[nodiscard]] auto store_key_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> bool;
+[[nodiscard]] auto delete_key_backup_room_sessions(PersistentStore& store, std::string_view user_id,
+                                                   std::string_view version, std::string_view room_id) -> bool;
 [[nodiscard]] auto delete_key_backup_session(PersistentStore& store, std::string_view user_id, std::string_view version,
                                              std::string_view room_id, std::string_view session_id) -> bool;
 [[nodiscard]] auto delete_all_key_backup_sessions(PersistentStore& store, std::string_view user_id) -> bool;
