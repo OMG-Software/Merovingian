@@ -121,10 +121,10 @@ fi
 - Fix send_join response missing members_omitted field (caused Synapse 500 on join)
 - Fix make_join template depth=0 and prev_events including all room events instead of forward extremities
 
-* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.47-1
+* Sat May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.47-1
 - Fix federated invite-join auth chain: populate make_join auth_events, copy auth_event_ids in send_join, store inbound invites in event graph
 
-* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.46-1
+* Sat May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.46-1
 - Fix PDU dispatch to include invited users in room members
 - Add receipt endpoint POST /rooms/{roomId}/receipt/{receiptType}/{eventId}
 - Add user directory search endpoint POST /user_directory/search
@@ -132,7 +132,7 @@ fi
 - Add key backup batch PUT endpoint PUT /room_keys/keys
 - Filter runtime startup to only add join/invite memberships to room->members
 
-* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.45-1
+* Sat May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.45-1
 - Fix auth_events to include only spec-required events per event type
 - Deduplicate createRoom preset events when client provides initial_state
 
@@ -141,47 +141,47 @@ fi
 - Combine and deduplicate trusted_private_chat additional_creators per spec v1.16
 - Key outbound federation EDUs by edu_type so Synapse accepts the transaction
 
-* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.43-1
+* Sat May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.43-1
 - Support joining remote room version 12 rooms via server_name/via parameters (MSC4291)
 
-* Fri May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.42-1
+* Sat May 30 2026 James Chapman <claude@ping.me.uk> - 0.4.42-1
 - Fix send_join auth_chain to include only state events (walk auth_events graph)
 - Document build.py as the recommended build entry point
 
-* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.41-1
+* Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.41-1
 - Add unified build.py script for Linux, BSD, and WSL builds, replacing build-wsl.ps1
 
-* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.40-1
+* Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.40-1
 - Accept v12 (MSC4291) room IDs in matrix_id_is_valid; the colon requirement
   rejected hash-based room IDs without a :server suffix, causing send_join
   to fail with 400 Bad Request
 
-* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.39-1
+* Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.39-1
 - Implement Matrix room version 12 (MSC4291 room IDs as create-event hashes,
   MSC4289 privileged room creators), fixing Synapse send_join BadSignatureError
 
-* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.38-1
+* Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.38-1
 - Emit m.room.encryption state event for private/trusted_private_chat presets
 - Add federation event-signing diagnostic logging for BadSignatureError triage
 
-* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.36-1
+* Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.36-1
 - Fix /sync returning incomplete timeline events and missing state events
 
 * Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.35-1
 - Add ccache and build caching to GitHub Actions CI workflows
 
-* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.34-1
+* Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.34-1
 - Add GET /account/3pid and GET /pushers returning empty arrays for Element settings
 - Fix GET /rooms/{roomId}/members returning empty chunk for locally-joined users
 - Fix outbound federation invite BadSignatureError by pruning event before signing
 
-* Thu May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.33-1
+* Fri May 29 2026 James Chapman <claude@ping.me.uk> - 0.4.33-1
 - Add comprehensive Matrix v1.18 Client-Server API conformance test suite (221 scenarios)
 
-* Wed May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.32-1
+* Thu May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.32-1
 - Fix DELETE /room_keys/version not removing backup, causing infinite Element retry loop
 
-* Wed May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.31-1
+* Thu May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.31-1
 - Fix POST /room_keys/version returning empty body instead of {"version":"1"}
 
 * Thu May 28 2026 James Chapman <claude@ping.me.uk> - 0.4.30-1
@@ -242,13 +242,13 @@ fi
 - Add the client-server publicRooms directory route so Matrix clients stop failing with M_UNRECOGNIZED after login
 - Split the old vertical_slice homeserver umbrella header into implementation-matched interfaces
 
-* Tue May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.17-1
+* Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.17-1
 - Store Ed25519 signing key secret as base64 to prevent null-byte truncation on SQLite/PostgreSQL reload
 
-* Tue May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.16-1
+* Wed May 27 2026 James Chapman <claude@ping.me.uk> - 0.4.16-1
 - Persist server Ed25519 signing key secret across restarts so outbound federation requests use a stable identity
 
-* Mon May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.14-1
+* Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.14-1
 - Percent-encode outbound federation membership path components before signing
 
 * Tue May 26 2026 James Chapman <claude@ping.me.uk> - 0.4.13-1
@@ -265,38 +265,38 @@ fi
 - Sign and persist inbound federation invites for client sync
 - Send outbound federation invites for remote createRoom invitees
 
-* Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.9-1
+* Mon May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.9-1
 - Add live Synapse federation integration tests against matrix.ping.me.uk
 
-* Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.8-1
+* Mon May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.8-1
 - Fix runtime_lock held during /sync long-poll blocking federation dispatch
 
-* Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.6-1
+* Mon May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.6-1
 - Fix federation transaction response to return spec-required JSON {"pdus":{}}
 
-* Sun May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.5-1
+* Mon May 25 2026 James Chapman <claude@ping.me.uk> - 0.4.5-1
 - Add v1.18 conformance fixtures for client-server and federation
 - Fix DispatchWorker overwrite and empty transaction_id bugs
 
-* Sat May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.4-1
+* Sun May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.4-1
 - Wire inbound EDU sink for all five EDU types (typing, receipt, presence, to-device, device_list_update)
 - Wire outbound membership into join_room for remote rooms (make_join → sign → send_join)
 - Wire device list update route and record_device_list_change
 - Add outbound EDU dispatch for typing notifications and read receipts
 - Add PUT /presence/{userId}/status route
 
-* Sat May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.3-1
+* Sun May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.3-1
 - Fix inbound PDU sync visibility (stream_ordering and sync notification for federation events)
 - Wire outbound PDU dispatch from local events to remote servers via DispatchWorker
 
-* Sat May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.2-1
+* Sun May 24 2026 James Chapman <claude@ping.me.uk> - 0.4.2-1
 - Fix federation invite path parsing (v1/v2 invite routes no longer emit spurious membership_path.rejected)
 - Add im.nheko.summary room summary endpoints for Nheko compatibility
 
-* Fri May 23 2026 James Chapman <claude@ping.me.uk> - 0.4.1-1
+* Sat May 23 2026 James Chapman <claude@ping.me.uk> - 0.4.1-1
 - Fix room join returning 500 when user is already a member in the persistent store but absent from the in-memory member list
 
-* Fri May 23 2026 James Chapman <claude@ping.me.uk> - 0.4.0-1
+* Sat May 23 2026 James Chapman <claude@ping.me.uk> - 0.4.0-1
 - Add POST /rooms/{roomId}/leave and /read_markers client-server routes
 - Add structured debug logging to federation, media, platform, and HTTP modules
 - Fix platform library linkage in merovingian-db-migrate
@@ -370,7 +370,7 @@ fi
 * Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.8-1
 - Fix malformed INSERT SQL in login and register boundary plans
 
-* Tue May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.7-1
+* Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.7-1
 - Bump version to 0.2.7
 
 * Wed May 20 2026 James Chapman <claude@ping.me.uk> - 0.2.6-1
