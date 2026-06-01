@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.53
+Version:        0.4.54
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.54-1
+- Fix Matrix v1.18 room-key backup metadata and update responses: add required count and etag fields, return RoomKeysUpdateResponse for room-key writes/deletes, and make single-session backup deletion actually remove the stored session.
+
 * Sun May 31 2026 James Chapman <claude@ping.me.uk> - 0.4.53-1
 - Fix room-key backup session lookup for percent-encoded Matrix path components so clients can retrieve Megolm backup sessions whose session IDs contain `/` immediately after batch upload.
 

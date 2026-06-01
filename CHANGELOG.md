@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.4.54
+- Fix Matrix v1.18 room-key backup metadata and update responses. Merovingian
+  was returning incomplete JSON for key-backup metadata and key-storage update
+  requests: `GET /_matrix/client/v3/room_keys/version` and
+  `GET /_matrix/client/v3/room_keys/version/{version}` omitted the required
+  `count` and `etag` fields, while `PUT /_matrix/client/v3/room_keys/keys` and
+  `PUT /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}` incorrectly
+  returned `{"version":"1"}` instead of `RoomKeysUpdateResponse`. Element's
+  Rust crypto SDK rejected those responses during backup processing with
+  `missing field etag`. Merovingian now computes backup session `count`, derives
+  an opaque `etag` from the stored backup contents, includes both fields in the
+  metadata endpoints, and returns `{"count", "etag"}` for room-key backup
+  writes and deletes.
+- Fix `DELETE /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}`. The
+  route returned 200 but did not delete the stored backup session, so the new
+  `count` metadata would have remained stale and clients could still fetch the
+  supposedly deleted session.
+- Add Matrix v1.18 conformance coverage for key-backup metadata and update
+  responses: `GET /room_keys/version`, `GET /room_keys/version/{version}`,
+  batch `PUT /room_keys/keys`, direct `PUT /room_keys/keys/{roomId}/{sessionId}`,
+  direct `DELETE /room_keys/keys/{roomId}/{sessionId}`, and an overwrite
+  regression that proves `etag` changes when a session is updated without
+  changing the total key count.
+
 ## 0.4.53
 - Fix key-backup session lookup for percent-encoded Matrix path components.
   Real Megolm session IDs can contain `/`, so clients encode the

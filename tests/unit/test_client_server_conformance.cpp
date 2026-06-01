@@ -761,11 +761,13 @@ SCENARIO("POST /room_keys/version returns a non-empty version string", "[conform
 // MUST return a JSON object with:
 //   algorithm - string naming the backup algorithm (e.g. "m.megolm_backup.v1")
 //   auth_data - algorithm-specific object supplied at creation time
+//   count     - integer number of backed-up sessions
+//   etag      - opaque string that changes when backed-up data changes
 //   version   - string identifier matching what POST /room_keys/version returned
-SCENARIO("GET /room_keys/version returns algorithm, auth_data, and version after backup is created",
+SCENARIO("GET /room_keys/version returns backup metadata including count and etag",
          "[conformance][client-server][key-backup]")
 {
-    GIVEN("a logged-in device that has created a key backup")
+    GIVEN("a logged-in device that has created a key backup and uploaded one session")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -776,13 +778,19 @@ SCENARIO("GET /room_keys/version returns algorithm, auth_data, and version after
                 {"POST", "/_matrix/client/v3/room_keys/version", token,
                  R"({"algorithm":"m.megolm_backup.v1","auth_data":{"public_key":"base64+public+key","signatures":{}}})"})
                 .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys?version=1", token,
+                 R"({"rooms":{"!backupmeta:example.org":{"sessions":{"sess1":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}}}}}})"})
+                .response.status == 200U);
 
         WHEN("the device retrieves the backup version")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/room_keys/version", token, {}});
 
-            THEN("the response is 200 with algorithm, auth_data, and version")
+            THEN("the response is 200 with algorithm, auth_data, count, etag, and version")
             {
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
@@ -796,6 +804,16 @@ SCENARIO("GET /room_keys/version returns algorithm, auth_data, and version after
                 // Do NOT remove — clients use auth_data to verify backup integrity.
                 auto const* auth_data = object_member_as_object(body, "auth_data");
                 REQUIRE(auth_data != nullptr);
+
+                // Spec MUST: "count" is present and reflects stored sessions.
+                auto const* count = int_member(body, "count");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 1);
+
+                // Spec MUST: "etag" is a non-empty string.
+                auto const* etag = string_member(body, "etag");
+                REQUIRE(etag != nullptr);
+                REQUIRE(!etag->empty());
 
                 // Spec MUST: "version" is a non-empty string.
                 auto const* version = string_member(body, "version");
@@ -2481,11 +2499,11 @@ SCENARIO("GET /keys/changes reflects device-key uploads made after the from toke
 // --- GET /_matrix/client/v3/room_keys/version/{version} ----------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keysversionversion
 //
-// MUST return algorithm, auth_data, and version for the requested backup version.
-SCENARIO("GET /room_keys/version/{version} returns backup data for a specific version",
+// MUST return algorithm, auth_data, count, etag, and version for the requested backup version.
+SCENARIO("GET /room_keys/version/{version} returns backup metadata for a specific version",
          "[conformance][client-server][e2ee]")
 {
-    GIVEN("a logged-in user with a key backup version created")
+    GIVEN("a logged-in user with a key backup version and one backed-up session")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -2497,13 +2515,19 @@ SCENARIO("GET /room_keys/version/{version} returns backup data for a specific ve
                 {"POST", "/_matrix/client/v3/room_keys/version", token,
                  R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
                 .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys?version=1", token,
+                 R"({"rooms":{"!versionmeta:example.org":{"sessions":{"sess1":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}}}}}})"})
+                .response.status == 200U);
 
         WHEN("GET /room_keys/version/1 is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/room_keys/version/1", token, {}});
 
-            THEN("the response is 200 with algorithm, auth_data, and version")
+            THEN("the response is 200 with algorithm, auth_data, count, etag, and version")
             {
                 // Spec MUST: 200 with backup metadata for the requested version.
                 REQUIRE(response.response.status == 200U);
@@ -2512,6 +2536,12 @@ SCENARIO("GET /room_keys/version/{version} returns backup data for a specific ve
                 REQUIRE(algorithm != nullptr);
                 REQUIRE(!algorithm->empty());
                 REQUIRE(object_member_as_object(body, "auth_data") != nullptr);
+                auto const* count = int_member(body, "count");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 1);
+                auto const* etag = string_member(body, "etag");
+                REQUIRE(etag != nullptr);
+                REQUIRE(!etag->empty());
                 auto const* version = string_member(body, "version");
                 REQUIRE(version != nullptr);
                 REQUIRE(*version == "1");
@@ -2625,7 +2655,7 @@ SCENARIO("DELETE /room_keys/version/{version} returns 200 after deleting a backu
 // --- PUT /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId} --------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3room_keyskeysroomidsessionid
 //
-// MUST return 200 on success.
+// MUST return RoomKeysUpdateResponse on success.
 SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} stores a session key backup", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server, a logged-in user, and an existing key backup")
@@ -2648,12 +2678,74 @@ SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} stores a session key backup",
                 {"PUT", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/session1", token,
                  R"({"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}})"});
 
-            THEN("the response is 200 with a valid JSON object body")
+            THEN("the response is 200 with count and etag for the updated backup state")
             {
-                // Spec MUST: 200 on successful session key backup storage.
+                // Spec MUST: 200 with RoomKeysUpdateResponse on successful session key backup storage.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                auto const* count = int_member(body, "count");
+                auto const* etag = string_member(body, "etag");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 1);
+                REQUIRE(etag != nullptr);
+                REQUIRE(!etag->empty());
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3room_keyskeysroomidsessionid
+//
+// Updating an existing backed-up session changes the stored backup state while
+// leaving the total session count unchanged, so the returned etag MUST change
+// even when the count remains stable.
+SCENARIO("PUT /room_keys/keys/{roomId}/{sessionId} changes etag when an existing session is overwritten",
+         "[conformance][client-server][e2ee]")
+{
+    GIVEN("a logged-in user overwriting the same backed-up session twice")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+
+        auto const first_put = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"PUT", "/_matrix/client/v3/room_keys/keys/%21etagroom%3Aexample.org/etag-session?version=1", token,
+             R"({"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"first","ephemeral":"def","mac":"ghi"}})"});
+        REQUIRE(first_put.response.status == 200U);
+        auto const first_body = parse_object(first_put.response.body);
+        auto const* first_count = int_member(first_body, "count");
+        auto const* first_etag = string_member(first_body, "etag");
+        REQUIRE(first_count != nullptr);
+        REQUIRE(*first_count == 1);
+        REQUIRE(first_etag != nullptr);
+        REQUIRE(!first_etag->empty());
+
+        WHEN("the same session id is overwritten with different session_data")
+        {
+            auto const second_put = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys/%21etagroom%3Aexample.org/etag-session?version=1", token,
+                 R"({"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"second","ephemeral":"def","mac":"ghi"}})"});
+
+            THEN("the count stays 1 but the etag changes")
+            {
+                REQUIRE(second_put.response.status == 200U);
+                auto const second_body = parse_object(second_put.response.body);
+                auto const* second_count = int_member(second_body, "count");
+                auto const* second_etag = string_member(second_body, "etag");
+                REQUIRE(second_count != nullptr);
+                REQUIRE(*second_count == 1);
+                REQUIRE(second_etag != nullptr);
+                REQUIRE(!second_etag->empty());
+                REQUIRE(*second_etag != *first_etag);
             }
         }
     }
@@ -2786,7 +2878,7 @@ SCENARIO("GET /room_keys/keys/{roomId}/{sessionId} returns 404 for unknown sessi
 // --- DELETE /_matrix/client/v3/room_keys/keys/{roomId}/{sessionId} -----------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#delete_matrixclientv3room_keyskeysroomidsessionid
 //
-// MUST return 200 on success.
+// MUST return RoomKeysUpdateResponse on success.
 SCENARIO("DELETE /room_keys/keys/{roomId}/{sessionId} removes a backed-up session key",
          "[conformance][client-server][e2ee]")
 {
@@ -2815,12 +2907,17 @@ SCENARIO("DELETE /room_keys/keys/{roomId}/{sessionId} removes a backed-up sessio
                 started.runtime,
                 {"DELETE", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org/sessD", token, {}});
 
-            THEN("the response is 200 with a valid JSON object body")
+            THEN("the response is 200 with count and etag for the updated backup state")
             {
-                // Spec MUST: 200 on successful session key deletion.
+                // Spec MUST: 200 with RoomKeysUpdateResponse on successful session key deletion.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                std::ignore = body;
+                auto const* count = int_member(body, "count");
+                auto const* etag = string_member(body, "etag");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 0);
+                REQUIRE(etag != nullptr);
+                REQUIRE(!etag->empty());
             }
         }
     }
@@ -2902,35 +2999,47 @@ SCENARIO("GET /room_keys/keys returns stored sessions grouped by room", "[confor
 
 // --- PUT /_matrix/client/v3/room_keys/keys ------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3room_keyskeys
-// IMPLEMENTATION GAP: bulk room key backup upload not yet implemented.
-SCENARIO("PUT /room_keys/keys returns 200 with version", "[conformance][client-server][e2ee]")
+// MUST return RoomKeysUpdateResponse with count and etag.
+SCENARIO("PUT /room_keys/keys returns count and etag for the stored backup state", "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
 
-        WHEN("PUT /room_keys/keys is called with empty rooms")
+        WHEN("PUT /room_keys/keys is called with one uploaded session")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"PUT", "/_matrix/client/v3/room_keys/keys", token, R"({"rooms":{}})"});
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys?version=1", token,
+                 R"({"rooms":{"!room1:example.org":{"sessions":{"sess1":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}}}}}})"});
 
-            THEN("the server returns 200 with a version")
+            THEN("the server returns 200 with count 1 and a non-empty etag")
             {
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* version = string_member(body, "version");
-                REQUIRE(version != nullptr);
-                REQUIRE(*version == "1");
+                auto const* count = int_member(body, "count");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 1);
+                auto const* etag = string_member(body, "etag");
+                REQUIRE(etag != nullptr);
+                REQUIRE(!etag->empty());
             }
         }
     }
 }
 
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3room_keyskeys
-// MUST store session data and return a version string.
-SCENARIO("PUT /room_keys/keys with session data stores and returns version", "[conformance][client-server][e2ee]")
+// MUST store session data and return RoomKeysUpdateResponse with count and etag.
+SCENARIO("PUT /room_keys/keys with session data stores and returns count and etag",
+         "[conformance][client-server][e2ee]")
 {
     GIVEN("a running client-server, a logged-in user, and an existing key backup version")
     {
@@ -2952,14 +3061,17 @@ SCENARIO("PUT /room_keys/keys with session data stores and returns version", "[c
                 {"PUT", "/_matrix/client/v3/room_keys/keys", token,
                  R"({"rooms":{"!room1:example.org":{"sessions":{"sess1":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"abc","ephemeral":"def","mac":"ghi"}}}}}})"});
 
-            THEN("the server returns 200 with a non-empty version string")
+            THEN("the server returns 200 with count 1 and a non-empty etag")
             {
-                // Spec MUST: 200 with version string on success.
+                // Spec MUST: 200 with RoomKeysUpdateResponse on success.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* version = string_member(body, "version");
-                REQUIRE(version != nullptr);
-                REQUIRE(!version->empty());
+                auto const* count = int_member(body, "count");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 1);
+                auto const* etag = string_member(body, "etag");
+                REQUIRE(etag != nullptr);
+                REQUIRE(!etag->empty());
             }
         }
     }

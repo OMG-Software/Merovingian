@@ -462,9 +462,11 @@ enum class MembershipStoreResult
 [[nodiscard]] auto store_cross_signing_key(PersistentStore& store, PersistentCrossSigningKey key) -> bool;
 [[nodiscard]] auto store_key_signature(PersistentStore& store, PersistentKeySignature signature) -> bool;
 [[nodiscard]] auto store_key_backup_version(PersistentStore& store, PersistentKeyBackupVersion version) -> bool;
-[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id,
-                                             std::string_view version) -> bool;
+[[nodiscard]] auto delete_key_backup_version(PersistentStore& store, std::string_view user_id, std::string_view version)
+    -> bool;
 [[nodiscard]] auto store_key_backup_session(PersistentStore& store, PersistentKeyBackupSession session) -> bool;
+[[nodiscard]] auto delete_key_backup_session(PersistentStore& store, std::string_view user_id, std::string_view version,
+                                             std::string_view room_id, std::string_view session_id) -> bool;
 [[nodiscard]] auto delete_all_key_backup_sessions(PersistentStore& store, std::string_view user_id) -> bool;
 [[nodiscard]] auto store_local_media(PersistentStore& store, PersistentLocalMedia media) -> bool;
 [[nodiscard]] auto update_local_media_state(PersistentStore& store, std::string_view media_id, bool quarantined,

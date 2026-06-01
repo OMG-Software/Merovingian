@@ -175,6 +175,14 @@ namespace
         return output;
     }
 
+    [[nodiscard]] auto lowercase_hex(unsigned char const* bytes, std::size_t size) -> std::string
+    {
+        auto output = std::string(size * 2U + 1U, '\0');
+        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes, size);
+        output.pop_back();
+        return output;
+    }
+
     // Thin builder facade over the project's canonical JSON value model.
     // Response paths construct a Value tree and hand it to serialize_canonical
     // so escaping (including control characters as \u00XX) is handled by the
@@ -1517,6 +1525,127 @@ namespace
         return resp(200U, json_serialize(json_obj({json_member(std::string{key}, json_str(r.body))})));
     }
 
+    auto set_object_member(canonicaljson::Object& object, std::string_view key, canonicaljson::Value value) -> void
+    {
+        auto const existing = std::ranges::find_if(object, [key](canonicaljson::ObjectMember const& member) {
+            return member.key == key;
+        });
+        if (existing != object.end())
+        {
+            existing->value = std::make_unique<canonicaljson::Value>(std::move(value));
+            return;
+        }
+        object.push_back(json_member(std::string{key}, std::move(value)));
+    }
+
+    [[nodiscard]] auto key_backup_version_for_user(database::PersistentStore const& store, std::string_view user_id,
+                                                   std::optional<std::string_view> version = std::nullopt)
+        -> database::PersistentKeyBackupVersion const*
+    {
+        if (version.has_value())
+        {
+            auto const found = std::ranges::find_if(
+                store.key_backup_versions, [user_id, version](database::PersistentKeyBackupVersion const& candidate) {
+                    return candidate.user_id == user_id && candidate.version == *version;
+                });
+            return found == store.key_backup_versions.end() ? nullptr : &*found;
+        }
+
+        for (auto it = store.key_backup_versions.rbegin(); it != store.key_backup_versions.rend(); ++it)
+        {
+            if (it->user_id == user_id)
+            {
+                return &*it;
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto key_backup_session_count(database::PersistentStore const& store, std::string_view user_id,
+                                                std::string_view version) -> std::int64_t
+    {
+        return static_cast<std::int64_t>(std::ranges::count_if(
+            store.key_backup_sessions, [user_id, version](database::PersistentKeyBackupSession const& session) {
+                return session.user_id == user_id && session.version == version;
+            }));
+    }
+
+    [[nodiscard]] auto key_backup_etag(database::PersistentStore const& store, std::string_view user_id,
+                                       std::string_view version) -> std::string
+    {
+        auto sessions = std::vector<database::PersistentKeyBackupSession const*>{};
+        for (auto const& session : store.key_backup_sessions)
+        {
+            if (session.user_id == user_id && session.version == version)
+            {
+                sessions.push_back(&session);
+            }
+        }
+        std::ranges::sort(sessions, [](database::PersistentKeyBackupSession const* lhs,
+                                       database::PersistentKeyBackupSession const* rhs) {
+            return std::tie(lhs->room_id, lhs->session_id, lhs->json) <
+                   std::tie(rhs->room_id, rhs->session_id, rhs->json);
+        });
+
+        std::ignore = sodium_init();
+        auto state = crypto_generichash_state{};
+        if (crypto_generichash_init(&state, nullptr, 0U, crypto_generichash_BYTES) != 0)
+        {
+            return std::string{"0"};
+        }
+
+        auto const update = [&state](std::string_view value) {
+            std::ignore =
+                crypto_generichash_update(&state, reinterpret_cast<unsigned char const*>(value.data()), value.size());
+            auto const separator = static_cast<unsigned char>(0);
+            std::ignore = crypto_generichash_update(&state, &separator, 1U);
+        };
+
+        update(version);
+        for (auto const* session : sessions)
+        {
+            update(session->room_id);
+            update(session->session_id);
+            update(session->json);
+        }
+
+        auto digest = std::array<unsigned char, crypto_generichash_BYTES>{};
+        if (crypto_generichash_final(&state, digest.data(), digest.size()) != 0)
+        {
+            return std::string{"0"};
+        }
+        return lowercase_hex(digest.data(), digest.size());
+    }
+
+    [[nodiscard]] auto room_keys_update_response(database::PersistentStore const& store, std::string_view user_id,
+                                                 std::string_view version) -> std::string
+    {
+        return json_serialize(json_obj({
+            json_member("count", json_int(key_backup_session_count(store, user_id, version))),
+            json_member("etag", json_str(key_backup_etag(store, user_id, version))),
+        }));
+    }
+
+    [[nodiscard]] auto key_backup_metadata_response(database::PersistentStore const& store,
+                                                    database::PersistentKeyBackupVersion const& version) -> std::string
+    {
+        auto metadata = canonicaljson::Object{};
+        auto const parsed = canonicaljson::parse_lossless(version.json);
+        if (parsed.error == canonicaljson::ParseError::none)
+        {
+            if (auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage()); object != nullptr)
+            {
+                metadata = *object;
+            }
+        }
+
+        set_object_member(metadata, "count",
+                          json_int(key_backup_session_count(store, version.user_id, version.version)));
+        set_object_member(metadata, "etag", json_str(key_backup_etag(store, version.user_id, version.version)));
+        set_object_member(metadata, "version", json_str(version.version));
+        return json_serialize(canonicaljson::Value{std::move(metadata)});
+    }
+
     [[nodiscard]] auto key_api_success_body(auth::KeyApiEndpoint endpoint) -> std::string
     {
         switch (endpoint)
@@ -2611,6 +2740,14 @@ namespace
                 return false;
             return database::delete_key_backup_version(store, user, version_str);
         }
+        case auth::KeyApiEndpoint::delete_room_key_backup: {
+            auto const path = room_key_backup_path_parts(req.target);
+            if (!path.has_value() || !path->session_id.has_value())
+            {
+                return false;
+            }
+            return database::delete_key_backup_session(store, user, "1", path->room_id, *path->session_id);
+        }
         case auth::KeyApiEndpoint::delete_room_key_backup_batch:
             return database::delete_all_key_backup_sessions(store, user);
         case auth::KeyApiEndpoint::upload_keys:
@@ -2621,7 +2758,6 @@ namespace
         case auth::KeyApiEndpoint::get_key_backup_version_by_id:
         case auth::KeyApiEndpoint::get_room_key_backup:
         case auth::KeyApiEndpoint::get_room_key_backup_batch:
-        case auth::KeyApiEndpoint::delete_room_key_backup:
             return true;
         }
         return true;
@@ -2640,26 +2776,14 @@ namespace
             return handle_key_query(rt, req.body);
         case auth::KeyApiEndpoint::claim_keys:
             return handle_key_claim(rt, req.body);
-        case auth::KeyApiEndpoint::get_key_backup_version:
-            if (auto const& versions = rt.homeserver.database.persistent_store.key_backup_versions; !versions.empty())
+        case auth::KeyApiEndpoint::get_key_backup_version: {
+            auto const* version = key_backup_version_for_user(rt.homeserver.database.persistent_store, user);
+            if (version == nullptr)
             {
-                auto const& v = versions.front();
-                // v.json is the original POST body (algorithm + auth_data only).
-                // The spec response MUST also include "version" — inject it here.
-                auto parsed = canonicaljson::parse_lossless(v.json);
-                if (parsed.error == canonicaljson::ParseError::none)
-                {
-                    if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
-                    {
-                        auto with_version = *obj;
-                        with_version.push_back(
-                            {"version", std::make_unique<canonicaljson::Value>(std::string{v.version})});
-                        return resp(200U, json_serialize(canonicaljson::Value{std::move(with_version)}));
-                    }
-                }
-                return resp(200U, v.json);
+                return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
             }
-            return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
+            return resp(200U, key_backup_metadata_response(rt.homeserver.database.persistent_store, *version));
+        }
         case auth::KeyApiEndpoint::get_key_backup_version_by_id: {
             auto constexpr vprefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
             auto const vsuffix = route_suffix(req.target, vprefix);
@@ -2668,26 +2792,12 @@ namespace
             {
                 return err(400U, "M_UNRECOGNIZED", "missing version in path");
             }
-            auto const& versions = rt.homeserver.database.persistent_store.key_backup_versions;
-            auto const vit = std::ranges::find_if(versions, [&](auto const& v) {
-                return v.user_id == user && v.version == vid;
-            });
-            if (vit == versions.end())
+            auto const* version = key_backup_version_for_user(rt.homeserver.database.persistent_store, user, vid);
+            if (version == nullptr)
             {
                 return resp(404U, matrix_error("M_NOT_FOUND", "key backup version not found"));
             }
-            auto parsed = canonicaljson::parse_lossless(vit->json);
-            if (parsed.error == canonicaljson::ParseError::none)
-            {
-                if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
-                {
-                    auto with_version = *obj;
-                    with_version.push_back(
-                        {"version", std::make_unique<canonicaljson::Value>(std::string{vit->version})});
-                    return resp(200U, json_serialize(canonicaljson::Value{std::move(with_version)}));
-                }
-            }
-            return resp(200U, vit->json);
+            return resp(200U, key_backup_metadata_response(rt.homeserver.database.persistent_store, *version));
         }
         case auth::KeyApiEndpoint::get_room_key_backup_batch: {
             auto const& all_sessions = rt.homeserver.database.persistent_store.key_backup_sessions;
@@ -2772,7 +2882,17 @@ namespace
         case auth::KeyApiEndpoint::upload_signatures:
         case auth::KeyApiEndpoint::create_key_backup_version:
         case auth::KeyApiEndpoint::update_key_backup_version:
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req))
+            {
+                return err(500U, "M_UNKNOWN", "key API persistence failed");
+            }
+            return resp(200U, key_api_success_body(route.endpoint));
         case auth::KeyApiEndpoint::delete_key_backup_version:
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req))
+            {
+                return err(500U, "M_UNKNOWN", "key API persistence failed");
+            }
+            return resp(200U, key_api_success_body(route.endpoint));
         case auth::KeyApiEndpoint::put_room_key_backup:
         case auth::KeyApiEndpoint::put_room_key_backup_batch:
         case auth::KeyApiEndpoint::delete_room_key_backup:
@@ -2781,7 +2901,7 @@ namespace
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
             }
-            return resp(200U, key_api_success_body(route.endpoint));
+            return resp(200U, room_keys_update_response(rt.homeserver.database.persistent_store, user, "1"));
         case auth::KeyApiEndpoint::device_list_update: {
             // PUT /_matrix/client/v3/devices/{deviceId} — update a device's
             // display name and notify all local users who share a room with
