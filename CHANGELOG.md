@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.4.55
+## 0.4.56
 - Fix outbound federation transaction IDs for E2EE to-device delivery.
   Merovingian was deriving `/send/{txnId}` from the local `next_session_id`
   counter, which resets on restart. That let a fresh `m.direct_to_device` EDU

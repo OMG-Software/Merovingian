@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.55
+Version:        0.4.56
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.56-1
+- Fix outbound federation transaction IDs for E2EE to-device delivery so restarts don't reuse IDs that remote servers deduplicate as replays.
+- Fix federated profile query for local users missing a stored profile row; returns spec-shaped empty profile instead of "user not found".
+- Fix inbound m.direct_to_device EDU parsing to use canonical JSON instead of raw brace searches, preserving nested encrypted payloads.
+- Fix v1.18 fallback-key claim semantics so federation /user/keys/claim returns a matching fallback key after one-time keys are exhausted.
+
 * Mon Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.55-1
 - Fix Matrix v1.18 fallback-key claim semantics so federation /user/keys/claim returns a matching fallback key after one-time keys are exhausted.
 - Fix fallback-key lookup to filter by requested algorithm so mixed fallback uploads still satisfy client and federation /keys/claim requests.
