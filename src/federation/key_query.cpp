@@ -98,60 +98,83 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
     auto request = parsed_value(request_body);
     if (!request.has_value())
     {
-        log_diagnostic("key_query.rejected", {{"reason", "request body parse failed", false}});
+        log_diagnostic("key_query.rejected", {
+                                                 {"reason", "request body parse failed", false}
+        });
         return {};
     }
     auto const* root = std::get_if<canonicaljson::Object>(&request->storage());
     if (root == nullptr)
     {
-        log_diagnostic("key_query.rejected", {{"reason", "request root is not an object", false}});
+        log_diagnostic("key_query.rejected", {
+                                                 {"reason", "request root is not an object", false}
+        });
         return {};
     }
+    auto const* requested = as_object(member_value(*root, "device_keys"));
+    if (requested == nullptr)
+    {
+        log_diagnostic("key_query.rejected", {
+                                                 {"reason", "device_keys member missing or not an object", false}
+        });
+        return {};
+    }
+
     auto device_keys = canonicaljson::Object{};
     auto master_keys = canonicaljson::Object{};
     auto self_signing_keys = canonicaljson::Object{};
-    if (auto const* requested = as_object(member_value(*root, "device_keys")); requested != nullptr)
+    for (auto const& user_member : *requested)
     {
-        for (auto const& user_member : *requested)
+        auto const* list = std::get_if<canonicaljson::Array>(&user_member.value->storage());
+        if (list == nullptr)
         {
-            // The requested device-id filter; an empty array selects every
-            // published device for the user.
-            auto wanted = std::vector<std::string>{};
-            if (auto const* list = std::get_if<canonicaljson::Array>(&user_member.value->storage());
-                list != nullptr)
-            {
-                for (auto const& entry : *list)
-                {
-                    if (auto const* id = std::get_if<std::string>(&entry.storage()); id != nullptr)
-                    {
-                        wanted.push_back(*id);
-                    }
-                }
-            }
-            auto user_devices = canonicaljson::Object{};
-            for (auto const& device_key : store.device_keys)
-            {
-                if (device_key.user_id != user_member.key)
-                {
-                    continue;
-                }
-                if (!wanted.empty() && std::ranges::find(wanted, device_key.device_id) == wanted.end())
-                {
-                    continue;
-                }
-                auto value = parsed_value(device_key.json);
-                if (value.has_value())
-                {
-                    user_devices.push_back(canonicaljson::make_member(device_key.device_id, std::move(*value)));
-                }
-            }
-            if (!user_devices.empty())
-            {
-                device_keys.push_back(
-                    canonicaljson::make_member(user_member.key, canonicaljson::Value{std::move(user_devices)}));
-            }
-            append_cross_signing(store, user_member.key, master_keys, self_signing_keys);
+            log_diagnostic("key_query.rejected", {
+                                                     {"reason",  "device_keys user entry is not an array", false},
+                                                     {"user_id", user_member.key,                          false}
+            });
+            return {};
         }
+
+        // The requested device-id filter; an empty array selects every
+        // published device for the user.
+        auto wanted = std::vector<std::string>{};
+        for (auto const& entry : *list)
+        {
+            auto const* id = std::get_if<std::string>(&entry.storage());
+            if (id == nullptr)
+            {
+                log_diagnostic("key_query.rejected", {
+                                                         {"reason",  "device_keys array entry is not a string", false},
+                                                         {"user_id", user_member.key,                           false}
+                });
+                return {};
+            }
+            wanted.push_back(*id);
+        }
+
+        auto user_devices = canonicaljson::Object{};
+        for (auto const& device_key : store.device_keys)
+        {
+            if (device_key.user_id != user_member.key)
+            {
+                continue;
+            }
+            if (!wanted.empty() && std::ranges::find(wanted, device_key.device_id) == wanted.end())
+            {
+                continue;
+            }
+            auto value = parsed_value(device_key.json);
+            if (value.has_value())
+            {
+                user_devices.push_back(canonicaljson::make_member(device_key.device_id, std::move(*value)));
+            }
+        }
+        if (!user_devices.empty())
+        {
+            device_keys.push_back(
+                canonicaljson::make_member(user_member.key, canonicaljson::Value{std::move(user_devices)}));
+        }
+        append_cross_signing(store, user_member.key, master_keys, self_signing_keys);
     }
     auto const device_key_user_count = device_keys.size();
     auto response = canonicaljson::Object{};
@@ -159,50 +182,70 @@ auto build_device_keys_query_response(database::PersistentStore const& store, st
     response.push_back(canonicaljson::make_member("master_keys", canonicaljson::Value{std::move(master_keys)}));
     response.push_back(
         canonicaljson::make_member("self_signing_keys", canonicaljson::Value{std::move(self_signing_keys)}));
-    log_diagnostic("key_query.accepted",
-                   {{"device_key_users", std::to_string(device_key_user_count), false}});
+    log_diagnostic("key_query.accepted", {
+                                             {"device_key_users", std::to_string(device_key_user_count), false}
+    });
     return serialize(std::move(response));
 }
 
-auto build_one_time_keys_claim_response(database::PersistentStore& store, std::string_view request_body)
-    -> std::string
+auto build_one_time_keys_claim_response(database::PersistentStore& store, std::string_view request_body) -> std::string
 {
     auto request = parsed_value(request_body);
     if (!request.has_value())
     {
-        log_diagnostic("otk_claim.rejected", {{"reason", "request body parse failed", false}});
+        log_diagnostic("otk_claim.rejected", {
+                                                 {"reason", "request body parse failed", false}
+        });
         return {};
     }
     auto const* root = std::get_if<canonicaljson::Object>(&request->storage());
     if (root == nullptr)
     {
-        log_diagnostic("otk_claim.rejected", {{"reason", "request root is not an object", false}});
+        log_diagnostic("otk_claim.rejected", {
+                                                 {"reason", "request root is not an object", false}
+        });
         return {};
     }
-    auto one_time_keys = canonicaljson::Object{};
-    if (auto const* requested = as_object(member_value(*root, "one_time_keys")); requested != nullptr)
+    auto const* requested = as_object(member_value(*root, "one_time_keys"));
+    if (requested == nullptr)
     {
-        for (auto const& user_member : *requested)
+        log_diagnostic("otk_claim.rejected", {
+                                                 {"reason", "one_time_keys member missing or not an object", false}
+        });
+        return {};
+    }
+
+    auto one_time_keys = canonicaljson::Object{};
+    for (auto const& user_member : *requested)
+    {
+        auto const* devices = std::get_if<canonicaljson::Object>(&user_member.value->storage());
+        if (devices == nullptr)
         {
-            auto const* devices = std::get_if<canonicaljson::Object>(&user_member.value->storage());
-            if (devices == nullptr)
+            log_diagnostic("otk_claim.rejected", {
+                                                     {"reason",  "one_time_keys user entry is not an object", false},
+                                                     {"user_id", user_member.key,                             false}
+            });
+            return {};
+        }
+
+        auto user_object = canonicaljson::Object{};
+        for (auto const& device_member : *devices)
+        {
+            auto const* algorithm = std::get_if<std::string>(&device_member.value->storage());
+            if (algorithm == nullptr)
             {
-                continue;
+                log_diagnostic("otk_claim.rejected",
+                               {
+                                   {"reason",    "one_time_keys device entry is not a string", false},
+                                   {"user_id",   user_member.key,                              false},
+                                   {"device_id", device_member.key,                            false}
+                });
+                return {};
             }
-            auto user_object = canonicaljson::Object{};
-            for (auto const& device_member : *devices)
+
+            auto const claimed = database::claim_one_time_key(store, user_member.key, device_member.key, *algorithm);
+            if (claimed.has_value())
             {
-                auto const* algorithm = std::get_if<std::string>(&device_member.value->storage());
-                if (algorithm == nullptr)
-                {
-                    continue;
-                }
-                auto const claimed =
-                    database::claim_one_time_key(store, user_member.key, device_member.key, *algorithm);
-                if (!claimed.has_value())
-                {
-                    continue;
-                }
                 auto value = parsed_value(claimed->json);
                 if (!value.has_value())
                 {
@@ -212,24 +255,44 @@ auto build_one_time_keys_claim_response(database::PersistentStore& store, std::s
                 key_object.push_back(canonicaljson::make_member(claimed->key_id, std::move(*value)));
                 user_object.push_back(
                     canonicaljson::make_member(device_member.key, canonicaljson::Value{std::move(key_object)}));
+                continue;
             }
-            if (!user_object.empty())
+
+            auto const fallback = database::find_fallback_key(store, user_member.key, device_member.key, *algorithm);
+            if (!fallback.has_value())
             {
-                one_time_keys.push_back(
-                    canonicaljson::make_member(user_member.key, canonicaljson::Value{std::move(user_object)}));
+                continue;
             }
+            auto value = parsed_value(fallback->json);
+            if (!value.has_value())
+            {
+                continue;
+            }
+            auto key_object = canonicaljson::Object{};
+            key_object.push_back(canonicaljson::make_member(fallback->key_id, std::move(*value)));
+            user_object.push_back(
+                canonicaljson::make_member(device_member.key, canonicaljson::Value{std::move(key_object)}));
+        }
+        if (!user_object.empty())
+        {
+            one_time_keys.push_back(
+                canonicaljson::make_member(user_member.key, canonicaljson::Value{std::move(user_object)}));
         }
     }
     auto const otk_user_count = one_time_keys.size();
     auto response = canonicaljson::Object{};
     response.push_back(canonicaljson::make_member("one_time_keys", canonicaljson::Value{std::move(one_time_keys)}));
-    log_diagnostic("otk_claim.accepted", {{"users", std::to_string(otk_user_count), false}});
+    log_diagnostic("otk_claim.accepted", {
+                                             {"users", std::to_string(otk_user_count), false}
+    });
     return serialize(std::move(response));
 }
 
 auto build_user_devices_response(database::PersistentStore const& store, std::string_view user_id) -> std::string
 {
-    log_diagnostic("user_devices.dispatch", {{"user_id", std::string{user_id}, false}});
+    log_diagnostic("user_devices.dispatch", {
+                                                {"user_id", std::string{user_id}, false}
+    });
     auto devices = canonicaljson::Array{};
     for (auto const& device_key : store.device_keys)
     {
@@ -249,7 +312,9 @@ auto build_user_devices_response(database::PersistentStore const& store, std::st
     }
     if (devices.empty())
     {
-        log_diagnostic("user_devices.empty", {{"user_id", std::string{user_id}, false}});
+        log_diagnostic("user_devices.empty", {
+                                                 {"user_id", std::string{user_id}, false}
+        });
         return {};
     }
     auto response = canonicaljson::Object{};

@@ -70,10 +70,14 @@ auto key_api_endpoint_name(KeyApiEndpoint endpoint) noexcept -> char const*
         return "delete_key_backup_version";
     case KeyApiEndpoint::put_room_key_backup:
         return "put_room_key_backup";
+    case KeyApiEndpoint::put_room_key_backup_room:
+        return "put_room_key_backup_room";
     case KeyApiEndpoint::put_room_key_backup_batch:
         return "put_room_key_backup_batch";
     case KeyApiEndpoint::get_room_key_backup:
         return "get_room_key_backup";
+    case KeyApiEndpoint::delete_room_key_backup_room:
+        return "delete_room_key_backup_room";
     case KeyApiEndpoint::delete_room_key_backup:
         return "delete_room_key_backup";
     case KeyApiEndpoint::get_key_backup_version_by_id:
@@ -100,8 +104,11 @@ auto key_api_routes() -> std::vector<KeyApiRoute>
         route("PUT", "/_matrix/client/v3/room_keys/version/{version}", KeyApiEndpoint::update_key_backup_version),
         route("DELETE", "/_matrix/client/v3/room_keys/version/{version}", KeyApiEndpoint::delete_key_backup_version),
         route("PUT", "/_matrix/client/v3/room_keys/keys", KeyApiEndpoint::put_room_key_backup_batch),
+        route("PUT", "/_matrix/client/v3/room_keys/keys/{roomId}", KeyApiEndpoint::put_room_key_backup_room),
         route("PUT", "/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}", KeyApiEndpoint::put_room_key_backup),
+        route("GET", "/_matrix/client/v3/room_keys/keys/{roomId}", KeyApiEndpoint::get_room_key_backup),
         route("GET", "/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}", KeyApiEndpoint::get_room_key_backup),
+        route("DELETE", "/_matrix/client/v3/room_keys/keys/{roomId}", KeyApiEndpoint::delete_room_key_backup_room),
         route("DELETE", "/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}",
               KeyApiEndpoint::delete_room_key_backup),
         route("GET", "/_matrix/client/v3/room_keys/version/{version}", KeyApiEndpoint::get_key_backup_version_by_id),
@@ -130,10 +137,26 @@ auto match_key_api_route(std::string_view method, std::string_view target) -> Ke
         {
             return {true, candidate, {}};
         }
+        if (candidate.path_template == "/_matrix/client/v3/room_keys/keys/{roomId}" &&
+            starts_with(target, "/_matrix/client/v3/room_keys/keys/"))
+        {
+            auto const path_only = target.substr(0U, target.find('?'));
+            auto const suffix = path_only.substr(std::string_view{"/_matrix/client/v3/room_keys/keys/"}.size());
+            if (!suffix.empty() && suffix.find('/') == std::string_view::npos)
+            {
+                return {true, candidate, {}};
+            }
+        }
         if (candidate.path_template == "/_matrix/client/v3/room_keys/keys/{roomId}/{sessionId}" &&
             starts_with(target, "/_matrix/client/v3/room_keys/keys/"))
         {
-            return {true, candidate, {}};
+            auto const path_only = target.substr(0U, target.find('?'));
+            auto const suffix = path_only.substr(std::string_view{"/_matrix/client/v3/room_keys/keys/"}.size());
+            auto const separator = suffix.find('/');
+            if (separator != std::string_view::npos && separator + 1U < suffix.size())
+            {
+                return {true, candidate, {}};
+            }
         }
         if (candidate.path_template == "/_matrix/client/v3/devices/{deviceId}" &&
             starts_with(target, "/_matrix/client/v3/devices/"))
@@ -170,8 +193,8 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
         };
     case KeyApiEndpoint::device_list_update:
         return {
-            {"key_api_record_device_list_update", "INSERT INTO device_list_updates (user_id, device_id) VALUES ($1, $2)",
-             user_device_params(user_id, device_id)}
+            {"key_api_record_device_list_update",
+             "INSERT INTO device_list_updates (user_id, device_id) VALUES ($1, $2)", user_device_params(user_id, device_id)}
         };
     case KeyApiEndpoint::upload_cross_signing_keys:
         return {
@@ -210,6 +233,12 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
              "INSERT INTO key_backup_sessions VALUES ($1, $2, $3, $4, $5)", {public_value(user_id), public_value("1"), public_value("room_id"), public_value("session_id"),
               sensitive_placeholder("room-key-backup-payload")}}
         };
+    case KeyApiEndpoint::put_room_key_backup_room:
+        return {
+            {"key_api_put_room_key_backup_room",
+             "INSERT INTO key_backup_sessions VALUES ($1, $2, $3, $4, $5)", {public_value(user_id), public_value("1"), public_value("room_id"), public_value("session_id"),
+              sensitive_placeholder("room-key-backup-payload")}}
+        };
     case KeyApiEndpoint::put_room_key_backup_batch:
         return {
             {"key_api_put_room_key_backup_batch",
@@ -226,6 +255,11 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
             {"key_api_delete_room_key_backup",
              "DELETE FROM key_backup_sessions WHERE user_id = $1", {public_value(user_id)}}
         };
+    case KeyApiEndpoint::delete_room_key_backup_room:
+        return {
+            {"key_api_delete_room_key_backup_room",
+             "DELETE FROM key_backup_sessions WHERE user_id = $1 AND version = $2 AND room_id = $3", {public_value(user_id), public_value("1"), public_value("room_id")}}
+        };
     case KeyApiEndpoint::get_key_backup_version_by_id:
         return {
             {"key_api_get_backup_version_by_id",
@@ -234,8 +268,7 @@ auto key_api_database_statements(KeyApiEndpoint endpoint, std::string_view user_
     case KeyApiEndpoint::get_room_key_backup_batch:
         return {
             {"key_api_get_room_key_backup_batch",
-             "SELECT room_id, session_id, json FROM key_backup_sessions WHERE user_id = $1",
-             {public_value(user_id)}}
+             "SELECT room_id, session_id, json FROM key_backup_sessions WHERE user_id = $1", {public_value(user_id)}}
         };
     case KeyApiEndpoint::delete_room_key_backup_batch:
         return {

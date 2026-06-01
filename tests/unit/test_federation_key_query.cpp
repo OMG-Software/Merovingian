@@ -45,7 +45,8 @@ namespace
     -> merovingian::canonicaljson::Value const*
 {
     for (auto const& m : obj)
-        if (m.key == key) return &(*m.value);
+        if (m.key == key)
+            return &(*m.value);
     return nullptr;
 }
 
@@ -59,8 +60,7 @@ namespace
 //   master_keys      - object mapping user IDs to cross-signing master keys
 //   self_signing_keys - object mapping user IDs to self-signing keys
 //   user_signing_keys - object mapping user IDs to user-signing keys (may be absent)
-SCENARIO("Federation device-key query returns published device and cross-signing keys",
-         "[federation][keys][query]")
+SCENARIO("Federation device-key query returns published device and cross-signing keys", "[federation][keys][query]")
 {
     GIVEN("a store with two devices and cross-signing keys for a user")
     {
@@ -76,22 +76,19 @@ SCENARIO("Federation device-key query returns published device and cross-signing
                 REQUIRE_FALSE(body.empty());
                 auto const parsed = merovingian::canonicaljson::parse_lossless(body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: device_keys is an object mapping user IDs to device maps.
                 auto const* dk_val = json_get(*root, std::string{"device_keys"});
                 REQUIRE(dk_val != nullptr);
-                auto const* dk_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&dk_val->storage());
+                auto const* dk_obj = std::get_if<merovingian::canonicaljson::Object>(&dk_val->storage());
                 REQUIRE(dk_obj != nullptr);
 
                 // Both devices must be present under alice's user ID.
                 auto const* alice_val = json_get(*dk_obj, std::string{"@alice:remote.example.org"});
                 REQUIRE(alice_val != nullptr);
-                auto const* alice_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&alice_val->storage());
+                auto const* alice_obj = std::get_if<merovingian::canonicaljson::Object>(&alice_val->storage());
                 REQUIRE(alice_obj != nullptr);
                 REQUIRE(json_get(*alice_obj, std::string{"DEVICE1"}) != nullptr);
                 REQUIRE(json_get(*alice_obj, std::string{"DEVICE2"}) != nullptr);
@@ -118,19 +115,16 @@ SCENARIO("Federation device-key query returns published device and cross-signing
                 REQUIRE_FALSE(body.empty());
                 auto const parsed = merovingian::canonicaljson::parse_lossless(body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 auto const* dk_val = json_get(*root, std::string{"device_keys"});
                 REQUIRE(dk_val != nullptr);
-                auto const* dk_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&dk_val->storage());
+                auto const* dk_obj = std::get_if<merovingian::canonicaljson::Object>(&dk_val->storage());
                 REQUIRE(dk_obj != nullptr);
                 auto const* alice_val = json_get(*dk_obj, std::string{"@alice:remote.example.org"});
                 REQUIRE(alice_val != nullptr);
-                auto const* alice_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&alice_val->storage());
+                auto const* alice_obj = std::get_if<merovingian::canonicaljson::Object>(&alice_val->storage());
                 REQUIRE(alice_obj != nullptr);
 
                 // Spec MUST: requested device present.
@@ -147,6 +141,27 @@ SCENARIO("Federation device-key query returns published device and cross-signing
             THEN("an empty string signals the malformed request")
             {
                 // Spec: malformed requests must not produce a partial response.
+                REQUIRE(body.empty());
+            }
+        }
+
+        WHEN("the request omits the required device_keys object")
+        {
+            auto const body = merovingian::federation::build_device_keys_query_response(store, "{}");
+
+            THEN("an empty string signals the malformed request")
+            {
+                REQUIRE(body.empty());
+            }
+        }
+
+        WHEN("the request supplies a non-array device list")
+        {
+            auto const body = merovingian::federation::build_device_keys_query_response(
+                store, R"({"device_keys":{"@alice:remote.example.org":{}}})");
+
+            THEN("an empty string signals the malformed request")
+            {
                 REQUIRE(body.empty());
             }
         }
@@ -176,27 +191,23 @@ SCENARIO("Federation one-time-key claim consumes and returns a stored key", "[fe
                 REQUIRE_FALSE(body.empty());
                 auto const parsed = merovingian::canonicaljson::parse_lossless(body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: one_time_keys is an object.
                 auto const* otk_val = json_get(*root, std::string{"one_time_keys"});
                 REQUIRE(otk_val != nullptr);
-                auto const* otk_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&otk_val->storage());
+                auto const* otk_obj = std::get_if<merovingian::canonicaljson::Object>(&otk_val->storage());
                 REQUIRE(otk_obj != nullptr);
 
                 // one_time_keys["@alice"]["DEVICE1"] must be an object.
                 auto const* alice_val = json_get(*otk_obj, std::string{"@alice:remote.example.org"});
                 REQUIRE(alice_val != nullptr);
-                auto const* alice_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&alice_val->storage());
+                auto const* alice_obj = std::get_if<merovingian::canonicaljson::Object>(&alice_val->storage());
                 REQUIRE(alice_obj != nullptr);
                 auto const* d1_val = json_get(*alice_obj, std::string{"DEVICE1"});
                 REQUIRE(d1_val != nullptr);
-                auto const* d1_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&d1_val->storage());
+                auto const* d1_obj = std::get_if<merovingian::canonicaljson::Object>(&d1_val->storage());
                 REQUIRE(d1_obj != nullptr);
 
                 // Spec MUST: the specific key ID is present as a key in the device map.
@@ -204,6 +215,75 @@ SCENARIO("Federation one-time-key claim consumes and returns a stored key", "[fe
 
                 // The store must no longer hold the consumed key.
                 REQUIRE(store.one_time_keys.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Federation one-time-key claim falls back to a matching fallback key when no one-time key remains",
+         "[federation][keys][claim]")
+{
+    GIVEN("a store holding only fallback keys for a device")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.fallback_keys.push_back(
+            {"@alice:remote.example.org", "DEVICE1", "curve25519:WRONGALG", R"({"key":"wrong-alg"})"});
+        store.fallback_keys.push_back(
+            {"@alice:remote.example.org", "DEVICE1", "signed_curve25519:FALLBACK", R"({"key":"fallback-payload"})"});
+
+        WHEN("a signed_curve25519 key is claimed over federation")
+        {
+            auto const body = merovingian::federation::build_one_time_keys_claim_response(
+                store, R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":"signed_curve25519"}}})");
+
+            THEN("the response returns the matching fallback key and leaves it reusable")
+            {
+                REQUIRE_FALSE(body.empty());
+                auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                auto const* otk_val = json_get(*root, std::string{"one_time_keys"});
+                REQUIRE(otk_val != nullptr);
+                auto const* otk_obj = std::get_if<merovingian::canonicaljson::Object>(&otk_val->storage());
+                REQUIRE(otk_obj != nullptr);
+                auto const* alice_val = json_get(*otk_obj, std::string{"@alice:remote.example.org"});
+                REQUIRE(alice_val != nullptr);
+                auto const* alice_obj = std::get_if<merovingian::canonicaljson::Object>(&alice_val->storage());
+                REQUIRE(alice_obj != nullptr);
+                auto const* d1_val = json_get(*alice_obj, std::string{"DEVICE1"});
+                REQUIRE(d1_val != nullptr);
+                auto const* d1_obj = std::get_if<merovingian::canonicaljson::Object>(&d1_val->storage());
+                REQUIRE(d1_obj != nullptr);
+
+                // Spec MUST: fallback keys are returned when no one-time keys remain.
+                REQUIRE(json_get(*d1_obj, std::string{"signed_curve25519:FALLBACK"}) != nullptr);
+                REQUIRE(json_get(*d1_obj, std::string{"curve25519:WRONGALG"}) == nullptr);
+
+                // Spec MUST: fallback keys are reused until replaced, not consumed on claim.
+                REQUIRE(store.fallback_keys.size() == 2U);
+            }
+        }
+
+        WHEN("the request omits the required one_time_keys object")
+        {
+            auto const body = merovingian::federation::build_one_time_keys_claim_response(store, "{}");
+
+            THEN("an empty string signals the malformed request")
+            {
+                REQUIRE(body.empty());
+            }
+        }
+
+        WHEN("the request supplies a non-string algorithm entry")
+        {
+            auto const body = merovingian::federation::build_one_time_keys_claim_response(
+                store, R"({"one_time_keys":{"@alice:remote.example.org":{"DEVICE1":{}}}})");
+
+            THEN("an empty string signals the malformed request")
+            {
+                REQUIRE(body.empty());
             }
         }
     }
@@ -224,16 +304,14 @@ SCENARIO("Federation user-devices query lists a user's published devices", "[fed
 
         WHEN("the user's devices are queried")
         {
-            auto const body =
-                merovingian::federation::build_user_devices_response(store, "@alice:remote.example.org");
+            auto const body = merovingian::federation::build_user_devices_response(store, "@alice:remote.example.org");
 
             THEN("the response contains user_id, devices array, and master_key object")
             {
                 REQUIRE_FALSE(body.empty());
                 auto const parsed = merovingian::canonicaljson::parse_lossless(body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: user_id is present and matches the queried user.
@@ -246,8 +324,7 @@ SCENARIO("Federation user-devices query lists a user's published devices", "[fed
                 // Spec MUST: devices is an array containing both published devices.
                 auto const* devs_val = json_get(*root, std::string{"devices"});
                 REQUIRE(devs_val != nullptr);
-                auto const* devs_arr =
-                    std::get_if<merovingian::canonicaljson::Array>(&devs_val->storage());
+                auto const* devs_arr = std::get_if<merovingian::canonicaljson::Array>(&devs_val->storage());
                 REQUIRE(devs_arr != nullptr);
                 REQUIRE(devs_arr->size() == 2U);
 
@@ -260,8 +337,7 @@ SCENARIO("Federation user-devices query lists a user's published devices", "[fed
 
         WHEN("a user with no devices is queried")
         {
-            auto const body =
-                merovingian::federation::build_user_devices_response(store, "@nobody:remote.example.org");
+            auto const body = merovingian::federation::build_user_devices_response(store, "@nobody:remote.example.org");
 
             THEN("an empty string signals no published devices")
             {

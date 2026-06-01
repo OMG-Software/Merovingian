@@ -649,6 +649,49 @@ SCENARIO("POST /keys/device_signing/upload returns 200 with a valid JSON object"
     }
 }
 
+SCENARIO("POST /keys/device_signing/upload then POST /keys/query returns published cross-signing keys",
+         "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("a logged-in device that has uploaded cross-signing keys")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"base64master"},"signatures":{}},"self_signing_key":{"user_id":"@alice:example.org","usage":["self_signing"],"keys":{"ed25519:SELF":"base64self"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USER":"base64user"},"signatures":{}}})"})
+                .response.status == 200U);
+
+        WHEN("the device queries its own keys")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/query", token, R"({"device_keys":{"@alice:example.org":[]}})"});
+
+            THEN("the response includes the user's published cross-signing key maps")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+
+                auto const* master_keys = object_member_as_object(body, "master_keys");
+                REQUIRE(master_keys != nullptr);
+                REQUIRE(object_member_as_object(*master_keys, "@alice:example.org") != nullptr);
+
+                auto const* self_signing_keys = object_member_as_object(body, "self_signing_keys");
+                REQUIRE(self_signing_keys != nullptr);
+                REQUIRE(object_member_as_object(*self_signing_keys, "@alice:example.org") != nullptr);
+
+                auto const* user_signing_keys = object_member_as_object(body, "user_signing_keys");
+                REQUIRE(user_signing_keys != nullptr);
+                REQUIRE(object_member_as_object(*user_signing_keys, "@alice:example.org") != nullptr);
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/keys/signatures/upload --------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keyssignaturesupload
 //
@@ -679,6 +722,75 @@ SCENARIO("POST /keys/signatures/upload response contains failures object", "[con
                 // were rejected. An absent failures field causes a client crash.
                 auto const* failures = object_member_as_object(body, "failures");
                 REQUIRE(failures != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /keys/signatures/upload then POST /keys/query returns the uploaded signatures",
+         "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("a logged-in device with uploaded device and cross-signing keys")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:DEVICE1":"curve","ed25519:DEVICE1":"device-signing"},"signatures":{}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"base64master"},"signatures":{}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/signatures/upload", token,
+                 R"({"@alice:example.org":{"DEVICE1":{"signatures":{"@alice:example.org":{"ed25519:MASTER":"device-sig"}}},"ed25519:MASTER":{"signatures":{"@alice:example.org":{"ed25519:DEVICE1":"master-sig"}}}}})"})
+                .response.status == 200U);
+
+        WHEN("the device queries its own keys")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/keys/query", token,
+                                  R"({"device_keys":{"@alice:example.org":["DEVICE1"]}})"});
+
+            THEN("the queried device and master key contain the uploaded signature entries")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+
+                auto const* device_keys = object_member_as_object(body, "device_keys");
+                REQUIRE(device_keys != nullptr);
+                auto const* alice_devices = object_member_as_object(*device_keys, "@alice:example.org");
+                REQUIRE(alice_devices != nullptr);
+                auto const* device1 = object_member_as_object(*alice_devices, "DEVICE1");
+                REQUIRE(device1 != nullptr);
+                auto const* device_signatures = object_member_as_object(*device1, "signatures");
+                REQUIRE(device_signatures != nullptr);
+                auto const* alice_device_signatures = object_member_as_object(*device_signatures, "@alice:example.org");
+                REQUIRE(alice_device_signatures != nullptr);
+                auto const* device_sig = string_member(*alice_device_signatures, "ed25519:MASTER");
+                REQUIRE(device_sig != nullptr);
+                REQUIRE(*device_sig == "device-sig");
+
+                auto const* master_keys = object_member_as_object(body, "master_keys");
+                REQUIRE(master_keys != nullptr);
+                auto const* alice_master = object_member_as_object(*master_keys, "@alice:example.org");
+                REQUIRE(alice_master != nullptr);
+                auto const* master_signatures = object_member_as_object(*alice_master, "signatures");
+                REQUIRE(master_signatures != nullptr);
+                auto const* alice_master_signatures = object_member_as_object(*master_signatures, "@alice:example.org");
+                REQUIRE(alice_master_signatures != nullptr);
+                auto const* master_sig = string_member(*alice_master_signatures, "ed25519:DEVICE1");
+                REQUIRE(master_sig != nullptr);
+                REQUIRE(*master_sig == "master-sig");
             }
         }
     }
@@ -3395,26 +3507,48 @@ SCENARIO("GET /room_keys/keys/{roomId} returns uploaded sessions for that room",
 
 // --- PUT /_matrix/client/v3/room_keys/keys/{roomId} --------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3room_keyskeysroomid
-SCENARIO("PUT /room_keys/keys/{roomId} is handled by the server", "[conformance][client-server][e2ee]")
+SCENARIO("PUT /room_keys/keys/{roomId} stores that room's sessions and returns count and etag",
+         "[conformance][client-server][e2ee]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a logged-in user with a created key backup version")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
 
-        WHEN("PUT /room_keys/keys/{roomId} is called")
+        WHEN("PUT /room_keys/keys/{roomId} is called with multiple sessions")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org", token, R"({"sessions":{}})"});
+                {"PUT", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org?version=1", token,
+                 R"({"sessions":{"sessA":{"first_message_index":1,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"aaa","ephemeral":"bbb","mac":"ccc"}},"sessB":{"first_message_index":2,"forwarded_count":1,"is_verified":false,"session_data":{"ciphertext":"ddd","ephemeral":"eee","mac":"fff"}}}})"});
 
-            THEN("the server handles the request (endpoint is implemented)")
+            THEN("the response returns RoomKeysUpdateResponse and the room GET returns both sessions")
             {
-                // The endpoint IS implemented; it may return 200 or an error
-                // depending on whether a backup version exists, but must not
-                // return 404 M_UNRECOGNIZED.
-                REQUIRE(response.response.status != 404U);
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* count = int_member(body, "count");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 2);
+                auto const* etag = string_member(body, "etag");
+                REQUIRE(etag != nullptr);
+                REQUIRE(!etag->empty());
+
+                auto const room_get = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org?version=1", token, {}});
+                REQUIRE(room_get.response.status == 200U);
+                auto const room_body = parse_object(room_get.response.body);
+                auto const* sessions = object_member_as_object(room_body, "sessions");
+                REQUIRE(sessions != nullptr);
+                REQUIRE(object_member_as_object(*sessions, "sessA") != nullptr);
+                REQUIRE(object_member_as_object(*sessions, "sessB") != nullptr);
             }
         }
     }
@@ -3422,25 +3556,61 @@ SCENARIO("PUT /room_keys/keys/{roomId} is handled by the server", "[conformance]
 
 // --- DELETE /_matrix/client/v3/room_keys/keys/{roomId} -----------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#delete_matrixclientv3room_keyskeysroomid
-SCENARIO("DELETE /room_keys/keys/{roomId} is handled by the server", "[conformance][client-server][e2ee]")
+SCENARIO("DELETE /room_keys/keys/{roomId} removes only that room's sessions and returns count and etag",
+         "[conformance][client-server][e2ee]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a logged-in user with backup sessions in two rooms")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/room_keys/version", token,
+                 R"({"algorithm":"m.megolm_backup.v1.curve25519-aes-sha2","auth_data":{"public_key":"abc","signatures":{}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/room_keys/keys?version=1", token,
+                 R"({"rooms":{"!room1:example.org":{"sessions":{"sessA":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"aaa","ephemeral":"bbb","mac":"ccc"}},"sessB":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"ddd","ephemeral":"eee","mac":"fff"}}}},"!room2:example.org":{"sessions":{"sessC":{"first_message_index":0,"forwarded_count":0,"is_verified":true,"session_data":{"ciphertext":"ggg","ephemeral":"hhh","mac":"iii"}}}}}})"})
+                .response.status == 200U);
 
         WHEN("DELETE /room_keys/keys/{roomId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"DELETE", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org", token, {}});
+                started.runtime,
+                {"DELETE", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org?version=1", token, {}});
 
-            THEN("the server handles the request (endpoint is implemented)")
+            THEN("the deleted room is empty while sessions in other rooms remain")
             {
-                // The endpoint IS implemented; it may return 200 or an error
-                // depending on whether a backup version exists, but must not
-                // return 404 M_UNRECOGNIZED.
-                REQUIRE(response.response.status != 404U);
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* count = int_member(body, "count");
+                REQUIRE(count != nullptr);
+                REQUIRE(*count == 1);
+                auto const* etag = string_member(body, "etag");
+                REQUIRE(etag != nullptr);
+                REQUIRE(!etag->empty());
+
+                auto const room1_get = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/room_keys/keys/%21room1%3Aexample.org?version=1", token, {}});
+                REQUIRE(room1_get.response.status == 200U);
+                auto const room1_body = parse_object(room1_get.response.body);
+                auto const* room1_sessions = object_member_as_object(room1_body, "sessions");
+                REQUIRE(room1_sessions != nullptr);
+                REQUIRE(room1_sessions->empty());
+
+                auto const room2_get = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/room_keys/keys/%21room2%3Aexample.org?version=1", token, {}});
+                REQUIRE(room2_get.response.status == 200U);
+                auto const room2_body = parse_object(room2_get.response.body);
+                auto const* room2_sessions = object_member_as_object(room2_body, "sessions");
+                REQUIRE(room2_sessions != nullptr);
+                REQUIRE(object_member_as_object(*room2_sessions, "sessC") != nullptr);
             }
         }
     }
@@ -7315,6 +7485,63 @@ SCENARIO("POST /keys/upload followed by POST /keys/claim returns a one-time key"
                 auto const* device_otks = object_member_as_object(*alice_otks, "DEVICE1");
                 REQUIRE(device_otks != nullptr);
                 REQUIRE(!device_otks->empty());
+            }
+        }
+    }
+}
+
+SCENARIO("POST /keys/claim reuses the matching fallback key when one-time keys are exhausted",
+         "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("a logged-in device that has uploaded multiple fallback-key algorithms")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"fallback_keys":{"curve25519:WRONGALG":{"key":"wrong-fallback"},"signed_curve25519:FALLBACK":{"key":"matching-fallback","signatures":{}}}})"})
+                .response.status == 200U);
+
+        WHEN("the device claims a signed_curve25519 key for that device")
+        {
+            auto const claim = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/keys/claim", token,
+                                  R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
+
+            THEN("the response returns the matching fallback key")
+            {
+                REQUIRE(claim.response.status == 200U);
+                auto const body = parse_object(claim.response.body);
+                auto const* otks = object_member_as_object(body, "one_time_keys");
+                REQUIRE(otks != nullptr);
+                auto const* user_otks = object_member_as_object(*otks, "@alice:example.org");
+                REQUIRE(user_otks != nullptr);
+                auto const* device_otks = object_member_as_object(*user_otks, "DEVICE1");
+                REQUIRE(device_otks != nullptr);
+
+                // Spec MUST: fallback key selection matches the requested algorithm.
+                REQUIRE(object_member(*device_otks, "signed_curve25519:FALLBACK") != nullptr);
+                REQUIRE(object_member(*device_otks, "curve25519:WRONGALG") == nullptr);
+            }
+
+            AND_THEN("a second claim returns the same fallback key because fallback keys are reusable")
+            {
+                auto const second_claim = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/keys/claim", token,
+                                      R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
+                REQUIRE(second_claim.response.status == 200U);
+                auto const body = parse_object(second_claim.response.body);
+                auto const* otks = object_member_as_object(body, "one_time_keys");
+                REQUIRE(otks != nullptr);
+                auto const* user_otks = object_member_as_object(*otks, "@alice:example.org");
+                REQUIRE(user_otks != nullptr);
+                auto const* device_otks = object_member_as_object(*user_otks, "DEVICE1");
+                REQUIRE(device_otks != nullptr);
+                REQUIRE(object_member(*device_otks, "signed_curve25519:FALLBACK") != nullptr);
             }
         }
     }
