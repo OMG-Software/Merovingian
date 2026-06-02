@@ -10,12 +10,6 @@
 - Pass `YYJSON_READ_STOP_WHEN_DONE` to yyjson so the adapter stops reading
   at the end of the top-level value, rejecting trailing-garbage payloads
   per canonical-JSON.
-- Add an overall request-head deadline and a per-byte inter-byte cap to
-  the HTTP listener's `read_request_head` to defeat slowloris-style
-  dribble attacks. New `request_limits.request_head_timeout` config key
-  (default 30 s) controls the overall cap; the existing 15 s per-byte
-  poll remains. Slow connections are aborted with
-  `RequestErrorCode::slowloris_timeout` instead of holding a worker.
 - Surface the exception type and message when the thread-pool worker
   catch-all swallows an exception, and at the three corresponding
   swallowed-exception sites in `http_server`. Log fields `type` (from
