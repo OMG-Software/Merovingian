@@ -193,6 +193,16 @@ Forwarding every `/_matrix/` request on `443` to the client listener will break
 federation authentication because remote homeservers will hit the client-server
 access-token gate instead of the federation router.
 
+**CORS preflight is handled by Merovingian itself (since 0.4.60).** The reverse
+proxy only needs to forward `Origin` and `Authorization` headers unmodified;
+it does **not** need to synthesise `Access-Control-Allow-*` headers. The
+examples below set CORS headers at the proxy purely as a defence-in-depth
+fallback. If you want the proxy to be the source of truth instead, set
+`server.cors.allowed_origins` to a single explicit origin (or an empty list)
+and the CORS headers Merovingian emits will be absent — the proxy headers
+will then be authoritative. See [CORS policy](#cors-policy) for the full
+config surface.
+
 **Apache** serves these discovery files from static files — create them once
 before reloading:
 
@@ -414,6 +424,213 @@ server {
 }
 ```
 
+### Caddy
+
+Caddy terminates TLS automatically with Let's Encrypt. Use a single
+`matrix.example.org` site block that serves the well-known discovery
+files inline and routes `/_matrix/` traffic to the loopback listeners.
+Federation is reached either via the same `:443` block (with `/.well-known/
+matrix/server` pointing at `:443`) or a separate `:8448` site.
+
+```caddyfile
+# Client + delegated federation (port 443)
+matrix.example.org {
+    # Inline discovery responses
+    @clientDiscovery path /.well-known/matrix/client
+    handle_response @clientDiscovery {
+        header Content-Type application/json
+        header Access-Control-Allow-Origin "*"
+        respond `{"m.homeserver":{"base_url":"https://matrix.example.org"}}` 200
+    }
+    @serverDiscovery path /.well-known/matrix/server
+    handle_response @serverDiscovery {
+        header Content-Type application/json
+        header Access-Control-Allow-Origin "*"
+        respond `{"m.server":"matrix.example.org:443"}` 200
+    }
+
+    # Matrix routes -> Merovingian
+    @federation path /_matrix/federation/* /_matrix/key/*
+    reverse_proxy @federation 127.0.0.1:8009
+
+    @client path /_matrix/client/*
+    reverse_proxy @client 127.0.0.1:8008
+
+    # Block everything else
+    respond 403
+}
+
+# Native federation listener (port 8448)
+matrix.example.org:8448 {
+    @federation path /_matrix/federation/* /_matrix/key/*
+    reverse_proxy @federation 127.0.0.1:8009
+    respond 403
+}
+```
+
+Caddy ships sane defaults for HSTS, modern TLS, and OCSP stapling, so no
+extra `header` directives are required for those. CORS preflight is still
+emitted by Merovingian; the `Access-Control-Allow-Origin` lines above are
+only for the discovery JSON, which Caddy serves directly.
+
+### Traefik
+
+Traefik v3 with the file provider. Use routers + services split by path
+prefix; the static discovery files are served by a dedicated `file`
+provider or a tiny HTTP backend.
+
+```yaml
+# traefik.yml (excerpt)
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+  websecure:
+    address: ":443"
+  federation:
+    address: ":8448"
+
+# dynamic.yml
+http:
+  routers:
+    client-server:
+      rule: "Host(`matrix.example.org`) && PathPrefix(`/_matrix/client/`)"
+      service: merovingian-client
+      entryPoints: [websecure]
+      tls: { certResolver: letsencrypt }
+    federation-443:
+      rule: "Host(`matrix.example.org`) && (PathPrefix(`/_matrix/federation/`) || PathPrefix(`/_matrix/key/`))"
+      service: merovingian-federation
+      entryPoints: [websecure]
+      tls: { certResolver: letsencrypt }
+    federation-8448:
+      rule: "Host(`matrix.example.org`)"
+      service: merovingian-federation
+      entryPoints: [federation]
+      tls: { certResolver: letsencrypt }
+
+  services:
+    merovingian-client:
+      loadBalancer:
+        servers: [{ url: "http://127.0.0.1:8008" }]
+    merovingian-federation:
+      loadBalancer:
+        servers: [{ url: "http://127.0.0.1:8009" }]
+```
+
+`/.well-known/matrix/client` and `/server` are served by Merovingian
+itself; with the wildcard CORS default no Traefik middleware is needed.
+Add a `headers.customRequestHeaders` block only if you want to strip
+Merovingian's `Access-Control-*` headers and replace them with stricter
+ones.
+
+### HAProxy
+
+HAProxy is the cheapest option for high-traffic deployments because it
+does not buffer requests. The frontend terminates TLS; the backends
+forward to the loopback listeners. ACLs route by path prefix so client
+and federation traffic land on the correct backend.
+
+```haproxy
+frontend ft_https
+    bind *:443 ssl crt /etc/haproxy/certs/matrix.example.org.pem alpn h2,http/1.1
+    http-request redirect scheme https code 301 if !{ ssl_fc }
+    acl is_client        path_beg /_matrix/client/
+    acl is_federation    path_beg /_matrix/federation/
+    acl is_key           path_beg /_matrix/key/
+    use_backend bk_merovingian_client     if is_client
+    use_backend bk_merovingian_federation if is_federation || is_key
+    # /.well-known/matrix/{client,server} is served by the client backend,
+    # which routes them to Merovingian.
+    use_backend bk_merovingian_client
+    default_backend bk_merovingian_client
+
+backend bk_merovingian_client
+    option forwardfor header X-Forwarded-For
+    http-request set-header X-Forwarded-Proto https
+    server merovingian 127.0.0.1:8008 check
+
+backend bk_merovingian_federation
+    option forwardfor header X-Forwarded-For
+    http-request set-header X-Forwarded-Proto https
+    server merovingian 127.0.0.1:8009 check
+
+frontend ft_federation_native
+    bind *:8448 ssl crt /etc/haproxy/certs/matrix.example.org.pem alpn h2,http/1.1
+    default_backend bk_merovingian_federation
+```
+
+HAProxy does not edit response headers unless told to; CORS preflight
+therefore reaches the client as Merovingian emits it. To override,
+add `http-response set-header Access-Control-Allow-Origin "*"` to each
+backend (defence-in-depth only; the spec already permits wildcard
+origins for Matrix because clients use bearer tokens).
+
+### Cloudflare
+
+Cloudflare's CDN terminates TLS and can route to an origin over HTTPS
+or HTTP. The two gotchas are (a) Cloudflare adds its own
+`Cf-Connecting-IP` and may strip `Authorization` if caching is on for
+the route, and (b) `Origin` request headers are passed through, so
+Merovingian's preflight handling still works.
+
+```yaml
+# Cloudflare dashboard or Terraform equivalent
+record:
+  - name: matrix
+    type: A
+    value: 203.0.113.10   # origin server public IP
+    proxied: true
+
+origin_rules:
+  - name: "Matrix client + delegated federation (port 443)"
+    condition: { hostname: "matrix.example.org" }
+    destination: { port: 8008 }   # client traffic; the origin server's nginx then splits by path
+
+  - name: "Federation native (port 8448)"
+    condition: { hostname: "matrix.example.org", port: 8448 }
+    destination: { port: 8009 }
+
+ssl: full
+```
+
+For a Cloudflare-fronted deployment the cleanest split is to put nginx
+in front of Merovingian on the origin box (the nginx section above
+already handles that). Cloudflare then connects to nginx's `:443` over
+HTTPS and forwards `Origin`, `Authorization`, and `Cf-Connecting-IP`
+unmodified. Make sure the Cloudflare cache is **off** for `/_matrix/`
+routes (set cache level to "Bypass" on the page rule) and that
+"Authenticated Origin Pulls" is enabled so the origin only accepts
+connections from Cloudflare.
+
+### Smoke test for every proxy
+
+After deploying, run this from the host that resolves
+`matrix.example.org`. The 200 response MUST include the
+`Access-Control-Allow-Origin` line; if it does not, the browser will
+block the preflight and Element will fail to join a room.
+
+```sh
+curl -X OPTIONS \
+    -H "Origin: vector://vector" \
+    -H "Access-Control-Request-Method: GET" \
+    -i https://matrix.example.org/_matrix/client/v3/versions
+```
+
+Expected response (200 + the CORS headers Merovingian emits):
+
+```text
+HTTP/1.1 200 OK
+Access-Control-Allow-Origin: *
+Access-Control-Allow-Methods: GET, POST, PUT, DELETE, OPTIONS
+Access-Control-Allow-Headers: authorization, content-type
+Access-Control-Max-Age: 86400
+Vary: Origin
+```
+
 ## Registration Token Policy
 
 Public registration is disabled by default. If it is enabled, startup requires
@@ -600,6 +817,31 @@ checks remain incomplete.
 | `secret redaction policy` | Enabled by validated logging defaults |
 
 Unknown values are not success claims. They mark work that still requires platform-specific runtime probes or sandbox setup.
+
+## CORS policy
+
+CORS preflight is emitted by Merovingian itself (since 0.4.60). The
+relevant config keys live under `server.cors.*`:
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `server.cors.allowed_origins` | string list (CSV) | `*` | Origins allowed to make cross-origin requests. Wildcard `*` is the safe default for Matrix because clients authenticate with `Authorization: Bearer` tokens, not browser cookies. Use an explicit list when embedding web clients in a mixed-trust context. |
+| `server.cors.allow_methods` | string | `GET, POST, PUT, DELETE, OPTIONS` | Advertised in the preflight `Access-Control-Allow-Methods` header. |
+| `server.cors.allow_headers` | string | `authorization, content-type` | Advertised in the preflight `Access-Control-Allow-Headers` header. This is the set Matrix clients actually send. |
+| `server.cors.allow_credentials` | bool | `false` | When `true`, sets `Access-Control-Allow-Credentials: true`. The CORS spec forbids combining this with a wildcard `*` origin; the config parser rejects the combination. |
+| `server.cors.max_age` | non-negative integer | `86400` | How long, in seconds, the browser may cache the preflight result. 24h by default; reduce to 0 to disable caching. |
+
+The reverse proxy in front of Merovingian does **not** need to add
+`Access-Control-Allow-*` headers — Merovingian already emits them. If the
+proxy does add them, the browser will keep whichever one is most
+permissive, so the proxy can be used to add a stricter override (for
+example, replacing the wildcard with an explicit origin in a multi-tenant
+deployment).
+
+CORS is not hot-reloadable: a change to any `server.cors.*` key requires
+a server restart. This matches how other HTTP-behaviour keys behave; see
+[Reloadability policy](#reloadability-policy) for the full set of
+reloadable keys.
 
 ## Current keys
 

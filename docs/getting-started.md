@@ -107,6 +107,12 @@ federation on `443` via
 `/.well-known/matrix/server`, route `/_matrix/client/` to `8008` and route
 `/_matrix/federation/` plus `/_matrix/key/` to `8009`.
 
+CORS preflight is now handled by Merovingian itself (since 0.4.60). The proxy
+only needs to forward `Origin` and `Authorization` headers unmodified; it does
+**not** need to synthesise `Access-Control-Allow-*` headers. See
+[Reverse proxy examples](configuration.md#reverse-proxy-examples) for nginx,
+Apache, Caddy, Traefik, HAProxy, and Cloudflare configs.
+
 Confirm it is reachable:
 
 ```sh
