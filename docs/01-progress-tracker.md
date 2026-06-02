@@ -558,6 +558,18 @@ a non-production environment.
 
 #### DONE
 
+- Login `device_id` collision fix (0.4.61).
+  `POST /_matrix/client/v3/login` no longer defaults `device_id` to
+  the literal string `"MEROVINGIAN"` when the client omits it.
+  Matrix v1.18 §5.3.2 requires the server to mint a unique opaque
+  id in that case; the literal caused every device-id-less login to
+  collide on a single shared device row, so two users (or two
+  device-id-less devices of the same user) shared one `device_keys`
+  upload slot and E2EE key bundles pointed at the wrong identity
+  key. The server now generates a fresh 128-bit hex `device_id` per
+  login when the body does not include one, and the new "Login
+  without device_id generates a unique opaque id" BDD scenario
+  guards the fix.
 - E2EE key bundle bootstrap (0.4.61). `keys/upload` persists the
   device's `device_keys` / `one_time_keys` / `fallback_keys` to the
   persistent store, and `keys/query` returns them to other users in

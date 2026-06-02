@@ -294,6 +294,22 @@ namespace
         return output;
     }
 
+    // Generate a server-side opaque device_id for clients that omit
+    // `device_id` from the login body. The spec (Matrix v1.18 §5.3.2
+    // login) requires the server to mint a unique opaque id; the
+    // previous "MEROVINGIAN" literal caused every device_id-less login
+    // to collide on a single shared device record.
+    [[nodiscard]] auto generate_device_id() -> std::string
+    {
+        std::ignore = sodium_init();
+        auto bytes = std::array<unsigned char, 16U>{};
+        randombytes_buf(bytes.data(), bytes.size());
+        auto output = std::string(bytes.size() * 2U + 1U, '\0');
+        std::ignore = sodium_bin2hex(output.data(), output.size(), bytes.data(), bytes.size());
+        output.pop_back(); // remove the null terminator included by sodium_bin2hex
+        return output;
+    }
+
     [[nodiscard]] auto lowercase_hex(unsigned char const* bytes, std::size_t size) -> std::string
     {
         auto output = std::string(size * 2U + 1U, '\0');
@@ -1256,7 +1272,7 @@ namespace
         auto const* device_id = string_member(*object, "device_id");
         auto const* supports_refresh_tokens = boolean_member(*object, "refresh_token");
         return MatrixLoginBody{matrix_user_id(server_name, *user), *password,
-                               device_id == nullptr ? "MEROVINGIAN" : *device_id,
+                               device_id == nullptr ? std::string{} : *device_id,
                                supports_refresh_tokens != nullptr && *supports_refresh_tokens};
     }
 
@@ -4132,10 +4148,14 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/login")
     {
-        auto const body = parse_login_body(req.body, rt.homeserver.config.server().server_name);
+        auto body = parse_login_body(req.body, rt.homeserver.config.server().server_name);
         if (!body.has_value())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "login body must be Matrix password JSON");
+        }
+        if (body->device_id.empty())
+        {
+            body->device_id = generate_device_id();
         }
         auto const result = login_local_user(rt.homeserver, body->user_id, body->password, body->device_id);
         if (!result.ok)

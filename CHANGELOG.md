@@ -1,6 +1,17 @@
 # Changelog
 
 ## 0.4.61
+- Fix `POST /_matrix/client/v3/login` defaulting `device_id` to the
+  literal string `"MEROVINGIAN"` when the client omits it from the
+  request body. Matrix v1.18 §5.3.2 requires the server to mint a
+  unique opaque id in that case; the literal caused every
+  device-id-less login to collide on a single shared device row, so
+  two users (or two device-id-less devices of the same user) shared
+  one `device_keys` upload slot and E2EE key bundles pointed at the
+  wrong identity key. The server now generates a fresh 128-bit
+  hex `device_id` per login when the body does not include one, and
+  the new "Login without device_id generates a unique opaque id"
+  BDD scenario guards the fix.
 - Make the E2EE key bundle round-trip through `keys/upload` and
   `keys/query`. After this build, a device that uploads its
   `device_keys`, `one_time_keys`, and `fallback_keys` is queryable by

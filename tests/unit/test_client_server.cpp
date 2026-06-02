@@ -61,6 +61,23 @@ namespace
     return body.substr(value_begin, value_end - value_begin);
 }
 
+[[nodiscard]] auto login_device_id(std::string const& body) -> std::string
+{
+    auto const key = std::string{"\"device_id\":\""};
+    auto const begin = body.find(key);
+    if (begin == std::string::npos)
+    {
+        return {};
+    }
+    auto const value_begin = begin + key.size();
+    auto const value_end = body.find('"', value_begin);
+    if (value_end == std::string::npos)
+    {
+        return {};
+    }
+    return body.substr(value_begin, value_end - value_begin);
+}
+
 [[nodiscard]] auto room_id(std::string const& body) -> std::string
 {
     auto const key = std::string{"\"room_id\":\""};
@@ -3859,6 +3876,74 @@ SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips"
                 // must be merged into the device_keys signature map under
                 // the SSK key id.
                 REQUIRE(body.find("\"ed25519:SSK\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+// +-------------------------------------------------------------------------+
+// |  Login device_id default collision (regression)                          |
+// |                                                                          |
+// |  Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien |
+// |  tsv3login                                                               |
+// |                                                                          |
+// |  When the client omits `device_id` from the login body, the server must |
+// |  generate a unique opaque device_id. Merovingian's parser at            |
+// |  client_server.cpp defaults to the literal string "MEROVINGIAN" instead, |
+// |  which causes all device_id-less logins to collide on the same device   |
+// |  row. This is observable on pong.ping.me.uk where @james (the bootstrap  |
+// |  admin, no device_id sent) and any other user with the same default     |
+// |  share a single device record.                                           |
+// +-------------------------------------------------------------------------+
+
+SCENARIO("Login without device_id generates a unique opaque id, not a fixed literal",
+         "[homeserver][client-server][login][device-id]")
+{
+    GIVEN("two freshly-registered users on the same homeserver")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("first", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("second", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        WHEN("both users log in without sending a device_id")
+        {
+            auto const login_first = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/login",
+                          {},
+                          R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@first:example.org"},"password":"CorrectHorse7!"})"});
+            REQUIRE(login_first.response.status == 200U);
+            auto const login_second = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/login",
+                          {},
+                          R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@second:example.org"},"password":"CorrectHorse7!"})"});
+            REQUIRE(login_second.response.status == 200U);
+
+            THEN("each user gets a distinct device_id; the literal \"MEROVINGIAN\" is not used")
+            {
+                auto const first_did = login_device_id(login_first.response.body);
+                auto const second_did = login_device_id(login_second.response.body);
+                INFO("first user device_id = " + first_did);
+                INFO("second user device_id = " + second_did);
+                // Spec: server-generated device_ids must be opaque and unique.
+                REQUIRE(first_did != "MEROVINGIAN");
+                REQUIRE(second_did != "MEROVINGIAN");
+                REQUIRE(first_did != second_did);
+                REQUIRE_FALSE(first_did.empty());
+                REQUIRE_FALSE(second_did.empty());
             }
         }
     }
