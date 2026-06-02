@@ -558,6 +558,12 @@ a non-production environment.
 
 #### DONE
 
+- E2EE key bundle bootstrap (0.4.61). `keys/upload` persists the
+  device's `device_keys` / `one_time_keys` / `fallback_keys` to the
+  persistent store, and `keys/query` returns them to other users in
+  shared rooms with uploaded signatures merged back into the
+  response. Element's "No key bundle found for user" log clears as
+  soon as the inviter completes its first `keys/upload` round-trip.
 - CORS self-sufficient preflight (0.4.60). Merovingian now emits
   `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`,
   `Access-Control-Allow-Headers`, `Access-Control-Max-Age`, and
