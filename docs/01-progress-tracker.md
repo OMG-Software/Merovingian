@@ -567,6 +567,8 @@ a non-production environment.
   routes exist.
 - Matrix UI-Interactive Authentication for `POST /register`: absent `auth` field
   returns 401 with `m.login.registration_token` flow, `params`, and `session`.
+  Incomplete auth (missing `token` for `m.login.registration_token` or wrong
+  `auth.type`) also returns 401 with the UIA challenge — not 403.
 - `POST /account/password` for authenticated password change with Argon2id
   hashing and persistent-store write-through.
 - `PUT /profile/{userId}/displayname` and `PUT /profile/{userId}/avatar_url`

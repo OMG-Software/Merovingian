@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.4.58
+- Fix registration UIAuth incomplete-credentials conformance. Per Matrix v1.18
+  §5.5.1, when a client submits `POST /register` with an `auth` dict that is
+  present but incomplete (missing `token` for `m.login.registration_token` or
+  using an unsupported `auth.type`), the homeserver must return `401` with the
+  UIA challenge — not proceed to registration and fail with `403 M_FORBIDDEN`.
+  Merovingian now validates `auth.type` and the required `token` parameter before
+  accepting the registration, so clients in the UIA flow receive the correct
+  challenge response and can retry with the token.
+
 ## 0.4.57
 - Tighten Matrix v1.18 `/sync` conformance coverage. The client-server
   conformance suite now asserts the full top-level `/sync` envelope
