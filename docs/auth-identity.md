@@ -74,3 +74,6 @@ These remain deferred:
 3. Complete backup retrieval/deletion semantics.
 4. Extend conformance fixtures beyond the beta auth/device/key happy paths into
    UI auth, interactive auth, and negative-device-list cases.
+
+- /keys/upload validates that every one-time and fallback key carries a signature by the device's own ed25519 identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE. This prevents stale device rows from leaving behind SignedKeys that no peer can verify at /keys/claim time, which would block the Olm session for the whole room's Megolm distribution.
+- /keys/query returns persisted device keys, and /keys/claim consumes

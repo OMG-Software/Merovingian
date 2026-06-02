@@ -3615,7 +3615,7 @@ SCENARIO("E2EE device_keys round-trip: inviter upload is visible to invitee quer
                 {"POST",
                  "/_matrix/client/v3/keys/upload",
                  inviter_token,
-                 R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":"BBBB_ED"}},"one_time_keys":{"signed_curve25519:AAAA":1}})"});
+                 R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":"BBBB_ED"}},"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_AAAA","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_AAAA"}}}}})"});
             REQUIRE(upload.response.status == 200U);
 
             auto const query = merovingian::homeserver::handle_client_server_request(

@@ -1,3 +1,33 @@
+## 0.4.62
+- Fix `/keys/upload` accepting one-time and fallback keys whose signature is
+  not made by the device's own ed25519 identity key. The Matrix v1.18 spec
+  (§11.10.1.4) requires every SignedKey to be signed by the device's
+  signing key; the server was storing any signature, so a stale device row
+  (or a buggy client) could leave behind OTKs whose signature cannot be
+  verified by the peer that claims them. matrix-rust-sdk then reports
+  `NoSignatureFound` at `/keys/claim` time, refuses to establish the Olm
+  session, and drops the sender's `m.room_key` to-device message. That was
+  the live bug on pong.ping.me.uk: Element james could not decrypt Cinny
+  jc2's `m.room.encrypted` messages, and the Element Web UI was stuck on
+  `joining` for the room because the encrypted state events were
+  unverifiable.
+- The `/keys/upload` validator extracts the device's ed25519 signing key id
+  from the in-body `device_keys` first, then from the persisted device_keys
+  row, and rejects (400 `M_INVALID_SIGNATURE`) any OTK or fallback key
+  whose embedded `signatures` map does not contain a signature by that key
+  id. Non-SignedKey members (e.g. the legacy integer-count form, which
+  the v1.18 spec no longer allows) are also rejected. When no device
+  signing key is known yet the OTK is still accepted, so a device's very
+  first `/keys/upload` is unaffected.
+- Update the existing `E2EE device_keys round-trip` test to use a proper
+  SignedKey for the OTK member; the previous legacy integer-count form
+  is no longer valid in v1.18.
+- New BDD coverage in `tests/unit/test_otk_signature_validation.cpp`:
+  reject OTK signed by a different key (the bug reproducer), accept OTK
+  signed by the device's own key, reject fallback key signed by a
+  different key, and accept a first-time OTK upload before device_keys
+  is known.
+
 # Changelog
 
 ## 0.4.61
