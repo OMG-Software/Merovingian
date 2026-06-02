@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.60
+Version:        0.4.61
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,7 +89,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Tue Jun 02 2026 James Chapman <claude@ping.me.uk> - 0.4.60-1
+* Tue Jun 02 2026 James Chapman <claude@ping.me.uk> - 0.4.61-1
 - Merovingian now emits Access-Control-* response headers itself, so a vanilla reverse proxy that does not synthesize CORS headers stops breaking browser clients (Element, etc.) on every cross-origin request
 - New server.cors.* config keys: allowed_origins, max_age, allow_credentials, allow_methods, allow_headers
 - Reject server.cors.allow_credentials=true combined with a wildcard origin (CORS spec violation)
