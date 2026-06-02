@@ -327,3 +327,64 @@ SCENARIO("Key-value config parser validates parsed insecure settings", "[config]
         }
     }
 }
+
+SCENARIO("Key-value config parser applies CORS policy keys", "[config][parser][cors]")
+{
+    GIVEN("a config with the CORS keys set to non-default values")
+    {
+        auto const input = std::string{"server.name=example.org\n"
+                                       "server.public_baseurl=https://matrix.example.org\n"
+                                       "server.cors.allowed_origins=https://app.example.com, https://other.example.com\n"
+                                       "server.cors.allow_methods=GET, POST, PUT, DELETE, OPTIONS\n"
+                                       "server.cors.allow_headers=authorization, content-type\n"
+                                       "server.cors.allow_credentials=false\n"
+                                       "server.cors.max_age=3600\n"};
+        WHEN("the config is parsed and validated")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+            REQUIRE(result.findings.empty());
+
+            THEN("the CORS policy is round-tripped into the config struct")
+            {
+                REQUIRE(result.config.server().cors.allowed_origins.size() == 2U);
+                REQUIRE(result.config.server().cors.allowed_origins.front() == "https://app.example.com");
+                REQUIRE(result.config.server().cors.allow_methods ==
+                        "GET, POST, PUT, DELETE, OPTIONS");
+                REQUIRE(result.config.server().cors.allow_headers == "authorization, content-type");
+                REQUIRE(result.config.server().cors.allow_credentials == false);
+                REQUIRE(result.config.server().cors.max_age == 3600U);
+            }
+        }
+    }
+}
+
+SCENARIO("Key-value config parser rejects wildcard origin with credentials enabled",
+         "[config][parser][cors]")
+{
+    GIVEN("a config combining wildcard '*' with allow_credentials=true")
+    {
+        auto const input = std::string{"server.name=example.org\n"
+                                       "server.public_baseurl=https://matrix.example.org\n"
+                                       "server.cors.allowed_origins=*\n"
+                                       "server.cors.allow_credentials=true\n"};
+        WHEN("the config is validated")
+        {
+            auto const result = merovingian::config::parse_key_value_config(input);
+            auto const findings = merovingian::config::validate(result.config);
+
+            THEN("a finding names the offending field")
+            {
+                auto found = false;
+                for (auto const& f : findings)
+                {
+                    if (f.field == "server.cors.allowed_origins")
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                REQUIRE(found);
+            }
+        }
+    }
+}

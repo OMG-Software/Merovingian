@@ -361,6 +361,24 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"server.public_baseurl", "public base URL must be a non-empty HTTPS URL"});
     }
 
+    // CORS spec: wildcard origin cannot be combined with credentials. We
+    // reject the combination at parse time so an operator never deploys a
+    // config that would silently fail browser preflight checks.
+    if (config.server().cors.allow_credentials)
+    {
+        for (auto const& origin : config.server().cors.allowed_origins)
+        {
+            if (origin == "*")
+            {
+                findings.push_back(
+                    {"server.cors.allowed_origins",
+                     "wildcard '*' is incompatible with server.cors.allow_credentials=true "
+                     "(CORS spec violation; list explicit origins instead)"});
+                break;
+            }
+        }
+    }
+
     if (!is_valid_listener_bind(config.listeners().client.bind))
     {
         findings.push_back({"listeners.client.bind", "client listener bind address must be host:port"});
