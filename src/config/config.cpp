@@ -46,7 +46,17 @@ auto Config::server() const noexcept -> ServerConfig const&
     return m_server;
 }
 
+auto Config::server() noexcept -> ServerConfig&
+{
+    return m_server;
+}
+
 auto Config::listeners() const noexcept -> ListenersConfig const&
+{
+    return m_listeners;
+}
+
+auto Config::listeners() noexcept -> ListenersConfig&
 {
     return m_listeners;
 }
@@ -56,7 +66,17 @@ auto Config::database() const noexcept -> DatabaseConfig const&
     return m_database;
 }
 
+auto Config::database() noexcept -> DatabaseConfig&
+{
+    return m_database;
+}
+
 auto Config::security() const noexcept -> SecurityConfig const&
+{
+    return m_security;
+}
+
+auto Config::security() noexcept -> SecurityConfig&
 {
     return m_security;
 }

@@ -26,6 +26,7 @@
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/http/request.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -2203,6 +2204,236 @@ SCENARIO("OPTIONS preflight requests return 200 without requiring an access toke
             THEN("the response is 200")
             {
                 REQUIRE(response.response.status == 200U);
+            }
+        }
+    }
+}
+
+namespace
+{
+    // Lookup helper for LocalHttpResponse::headers (added in 0.4.60). Returns the
+    // header value or empty string when the header is absent. Case-sensitive
+    // because the wire emitter writes the canonical header name.
+    [[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response,
+                                       std::string_view name) -> std::string
+    {
+        for (auto const& [key, value] : response.headers)
+        {
+            if (key == name)
+            {
+                return value;
+            }
+        }
+        return {};
+    }
+} // namespace
+
+SCENARIO("OPTIONS preflight attaches Access-Control-Allow-Origin wildcard by default",
+         "[homeserver][client-server][cors][preflight]")
+{
+    GIVEN("a started client-server runtime with the default CORS policy")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("an OPTIONS preflight is sent to the sync endpoint")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{
+                "OPTIONS", "/_matrix/client/v3/sync", {}, {}, {merovingian::http::Header{"Origin", "vector://vector"}},
+            };
+            auto const response = merovingian::homeserver::handle_client_server_request(runtime, request);
+
+            THEN("the response carries Access-Control-Allow-Origin: *")
+            {
+                REQUIRE(response_header(response.response, "Access-Control-Allow-Origin") == "*");
+            }
+        }
+    }
+}
+
+SCENARIO("OPTIONS preflight attaches Access-Control-Allow-Methods and Allow-Headers",
+         "[homeserver][client-server][cors][preflight]")
+{
+    GIVEN("a started client-server runtime with the default CORS policy")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("an OPTIONS preflight is sent to the rooms endpoint")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{
+                "OPTIONS", "/_matrix/client/v3/rooms", {}, {}, {merovingian::http::Header{"Origin", "vector://vector"}},
+            };
+            auto const response = merovingian::homeserver::handle_client_server_request(runtime, request);
+
+            THEN("Access-Control-Allow-Methods lists GET, POST, PUT, DELETE, OPTIONS")
+            {
+                REQUIRE(response_header(response.response, "Access-Control-Allow-Methods") ==
+                        "GET, POST, PUT, DELETE, OPTIONS");
+            }
+            THEN("Access-Control-Allow-Headers includes authorization and content-type")
+            {
+                auto const allow_headers = response_header(response.response, "Access-Control-Allow-Headers");
+                REQUIRE(allow_headers.find("authorization") != std::string::npos);
+                REQUIRE(allow_headers.find("content-type") != std::string::npos);
+            }
+            THEN("Access-Control-Max-Age is set to the configured 24h default")
+            {
+                REQUIRE(response_header(response.response, "Access-Control-Max-Age") == "86400");
+            }
+            THEN("Vary: Origin is set so caches do not poison a wildcard response")
+            {
+                REQUIRE(response_header(response.response, "Vary") == "Origin");
+            }
+        }
+    }
+}
+
+SCENARIO("OPTIONS preflight echoes back an explicit single origin from the allow-list",
+         "[homeserver][client-server][cors][preflight]")
+{
+    GIVEN("a started client-server runtime with one allowed origin configured")
+    {
+        auto server = merovingian::config::ServerConfig{};
+        auto security = merovingian::config::SecurityConfig{};
+        merovingian::tests::enable_token_registration(security);
+        auto config = merovingian::config::Config{server, {}, {}, security};
+        // Configure the allow-list via the runtime's CORS snapshot. (The
+        // config-parser key is wired in commit 3; here we exercise the
+        // runtime surface directly so the test is independent of the
+        // parser.)
+        config.server().cors.allowed_origins = {"https://app.example.com"};
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("a preflight from the allowed origin arrives")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{};
+            request.method = "OPTIONS";
+            request.target = "/_matrix/client/v3/sync";
+            request.headers = {merovingian::http::Header{"Origin", "https://app.example.com"}};
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(runtime, request);
+
+            THEN("the response echoes the request Origin back as the allowed origin")
+            {
+                REQUIRE(response_header(response.response, "Access-Control-Allow-Origin") ==
+                        "https://app.example.com");
+            }
+        }
+    }
+}
+
+SCENARIO("OPTIONS preflight from an origin not in the allow-list omits Allow-Origin",
+         "[homeserver][client-server][cors][preflight]")
+{
+    GIVEN("a started client-server runtime with one allowed origin configured")
+    {
+        auto server = merovingian::config::ServerConfig{};
+        auto security = merovingian::config::SecurityConfig{};
+        merovingian::tests::enable_token_registration(security);
+        auto config = merovingian::config::Config{server, {}, {}, security};
+        config.server().cors.allowed_origins = {"https://app.example.com"};
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("a preflight from an unlisted origin arrives")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{};
+            request.method = "OPTIONS";
+            request.target = "/_matrix/client/v3/sync";
+            request.headers = {merovingian::http::Header{"Origin", "https://attacker.example"}};
+            auto const response =
+                merovingian::homeserver::handle_client_server_request(runtime, request);
+
+            THEN("Access-Control-Allow-Origin is not set so the browser blocks the request")
+            {
+                REQUIRE(response_header(response.response, "Access-Control-Allow-Origin").empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Non-preflight responses also carry the CORS headers so the browser accepts them",
+         "[homeserver][client-server][cors]")
+{
+    GIVEN("a started client-server runtime with the default CORS policy")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("a GET /_matrix/client/versions is sent")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{
+                "GET", "/_matrix/client/versions", {}, {}, {merovingian::http::Header{"Origin", "vector://vector"}},
+            };
+            auto const response = merovingian::homeserver::handle_client_server_request(runtime, request);
+
+            THEN("the response status is 200")
+            {
+                REQUIRE(response.response.status == 200U);
+            }
+            THEN("the response still carries Access-Control-Allow-Origin")
+            {
+                // Browsers will not expose the response body to the page if
+                // the actual response is missing the CORS header, even when
+                // the preflight succeeded.
+                REQUIRE(response_header(response.response, "Access-Control-Allow-Origin") == "*");
+            }
+        }
+    }
+}
+
+SCENARIO("format_response wire output emits configured headers in insertion order",
+         "[homeserver][http-transport][wire-format]")
+{
+    GIVEN("a list of headers to inject into the response")
+    {
+        // format_response is internal to the homeserver TU. We exercise it
+        // through handle_client_server_request's OPTIONS path which is the
+        // smallest observable surface for the wire format. The headers live
+        // on `response.response.headers` (parsed by the http_server emitter),
+        // not in the body.
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the OPTIONS preflight is formatted")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{
+                "OPTIONS", "/_matrix/client/v3/sync", {}, {},
+                {merovingian::http::Header{"Origin", "vector://vector"}},
+            };
+            auto const response = merovingian::homeserver::handle_client_server_request(runtime, request);
+
+            THEN("Access-Control-Allow-Origin appears before Access-Control-Allow-Methods")
+            {
+                auto const& hdrs = response.response.headers;
+                auto origin_pos = std::size_t{};
+                auto methods_pos = std::size_t{};
+                auto found_origin = false;
+                auto found_methods = false;
+                for (std::size_t i = 0U; i < hdrs.size(); ++i)
+                {
+                    if (hdrs[i].first == "Access-Control-Allow-Origin")
+                    {
+                        origin_pos = i;
+                        found_origin = true;
+                    }
+                    else if (hdrs[i].first == "Access-Control-Allow-Methods")
+                    {
+                        methods_pos = i;
+                        found_methods = true;
+                    }
+                }
+                REQUIRE(found_origin);
+                REQUIRE(found_methods);
+                REQUIRE(origin_pos < methods_pos);
             }
         }
     }

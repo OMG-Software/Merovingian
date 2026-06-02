@@ -77,6 +77,10 @@ struct ClientServerRuntime final
     std::vector<ClientKeyApiRecord> key_api_records{};
     std::vector<RegistrationValidationSession> registration_validation_sessions{};
     std::vector<ClientRateLimitCounter> rate_limits{};
+    // CORS policy snapshot. Copied from `config.server().cors` at
+    // `start_client_server()` time. CORS is not hot-reloadable: a config
+    // change requires a server restart.
+    config::CorsConfig cors{};
     std::uint64_t request_clock{0U};
     // Owning pointer to the long-poll notifier. SyncNotifier holds a mutex
     // and condition_variable so it can't be copied or moved by value; a

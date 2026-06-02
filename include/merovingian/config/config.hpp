@@ -10,11 +10,38 @@
 namespace merovingian::config
 {
 
+struct CorsConfig final
+{
+    // Origins to allow. Wildcard `*` is the default and means any origin is
+    // allowed to make cross-origin requests. The CORS spec forbids combining
+    // `*` with `allow_credentials=true`; the config parser enforces that.
+    std::vector<std::string> allowed_origins{"*"};
+    // How long the preflight result may be cached, in seconds.
+    std::uint32_t max_age{86400U};
+    // Whether to allow browser credentials (cookies, client TLS certs).
+    // Matrix clients authenticate with bearer tokens so this is false by
+    // default; flip it on only when you know what you are doing.
+    bool allow_credentials{false};
+    // Methods advertised in the preflight `Access-Control-Allow-Methods`
+    // header. Empty string falls back to the standard list.
+    std::string allow_methods{"GET, POST, PUT, DELETE, OPTIONS"};
+    // Headers advertised in the preflight `Access-Control-Allow-Headers`
+    // header. Empty string falls back to `authorization, content-type`,
+    // which is the set Matrix clients actually use.
+    std::string allow_headers{"authorization, content-type"};
+};
+
 struct ServerConfig final
 {
     std::string server_name{"example.org"};
     std::string public_baseurl{"https://matrix.example.org"};
     std::vector<std::string> trusted_proxies{};
+    // CORS preflight policy. Wildcard `*` is the default origin and is safe
+    // for Matrix because clients authenticate with `Authorization: Bearer`
+    // tokens, not browser-credentialed cookies. A `*` in `allowed_origins`
+    // combined with `allow_credentials=true` is rejected at config-parse
+    // time per the CORS spec.
+    CorsConfig cors{};
 };
 
 struct ListenerConfig final
@@ -118,9 +145,13 @@ public:
     Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security);
 
     [[nodiscard]] auto server() const noexcept -> ServerConfig const&;
+    [[nodiscard]] auto server() noexcept -> ServerConfig&;
     [[nodiscard]] auto listeners() const noexcept -> ListenersConfig const&;
+    [[nodiscard]] auto listeners() noexcept -> ListenersConfig&;
     [[nodiscard]] auto database() const noexcept -> DatabaseConfig const&;
+    [[nodiscard]] auto database() noexcept -> DatabaseConfig&;
     [[nodiscard]] auto security() const noexcept -> SecurityConfig const&;
+    [[nodiscard]] auto security() noexcept -> SecurityConfig&;
 
 private:
     ServerConfig m_server{};
