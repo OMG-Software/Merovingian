@@ -321,14 +321,26 @@ namespace
         }
     }
 
-    [[nodiscard]] auto format_response(std::uint16_t status, std::string_view body) -> std::string
+    [[nodiscard]] auto format_response(std::uint16_t status, std::string_view body,
+                                       std::vector<std::pair<std::string, std::string>> const& headers = {})
+        -> std::string
     {
         auto response = std::string{};
-        response.reserve(body.size() + 128U);
+        response.reserve(body.size() + 128U + 256U * headers.size());
         response.append("HTTP/1.1 ");
         response.append(std::to_string(status));
         response.push_back(' ');
         response.append(reason_phrase(status));
+        // Per-response headers (CORS preflight, Vary: Origin) come first so
+        // the browser sees them before Content-Length/Content-Type. Defaulted
+        // to empty for the few synthetic responses that carry no metadata.
+        for (auto const& header : headers)
+        {
+            response.append("\r\n");
+            response.append(header.first);
+            response.append(": ");
+            response.append(header.second);
+        }
         response.append("\r\nContent-Length: ");
         response.append(std::to_string(body.size()));
         response.append("\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n");
@@ -585,7 +597,8 @@ namespace
                                         {"status",         std::to_string(final_result.response.status),              false},
                                         {"response_bytes", std::to_string(final_result.response.body.size()),          false}});
                         auto const formatted =
-                            format_response(final_result.response.status, final_result.response.body);
+                            format_response(final_result.response.status, final_result.response.body,
+                                            final_result.response.headers);
                         std::ignore = ::send(fd, formatted.data(), formatted.size(), MSG_NOSIGNAL);
                         std::ignore = ::shutdown(fd, SHUT_RDWR);
                         ::close(fd);
@@ -620,7 +633,7 @@ namespace
                            {"status",         std::to_string(result.response.status),                     false},
                            {"response_bytes", std::to_string(result.response.body.size()),                false}
         });
-        auto const formatted = format_response(result.response.status, result.response.body);
+        auto const formatted = format_response(result.response.status, result.response.body, result.response.headers);
         std::ignore = send_all(stream, formatted);
         return false;
     }

@@ -47,6 +47,44 @@ namespace
         {
             server.trusted_proxies = parse_string_list(value);
         }
+        else if (key == "server.cors.allowed_origins")
+        {
+            server.cors.allowed_origins = parse_string_list(value);
+        }
+        else if (key == "server.cors.allow_methods")
+        {
+            server.cors.allow_methods = std::string{value};
+        }
+        else if (key == "server.cors.allow_headers")
+        {
+            server.cors.allow_headers = std::string{value};
+        }
+        else if (key == "server.cors.allow_credentials")
+        {
+            if (!parse_bool_value(value, server.cors.allow_credentials))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "server.cors.max_age")
+        {
+            try
+            {
+                auto const parsed = std::stoul(std::string{value});
+                if (parsed > std::numeric_limits<std::uint32_t>::max())
+                {
+                    add_parse_finding(findings, std::string{key}, "value too large for uint32");
+                }
+                else
+                {
+                    server.cors.max_age = static_cast<std::uint32_t>(parsed);
+                }
+            }
+            catch (...)
+            {
+                add_parse_finding(findings, std::string{key}, "expected non-negative integer");
+            }
+        }
         else if (key == "listeners.client.bind")
         {
             listeners.client.bind = std::string{value};

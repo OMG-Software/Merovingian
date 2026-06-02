@@ -11,6 +11,22 @@ server.name=example.org
 server.public_baseurl=https://matrix.example.org
 server.trusted_proxies=
 
+# CORS policy (preflight + actual responses).
+# allowed_origins is a comma-separated list of origins allowed to make
+# cross-origin requests.  Wildcard '*' (the default) is safe for Matrix
+# because clients authenticate with Authorization: Bearer tokens, not
+# browser cookies.  Use an explicit list when embedding web clients in
+# a mixed-trust context.
+# allow_methods / allow_headers are advertised in the preflight response.
+# allow_credentials=true is rejected at parse time when combined with a
+# wildcard '*' origin (CORS spec violation).
+# max_age is how long the browser may cache the preflight result, in seconds.
+server.cors.allowed_origins=*
+server.cors.allow_methods=GET, POST, PUT, DELETE, OPTIONS
+server.cors.allow_headers=authorization, content-type
+server.cors.allow_credentials=false
+server.cors.max_age=86400
+
 # Listener exposure
 # Keep TLS disabled only on loopback binds. If binding to a public interface,
 # set tls=true and provide certificate and private-key paths below.

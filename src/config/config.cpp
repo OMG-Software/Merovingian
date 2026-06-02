@@ -46,7 +46,17 @@ auto Config::server() const noexcept -> ServerConfig const&
     return m_server;
 }
 
+auto Config::server() noexcept -> ServerConfig&
+{
+    return m_server;
+}
+
 auto Config::listeners() const noexcept -> ListenersConfig const&
+{
+    return m_listeners;
+}
+
+auto Config::listeners() noexcept -> ListenersConfig&
 {
     return m_listeners;
 }
@@ -56,7 +66,17 @@ auto Config::database() const noexcept -> DatabaseConfig const&
     return m_database;
 }
 
+auto Config::database() noexcept -> DatabaseConfig&
+{
+    return m_database;
+}
+
 auto Config::security() const noexcept -> SecurityConfig const&
+{
+    return m_security;
+}
+
+auto Config::security() noexcept -> SecurityConfig&
 {
     return m_security;
 }
@@ -339,6 +359,24 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     if (!is_valid_public_baseurl(config.server().public_baseurl))
     {
         findings.push_back({"server.public_baseurl", "public base URL must be a non-empty HTTPS URL"});
+    }
+
+    // CORS spec: wildcard origin cannot be combined with credentials. We
+    // reject the combination at parse time so an operator never deploys a
+    // config that would silently fail browser preflight checks.
+    if (config.server().cors.allow_credentials)
+    {
+        for (auto const& origin : config.server().cors.allowed_origins)
+        {
+            if (origin == "*")
+            {
+                findings.push_back(
+                    {"server.cors.allowed_origins",
+                     "wildcard '*' is incompatible with server.cors.allow_credentials=true "
+                     "(CORS spec violation; list explicit origins instead)"});
+                break;
+            }
+        }
     }
 
     if (!is_valid_listener_bind(config.listeners().client.bind))

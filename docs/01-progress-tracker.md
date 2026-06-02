@@ -558,6 +558,17 @@ a non-production environment.
 
 #### DONE
 
+- CORS self-sufficient preflight (0.4.60). Merovingian now emits
+  `Access-Control-Allow-Origin`, `Access-Control-Allow-Methods`,
+  `Access-Control-Allow-Headers`, `Access-Control-Max-Age`, and
+  `Vary: Origin` on every response, so a vanilla reverse proxy that
+  does not synthesize CORS headers stops breaking browser clients
+  on every cross-origin request. New `server.cors.*` config keys
+  (`allowed_origins`, `max_age`, `allow_credentials`, `allow_methods`,
+  `allow_headers`) cover the policy surface; wildcard `*` is the
+  default and is safe for Matrix because clients use bearer tokens.
+  `docs/configuration.md` reverse-proxy examples rewritten for
+  nginx, Apache, Caddy, Traefik, HAProxy, and Cloudflare.
 - Audit follow-up sweep (0.4.59). Canonical-JSON integer parsing now rejects
   leading zeros and explicit `+`; yyjson adapter passes
   `YYJSON_READ_STOP_WHEN_DONE` to reject trailing-garbage payloads; HTTP
