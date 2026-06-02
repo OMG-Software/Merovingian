@@ -380,6 +380,16 @@ auto parse_lossless(std::string_view input) -> ParseResult
         return {{}, map_yyjson_error(error)};
     }
 
+    // C5: reject trailing-garbage payloads. yyjson stops after one value by
+    // default when no flag is set, but it does not surface the bytes-read
+    // count as an error code; we have to compare document->dat_read against
+    // the input length ourselves. A successful read that did not consume
+    // every byte is treated as trailing_data, per canonical JSON.
+    if (merovingian_yyjson_doc_bytes_read(document.get()) != owned_input.size())
+    {
+        return {{}, ParseError::trailing_data};
+    }
+
     auto converted = convert_yyjson_value(merovingian_yyjson_doc_root(document.get()), 0U);
     return {std::move(converted.value), converted.error};
 }

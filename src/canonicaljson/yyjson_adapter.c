@@ -73,12 +73,7 @@ MerovingianYyjsonDoc* merovingian_yyjson_read_raw_numbers(char const* data, size
                                                           MerovingianYyjsonReadCode* error_code)
 {
     yyjson_read_err error;
-    // YYJSON_READ_STOP_WHEN_DONE makes the parser stop at the end of the
-    // top-level value; payloads with trailing garbage (which canonical JSON
-    // forbids) are then rejected. The flag has been in yyjson since 0.5.0,
-    // well before the 0.12.0 pin in subprojects/yyjson.wrap.
-    yyjson_doc* document = yyjson_read_opts(
-        (char*)data, length, YYJSON_READ_NUMBER_AS_RAW | YYJSON_READ_STOP_WHEN_DONE, NULL, &error);
+    yyjson_doc* document = yyjson_read_opts((char*)data, length, YYJSON_READ_NUMBER_AS_RAW, NULL, &error);
     if (error_code != NULL)
     {
         *error_code = merovingian_yyjson_map_read_code(error.code);
@@ -94,6 +89,11 @@ void merovingian_yyjson_doc_free(MerovingianYyjsonDoc* document)
 MerovingianYyjsonValue* merovingian_yyjson_doc_root(MerovingianYyjsonDoc* document)
 {
     return yyjson_doc_get_root(document);
+}
+
+size_t merovingian_yyjson_doc_bytes_read(MerovingianYyjsonDoc* document)
+{
+    return document == NULL ? 0U : document->dat_read;
 }
 
 MerovingianYyjsonValueType merovingian_yyjson_value_type(MerovingianYyjsonValue* value)

@@ -49,6 +49,11 @@ extern "C"
                                                               MerovingianYyjsonReadCode* error_code);
     void merovingian_yyjson_doc_free(MerovingianYyjsonDoc* document);
     MerovingianYyjsonValue* merovingian_yyjson_doc_root(MerovingianYyjsonDoc* document);
+    // Number of input bytes yyjson consumed while parsing the document. Used
+    // by the parser to detect trailing-garbage payloads that canonical JSON
+    // forbids; if the value is less than the input length, extra bytes
+    // follow the top-level value and the parse must be rejected.
+    size_t merovingian_yyjson_doc_bytes_read(MerovingianYyjsonDoc* document);
     MerovingianYyjsonValueType merovingian_yyjson_value_type(MerovingianYyjsonValue* value);
     int merovingian_yyjson_bool_value(MerovingianYyjsonValue* value);
     char const* merovingian_yyjson_raw_data(MerovingianYyjsonValue* value, size_t* length);

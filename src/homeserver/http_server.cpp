@@ -76,12 +76,12 @@ namespace
 
     auto log_swallowed_exception(std::string_view site) -> void
     {
-        log_diagnostic("sync.exception",
-                       {
-                           {"site",  site,                        false},
-                           {"type",  current_exception_type_name(), false},
-                           {"what",  current_exception_message(),   false}
-        });
+        auto fields = std::vector<observability::StructuredLogField>{
+            observability::StructuredLogField{"site", std::string{site}, false},
+            observability::StructuredLogField{"type", std::string{current_exception_type_name()}, false},
+            observability::StructuredLogField{"what", current_exception_message(), false}
+        };
+        log_diagnostic("sync.exception", std::move(fields));
     }
 
     // Conservative deadlines for the minimal serve loop. The slowloris policy
