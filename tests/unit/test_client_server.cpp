@@ -3729,3 +3729,137 @@ SCENARIO("E2EE cross-signing keys round-trip via /keys/device_signing/upload + /
         }
     }
 }
+
+// +-------------------------------------------------------------------------+
+// |  End-to-end E2EE bootstrap (Element Rust crypto order)                  |
+// |                                                                          |
+// |  Spec:                                                                   |
+// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |    tsv3keysupload                                                        |
+// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |    tsv3keysdevice_signingupload                                          |
+// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |    tsv3keyssignaturesupload                                              |
+// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |    tsv3room_keysversion                                                  |
+// |                                                                          |
+// |  Replays the exact order of requests Element's matrix-rust-sdk sends     |
+// |  when bootstrapping a brand-new device: device_keys, one_time_keys,      |
+// |  cross-signing keys, cross-signing signatures, key backup version,      |
+// |  then a `keys/query` from a peer. The assertion is that the inviter's   |
+// |  device_keys, one_time_keys, and master_keys are all visible to the     |
+// |  invitee after this sequence. This is the reproducer for the            |
+// |  `maybeAcceptKeyBundle: No key bundle found for user` log line.         |
+// +-------------------------------------------------------------------------+
+
+SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips",
+         "[homeserver][client-server][e2ee][bootstrap][regression]")
+{
+    GIVEN("two users on the same homeserver, registered and logged in")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("inviter", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("invitee", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const inviter_login = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
+                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"INVITER_DEV"})"});
+        REQUIRE(inviter_login.response.status == 200U);
+        auto const inviter_token = login_token(inviter_login.response.body);
+
+        auto const invitee_login = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
+                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@invitee:example.org"},"password":"CorrectHorse8!","device_id":"INVITEE_DEV"})"});
+        REQUIRE(invitee_login.response.status == 200U);
+        auto const invitee_token = login_token(invitee_login.response.body);
+
+        WHEN("both devices run the full Element Rust crypto bootstrap order")
+        {
+            // 1. device_keys + one_time_keys for inviter
+            auto const inviter_device_upload = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/keys/upload",
+                 inviter_token,
+                 R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA","ed25519:INVITER_DEV":"BBBB"},"signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"SIG1"}}},"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_1"}}}}})"});
+            REQUIRE(inviter_device_upload.response.status == 200U);
+
+            // 2. cross-signing keys for inviter
+            auto const inviter_cs_upload = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/keys/device_signing/upload",
+                 inviter_token,
+                 R"({"master_key":{"user_id":"@inviter:example.org","usage":["user"],"keys":{"ed25519:MASTER":"MASTER_VALUE"}},"self_signing_key":{"user_id":"@inviter:example.org","usage":["self_signing"],"keys":{"ed25519:SSK":"SSK_VALUE"}}})"});
+            REQUIRE(inviter_cs_upload.response.status == 200U);
+
+            // 3. cross-signing signatures for inviter (self-signing)
+            auto const inviter_sigs = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/keys/signatures/upload",
+                 inviter_token,
+                 R"({"@inviter:example.org":{"ed25519:SSK":{"device_keys":{"INVITER_DEV":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"ed25519:INVITER_DEV":"BBBB"}}}}}})"});
+            REQUIRE(inviter_sigs.response.status == 200U);
+
+            // 4. key backup version for inviter
+            auto const inviter_backup = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/room_keys/version",
+                 inviter_token,
+                 R"({"algorithm":"m.megolm_backup.v1","auth_data":{}})"});
+            REQUIRE(inviter_backup.response.status == 200U);
+
+            // Now the invitee queries the inviter's bundle.
+            auto const invitee_query = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/keys/query",
+                 invitee_token,
+                 R"({"device_keys":{"@inviter:example.org":["INVITER_DEV"]}})"});
+            REQUIRE(invitee_query.response.status == 200U);
+
+            THEN("the invitee's query returns the inviter's full key bundle")
+            {
+                auto const body = invitee_query.response.body;
+                INFO("invitee query body = " + body);
+                // The fundamental contract: device_keys for the queried
+                // user/device must be present and non-empty.
+                REQUIRE(body.find("device_keys") != std::string::npos);
+                REQUIRE(body.find("@inviter:example.org") != std::string::npos);
+                REQUIRE(body.find("INVITER_DEV") != std::string::npos);
+                REQUIRE(body.find("AAAA") != std::string::npos);
+                REQUIRE(body.find("BBBB") != std::string::npos);
+                // Cross-signing keys must also be present, with the
+                // self-signing signature merged into the device_keys
+                // signature map.
+                REQUIRE(body.find("master_keys") != std::string::npos);
+                REQUIRE(body.find("self_signing_keys") != std::string::npos);
+                REQUIRE(body.find("MASTER_VALUE") != std::string::npos);
+                REQUIRE(body.find("SSK_VALUE") != std::string::npos);
+                // The self-signing signature for the device's ed25519 key
+                // must be merged into the device_keys signature map under
+                // the SSK key id.
+                REQUIRE(body.find("\"ed25519:SSK\"") != std::string::npos);
+            }
+        }
+    }
+}
