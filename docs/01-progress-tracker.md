@@ -1,3 +1,20 @@
+## 0.4.62 (in progress — fix/otk-signature-claim)
+
+- Server now rejects `one_time_keys` and `fallback_keys` whose signature
+  is not made by the device's own ed25519 identity key. The device's
+  signing key is resolved from the in-body `device_keys` first, then
+  the persisted `device_keys` row. This was the live bug on
+  pong.ping.me.uk where matrix-rust-sdk reported `NoSignatureFound` for
+  OTK signatures on the stale `MEROVINGIAN` device row and Element Web
+  was stuck on `joining` for the room.
+- `tests/unit/test_otk_signature_validation.cpp` adds four BDD
+  scenarios (reject imposter-signed OTK, accept own-key-signed OTK,
+  reject imposter-signed fallback key, accept first-time OTK before
+  device_keys is known).
+- Version bumped to 0.4.62 across `meson.build`, `src/main.cpp`,
+  `src/db_migrate.cpp`, `packaging/freebsd/+MANIFEST`,
+  `packaging/rpm/merovingian.spec`, and the `scripts/build-*.sh` packagers.
+
 # Progress tracker
 
 This is the authoritative progress, readiness, and Matrix v1.18 coverage ledger

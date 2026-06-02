@@ -2363,6 +2363,130 @@ namespace
                                   }));
     }
 
+    // Extract the device's own ed25519 key id from a parsed `device_keys`
+    // object. The Matrix v1.18 spec requires the device to publish a
+    // `keys` map whose ed25519 member is the device's own identity key;
+    // every SignedKey (one-time key, fallback key) MUST be signed by it.
+    // Returns the empty string when the object has no ed25519 member;
+    // the caller treats that as "no identity known" and skips the OTK
+    // signature check so the device's first /keys/upload still succeeds.
+    [[nodiscard]] auto device_signing_key_id_from_device_keys_object(canonicaljson::Object const& device_keys_object)
+        -> std::string
+    {
+        auto const* keys_map = object_member_as_object(device_keys_object, "keys");
+        if (keys_map == nullptr)
+        {
+            return {};
+        }
+        for (auto const& member : *keys_map)
+        {
+            if (member.value == nullptr)
+            {
+                continue;
+            }
+            if (member.key.size() > 8U && member.key.substr(0U, 8U) == "ed25519:")
+            {
+                return member.key;
+            }
+        }
+        return {};
+    }
+
+    // Resolve the device's ed25519 signing key id, preferring the in-body
+    // `device_keys` (so the very same /keys/upload that publishes the
+    // identity is honored) and falling back to the persisted device_keys
+    // row. Returns the empty string if neither source yields an identity.
+    [[nodiscard]] auto device_signing_key_id_for_upload(database::PersistentStore const& store,
+                                                       std::string_view user,
+                                                       std::string_view device_id,
+                                                       canonicaljson::Object const* const in_body_device_keys) -> std::string
+    {
+        if (in_body_device_keys != nullptr)
+        {
+            auto const from_body = device_signing_key_id_from_device_keys_object(*in_body_device_keys);
+            if (!from_body.empty())
+            {
+                return from_body;
+            }
+        }
+        auto const existing = database::find_device_key(store, user, device_id);
+        if (!existing.has_value())
+        {
+            return {};
+        }
+        auto const parsed = parsed_json_object(existing->json);
+        if (!parsed.has_value())
+        {
+            return {};
+        }
+        return device_signing_key_id_from_device_keys_object(*parsed);
+    }
+
+    // Return true if `key_value` is a SignedKey that carries a signature
+    // made by `signing_key_id` (an "ed25519:..." key id). Non-SignedKey
+    // members (e.g. the legacy integer-count form, or a bare string) are
+    // treated as not signed: v1.18 requires SignedKey objects for both
+    // one-time keys and fallback keys.
+    [[nodiscard]] auto key_object_is_signed_by(canonicaljson::Value const& key_value, std::string_view signing_key_id)
+        -> bool
+    {
+        if (signing_key_id.empty())
+        {
+            return true;
+        }
+        auto const* key_obj = std::get_if<canonicaljson::Object>(&key_value.storage());
+        if (key_obj == nullptr)
+        {
+            return false;
+        }
+        auto const* signatures = object_member_as_object(*key_obj, "signatures");
+        if (signatures == nullptr || signatures->empty())
+        {
+            return false;
+        }
+        for (auto const& user_member : *signatures)
+        {
+            if (user_member.value == nullptr)
+            {
+                continue;
+            }
+            auto const* key_sigs = std::get_if<canonicaljson::Object>(&user_member.value->storage());
+            if (key_sigs == nullptr)
+            {
+                continue;
+            }
+            for (auto const& key_member : *key_sigs)
+            {
+                if (key_member.key == signing_key_id && key_member.value != nullptr)
+                {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // Validate that every member of an OTK or fallback-key object is a
+    // SignedKey whose signature is made by the device's own ed25519 key.
+    // Returns the empty string when every key is valid, or a short reason
+    // identifying the first invalid member when at least one fails.
+    [[nodiscard]] auto validate_key_object_members(canonicaljson::Object const& object, std::string_view signing_key_id)
+        -> std::string
+    {
+        for (auto const& member : object)
+        {
+            if (member.value == nullptr)
+            {
+                return std::string{member.key} + ": null value";
+            }
+            if (!key_object_is_signed_by(*member.value, signing_key_id))
+            {
+                return std::string{member.key} + ": not signed by device identity";
+            }
+        }
+        return {};
+    }
+
     [[nodiscard]] auto store_key_object_members(ClientServerRuntime& rt, std::string_view user,
                                                 std::string_view device_id, canonicaljson::Object const& object,
                                                 bool fallback) -> bool
@@ -2430,15 +2554,42 @@ namespace
                 }
             }
         }
-        if (auto const* keys = object_member_object(*object, "one_time_keys");
-            keys != nullptr && !store_key_object_members(rt, user, device_id, *keys, false))
+        // Reject any one-time / fallback key that is not signed by the
+        // device's own ed25519 identity. The Matrix v1.18 spec requires
+        // every SignedKey to be signed by the device's signing key; an
+        // unverifiable key is useless to a peer (it will fail
+        // NoSignatureFound at /keys/claim time, blocking the Olm session
+        // for the whole room's Megolm distribution) and must not be
+        // persisted. The device's signing key id is resolved from the
+        // in-body device_keys first, then the persisted device_keys row.
+        // When neither is known, the OTK is accepted (the device's very
+        // first /keys/upload can't be checked against a prior identity).
+        auto const* in_body_device_keys = object_member_object(*object, "device_keys");
+        auto const device_signing_key_id =
+            device_signing_key_id_for_upload(store, user, device_id, in_body_device_keys);
+        if (auto const* keys = object_member_object(*object, "one_time_keys"); keys != nullptr)
         {
-            return err(500U, "M_UNKNOWN", "one-time key persistence failed");
+            if (auto const reason = validate_key_object_members(*keys, device_signing_key_id); !reason.empty())
+            {
+                return err(400U, "M_INVALID_SIGNATURE",
+                           "one-time key " + reason + " (device signing key " + device_signing_key_id + ")");
+            }
+            if (!store_key_object_members(rt, user, device_id, *keys, false))
+            {
+                return err(500U, "M_UNKNOWN", "one-time key persistence failed");
+            }
         }
-        if (auto const* keys = object_member_object(*object, "fallback_keys");
-            keys != nullptr && !store_key_object_members(rt, user, device_id, *keys, true))
+        if (auto const* keys = object_member_object(*object, "fallback_keys"); keys != nullptr)
         {
-            return err(500U, "M_UNKNOWN", "fallback key persistence failed");
+            if (auto const reason = validate_key_object_members(*keys, device_signing_key_id); !reason.empty())
+            {
+                return err(400U, "M_INVALID_SIGNATURE",
+                           "fallback key " + reason + " (device signing key " + device_signing_key_id + ")");
+            }
+            if (!store_key_object_members(rt, user, device_id, *keys, true))
+            {
+                return err(500U, "M_UNKNOWN", "fallback key persistence failed");
+            }
         }
         return resp(200U,
                     json_serialize(json_obj({

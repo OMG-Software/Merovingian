@@ -18,6 +18,7 @@
 - Event authorization
 - State resolution
 - Device and key APIs
+- E2EE /keys/upload signature validation (verifies one-time and fallback key signatures against the device's own identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE)
 - Token handling
 - Media handling
 - Config parsing
