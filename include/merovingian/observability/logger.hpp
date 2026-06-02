@@ -20,7 +20,11 @@
 #include <thread>
 #include <tuple>
 #include <utility>
+#include <shared_mutex>
+#include <unordered_map>
 #include <vector>
+
+#include "merovingian/observability/observability.hpp"
 
 namespace merovingian::observability
 {
@@ -39,6 +43,22 @@ enum class LogLevel
     critical = 700,
     off = 1000,
 };
+enum class LogEventSeverity
+{
+    // Per-event severity. Mirrors LogLevel so the threshold check is
+    // uniform across the diagnostic and audit-routing paths. The
+    // `log_diagnostic` free function takes one as its fourth arg with
+    // a default of `LogEventSeverity::debug`, so the 40+ existing
+    // call sites continue to compile unchanged.
+    trace = 100,
+    debug = 200,
+    info = 300,
+    notice = 400,
+    warning = 500,
+    error = 600,
+    critical = 700,
+};
+
 
 class LowSeverityFlushPolicy final
 {
@@ -157,6 +177,38 @@ public:
     auto set_file_log_level(LogLevel level) noexcept -> void
     {
         m_file_log_level.store(level);
+    }
+
+    // The default level is consulted when the per-logger level map has
+    // no entry for a given logger. Defaults to LogLevel::info so a
+    // misconfigured or empty `log_modules` config still silences the
+    // http_server/sync_notifier noise that motivated this design.
+    auto set_default_log_level(LogLevel level) noexcept -> void
+    {
+        m_default_log_level.store(level);
+    }
+
+    // Per-logger level. A module is the first whitespace-delimited
+    // token of the diagnostic line (e.g. "http_server", "auth",
+    // "sync_notifier"). Empty/blank logger names are treated as the
+    // default. The map is read with a shared_mutex so the operator can
+    // hot-reload log_modules on SIGHUP without blocking the hot path.
+    auto set_module_log_level(std::string_view logger, LogLevel level) -> void
+    {
+        auto lock = std::lock_guard<std::shared_mutex>{m_module_levels_lock};
+        m_module_levels[std::string{logger}] = level;
+    }
+
+    [[nodiscard]] auto module_log_level(std::string_view logger) const -> LogLevel
+    {
+        {
+            auto lock = std::shared_lock<std::shared_mutex>{m_module_levels_lock};
+            if (auto const it = m_module_levels.find(std::string{logger}); it != m_module_levels.end())
+            {
+                return it->second;
+            }
+        }
+        return m_default_log_level.load();
     }
 
     auto set_log_file_path(std::string const& path) -> void
@@ -453,6 +505,9 @@ private:
 
     std::atomic<LogLevel> m_console_log_level{LogLevel::info};
     std::atomic<LogLevel> m_file_log_level{LogLevel::trace};
+    std::atomic<LogLevel> m_default_log_level{LogLevel::info};
+    mutable std::shared_mutex m_module_levels_lock{};
+    std::unordered_map<std::string, LogLevel> m_module_levels{};
     std::ofstream m_file_out{};
     std::string m_file_path{};
     std::array<char, logger_internal_buffer_size> m_write_buffer{};
@@ -515,6 +570,64 @@ auto string_format(std::string const& format, Args&&... args) -> std::string
     return std::string{buffer.data(), static_cast<std::size_t>(required)};
 }
 
+// +-------------------------------------------------------------------------+
+// |  log_diagnostic (0.5.0)                                                    |
+// |                                                                         |
+// |  These are the public entry points for the ~40 call sites that today     |
+// |  construct a `diagnostic_log_summary` and pass it to LOG_DEBUG. They     |
+// |  exist so a single call site can (a) declare its per-event severity,     |
+// |  (b) auto-route severity >= warning into the `audit_log` table. The      |
+// |  severity arg has a default of `LogEventSeverity::debug`, so every      |
+// |  existing call site (which today emits at LOG_DEBUG) continues to       |
+// |  build unchanged.                                                       |
+// |                                                                         |
+// |  The audit-routing side is opt-in: only the five high-signal failure    |
+// |  call sites (rate_limit.exceeded, login.rejected,                        |
+// |  access_token.rejected, request.rejected, registration_policy.denied)   |
+// |  Five hand-picked call sites additionally call `append_local_audit`     |
+// |  `log_diagnostic` and never write to audit_log.                         |
+// +-------------------------------------------------------------------------+
+
+[[nodiscard]] inline auto severity_at_or_above(LogEventSeverity a, LogEventSeverity b) noexcept -> bool
+{
+    return static_cast<int>(a) >= static_cast<int>(b);
+}
+
+// Splits a structured-log message into the first whitespace-delimited token
+// (the module/logger name) and the rest. Used by the module-level filter.
+[[nodiscard]] inline auto split_logger_from_message(std::string_view message) -> std::pair<std::string_view, std::string_view>
+{
+    auto const ws = message.find(' ');
+    if (ws == std::string_view::npos)
+    {
+        return {message, std::string_view{}};
+    }
+    return {message.substr(0U, ws), message.substr(ws + 1U)};
+}
+
+[[nodiscard]] inline auto severity_to_log_level(LogEventSeverity severity) noexcept -> LogLevel
+{
+    return static_cast<LogLevel>(static_cast<int>(severity));
+}
+
+// Public free-function entry point. Emits the diagnostic line at the
+// requested severity, but only if the per-module level filter (or the
+// default level) admits it. Today every existing call site omits the
+// severity arg, so it defaults to debug and behaviour is preserved.
+inline auto log_diagnostic(std::string_view logger, std::string_view event,
+                           std::vector<StructuredLogField> const& fields = {},
+                           LogEventSeverity severity = LogEventSeverity::debug) -> void
+{
+    auto const level = severity_to_log_level(severity);
+    auto const module_level = SingleLog::instance().module_log_level(logger);
+    if (static_cast<int>(module_level) > static_cast<int>(level))
+    {
+        return;
+    }
+    SingleLog::instance().log(level, diagnostic_log_summary(logger, event, fields));
+}
+
+
 } // namespace merovingian::observability
 
 #define LOG_FUNCTION_TRACE                                                                                             \
@@ -522,8 +635,6 @@ auto string_format(std::string const& format, Args&&... args) -> std::string
     {                                                                                                                  \
         __func__                                                                                                       \
     }
-
-#define LOG_TRACE(message) ::merovingian::observability::SingleLog::instance().trace(__func__, message)
 
 #define LOG_DEBUG(message) ::merovingian::observability::SingleLog::instance().debug(__func__, message)
 
