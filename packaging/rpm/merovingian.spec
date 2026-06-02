@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.62
+Version:        0.5.0
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,7 +89,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Tue Jun 02 2026 James Chapman <claude@ping.me.uk> - 0.4.62-1
+* Tue Jun 02 2026 James Chapman <claude@ping.me.uk> - 0.5.0-1
 - /keys/upload now validates that one-time and fallback keys are signed by the device's own ed25519 identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE. Fixes the Element "No key bundle found for user" / "NoSignatureFound" bug seen on pong.ping.me.uk where a stale device row left behind OTKs that no peer could verify.
 
 * Tue Jun 02 2026 James Chapman <claude@ping.me.uk> - 0.4.61-1
