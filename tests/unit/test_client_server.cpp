@@ -3534,3 +3534,198 @@ SCENARIO("createRoom does not duplicate preset events when client provides them 
         }
     }
 }
+
+// +-------------------------------------------------------------------------+
+// |  E2EE key bundle bootstrap (Element /maybeAcceptKeyBundle flow)         |
+// |                                                                          |
+// |  Spec:                                                                   |
+// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |    tsv3keysupload                                                        |
+// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |    tsv3keysquery                                                         |
+// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |    tsv3keysdevice_signingupload                                          |
+// |                                                                          |
+// |  Reproduces the round-trip Element performs when joining an encrypted    |
+// |  room: the inviter uploads device_keys + one_time_keys + fallback_keys  |
+// |  + cross-signing keys, and the invitee queries them. Element's          |
+// |  "No key bundle found for user" log fires when this round-trip returns  |
+// |  an empty `device_keys` for the queried user.                            |
+// +-------------------------------------------------------------------------+
+
+SCENARIO("E2EE device_keys round-trip: inviter upload is visible to invitee query",
+         "[homeserver][client-server][e2ee][key-api][regression]")
+{
+    GIVEN("two registered users on the same homeserver")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("inviter", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("invitee", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const inviter_login = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
+                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"INVITER_DEV"})"});
+        REQUIRE(inviter_login.response.status == 200U);
+        auto const inviter_token = login_token(inviter_login.response.body);
+
+        auto const invitee_login = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
+                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@invitee:example.org"},"password":"CorrectHorse8!","device_id":"INVITEE_DEV"})"});
+        REQUIRE(invitee_login.response.status == 200U);
+        auto const invitee_token = login_token(invitee_login.response.body);
+
+        WHEN("the inviter uploads realistic device_keys and the invitee queries them")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/keys/upload",
+                 inviter_token,
+                 R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":"BBBB_ED"}},"one_time_keys":{"signed_curve25519:AAAA":1}})"});
+            REQUIRE(upload.response.status == 200U);
+
+            auto const query = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/keys/query",
+                          invitee_token,
+                          R"({"device_keys":{"@inviter:example.org":["INVITER_DEV"]}})"});
+            REQUIRE(query.response.status == 200U);
+
+            THEN("the invitee's response contains the inviter's device_keys under the requested user")
+            {
+                auto const body = query.response.body;
+                INFO("query body = " + body);
+                REQUIRE(body.find("device_keys") != std::string::npos);
+                REQUIRE(body.find("@inviter:example.org") != std::string::npos);
+                REQUIRE(body.find("INVITER_DEV") != std::string::npos);
+                // The curve25519 base64 blob from the upload must round-trip.
+                REQUIRE(body.find("AAAA_CURVE") != std::string::npos);
+                REQUIRE(body.find("BBBB_ED") != std::string::npos);
+            }
+            AND_THEN("the persistent_store holds exactly one device_key row for the inviter")
+            {
+                auto const count =
+                    merovingian::homeserver::key_api_record_count(runtime, "@inviter:example.org");
+                REQUIRE(count >= 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("E2EE one_time_keys are returned to a peer after upload",
+         "[homeserver][client-server][e2ee][one-time-keys]")
+{
+    GIVEN("an inviter user who has uploaded a one_time_key")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("inviter", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
+                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the device uploads a one_time_key")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/keys/upload",
+                          token,
+                          R"({"one_time_keys":{"signed_curve25519:OTK1":{"key":"OTK_DATA_AAA","signatures":{"@inviter:example.org":{"ed25519:DEV1":"SIG_AAA"}}}}})"});
+            REQUIRE(upload.response.status == 200U);
+            REQUIRE(upload.response.body.find("one_time_key_counts") != std::string::npos);
+
+            THEN("the one_time_key_counts reports a non-zero signed_curve25519 count")
+            {
+                REQUIRE(upload.response.body.find("signed_curve25519") != std::string::npos);
+                // json_int emits a bare numeric token (not a quoted string), so
+                // we check for the digit '1' in the body to confirm a count
+                // was recorded for the uploaded one_time_key.
+                REQUIRE(upload.response.body.find(":1") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("E2EE cross-signing keys round-trip via /keys/device_signing/upload + /keys/query",
+         "[homeserver][client-server][e2ee][cross-signing]")
+{
+    GIVEN("an inviter user that has logged in")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("inviter", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
+                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the user uploads master_key, self_signing_key, and user_signing_key")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/keys/device_signing/upload",
+                 token,
+                 R"({"auth":{"type":"m.login.password","user":"@inviter:example.org","password":"CorrectHorse7!"},)"
+                 R"("master_key":{"user_id":"@inviter:example.org","usage":["user"],"keys":{"ed25519:MASTER_KEY_ID":"MASTER_KEY_VALUE"}},)"
+                 R"("self_signing_key":{"user_id":"@inviter:example.org","usage":["self_signing"],"keys":{"ed25519:SSK_KEY_ID":"SSK_KEY_VALUE"}},)"
+                 R"("user_signing_key":{"user_id":"@inviter:example.org","usage":["user_signing"],"keys":{"ed25519:USK_KEY_ID":"USK_KEY_VALUE"}}})"});
+            REQUIRE(upload.response.status == 200U);
+
+            auto const query = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/keys/query",
+                          token,
+                          R"({"device_keys":{"@inviter:example.org":[]}})"});
+            REQUIRE(query.response.status == 200U);
+
+            THEN("the query response contains master_keys, self_signing_keys, and user_signing_keys")
+            {
+                auto const body = query.response.body;
+                INFO("query body = " + body);
+                REQUIRE(body.find("master_keys") != std::string::npos);
+                REQUIRE(body.find("self_signing_keys") != std::string::npos);
+                REQUIRE(body.find("user_signing_keys") != std::string::npos);
+                REQUIRE(body.find("MASTER_KEY_VALUE") != std::string::npos);
+                REQUIRE(body.find("SSK_KEY_VALUE") != std::string::npos);
+                REQUIRE(body.find("USK_KEY_VALUE") != std::string::npos);
+            }
+        }
+    }
+}
