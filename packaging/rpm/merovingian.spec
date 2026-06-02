@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.4.58
+Version:        0.4.59
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,14 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Jun 02 2026 James Chapman <claude@ping.me.uk> - 0.4.59-1
+- Canonical-JSON integer parsing now rejects leading zeros and explicit positive signs per Matrix spec
+- yyjson adapter passes YYJSON_READ_STOP_WHEN_DONE to reject trailing-garbage payloads
+- HTTP read_request_head gains a 30 s overall deadline plus a 5 s inter-byte cap to defeat slowloris
+- Thread-pool and http-server swallowed-exception sites now log the type and what() of the caught exception
+- schema_migrations INSERT switched from string concatenation to a PreparedStatement
+- thread_pool::request_stop and sqlite_transient_destructor non-reentrancy / lifetime contracts are now documented and debug-asserted
+
 * Sun Jun 01 2026 James Chapman <claude@ping.me.uk> - 0.4.58-1
 - Fix registration UIAuth: incomplete auth credentials (missing token or wrong auth.type) now return 401 UIA challenge instead of 403
 
