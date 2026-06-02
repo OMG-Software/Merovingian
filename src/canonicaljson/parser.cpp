@@ -74,9 +74,54 @@ namespace
         });
     }
 
+    // Canonical-JSON numbers are restricted integer literals per Matrix spec:
+    //   "Numbers [...] are represented as base-10 integers".
+    // Accept only the shape ^-?(0|[1-9][0-9]*)$. This rejects leading zeros
+    // (`01`, `007`), explicit positive signs (`+5`), and any other forms the
+    // downstream `std::from_chars` would otherwise happily accept.
+    [[nodiscard]] auto is_canonical_int64_token(std::string_view token) noexcept -> bool
+    {
+        if (token.empty())
+        {
+            return false;
+        }
+        auto index = std::size_t{0U};
+        if (token[index] == '-')
+        {
+            if (token.size() == 1U)
+            {
+                return false;
+            }
+            ++index;
+        }
+        if (token[index] == '0')
+        {
+            return index + 1U == token.size();
+        }
+        if (token[index] < '1' || token[index] > '9')
+        {
+            return false;
+        }
+        ++index;
+        while (index < token.size())
+        {
+            auto const character = token[index];
+            if (character < '0' || character > '9')
+            {
+                return false;
+            }
+            ++index;
+        }
+        return true;
+    }
+
     [[nodiscard]] auto raw_number_as_int64(std::string_view token) noexcept -> ConvertResult
     {
         if (token.find_first_of(".eE") != std::string_view::npos)
+        {
+            return {{}, ParseError::invalid_number};
+        }
+        if (!is_canonical_int64_token(token))
         {
             return {{}, ParseError::invalid_number};
         }
@@ -117,7 +162,8 @@ namespace
         case MEROVINGIAN_YYJSON_TYPE_RAW: {
             auto length = std::size_t{0U};
             auto const* raw = merovingian_yyjson_raw_data(value, &length);
-            return raw == nullptr ? ConvertResult{{}, ParseError::invalid_number} : raw_number_as_int64({raw, length});
+            return raw == nullptr ? ConvertResult{{}, ParseError::unexpected_token}
+                                  : raw_number_as_int64({raw, length});
         }
         case MEROVINGIAN_YYJSON_TYPE_STRING: {
             auto length = std::size_t{0U};
@@ -332,6 +378,16 @@ auto parse_lossless(std::string_view input) -> ParseResult
     if (document == nullptr)
     {
         return {{}, map_yyjson_error(error)};
+    }
+
+    // C5: reject trailing-garbage payloads. yyjson stops after one value by
+    // default when no flag is set, but it does not surface the bytes-read
+    // count as an error code; we have to compare document->dat_read against
+    // the input length ourselves. A successful read that did not consume
+    // every byte is treated as trailing_data, per canonical JSON.
+    if (merovingian_yyjson_doc_bytes_read(document.get()) != owned_input.size())
+    {
+        return {{}, ParseError::trailing_data};
     }
 
     auto converted = convert_yyjson_value(merovingian_yyjson_doc_root(document.get()), 0U);

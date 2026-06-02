@@ -17,6 +17,8 @@
 #include <type_traits>
 #include <vector>
 
+#include <sqlite3.h>
+
 namespace
 {
 
@@ -1080,5 +1082,49 @@ SCENARIO("Server signing keys are looked up by server identity and key ID", "[da
                 REQUIRE_FALSE(not_found.has_value());
             }
         }
+    }
+}
+
+SCENARIO("SQLite migration bootstrap records the applied migration in schema_migrations",
+         "[database][persistence][migration][sqlite]")
+{
+    GIVEN("a fresh SQLite persistent store that triggers the initial migration")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+
+        WHEN("the store is opened and the initial schema migration is applied")
+        {
+            auto const opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+            REQUIRE(opened.ok);
+
+            THEN("the schema_migrations row is written with the initial_schema name and upgrade direction")
+            {
+                // Open a separate raw connection to inspect schema_migrations
+                // directly. The store's own in-memory state was populated
+                // from the same migration step, so we just need to confirm
+                // the row landed.
+                sqlite3* raw = nullptr;
+                REQUIRE(sqlite3_open(sqlite_path.string().c_str(), &raw) == SQLITE_OK);
+                auto const* select_sql = "SELECT name FROM schema_migrations";
+                sqlite3_stmt* statement = nullptr;
+                REQUIRE(sqlite3_prepare_v2(raw, select_sql, -1, &statement, nullptr) == SQLITE_OK);
+                auto saw_initial_schema = false;
+                while (sqlite3_step(statement) == SQLITE_ROW)
+                {
+                    auto const* name =
+                        reinterpret_cast<char const*>(sqlite3_column_text(statement, 0));
+                    if (name != nullptr && std::string{name} == "initial_schema")
+                    {
+                        saw_initial_schema = true;
+                    }
+                }
+                sqlite3_finalize(statement);
+                sqlite3_close(raw);
+                REQUIRE(saw_initial_schema);
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
     }
 }

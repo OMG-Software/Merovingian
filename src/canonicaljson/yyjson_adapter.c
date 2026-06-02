@@ -91,6 +91,11 @@ MerovingianYyjsonValue* merovingian_yyjson_doc_root(MerovingianYyjsonDoc* docume
     return yyjson_doc_get_root(document);
 }
 
+size_t merovingian_yyjson_doc_bytes_read(MerovingianYyjsonDoc* document)
+{
+    return document == NULL ? 0U : document->dat_read;
+}
+
 MerovingianYyjsonValueType merovingian_yyjson_value_type(MerovingianYyjsonValue* value)
 {
     if (yyjson_is_null(value))

@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.4.59
+- Fix canonical-JSON integer parsing to reject leading zeros and explicit
+  positive signs per Matrix canonical-JSON spec. `01`, `007`, and `+5` are
+  now `invalid_number`; only `^-?(0|[1-9][0-9]*)$` is accepted as a
+  canonical int64. The parser also returns `unexpected_token` (not
+  `invalid_number`) when yyjson yields no raw data for a number position,
+  matching spec wording.
+- Pass `YYJSON_READ_STOP_WHEN_DONE` to yyjson so the adapter stops reading
+  at the end of the top-level value, rejecting trailing-garbage payloads
+  per canonical-JSON.
+- Surface the exception type and message when the thread-pool worker
+  catch-all swallows an exception, and at the three corresponding
+  swallowed-exception sites in `http_server`. Log fields `type` (from
+  `abi::__cxa_current_exception_type()->name()`) and `what` (from
+  `std::exception::what()`) are now attached to every swallowed-exception
+  log line. Includes a portability fallback when `<cxxabi.h>` is absent.
+- Switch the `schema_migrations` INSERT in `sqlite_store` from string
+  concatenation to a `PreparedStatement` with bound parameters, matching
+  the `persistent_store.cpp` pattern. Migration descriptions containing
+  quotes or NUL bytes now round-trip safely.
+- Document the `thread_pool::request_stop` non-reentrancy contract and
+  guard it with a debug-only assertion. Document the
+  `sqlite_transient_destructor` lifetime contract in `sqlite_store.cpp`
+  so a future refactor does not silently switch to `SQLITE_STATIC` and
+  corrupt binds.
+
 ## 0.4.58
 - Fix registration UIAuth incomplete-credentials conformance. Per Matrix v1.18
   §5.5.1, when a client submits `POST /register` with an `auth` dict that is

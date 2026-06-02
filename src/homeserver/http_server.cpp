@@ -16,12 +16,17 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <exception>
 #include <mutex>
 #include <string>
 #include <string_view>
 #include <tuple>
 #include <utility>
 #include <vector>
+
+#if __has_include(<cxxabi.h>) && defined(__GNUC__)
+#include <cxxabi.h>
+#endif
 
 #include <poll.h>
 #include <sys/socket.h>
@@ -37,10 +42,64 @@ namespace
         LOG_DEBUG(observability::diagnostic_log_summary("http_server", event, std::move(fields)));
     }
 
+    // C2: the three swallowed-exception sites in this file (sync wait, sync
+    // pool dispatch, dispatch_local_http_request) previously logged only
+    // {"reason":"exception"}. Capture the mangled type and the std::exception
+    // message so a postmortem can identify the throwing site. The mangled
+    // name is intentionally not demangled here so the helper stays portable
+    // across libstdc++ / libc++ / MSVC.
+    [[nodiscard]] auto current_exception_type_name() noexcept -> char const*
+    {
+#if __has_include(<cxxabi.h>) && defined(__GNUC__)
+        auto const* type = abi::__cxa_current_exception_type();
+        return type == nullptr ? "unknown" : type->name();
+#else
+        return "unknown";
+#endif
+    }
+
+    [[nodiscard]] auto current_exception_message() noexcept -> std::string
+    {
+        try
+        {
+            std::rethrow_exception(std::current_exception());
+        }
+        catch (std::exception const& ex)
+        {
+            return std::string{ex.what()};
+        }
+        catch (...)
+        {
+            return {};
+        }
+    }
+
+    auto log_swallowed_exception(std::string_view site) -> void
+    {
+        auto fields = std::vector<observability::StructuredLogField>{
+            observability::StructuredLogField{"site", std::string{site}, false},
+            observability::StructuredLogField{"type", std::string{current_exception_type_name()}, false},
+            observability::StructuredLogField{"what", current_exception_message(), false}
+        };
+        log_diagnostic("sync.exception", std::move(fields));
+    }
+
     // Conservative deadlines for the minimal serve loop. The slowloris policy
     // scaffolding in http/connection_guard.cpp will replace these once
     // connection-level accounting lands.
     constexpr auto receive_timeout_milliseconds = 15000;
+    // B3: slowloris hardening. Two new caps layered on top of the per-byte
+    // poll above:
+    //   - overall request-head deadline (default 30 s): a slow client can
+    //     dribble a head indefinitely without ever filling the head buffer
+    //     or tripping the per-byte poll, so the worker would otherwise stay
+    //     parked until head_cap bytes had been dribbled in.
+    //   - per-byte inter-byte cap (default 5 s): a client that sends one
+    //     byte per recv poll would otherwise still be inside the 15 s
+    //     per-poll window; 5 s between bytes is a reasonable upper bound
+    //     for any non-attack traffic.
+    constexpr auto request_head_deadline = std::chrono::seconds{30};
+    constexpr auto inter_byte_timeout = std::chrono::seconds{5};
     constexpr auto header_terminator = std::string_view{"\r\n\r\n"};
 
     class ConnectionStream
@@ -151,8 +210,35 @@ namespace
     {
         auto buffer = std::string{};
         auto chunk = std::array<char, 4096U>{};
+        auto const start = std::chrono::steady_clock::now();
+        auto last_byte = start;
         while (true)
         {
+            // B3 slowloris: enforce an overall deadline and an inter-byte cap
+            // in addition to the per-byte recv poll timeout. The deadline
+            // bounds the worst-case worker hold time regardless of how
+            // cleverly the client dribbles bytes.
+            auto const now = std::chrono::steady_clock::now();
+            if (now - start > request_head_deadline)
+            {
+                log_diagnostic("request.head_slowloris",
+                               {
+                                   {"reason",  "overall_deadline", false},
+                                   {"elapsed_ms", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count()), false},
+                                   {"bytes_received", std::to_string(buffer.size()), false}
+                });
+                return {std::move(buffer), std::string::npos};
+            }
+            if (now - last_byte > inter_byte_timeout)
+            {
+                log_diagnostic("request.head_slowloris",
+                               {
+                                   {"reason",  "inter_byte_timeout", false},
+                                   {"elapsed_ms", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - last_byte).count()), false},
+                                   {"bytes_received", std::to_string(buffer.size()), false}
+                });
+                return {std::move(buffer), std::string::npos};
+            }
             if (buffer.size() >= cap)
             {
                 return {std::move(buffer), std::string::npos};
@@ -165,6 +251,7 @@ namespace
                 return {std::move(buffer), std::string::npos};
             }
             buffer.append(chunk.data(), static_cast<std::size_t>(received));
+            last_byte = std::chrono::steady_clock::now();
             auto const terminator = buffer.find(header_terminator);
             if (terminator != std::string::npos)
             {
@@ -486,7 +573,10 @@ namespace
                                                                      wait.since_sync_stream_id,
                                                                      wait.timeout);
                         }
-                        catch (...) {}
+                        catch (...)
+                        {
+                            log_swallowed_exception("sync_pool_dispatch");
+                        }
                         auto const final_result = handle_client_server_request(runtime, request_copy, false);
                         ++stats.completed_requests;
                         log_diagnostic("request.completed",
@@ -517,7 +607,7 @@ namespace
             }
             catch (...)
             {
-                log_diagnostic("sync.wait_failed", {{"reason", "exception", false}});
+                log_swallowed_exception("serve_stream_sync_wait");
             }
             result = handle_client_server_request(runtime, local_request, false);
         }
@@ -559,7 +649,7 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
         }
         catch (...)
         {
-            log_diagnostic("sync.wait_failed", {{"reason", "exception", false}});
+            log_swallowed_exception("dispatch_local_http_request");
         }
         result = handle_client_server_request(runtime, request, false);
     }

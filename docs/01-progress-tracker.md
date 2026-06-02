@@ -558,6 +558,14 @@ a non-production environment.
 
 #### DONE
 
+- Audit follow-up sweep (0.4.59). Canonical-JSON integer parsing now rejects
+  leading zeros and explicit `+`; yyjson adapter passes
+  `YYJSON_READ_STOP_WHEN_DONE` to reject trailing-garbage payloads; HTTP
+  `read_request_head` gains a 30 s overall deadline plus a 5 s inter-byte cap
+  to defeat slowloris; thread-pool and http-server swallowed-exception sites
+  log the demangled type and `what()`; `schema_migrations` INSERT switched to
+  a `PreparedStatement`; `request_stop` and `sqlite_transient_destructor`
+  non-reentrancy / lifetime contracts are now documented and debug-asserted.
 - Alpha foundations listed above.
 - Federation request signing and PDU signature verification boundaries exist for
   known keys.

@@ -288,13 +288,35 @@ namespace
                     return std::nullopt;
                 }
             }
-            auto const record_sql = "INSERT OR IGNORE INTO schema_migrations VALUES ('" + std::to_string(step.version) +
-                                    "', '" + step.name + "', '" +
-                                    std::string{migration_direction_name(step.direction)} + "')";
-            if (!execute_sql(connection, record_sql))
+            // C3: switch the schema_migrations INSERT to a bound
+            // PreparedStatement instead of string concatenation. The
+            // values pass through SQLite's parameter binding (which
+            // handles quoting, NUL bytes, and binary safely), matching
+            // the boundary used by the rest of the database layer.
+            auto record_statement = prepare(connection,
+                                            "INSERT OR IGNORE INTO schema_migrations VALUES (?1, ?2, ?3)");
+            if (!record_statement.has_value())
             {
                 return std::nullopt;
             }
+            auto& record_handle = *record_statement->get();
+            auto const bind_result = sqlite3_bind_int64(&record_handle, 1,
+                                                        static_cast<sqlite3_int64>(step.version)) == SQLITE_OK &&
+                                     sqlite3_bind_text(&record_handle, 2, step.name.c_str(),
+                                                       static_cast<int>(step.name.size()),
+                                                       sqlite_transient_destructor()) == SQLITE_OK &&
+                                     sqlite3_bind_text(&record_handle, 3, migration_direction_name(step.direction).data(),
+                                                       static_cast<int>(migration_direction_name(step.direction).size()),
+                                                       sqlite_transient_destructor()) == SQLITE_OK;
+            if (!bind_result)
+            {
+                return std::nullopt;
+            }
+            if (sqlite3_step(&record_handle) != SQLITE_DONE)
+            {
+                return std::nullopt;
+            }
+            sqlite3_reset(&record_handle);
         }
         auto applied = apply_migration_plan(std::move(state), plan);
         if (!applied.ok)
@@ -577,6 +599,13 @@ namespace
                 return false;
             }
             auto const value_size = static_cast<int>(value.size());
+            // B5 contract: sqlite_transient_destructor() (the -1 sentinel)
+            // tells SQLite to copy the bound buffer immediately, so the
+            // std::string we're passing a c_str() of can be a stack-local
+            // that goes out of scope before sqlite3_step returns. Do not
+            // switch to SQLITE_STATIC without ensuring the parameter view
+            // outlives the step call — otherwise we'd be reading freed
+            // memory.
             if (sqlite3_bind_text(&statement, bind_index, value.c_str(), value_size, sqlite_transient_destructor()) !=
                 SQLITE_OK)
             {
