@@ -74,9 +74,54 @@ namespace
         });
     }
 
+    // Canonical-JSON numbers are restricted integer literals per Matrix spec:
+    //   "Numbers [...] are represented as base-10 integers".
+    // Accept only the shape ^-?(0|[1-9][0-9]*)$. This rejects leading zeros
+    // (`01`, `007`), explicit positive signs (`+5`), and any other forms the
+    // downstream `std::from_chars` would otherwise happily accept.
+    [[nodiscard]] auto is_canonical_int64_token(std::string_view token) noexcept -> bool
+    {
+        if (token.empty())
+        {
+            return false;
+        }
+        auto index = std::size_t{0U};
+        if (token[index] == '-')
+        {
+            if (token.size() == 1U)
+            {
+                return false;
+            }
+            ++index;
+        }
+        if (token[index] == '0')
+        {
+            return index + 1U == token.size();
+        }
+        if (token[index] < '1' || token[index] > '9')
+        {
+            return false;
+        }
+        ++index;
+        while (index < token.size())
+        {
+            auto const character = token[index];
+            if (character < '0' || character > '9')
+            {
+                return false;
+            }
+            ++index;
+        }
+        return true;
+    }
+
     [[nodiscard]] auto raw_number_as_int64(std::string_view token) noexcept -> ConvertResult
     {
         if (token.find_first_of(".eE") != std::string_view::npos)
+        {
+            return {{}, ParseError::invalid_number};
+        }
+        if (!is_canonical_int64_token(token))
         {
             return {{}, ParseError::invalid_number};
         }
@@ -117,7 +162,8 @@ namespace
         case MEROVINGIAN_YYJSON_TYPE_RAW: {
             auto length = std::size_t{0U};
             auto const* raw = merovingian_yyjson_raw_data(value, &length);
-            return raw == nullptr ? ConvertResult{{}, ParseError::invalid_number} : raw_number_as_int64({raw, length});
+            return raw == nullptr ? ConvertResult{{}, ParseError::unexpected_token}
+                                  : raw_number_as_int64({raw, length});
         }
         case MEROVINGIAN_YYJSON_TYPE_STRING: {
             auto length = std::size_t{0U};
