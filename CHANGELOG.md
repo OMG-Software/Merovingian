@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.4.60
+- Merovingian now emits the `Access-Control-Allow-*` response headers
+  itself, so a vanilla reverse proxy that does not synthesize CORS
+  headers stops breaking browser clients (Element desktop, etc.) on
+  every cross-origin request. The preflight `OPTIONS` short-circuit
+  returns `200` with `Access-Control-Allow-Origin`,
+  `Access-Control-Allow-Methods`,
+  `Access-Control-Allow-Headers`, `Access-Control-Max-Age`, and
+  `Vary: Origin`, and the same headers are attached to every other
+  response (so the actual request also passes the browser's
+  post-preflight CORS check).
+- New `server.cors.*` config keys: `allowed_origins` (default `*`,
+  which is safe for Matrix because clients use bearer tokens, not
+  browser-credentialed cookies), `max_age` (default 86400),
+  `allow_credentials` (default `false`),
+  `allow_methods` (default
+  `GET, POST, PUT, DELETE, OPTIONS`), and `allow_headers` (default
+  `authorization, content-type`).
+- Reject `server.cors.allow_credentials=true` combined with a wildcard
+  origin in `allowed_origins`, which the CORS spec forbids. CORS is
+  read at startup; a config change still requires a server restart
+  to take effect.
+- `docs/configuration.md` "Reverse proxy examples" rewritten with
+  copy-pasteable configs for nginx, Apache, Caddy, Traefik, HAProxy,
+  and Cloudflare. Each example notes that no `Access-Control-*`
+  configuration is required because Merovingian emits them, and
+  includes a `curl` smoke test for the preflight.
+
 ## 0.4.59
 - Fix canonical-JSON integer parsing to reject leading zeros and explicit
   positive signs per Matrix canonical-JSON spec. `01`, `007`, and `+5` are
