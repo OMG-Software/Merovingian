@@ -1362,7 +1362,8 @@ auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id,
     {
         room->members.emplace_back(user_id);
     }
-    else if (membership != "join" && member != room->members.end())
+    else if ((membership == "invite" || membership == "leave" || membership == "ban" || membership == "knock") &&
+             member != room->members.end())
     {
         room->members.erase(member);
     }
