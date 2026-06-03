@@ -2,7 +2,7 @@
 
 #include "merovingian/homeserver/runtime.hpp"
 
-#include "local_services.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
@@ -255,13 +255,17 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     });
 
     runtime.database = bootstrap_local_database(config, std::move(existing_state));
-    // Install the active LocalDatabase pointer in the audit sink so
-    // modules below `homeserver/` (notably `auth/registration_policy`)
-    // can route audit rows through the sink without taking a direct
-    // dependency on this runtime. The pointer is overwritten on each
-    // `start_runtime` call; the previous install becomes a no-op once
-    // a new runtime replaces the current thread's pointer.
-    install_local_audit_database(&runtime.database);
+    // NOTE: the audit-sink install is intentionally performed by
+    // `start_client_server` (the production entry point) and by any
+    // test scenario that calls `start_runtime` directly. Doing it
+    // here would take the address of `runtime.database` while
+    // `runtime` is a stack local of `start_runtime`; the subsequent
+    // `std::move(runtime)` into the return value (and the moves in
+    // `start_client_server` and `main` after that) release that
+    // storage, leaving the thread_local audit sink pointing into a
+    // dead stack frame. The integration test that exercises the
+    // audit-routing path therefore installs against the test's own
+    // `runtime.database`, which is the final stable address.
     if (!runtime.database.opened || !runtime.database.schema_validated ||
         !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "devices") ||
         !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") ||

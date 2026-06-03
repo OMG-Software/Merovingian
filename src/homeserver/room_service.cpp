@@ -2,7 +2,7 @@
 
 #include "merovingian/homeserver/room_service.hpp"
 
-#include "local_services.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"

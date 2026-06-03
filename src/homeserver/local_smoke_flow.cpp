@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "local_services.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_smoke_flow.hpp"
 #include "merovingian/homeserver/room_service.hpp"

@@ -8,7 +8,7 @@
 
 #include "merovingian/homeserver/client_server.hpp"
 
-#include "local_services.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/key_api.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
@@ -4086,6 +4086,15 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
     auto result = ClientServerStartResult{};
     result.started = true;
     result.runtime = std::move(rt);
+    // Install the audit sink against the runtime's final stable
+    // address. C++17 mandatory copy elision guarantees `result` is
+    // constructed in the caller's storage, so the address taken here
+    // is the same one the caller will see in
+    // `runtime_result.runtime.homeserver.database`. Installing here
+    // (rather than in `start_runtime`) means the thread_local audit
+    // pointer is never set to an address that lives on `start_runtime`'s
+    // soon-to-be-destroyed stack frame.
+    install_local_audit_database(&result.runtime.homeserver.database);
     return result;
 }
 

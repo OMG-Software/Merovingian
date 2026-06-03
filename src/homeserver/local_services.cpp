@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "local_services.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/observability/logger.hpp"

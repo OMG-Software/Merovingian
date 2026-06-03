@@ -5,6 +5,7 @@
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -430,6 +431,13 @@ SCENARIO("GET /_merovingian/admin/audit filters by category and event_type query
         auto started = merovingian::homeserver::start_runtime(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;
+        // This scenario exercises the audit-routing path, so install
+        // the sink against this test's stable stack address.
+        // `start_runtime` does not install on the caller's behalf
+        // because the LocalDatabase is a value member of a returned
+        // object; the call site that holds the runtime for the audit
+        // row's lifetime is responsible for the install.
+        merovingian::homeserver::install_local_audit_database(&runtime.database);
 
         // Bootstrap the admin user so the audit endpoint will accept the
         // request without returning 401. After bootstrap, log in once to
