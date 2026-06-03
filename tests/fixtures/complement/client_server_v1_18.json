@@ -649,11 +649,15 @@
       "save_string": {"bob_token": "access_token"}
     },
     {
-      "description": "Create a named private room for join/leave tests",
+      "description": "Create a named private room and invite Bob for join/leave tests",
       "method": "POST",
       "path": "/_matrix/client/v3/createRoom",
       "auth_from": "alice_token_v2",
-      "body": {"name": "Conformance Room", "visibility": "private"},
+      "body": {
+        "name": "Conformance Room",
+        "visibility": "private",
+        "invite": ["@bob:example.org"]
+      },
       "expect_status": 200,
       "expect_keys_present": ["room_id"],
       "save_string": {"named_room_id": "room_id"}

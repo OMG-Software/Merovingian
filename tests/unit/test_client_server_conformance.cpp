@@ -196,6 +196,18 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
     return *rid;
 }
 
+[[nodiscard]] auto create_public_room(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> std::string
+{
+    auto const r = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"public_chat"})"});
+    REQUIRE(r.response.status == 200U);
+    auto const body = parse_object(r.response.body);
+    auto const* rid = string_member(body, "room_id");
+    REQUIRE(rid != nullptr);
+    return *rid;
+}
+
 // Sends a text message and returns the event_id.
 [[nodiscard]] auto send_message(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                                 std::string const& room_id) -> std::string
@@ -1552,7 +1564,7 @@ SCENARIO("GET /rooms/{roomId}/members includes joined user after local join",
         auto const token_b = register_and_login(started.runtime, "bob");
 
         auto const create = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/client/v3/createRoom", token_a, "{}"});
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", token_a, R"({"preset":"public_chat"})"});
         REQUIRE(create.response.status == 200U);
 
         auto const create_body = parse_object(create.response.body);
@@ -1577,6 +1589,80 @@ SCENARIO("GET /rooms/{roomId}/members includes joined user after local join",
                 REQUIRE(chunk != nullptr);
                 // The creator and the joined user — at least two member events.
                 REQUIRE(chunk->size() >= 2U);
+            }
+        }
+    }
+}
+
+// --- GET /_matrix/client/v3/rooms/{roomId}/members (invite -> local join) ----
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
+//
+// An invited local user who joins must replace the invite state with a
+// `m.room.member` event whose `content.membership` is `join`.
+SCENARIO("GET /rooms/{roomId}/members reports join membership after invited local user joins",
+         "[conformance][client-server][rooms][members]")
+{
+    GIVEN("a private room with a pending local invite")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id_ptr = string_member(create_body, "room_id");
+        REQUIRE(room_id_ptr != nullptr);
+        auto const room_id = *room_id_ptr;
+
+        WHEN("the invited local user joins the room")
+        {
+            auto const join = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
+
+            THEN("the members response contains a join membership event for that user")
+            {
+                REQUIRE(join.response.status == 200U);
+
+                auto const response = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/members", alice, {}});
+                REQUIRE(response.response.status == 200U);
+
+                auto const body = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+
+                auto found_join_membership = false;
+                for (auto const& entry : *chunk)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                    REQUIRE(event != nullptr);
+
+                    auto const* type = string_member(*event, "type");
+                    auto const* state_key = string_member(*event, "state_key");
+                    if (type == nullptr || state_key == nullptr)
+                    {
+                        continue;
+                    }
+                    if (*type != "m.room.member" || *state_key != "@bob:example.org")
+                    {
+                        continue;
+                    }
+
+                    auto const* content = object_member_as_object(*event, "content");
+                    REQUIRE(content != nullptr);
+                    auto const* membership = string_member(*content, "membership");
+                    REQUIRE(membership != nullptr);
+                    REQUIRE(*membership == "join");
+                    found_join_membership = true;
+                    break;
+                }
+
+                REQUIRE(found_join_membership);
             }
         }
     }
@@ -5017,7 +5103,7 @@ SCENARIO("POST /join/{roomIdOrAlias} returns room_id on success", "[conformance]
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const alice = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, alice);
+        auto const room_id = create_public_room(started.runtime, alice);
         auto const bob = register_and_login(started.runtime, "bob");
 
         WHEN("bob POSTs to /join/{roomId}")
@@ -5047,7 +5133,7 @@ SCENARIO("POST /rooms/{roomId}/join returns room_id on success", "[conformance][
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const alice = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, alice);
+        auto const room_id = create_public_room(started.runtime, alice);
         auto const bob = register_and_login(started.runtime, "bob");
 
         WHEN("bob POSTs to /rooms/{roomId}/join")
@@ -5063,6 +5149,33 @@ SCENARIO("POST /rooms/{roomId}/join returns room_id on success", "[conformance][
                 auto const* rid = string_member(body, "room_id");
                 REQUIRE(rid != nullptr);
                 REQUIRE(*rid == room_id);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /rooms/{roomId}/join returns 403 for an invite-only room without an invite",
+         "[conformance][client-server][room-membership]")
+{
+    GIVEN("a running client-server with two users and alice creates the default invite-only room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        WHEN("bob POSTs to /rooms/{roomId}/join without being invited")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
+
+            THEN("the server rejects the join")
+            {
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(string_member(body, "errcode") != nullptr);
+                REQUIRE(string_member(body, "error") != nullptr);
             }
         }
     }

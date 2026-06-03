@@ -2,10 +2,10 @@
 
 #include "merovingian/homeserver/runtime.hpp"
 
-#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/media/runtime_media.hpp"
@@ -167,7 +167,7 @@ auto hydrate_local_database(LocalDatabase& database) -> void
 
     for (auto const& membership : database.persistent_store.memberships)
     {
-        if (membership.membership != "join" && membership.membership != "invite")
+        if (membership.membership != "join")
         {
             continue;
         }

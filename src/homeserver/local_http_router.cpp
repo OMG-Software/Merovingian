@@ -1358,7 +1358,7 @@ auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id,
     auto const member = std::ranges::find_if(room->members, [&](std::string const& member_id) {
         return member_id == user_id;
     });
-    if ((membership == "join" || membership == "invite") && member == room->members.end())
+    if (membership == "join" && member == room->members.end())
     {
         room->members.emplace_back(user_id);
     }
