@@ -15,6 +15,9 @@
 - Fix the remaining conformance and complement join fixtures so success
   paths only join public rooms or invited private rooms, instead of
   depending on the old invite-only join bug.
+- Keep `LocalRoom.members` aligned with joined membership only by
+  ignoring `invite` and `knock` updates in the runtime projection,
+  instead of treating them as removals.
 
 ## 0.5.1
 

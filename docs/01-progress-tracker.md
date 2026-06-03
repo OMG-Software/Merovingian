@@ -1425,3 +1425,7 @@ SPDX and CycloneDX inventories.
   explicitly invites Bob before he joins, and the client-server suite now
   asserts that uninvited joins to the default invite-only room are
   rejected with `403`.
+- Follow-up review fix: runtime membership projection no longer erases a
+  joined user when `invite` or `knock` membership updates are applied.
+  A focused regression in `tests/unit/test_review_regressions.cpp` now
+  pins that joined-members-only behavior.

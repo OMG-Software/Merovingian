@@ -234,6 +234,31 @@ SCENARIO("Admin health remains admin-only after router split", "[homeserver][sec
     }
 }
 
+SCENARIO("Runtime membership projection ignores non-joined invite and knock updates",
+         "[homeserver][review][membership]")
+{
+    GIVEN("a local room whose joined-members projection already contains the same user")
+    {
+        auto database = merovingian::homeserver::LocalDatabase{};
+        database.rooms.push_back({"!room:example.org", "@alice:example.org", {"@bob:example.org"}, {}});
+
+        WHEN("invite and knock membership updates are applied to the runtime projection")
+        {
+            merovingian::homeserver::apply_runtime_membership(database, "!room:example.org", "@bob:example.org",
+                                                              "invite");
+            merovingian::homeserver::apply_runtime_membership(database, "!room:example.org", "@bob:example.org",
+                                                              "knock");
+
+            THEN("the joined-members projection is unchanged")
+            {
+                REQUIRE(database.rooms.size() == 1U);
+                REQUIRE(database.rooms.front().members.size() == 1U);
+                REQUIRE(database.rooms.front().members.front() == "@bob:example.org");
+            }
+        }
+    }
+}
+
 SCENARIO("Public registration enforces configured token policy and never bootstraps admin",
          "[homeserver][security][auth][review]")
 {
