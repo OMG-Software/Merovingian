@@ -119,14 +119,6 @@ auto install_local_audit_database(LocalDatabase* database) noexcept -> void
     thread_audit_database() = database;
 }
 
-auto install_local_audit_database_returning_previous(LocalDatabase* database) noexcept -> LocalDatabase*
-{
-    (void)ensure_audit_sink_installed();
-    auto* const previous = thread_audit_database();
-    thread_audit_database() = database;
-    return previous;
-}
-
 auto current_audit_database() noexcept -> LocalDatabase*
 {
     return thread_audit_database();

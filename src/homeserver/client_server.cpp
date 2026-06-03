@@ -4086,15 +4086,14 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
     auto result = ClientServerStartResult{};
     result.started = true;
     result.runtime = std::move(rt);
-    // Install the audit sink against the runtime's final stable
-    // address. C++17 mandatory copy elision guarantees `result` is
-    // constructed in the caller's storage, so the address taken here
-    // is the same one the caller will see in
-    // `runtime_result.runtime.homeserver.database`. Installing here
-    // (rather than in `start_runtime`) means the thread_local audit
-    // pointer is never set to an address that lives on `start_runtime`'s
-    // soon-to-be-destroyed stack frame.
-    install_local_audit_database(&result.runtime.homeserver.database);
+    // No explicit `install_local_audit_database` call here: the
+    // `HomeserverRuntime` member `audit_sink_scope` is installed on
+    // construction and cleared on destruction, so the install is
+    // already bound to the returned `result.runtime`'s lifetime by
+    // the time the caller sees it. C++17 mandatory copy elision
+    // guarantees `result` is constructed in the caller's storage,
+    // so the address taken by the scope's ctor is the same one the
+    // caller will see in `runtime_result.runtime.homeserver.database`.
     return result;
 }
 

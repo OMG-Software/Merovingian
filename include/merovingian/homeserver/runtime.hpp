@@ -118,17 +118,35 @@ struct InboundReceipt final
     std::uint64_t ts{0U};
 };
 
+// RAII scope guard that wires the active `LocalDatabase` into the
+// audit sink on construction and *clears* the install on destruction
+// (if the install still belongs to this scope). The full definition
+// lives in `merovingian/homeserver/local_services.hpp`; the
+// forward-declaration here lets `HomeserverRuntime` own one as a
+// pimpl-typed member without dragging the audit-sink functions into
+// this header. See the class definition for the full contract.
+class LocalDatabaseScope;
+
 struct HomeserverRuntime final
 {
-    HomeserverRuntime() = default;
+    HomeserverRuntime();
     HomeserverRuntime(HomeserverRuntime const& other) = delete;
     auto operator=(HomeserverRuntime const& other) -> HomeserverRuntime& = delete;
     HomeserverRuntime(HomeserverRuntime&& other) noexcept;
     auto operator=(HomeserverRuntime&& other) noexcept -> HomeserverRuntime&;
+    ~HomeserverRuntime();
 
     config::Config config{};
     net::RuntimeListeners listeners{};
     LocalDatabase database{};
+    // RAII scope guard that binds the audit-sink install to this
+    // runtime's lifetime. Constructed in the runtime ctor against
+    // `database` and cleared in the dtor; if a different runtime
+    // takes over the install (e.g. via move), the source's scope
+    // detects the mismatch and becomes a no-op on its own dtor.
+    // `std::unique_ptr` keeps the runtime movable without requiring
+    // `LocalDatabaseScope` to be a complete type in this header.
+    std::unique_ptr<LocalDatabaseScope> audit_sink_scope{};
     federation::FederationRuntimeState federation{};
     media::LocalMediaRepository media_repository{};
     platform::HardeningSelfCheck hardening{};

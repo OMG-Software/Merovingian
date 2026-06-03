@@ -78,10 +78,25 @@ namespace
 
 } // namespace
 
+HomeserverRuntime::HomeserverRuntime()
+    : audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
+{
+}
+
+HomeserverRuntime::~HomeserverRuntime() = default;
+
 HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     : config(std::move(other.config))
     , listeners(std::move(other.listeners))
     , database(std::move(other.database))
+    // The source's `audit_sink_scope` is left as-is (still pointing
+    // at the source's `database` address). When the source runtime
+    // is destroyed, its scope's dtor will see the thread_local now
+    // points at the new `database` (this runtime's), and the
+    // `current != m_installed` check makes the clear a no-op.
+    // Re-install a fresh scope against the new `database` so the
+    // thread_local tracks the moved-into runtime, not the source.
+    , audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
     , federation(std::move(other.federation))
     , media_repository(std::move(other.media_repository))
     , hardening(std::move(other.hardening))
@@ -105,6 +120,13 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     config = std::move(other.config);
     listeners = std::move(other.listeners);
     database = std::move(other.database);
+    // `database` is now the new storage; re-seat the audit-sink
+    // install on it. The old scope (which pointed at the previous
+    // `database` address) is destroyed by `reset()` first; its dtor
+    // clears the thread_local only if the install is still ours, so
+    // it is always safe to call.
+    audit_sink_scope.reset();
+    audit_sink_scope = std::make_unique<LocalDatabaseScope>(database);
     federation = std::move(other.federation);
     media_repository = std::move(other.media_repository);
     hardening = std::move(other.hardening);
@@ -255,17 +277,13 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     });
 
     runtime.database = bootstrap_local_database(config, std::move(existing_state));
-    // NOTE: the audit-sink install is intentionally performed by
-    // `start_client_server` (the production entry point) and by any
-    // test scenario that calls `start_runtime` directly. Doing it
-    // here would take the address of `runtime.database` while
-    // `runtime` is a stack local of `start_runtime`; the subsequent
-    // `std::move(runtime)` into the return value (and the moves in
-    // `start_client_server` and `main` after that) release that
-    // storage, leaving the thread_local audit sink pointing into a
-    // dead stack frame. The integration test that exercises the
-    // audit-routing path therefore installs against the test's own
-    // `runtime.database`, which is the final stable address.
+    // The default ctor installed `audit_sink_scope` against the
+    // empty `LocalDatabase{}` placeholder. Now that `database` holds
+    // the real connection state, re-seat the scope so audit rows
+    // route through the *current* `database` member (which is the
+    // one the caller will see via NRVO in the returned
+    // `RuntimeStartResult`).
+    runtime.audit_sink_scope->reset(runtime.database);
     if (!runtime.database.opened || !runtime.database.schema_validated ||
         !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "devices") ||
         !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") ||
