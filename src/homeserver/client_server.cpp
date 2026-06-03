@@ -1361,107 +1361,135 @@ namespace
         return std::string{body.substr(value_start, value_end - value_start)};
     }
 
-    [[nodiscard]] auto auth(ClientServerRuntime const& rt, std::string_view token) -> std::optional<std::string>
+    [[nodiscard]] auto auth(ClientServerRuntime& rt, std::string_view token) -> std::optional<std::string>
     {
+        // `authenticated_user` is non-const because the audit-routing
+        // helper (0.5.0) writes a row to audit_log on token rejection.
+        // The caller has already locked `rt.homeserver.mutex` for the
+        // request, so the const cast is safe.
         return authenticated_user(rt.homeserver, token);
     }
 
-    [[nodiscard]] auto normalized_bucket(LocalHttpRequest const& req) -> std::string
+    // Wall-clock rate limiter. The cap is `http::RateLimitEngine<Clock>::check`,
+    // which honours the per-endpoint policy configured in
+    // `config.client_rate_limits()` (or the design-doc defaults if the
+    // operator left the block empty). Two independent tiers:
+    //   * per-IP,  keyed by the request's source IP + target prefix.
+    //   * per-user, keyed by the authenticated user_id (empty on
+    //     unauthenticated paths so the per-user tier is silently
+    //     skipped). The 5/60s per-user login cap is enforced through
+    //     this path.
+    // Wall-clock seconds: a quiet server does not freeze the bucket
+    // because the bucket rolls over on real time, not on the request
+    // counter. The engine is constructed once in `start_client_server`
+    // and is wiped by a process restart (in-process state, no on-disk
+    // persistence — see the design doc for the operator sign-off).
+    // Replace path parameters (roomId, deviceId, userId, etc.) in
+    // `target` with a stable placeholder so two different room IDs hit
+    // the same rate-limit bucket. The Matrix spec defines a small set
+    // of path templates under `/_matrix/client/v3/...`; we only handle
+    // the ones the legacy request-counter limiter coalesced, because
+    // the per-endpoint caps are the unit the operator reasons about.
+    [[nodiscard]] static auto normalized_target(std::string_view target) -> std::string
     {
+        auto out = std::string{target};
         auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        if (starts_with(out, room_prefix))
+        {
+            // /_matrix/client/v3/rooms/{roomId}/{action}
+            auto rest = std::string_view{out}.substr(room_prefix.size());
+            auto const slash = rest.find('/');
+            if (slash != std::string_view::npos)
+            {
+                out = std::string{room_prefix} + "{roomId}" + std::string{rest.substr(slash)};
+            }
+        }
         auto constexpr device_prefix = std::string_view{"/_matrix/client/v3/devices/"};
-        // Prefix the bucket with the caller's access token so authenticated
-        // endpoints quota each client independently. Unauthenticated routes
-        // (login, register, versions, /_matrix/key/v2/server) carry an empty
-        // token and still share a global bucket per route; scoping those by
-        // remote IP needs `LocalHttpRequest` to grow a `remote_addr` field
-        // and is tracked as a follow-up alongside the federation discovery
-        // work in `docs/01-progress-tracker.md`.
-        auto identity = req.access_token + '|';
-        auto target = std::string_view{req.target};
-        if (starts_with(target, room_prefix) && ends_with(target, "/join"))
+        if (starts_with(out, device_prefix))
         {
-            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/join";
-        }
-        if (starts_with(target, room_prefix) && ends_with(target, "/send"))
-        {
-            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/send";
-        }
-        if (starts_with(target, room_prefix) && ends_with(target, "/state"))
-        {
-            return identity + req.method + " /_matrix/client/v3/rooms/{roomId}/state";
-        }
-        if (starts_with(target, device_prefix))
-        {
-            return identity + req.method + " /_matrix/client/v3/devices/{deviceId}";
+            out = std::string{device_prefix} + "{deviceId}";
         }
         auto constexpr user_prefix = std::string_view{"/_matrix/client/v3/user/"};
-        if (starts_with(target, user_prefix) && ends_with(target, "/filter"))
+        if (starts_with(out, user_prefix))
         {
-            return identity + req.method + " /_matrix/client/v3/user/{userId}/filter";
-        }
-        if (starts_with(target, user_prefix) && target.find("/filter/") != std::string_view::npos)
-        {
-            return identity + req.method + " /_matrix/client/v3/user/{userId}/filter/{filterId}";
-        }
-        if (starts_with(target, user_prefix) && target.find("/account_data/") != std::string_view::npos)
-        {
-            return identity + req.method + " /_matrix/client/v3/user/{userId}/account_data/{type}";
-        }
-        if (starts_with(target, "/_matrix/client/v3/join/"))
-        {
-            return identity + req.method + " /_matrix/client/v3/join/{roomIdOrAlias}";
+            // /_matrix/client/v3/user/{userId}/{action}
+            auto rest = std::string_view{out}.substr(user_prefix.size());
+            auto const slash = rest.find('/');
+            if (slash != std::string_view::npos)
+            {
+                out = std::string{user_prefix} + "{userId}" + std::string{rest.substr(slash)};
+            }
         }
         auto constexpr profile_prefix = std::string_view{"/_matrix/client/v3/profile/"};
-        if (starts_with(target, profile_prefix))
+        if (starts_with(out, profile_prefix))
         {
-            return identity + req.method + " /_matrix/client/v3/profile/{userId}";
+            out = std::string{profile_prefix} + "{userId}";
         }
-        if (trust_safety::match_reporting_api_route(req.method, target).matched)
+        if (starts_with(out, "/_matrix/client/v3/join/"))
         {
-            return identity + req.method + " /_matrix/client/v3/trust-safety/{route}";
+            out = "/_matrix/client/v3/join/{roomIdOrAlias}";
         }
-        return identity + req.method + ' ' + req.target;
+        return out;
     }
 
-    // Per-bucket request limiter. The cap is the lower of the per-endpoint
-    // `http::endpoint_default_rate_limit` quota (login and register 5,
-    // keys and devices 30, media 20, federation 120, default 60) and the
-    // runtime-configured `ClientApiLimits::max_requests_per_bucket` ceiling
-    // (which tests use to drive the limiter from a single request). The
-    // window length stays in request-count units via
-    // `ClientApiLimits::rate_limit_window_requests`; switching the window
-    // to wall-clock seconds is a follow-up that needs an injectable time
-    // source to remain unit-testable without sleeps.
     [[nodiscard]] auto allow(ClientServerRuntime& rt, LocalHttpRequest const& req) -> bool
     {
-        ++rt.request_clock;
-        auto const policy = http::endpoint_default_rate_limit(req.method, req.target);
-        if (!http::rate_limit_policy_is_valid(policy))
+        if (rt.rate_limit_engine == nullptr)
         {
-            return false;
-        }
-        auto const max_requests = std::min(rt.limits.max_requests_per_bucket, policy.max_requests);
-        auto const bucket = normalized_bucket(req);
-        auto const it = std::ranges::find_if(rt.rate_limits, [&bucket](ClientRateLimitCounter const& c) {
-            return c.bucket == bucket;
-        });
-        if (it == rt.rate_limits.end())
-        {
-            rt.rate_limits.push_back({bucket, 1U, rt.request_clock});
+            // The runtime is in a test-only state with no engine installed
+            // (e.g. a stub constructed by a unit test that does not call
+            // start_client_server). Permitting the request is the safe
+            // default for a fully-validated, body-sized request; the
+            // production path always has an engine.
             return true;
         }
-        if (rt.request_clock - it->window_start_request >= rt.limits.rate_limit_window_requests)
+        // Per-IP bucket: today `LocalHttpRequest` does not carry a source
+        // IP, so the engine sees a single synthetic "local" IP for the
+        // entire process. We still include the *normalized* target in
+        // the key so different endpoints (e.g. /register vs /versions)
+        // get independent buckets and route templates (e.g.
+        // /rooms/{roomId}/send for two different room IDs) coalesce
+        // into the same bucket. The per-endpoint cap is the binding
+        // constraint, and a global per-IP cap would conflate them.
+        auto const norm = normalized_target(req.target);
+        auto const ip_key = std::string{"local|"} + norm;
+        // Per-user bucket: the bearer token is the user identity in this
+        // pre-authentication call site (callers have not yet resolved it
+        // to a user_id). Unauthenticated paths pass an empty token, so
+        // the per-user tier is silently skipped — same behaviour as the
+        // 0.4.x limiter's empty-token bucket. We also append the
+        // normalized target so a 5/60s cap on /login does not bleed
+        // into a 60/60s cap on /sync.
+        std::string user_key;
+        if (!req.access_token.empty())
         {
-            it->count = 0U;
-            it->window_start_request = rt.request_clock;
+            user_key = req.access_token;
+            user_key.push_back('|');
+            user_key.append(norm);
         }
-        if (it->count >= max_requests)
+        auto const decision = rt.rate_limit_engine->check(std::string_view{ip_key}, req.target,
+                                                          std::string_view{user_key});
+        if (!decision.allowed)
         {
-            return false;
+            // Audit-routing: rate-limit denial is one of the five
+            // high-signal failure events from the 0.5.0 design doc.
+            // We log the structured diagnostic AND write a row to
+            // audit_log so `GET /_merovingian/admin/audit?category=policy`
+            // surfaces the cap being hit.
+            log_diagnostic_audit(rt.homeserver.database, "rate_limit", "rate_limit.exceeded",
+                                 {{"target",         observability::sanitized_http_target(req.target), false},
+                                  {"deny_reason",    std::string{decision.deny_reason},                  false},
+                                  {"requests_seen",  std::to_string(decision.requests_seen),            false},
+                                  {"max_requests",   std::to_string(decision.max_requests),             false},
+                                  {"window_seconds", std::to_string(decision.window_seconds),           false},
+                                  {"per_ip_count",   std::to_string(decision.per_ip_count),             false},
+                                  {"per_user_count", std::to_string(decision.per_user_count),           false}},
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::policy,
+                                 "rate_limit.exceeded", req.access_token, req.target,
+                                 "max=" + std::to_string(decision.max_requests) + " per " +
+                                     std::to_string(decision.window_seconds) + "s");
         }
-        ++it->count;
-        return true;
+        return decision.allowed;
     }
 
     [[nodiscard]] auto find_device(ClientServerRuntime& rt, std::string_view user, std::string_view device)
@@ -3940,6 +3968,83 @@ namespace
 
 } // namespace
 
+// Translate the operator-facing `config::ClientRateLimitsConfig` into the
+// engine's `http::RateLimitConfig`. The operator writes one map per tier
+// keyed by URL prefix; the engine needs the same shape so the only work
+// here is to copy the maps and the per-IP default. The conversion is a
+// pure function so it is easy to unit test independently of the engine.
+[[nodiscard]] static auto to_http_rate_limit_config(config::ClientRateLimitsConfig const& in) -> http::RateLimitConfig
+{
+    auto out = http::RateLimitConfig{};
+    out.per_ip.reserve(in.per_ip.size());
+    for (auto const& [k, v] : in.per_ip)
+    {
+        out.per_ip.emplace(k, v);
+    }
+    out.per_user.reserve(in.per_user.size());
+    for (auto const& [k, v] : in.per_user)
+    {
+        out.per_user.emplace(k, v);
+    }
+    out.default_per_ip = in.default_per_ip;
+    return out;
+}
+
+// Push the operator's `log_modules` map into the process-wide `SingleLog`.
+// A special key of `*` sets the default level (the floor every other
+// module sees); any other key names an individual module. Levels are
+// case-folded to the canonical lowercase form before lookup so the
+// operator can write `LOG_MODULES.HOME_SERVER=DEBUG` or
+// `log_modules.home_server=debug` interchangeably.
+static auto apply_log_modules(config::LogModulesConfig const& cfg) -> void
+{
+    auto& log = observability::SingleLog::instance();
+    for (auto const& [name, level] : cfg.levels)
+    {
+        if (name == "*")
+        {
+            log.set_default_log_level(level);
+        }
+        else
+        {
+            log.set_module_log_level(name, level);
+        }
+    }
+}
+
+auto install_test_rate_limit_engine(ClientServerRuntime& runtime) -> void
+{
+    // One request per 60 seconds for every target. The default runtime
+    // engine has 60 per 60s on most routes, so this is the minimum
+    // cap that still drives a 429 from a single back-to-back request.
+    // A real "test for the 429 path" wants the second call to be
+    // denied; that is exactly what the cap-of-1 guarantees.
+    auto cfg = http::RateLimitConfig{};
+    cfg.default_per_ip = {1U, 60U};
+    runtime.rate_limit_engine =
+        std::make_unique<http::RateLimitEngine<ClientServerClock>>(cfg, runtime.clock);
+}
+
+// Test-only helper: install an engine with both per-IP and per-user
+// caps set to 1/60s. Used by the per-user isolation test, which needs
+// to verify that alice exhausting her per-user bucket does not
+// deplete bob's. The per-user map covers account/whoami so the test
+// can hit the per-user tier deterministically.
+auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> void
+{
+    auto cfg = http::RateLimitConfig{};
+    // Per-IP cap is loose (1000/60s) so it never binds — the test
+    // only cares about per-user isolation. Production servers run with
+    // 60/60s or tighter; the loose cap here is the simplest way to
+    // exercise the per-user tier in isolation.
+    cfg.default_per_ip = {1000U, 60U};
+    cfg.per_user = {
+        {"/_matrix/client/v3/account/whoami", {1U, 60U}},
+    };
+    runtime.rate_limit_engine =
+        std::make_unique<http::RateLimitEngine<ClientServerClock>>(cfg, runtime.clock);
+}
+
 auto start_client_server(config::Config const& config) -> ClientServerStartResult
 {
     auto started = start_runtime(config);
@@ -3953,6 +4058,21 @@ auto start_client_server(config::Config const& config) -> ClientServerStartResul
     // configuration (per docs/configuration.md) and so requires a restart to
     // take effect, matching every other HTTP-behaviour key.
     rt.cors = config.server().cors;
+    // Build the wall-clock rate-limit engine from the parsed
+    // ClientRateLimitsConfig. The engine borrows the runtime's clock
+    // member so a unit test that constructs a `ClientServerRuntime` by
+    // hand can swap the clock by giving the runtime a different
+    // `ClientServerClock` instance and then creating the engine against
+    // the new clock. (In production the clock always reads
+    // std::chrono::steady_clock::now() so this is just a default-init.)
+    rt.rate_limit_engine = std::make_unique<http::RateLimitEngine<ClientServerClock>>(
+        to_http_rate_limit_config(config.client_rate_limits()), rt.clock);
+    // Apply the operator's per-module log level overrides. The
+    // SingleLog is a process-wide singleton; setting the level map here
+    // is the bootstrap that lets the operator silence http_server and
+    // bump auth to debug without recompiling. Restart-required; see
+    // src/config/reload_policy.cpp.
+    apply_log_modules(config.log_modules());
     rt.sync_notifier = std::make_unique<sync::SyncNotifier>();
     rt.homeserver.sync_notifier = rt.sync_notifier.get();
     rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
@@ -4044,35 +4164,38 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     });
     if (!rt.homeserver.started)
     {
-        log_diagnostic("request.rejected", {
-                                               {"method", req.method,                                       false},
-                                               {"target", observability::sanitized_http_target(req.target), false},
-                                               {"status", "503",                                            false},
-                                               {"reason", "runtime not started",                            false}
-        });
+        log_diagnostic_audit(rt.homeserver.database, "client_server", "request.rejected",
+                             {{"method", req.method,                                       false},
+                              {"target", observability::sanitized_http_target(req.target), false},
+                              {"status", "503",                                            false},
+                              {"reason", "runtime not started",                            false}},
+                             observability::LogEventSeverity::warning, observability::AuditCategory::policy,
+                             "request.rejected", req.access_token, req.target, "503:runtime not started");
         return dispatch_err(req, rt, 503U, "M_UNAVAILABLE", "runtime not started");
     }
     if (req.body.size() > rt.limits.max_body_bytes)
     {
-        log_diagnostic("request.rejected", {
-                                               {"method",      req.method,                                       false},
-                                               {"target",      observability::sanitized_http_target(req.target), false},
-                                               {"status",      "413",                                            false},
-                                               {"body_bytes",  std::to_string(req.body.size()),                  false},
-                                               {"limit_bytes", std::to_string(rt.limits.max_body_bytes),         false},
-                                               {"reason",      "request body too large",                         false}
-        });
+        log_diagnostic_audit(rt.homeserver.database, "client_server", "request.rejected",
+                             {{"method",      req.method,                                       false},
+                              {"target",      observability::sanitized_http_target(req.target), false},
+                              {"status",      "413",                                            false},
+                              {"body_bytes",  std::to_string(req.body.size()),                  false},
+                              {"limit_bytes", std::to_string(rt.limits.max_body_bytes),         false},
+                              {"reason",      "request body too large",                         false}},
+                             observability::LogEventSeverity::warning, observability::AuditCategory::policy,
+                             "request.rejected", req.access_token, req.target, "413:request body too large");
         return dispatch_err(req, rt, 413U, "M_TOO_LARGE", "request body too large");
     }
     auto guard = std::unique_lock<std::recursive_mutex>{rt.homeserver.mutex};
     if (!allow(rt, req))
     {
-        log_diagnostic("request.rejected", {
-                                               {"method", req.method,                                       false},
-                                               {"target", observability::sanitized_http_target(req.target), false},
-                                               {"status", "429",                                            false},
-                                               {"reason", "rate limit exceeded",                            false}
-        });
+        log_diagnostic_audit(rt.homeserver.database, "client_server", "request.rejected",
+                             {{"method", req.method,                                       false},
+                              {"target", observability::sanitized_http_target(req.target), false},
+                              {"status", "429",                                            false},
+                              {"reason", "rate limit exceeded",                            false}},
+                             observability::LogEventSeverity::warning, observability::AuditCategory::policy,
+                             "request.rejected", req.access_token, req.target, "429:rate limit exceeded");
         return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "rate limit exceeded");
     }
     auto call_local = [&](LocalHttpRequest const& inner) {

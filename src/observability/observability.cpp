@@ -174,6 +174,36 @@ auto audit_category_name(AuditCategory category) noexcept -> char const*
     return "unknown";
 }
 
+auto audit_category_from_name(std::string_view name) noexcept -> std::optional<AuditCategory>
+{
+    // Inverse of `audit_category_name`. Used by the audit-filter
+    // helper to turn `?category=policy` query parameters into the
+    // enum. Unknown names return `std::nullopt` so the caller can
+    // return 400 with a clear "unknown audit category: <name>"
+    // message rather than silently dropping the request.
+    if (name == "auth")
+    {
+        return AuditCategory::auth;
+    }
+    if (name == "key_lifecycle")
+    {
+        return AuditCategory::key_lifecycle;
+    }
+    if (name == "policy")
+    {
+        return AuditCategory::policy;
+    }
+    if (name == "moderation")
+    {
+        return AuditCategory::moderation;
+    }
+    if (name == "admin")
+    {
+        return AuditCategory::admin;
+    }
+    return std::nullopt;
+}
+
 auto health_status_name(HealthStatus status) noexcept -> char const*
 {
     switch (status)

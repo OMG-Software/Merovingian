@@ -1,31 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//
-// +-------------------------------------------------------------------------+
-// |  WALL-CLOCK RATE LIMITER (REGRESSION)                                   |
-// |                                                                         |
-// |  Spec (background): https://spec.matrix.org/v1.18/client-server-api/    |
-// |  Implementation plan: docs/log-filtering-design.md                      |
-// |                                                                         |
-// |  The 0.4.x rate limiter used a REQUEST-COUNT window, not a wall-clock   |
-// |  one, which meant on a quiet server the per-IP bucket for `/register`  |
-// |  was effectively frozen at the cap (5) until 64 unrelated requests had  |
-// |  landed server-wide. Operators could not register a single user without |
-// |  first generating 64 unrelated requests. 0.5.0 replaces this with a     |
-// |  wall-clock seconds window, configurable per-endpoint, and adds a      |
-// |  per-user login cap as the credential-stuffing defence. Buckets are    |
-// |  in-process so a server restart wipes the counter.                     |
-// |                                                                         |
-// |  These scenarios exercise:                                              |
-// |   1. The cap is enforced as requests per 60 seconds, not per 64         |
-// |      server-wide requests.                                             |
-// |   2. The bucket rolls over on wall-clock seconds; advancing the clock  |
-// |      by 60 s releases the next request without sleeping.               |
-// |   3. Per-IP and per-user buckets are independent.                      |
-// |   4. The 6th /login for the same user from any IP is rejected.         |
-// |   5. Per-endpoint caps are overridable via ClientRateLimitsConfig.       |
-// |   6. The /register limit defaults to 20/60s per IP, not the legacy     |
-// |      5/60s.                                                            |
-// +-------------------------------------------------------------------------+
 
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/http/rate_limit.hpp"

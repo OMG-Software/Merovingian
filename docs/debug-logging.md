@@ -16,6 +16,14 @@ file for join-failure triage. Low-severity log batches now flush every 1 second
 or every 100 messages, whichever comes first, so a quiet debug session does not
 wait indefinitely for a severity bump or a large burst of traffic.
 
+## Per-module level overrides (0.5.0)
+
+`--debug` lowers the **default** level to `debug` for every module that
+does not have an explicit override. To narrow the firehose to the
+modules you care about, set `log_modules.<name>=<level>` keys in
+`merovingian.conf`. See `docs/log-filtering.md` for the full recipe and
+the list of recognised module names.
+
 ## Join Failure Diagnostics
 
 For failed room joins, enable debug/file logging and inspect events with these

@@ -21,7 +21,7 @@ namespace merovingian::homeserver
                                                    std::string_view device_id) -> OperationResult;
 [[nodiscard]] auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token)
     -> SessionRefreshResult;
-[[nodiscard]] auto authenticated_user(HomeserverRuntime const& runtime, std::string_view access_token)
+[[nodiscard]] auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_token)
     -> std::optional<std::string>;
 [[nodiscard]] auto authenticated_session(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<LocalSession>;

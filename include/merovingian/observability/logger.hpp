@@ -627,6 +627,61 @@ inline auto log_diagnostic(std::string_view logger, std::string_view event,
     SingleLog::instance().log(level, diagnostic_log_summary(logger, event, fields));
 }
 
+// +-------------------------------------------------------------------------+
+// |  Audit-routing sink (0.5.0)                                              |
+// |                                                                         |
+// |  The `log_diagnostic_audit` helper below emits the diagnostic line and,  |
+// |  when severity is at or above `warning`, invokes the registered audit    |
+// |  sink with the audit row fields. The sink is a function pointer set by  |
+// |  the homeserver at startup; the default sink is a no-op. The reason     |
+// |  this lives here (in `observability/`) rather than `homeserver/` is the |
+// |  dependency direction: the `auth::registration_policy` function wants to |
+// |  call it, but `auth/` is below `homeserver/` in the module stack and    |
+// |  must not depend on `homeserver/`. The sink indirection keeps the       |
+// |  helper in the lower layer without dragging `LocalDatabase` into every  |
+// |  module that wants audit routing.                                       |
+// +-------------------------------------------------------------------------+
+
+struct AuditSinkFields final
+{
+    AuditCategory category{AuditCategory::auth};
+    std::string_view event_type{};
+    std::string_view actor{};
+    std::string_view target{};
+    std::string_view reason{};
+};
+
+using AuditSink = auto (*)(AuditSinkFields const&) -> void;
+
+// Default no-op sink. The homeserver installs a real one at startup
+// that calls `append_local_audit`; modules below `homeserver/` see
+// only this default and never touch the database directly.
+inline auto default_audit_sink(AuditSinkFields const& /*fields*/) -> void
+{
+}
+
+inline auto the_audit_sink() noexcept -> AuditSink&
+{
+    static auto sink = AuditSink{&default_audit_sink};
+    return sink;
+}
+
+inline auto set_audit_sink(AuditSink sink) noexcept -> void
+{
+    the_audit_sink() = sink;
+}
+
+inline auto log_diagnostic_audit(std::string_view logger, std::string_view event,
+                                 std::vector<StructuredLogField> const& fields, LogEventSeverity severity,
+                                 AuditSinkFields const& audit_fields) -> void
+{
+    log_diagnostic(logger, event, fields, severity);
+    if (static_cast<int>(severity) >= static_cast<int>(LogEventSeverity::warning))
+    {
+        the_audit_sink()(audit_fields);
+    }
+}
+
 
 } // namespace merovingian::observability
 

@@ -1,3 +1,31 @@
+## 0.5.0 (in progress — feature/0.5.0-rate-limit-and-logging-config)
+
+- Wires the wall-clock rate-limit engine, per-module log-level
+  overrides, and audit-row routing into production. The PR #190 commit
+  added the engine and helpers; this branch makes them reachable from
+  `merovingian.conf` and routes the five high-signal failure call
+  sites through the audit pipeline.
+- New config keys under `client_rate_limits.*` and `log_modules.*` with
+  a parser that accepts dotted target prefixes (e.g.
+  `client_rate_limits.per_ip./_matrix/client/v3/login=20/60s`).
+  Documented in `config/merovingian.conf.example`,
+  `docs/configuration.md`, and the new `docs/log-filtering.md`.
+- `/_merovingian/admin/audit` now accepts `?category=` and
+  `?event_type=` query-string filters. Unknown categories return 400
+  with `unknown audit category: <name>`. Implementation in
+  `src/homeserver/runtime.cpp` and `src/homeserver/local_http_router.cpp`.
+- Five failure call sites now route through
+  `observability::log_diagnostic_audit`:
+  `rate_limit.exceeded`, `login.rejected`, `access_token.rejected`,
+  `request.rejected`, and `registration_policy.denied`. At severity
+  `warning` or above the helper appends a row to `audit_log` with
+  the same actor / target / reason as the structured log line.
+- New BDD tests: `tests/unit/test_config_client_rate_limits.cpp`
+  (4 scenarios), `tests/unit/test_config_log_modules.cpp` (3
+  scenarios), `tests/unit/test_audit_filter.cpp` (2 scenarios), and a
+  new SCENARIO in `tests/integration/test_client_server_flow.cpp` for
+  the round-trip audit-filter request.
+
 ## 0.4.62 (in progress — fix/otk-signature-claim)
 
 - Server now rejects `one_time_keys` and `fallback_keys` whose signature

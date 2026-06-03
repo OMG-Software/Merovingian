@@ -126,6 +126,7 @@ struct ObservabilitySnapshot final
 [[nodiscard]] auto admin_surface_name(AdminSurface surface) noexcept -> char const*;
 [[nodiscard]] auto admin_operation_name(AdminOperation operation) noexcept -> char const*;
 [[nodiscard]] auto audit_category_name(AuditCategory category) noexcept -> char const*;
+[[nodiscard]] auto audit_category_from_name(std::string_view name) noexcept -> std::optional<AuditCategory>;
 [[nodiscard]] auto health_status_name(HealthStatus status) noexcept -> char const*;
 [[nodiscard]] auto admin_surface_is_safe(AdminControlSurface const& surface) noexcept -> bool;
 [[nodiscard]] auto admin_routes() -> std::vector<AdminRoute>;

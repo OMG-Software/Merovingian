@@ -60,7 +60,9 @@ namespace
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
         security,
-    };
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+};
 }
 
 [[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)

@@ -142,6 +142,8 @@ SCENARIO("SQLite runtime database summary includes performance warning", "[datab
             merovingian::config::ListenersConfig{},
             database,
             merovingian::config::SecurityConfig{},
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
 
         WHEN("runtime database config is summarized")
@@ -173,6 +175,8 @@ SCENARIO("SQLite config requires a database path", "[config][database][validatio
             merovingian::config::ListenersConfig{},
             database,
             merovingian::config::SecurityConfig{},
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
 
         WHEN("the config is validated")

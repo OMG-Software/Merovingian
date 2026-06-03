@@ -5,8 +5,10 @@
 #include "merovingian/homeserver/dispatch_result.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/http/rate_limit.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
@@ -24,17 +26,6 @@ struct ClientDevice final
     std::string user_id{};
     std::string device_id{};
     std::string display_name{};
-};
-
-struct ClientRateLimitCounter final
-{
-    std::string bucket{};
-    std::uint32_t count{0U};
-    // Logical request-count clock value when the current window started.
-    // The bucket-level cap comes from `http::endpoint_default_rate_limit`
-    // for the request's method and target (with `ClientApiLimits::max_requests_per_bucket`
-    // acting as an override ceiling for tests that need a tighter limit).
-    std::uint64_t window_start_request{0U};
 };
 
 struct ClientKeyApiRecord final
@@ -63,10 +54,19 @@ struct ClientApiLimits final
     // many one-time keys) while staying well below the HTTP-layer 1 MiB cap in
     // http::RequestLimits::max_body_bytes.
     std::size_t max_body_bytes{65536U};
-    std::uint32_t max_requests_per_bucket{64U};
-    std::uint64_t rate_limit_window_requests{64U};
     std::size_t max_sync_rooms{16U};
     std::size_t max_sync_events_per_room{8U};
+};
+
+// Wall-clock source for the rate-limit engine. The engine takes a
+// callable; we hold the state inline so the engine (a unique_ptr) can
+// borrow it. Default-constructed runtimes start at steady_clock origin.
+struct ClientServerClock final
+{
+    [[nodiscard]] auto operator()() const noexcept -> std::chrono::steady_clock::time_point
+    {
+        return std::chrono::steady_clock::now();
+    }
 };
 
 struct ClientServerRuntime final
@@ -76,12 +76,18 @@ struct ClientServerRuntime final
     std::vector<ClientDevice> devices{};
     std::vector<ClientKeyApiRecord> key_api_records{};
     std::vector<RegistrationValidationSession> registration_validation_sessions{};
-    std::vector<ClientRateLimitCounter> rate_limits{};
     // CORS policy snapshot. Copied from `config.server().cors` at
     // `start_client_server()` time. CORS is not hot-reloadable: a config
     // change requires a server restart.
     config::CorsConfig cors{};
-    std::uint64_t request_clock{0U};
+    // Wall-clock rate-limit engine. Constructed once in
+    // `start_client_server()` from `config.client_rate_limits()`. The
+    // engine borrows `clock` (a member of the runtime) so the
+    // unique_ptr can hold the templated engine and the runtime stays
+    // movable. In tests the same engine template accepts a manual
+    // clock via the same borrowed reference.
+    ClientServerClock clock{};
+    std::unique_ptr<http::RateLimitEngine<ClientServerClock>> rate_limit_engine{nullptr};
     // Owning pointer to the long-poll notifier. SyncNotifier holds a mutex
     // and condition_variable so it can't be copied or moved by value; a
     // unique_ptr keeps the runtime movable. Default-constructed runtimes
@@ -95,6 +101,17 @@ struct ClientServerRuntime final
 // and republishes the persistent store's current sync stream id. Called by
 // the mutators below and the sync handler.
 [[nodiscard]] auto ensure_sync_notifier(ClientServerRuntime& runtime) -> sync::SyncNotifier&;
+
+// Test-only helper: replace the rate-limit engine with one that allows
+// exactly one request per route per 60s window. The test scenarios in
+// tests/unit/test_client_server.cpp install this to drive the 429 path
+// from a single request without depending on the operator-configurable
+// per-route caps. In production the engine is built in
+// `start_client_server()` from `config.client_rate_limits()`. Not in the
+// public API: declared here so test files can find it via the runtime
+// header, defined in src/homeserver/client_server.cpp.
+auto install_test_rate_limit_engine(ClientServerRuntime& runtime) -> void;
+auto install_test_per_user_rate_limit_engine(ClientServerRuntime& runtime) -> void;
 
 // Sync surface mutators. Each enqueues the row through the persistent
 // store and bumps the SyncNotifier so a parked /sync request can wake.

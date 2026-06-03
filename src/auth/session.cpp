@@ -73,8 +73,24 @@ auto registration_policy(RegistrationPolicy policy) -> RegistrationPolicyDecisio
         }
         return {true, {}};
     }();
-    log_diagnostic(result.allowed ? "registration_policy.allowed" : "registration_policy.denied",
-                   {{"reason", result.reason, false}});
+    if (result.allowed)
+    {
+        log_diagnostic("registration_policy.allowed", {{"reason", result.reason, false}});
+    }
+    else
+    {
+        // Audit-routing: a denied registration is one of the five
+        // high-signal failure events from the 0.5.0 design doc. We log
+        // the structured diagnostic AND write a row to audit_log via
+        // the homeserver-installed sink so operators can query
+        // `GET /_merovingian/admin/audit?category=policy` to see the
+        // configured policy denying the request.
+        observability::log_diagnostic_audit(
+            "auth", "registration_policy.denied", {{"reason", result.reason, false}},
+            observability::LogEventSeverity::warning,
+            observability::AuditSinkFields{observability::AuditCategory::policy, "registration_policy.denied", "system",
+                                          "system", result.reason});
+    }
     return result;
 }
 

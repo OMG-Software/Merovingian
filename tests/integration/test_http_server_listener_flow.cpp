@@ -45,7 +45,9 @@ namespace
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
         security,
-    };
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+};
 }
 
 [[nodiscard]] auto connect_loopback(std::uint16_t port) -> int

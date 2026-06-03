@@ -32,7 +32,9 @@ namespace
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
         security,
-    };
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+};
 }
 
 [[nodiscard]] auto sqlite_media_test_config(std::filesystem::path const& sqlite_path) -> merovingian::config::Config
@@ -49,7 +51,9 @@ namespace
         merovingian::config::ListenersConfig{},
         database,
         security,
-    };
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+};
 }
 
 [[nodiscard]] auto unique_sqlite_path() -> std::filesystem::path

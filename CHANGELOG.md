@@ -1,3 +1,34 @@
+## 0.5.1
+
+- Wire the wall-clock rate-limit engine, per-module log-level
+  overrides, and audit-routing helper into production.
+- New `client_rate_limits.*` config keys (per-IP and per-user,
+  keyed by target prefix, format `<N>/<Ws>s`).
+- New `log_modules.*` config keys for per-module and wildcard
+  default log levels. Restart required to take effect.
+- `/_merovingian/admin/audit` accepts `?category=` and
+  `?event_type=` query-string filters. Unknown categories
+  return 400.
+- Five high-signal failure call sites now route through
+  `observability::log_diagnostic_audit`, which at severity
+  `warning` or above appends a row to `audit_log` with the
+  same actor / target / reason as the structured log line:
+  `rate_limit.exceeded`, `login.rejected`,
+  `access_token.rejected`, `request.rejected`,
+  `registration_policy.denied`.
+- New BDD tests: `tests/unit/test_config_client_rate_limits.cpp`
+  (4 scenarios), `tests/unit/test_config_log_modules.cpp`
+  (3 scenarios), `tests/unit/test_audit_filter.cpp`
+  (2 scenarios), and a new SCENARIO in
+  `tests/integration/test_client_server_flow.cpp` for the
+  round-trip audit-filter request.
+- New operator docs: `docs/log-filtering.md`.
+
+## 0.5.0
+- Add the wall-clock `RateLimitEngine<Clock>` template, the
+  per-event severities on `SingleLog`, and the per-module
+  `set_module_log_level` / `set_default_log_level` API.
+
 ## 0.4.62
 - Fix `/keys/upload` accepting one-time and fallback keys whose signature is
   not made by the device's own ed25519 identity key. The Matrix v1.18 spec

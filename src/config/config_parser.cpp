@@ -2,8 +2,13 @@
 
 #include "merovingian/config/config_parser.hpp"
 
+#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/observability/logger.hpp"
+
 #include <limits>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace merovingian::config
@@ -32,9 +37,75 @@ namespace
     }
 
     inline auto apply_config_value(ServerConfig& server, ListenersConfig& listeners, DatabaseConfig& database,
-                                   SecurityConfig& security, std::string_view key, std::string_view value,
+                                   SecurityConfig& security, ClientRateLimitsConfig& client_rate_limits,
+                                   LogModulesConfig& log_modules, std::string_view key, std::string_view value,
                                    std::vector<ConfigValidationFinding>& findings) -> void
     {
+        // The client_rate_limits.per_ip and .per_user maps are keyed by
+        // request target prefix (e.g. "/_matrix/client/v3/login"), which
+        // contains '/' characters. We handle them with prefix-matching
+        // before the literal-key branches so the rest of the parser
+        // remains a clean if/else chain.
+        if (starts_with(key, "client_rate_limits.per_ip."))
+        {
+            auto const target = std::string{key.substr(std::string_view{"client_rate_limits.per_ip."}.size())};
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 20/60s)");
+            }
+            else
+            {
+                client_rate_limits.per_ip[target] = *policy;
+            }
+            return;
+        }
+        if (starts_with(key, "client_rate_limits.per_user."))
+        {
+            auto const target = std::string{key.substr(std::string_view{"client_rate_limits.per_user."}.size())};
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 5/60s)");
+            }
+            else
+            {
+                client_rate_limits.per_user[target] = *policy;
+            }
+            return;
+        }
+        if (key == "client_rate_limits.default_per_ip")
+        {
+            auto const policy = parse_rate_limit_policy(value);
+            if (!policy.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected rate-limit policy of the form N/Ns (e.g. 60/60s)");
+            }
+            else
+            {
+                client_rate_limits.default_per_ip = *policy;
+            }
+            return;
+        }
+        if (starts_with(key, "log_modules."))
+        {
+            auto const name = std::string{key.substr(std::string_view{"log_modules."}.size())};
+            auto const level = parse_log_level(value);
+            if (!level.has_value())
+            {
+                add_parse_finding(findings, std::string{key},
+                                  "expected log level trace|debug|info|notice|warning|error|critical|off");
+            }
+            else
+            {
+                log_modules.levels[name] = *level;
+            }
+            return;
+        }
+
         if (key == "server.name")
         {
             server.server_name = std::string{value};
@@ -425,6 +496,8 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
     auto listeners = ListenersConfig{};
     auto database = DatabaseConfig{};
     auto security = SecurityConfig{};
+    auto client_rate_limits = ClientRateLimitsConfig{};
+    auto log_modules = LogModulesConfig{};
     auto findings = std::vector<ConfigValidationFinding>{};
     auto seen_keys = std::vector<std::string>{};
 
@@ -467,7 +540,8 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
                 else
                 {
                     seen_keys.emplace_back(key);
-                    apply_config_value(server, listeners, database, security, key, value, findings);
+                    apply_config_value(server, listeners, database, security, client_rate_limits, log_modules, key,
+                                       value, findings);
                 }
             }
         }
@@ -480,7 +554,7 @@ auto parse_key_value_config(std::string_view input) -> ConfigParseResult
         ++line_number;
     }
 
-    auto config = Config{server, listeners, database, security};
+    auto config = Config{server, listeners, database, security, client_rate_limits, log_modules};
     auto validation_findings = validate(config);
     findings.insert(findings.end(), validation_findings.begin(), validation_findings.end());
 

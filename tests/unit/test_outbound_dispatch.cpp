@@ -39,6 +39,8 @@ namespace
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
         security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 

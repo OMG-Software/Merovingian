@@ -40,12 +40,14 @@ SCENARIO("Runtime listener planning preserves configured federation bind", "[net
     {
         auto listeners_config = merovingian::config::ListenersConfig{};
         listeners_config.federation.bind = "127.0.0.1:8010";
-        auto const config = merovingian::config::Config{
+        auto const config = merovingian::config::Config {
             merovingian::config::ServerConfig{},
             listeners_config,
             merovingian::config::DatabaseConfig{},
             merovingian::config::SecurityConfig{},
-        };
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+};
 
         WHEN("runtime listeners are planned")
         {
@@ -72,12 +74,14 @@ SCENARIO("Runtime listener planning carries TLS certificate paths", "[net][liste
         listeners_config.federation.tls = true;
         listeners_config.federation.tls_certificate_file = "/etc/merovingian/federation.pem";
         listeners_config.federation.tls_private_key_file = "/etc/merovingian/federation.key";
-        auto const config = merovingian::config::Config{
+        auto const config = merovingian::config::Config {
             merovingian::config::ServerConfig{},
             listeners_config,
             merovingian::config::DatabaseConfig{},
             merovingian::config::SecurityConfig{},
-        };
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+};
 
         WHEN("runtime listeners are planned")
         {
@@ -103,12 +107,14 @@ SCENARIO("Runtime listener planning omits federation listener when federation is
     {
         auto security = merovingian::config::SecurityConfig{};
         security.federation.enabled = false;
-        auto const config = merovingian::config::Config{
+        auto const config = merovingian::config::Config {
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},
             security,
-        };
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+};
 
         WHEN("runtime listeners are planned")
         {

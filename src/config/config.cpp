@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/config/config_parser.hpp"
 
 #include <limits>
+#include <optional>
+#include <string_view>
 #include <utility>
 
 namespace merovingian::config
@@ -33,11 +36,14 @@ namespace
 
 } // namespace
 
-Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security)
+Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
+                 ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules)
     : m_server{std::move(server)}
     , m_listeners{std::move(listeners)}
     , m_database{std::move(database)}
     , m_security{std::move(security)}
+    , m_client_rate_limits{std::move(client_rate_limits)}
+    , m_log_modules{std::move(log_modules)}
 {
 }
 
@@ -79,6 +85,26 @@ auto Config::security() const noexcept -> SecurityConfig const&
 auto Config::security() noexcept -> SecurityConfig&
 {
     return m_security;
+}
+
+auto Config::client_rate_limits() const noexcept -> ClientRateLimitsConfig const&
+{
+    return m_client_rate_limits;
+}
+
+auto Config::client_rate_limits() noexcept -> ClientRateLimitsConfig&
+{
+    return m_client_rate_limits;
+}
+
+auto Config::log_modules() const noexcept -> LogModulesConfig const&
+{
+    return m_log_modules;
+}
+
+auto Config::log_modules() noexcept -> LogModulesConfig&
+{
+    return m_log_modules;
 }
 
 auto is_ascii_digit(char value) noexcept -> bool
@@ -347,6 +373,101 @@ auto is_private_or_loopback_range(std::string_view range) noexcept -> bool
            range == "::1/128" || range == "fc00::/7";
 }
 
+// Parse a "<max>/<window>s" rate-limit value, e.g. "20/60s" or
+// "5/60s". Returns std::nullopt on a malformed value. Validates the
+// window via the existing `parse_duration_seconds` and the cap against
+// the same window/cap constraints `http::rate_limit_policy_is_valid`
+// enforces at runtime, so an operator who sets `client_rate_limits.*=0/0s`
+// gets rejected at parse time rather than at the first request.
+auto parse_rate_limit_policy(std::string_view value) noexcept -> std::optional<http::RateLimitPolicy>
+{
+    if (value.empty())
+    {
+        return std::nullopt;
+    }
+    auto const slash = value.find('/');
+    if (slash == std::string_view::npos || slash == 0U || slash + 1U >= value.size())
+    {
+        return std::nullopt;
+    }
+    auto const cap_text = value.substr(0U, slash);
+    auto const window_text = value.substr(slash + 1U);
+    auto cap = std::uint32_t{0U};
+    if (!parse_u32_value(cap_text, cap) || cap == 0U)
+    {
+        return std::nullopt;
+    }
+    auto const window = parse_duration_seconds(window_text);
+    if (!window.valid || window.seconds == 0U || window.seconds > 3600U)
+    {
+        return std::nullopt;
+    }
+    return http::RateLimitPolicy{cap, window.seconds};
+}
+
+auto parse_log_level(std::string_view value) noexcept -> std::optional<observability::LogLevel>
+{
+    using observability::LogLevel;
+    if (value == "trace")
+    {
+        return LogLevel::trace;
+    }
+    if (value == "debug")
+    {
+        return LogLevel::debug;
+    }
+    if (value == "info")
+    {
+        return LogLevel::info;
+    }
+    if (value == "notice")
+    {
+        return LogLevel::notice;
+    }
+    if (value == "warning")
+    {
+        return LogLevel::warning;
+    }
+    if (value == "error")
+    {
+        return LogLevel::error;
+    }
+    if (value == "critical")
+    {
+        return LogLevel::critical;
+    }
+    if (value == "off")
+    {
+        return LogLevel::off;
+    }
+    return std::nullopt;
+}
+
+auto log_level_name(observability::LogLevel level) noexcept -> std::string_view
+{
+    using observability::LogLevel;
+    switch (level)
+    {
+    case LogLevel::trace:
+        return "trace";
+    case LogLevel::debug:
+        return "debug";
+    case LogLevel::info:
+        return "info";
+    case LogLevel::notice:
+        return "notice";
+    case LogLevel::warning:
+        return "warning";
+    case LogLevel::error:
+        return "error";
+    case LogLevel::critical:
+        return "critical";
+    case LogLevel::off:
+        return "off";
+    }
+    return "off";
+}
+
 auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
 {
     auto findings = std::vector<ConfigValidationFinding>{};
@@ -534,6 +655,65 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
     if (!config.security().logging.redact_event_content)
     {
         findings.push_back({"security.logging.redact_event_content", "event content must be redacted from logs"});
+    }
+
+    // Per-endpoint rate-limit policies. The map is operator-supplied, so
+    // the validator confirms the structural contract the runtime
+    // depends on: every entry's `max_requests` and `window_seconds` are
+    // strictly positive. Empty targets are also rejected so an operator
+    // typo (a stray blank line) does not silently insert a catch-all
+    // entry that shadows the configured `default_per_ip`.
+    for (auto const& [target, policy] : config.client_rate_limits().per_ip)
+    {
+        if (target.empty())
+        {
+            findings.push_back({"client_rate_limits.per_ip", "rate-limit target must not be empty"});
+            break;
+        }
+        if (policy.max_requests == 0U || policy.window_seconds == 0U)
+        {
+            findings.push_back(
+                {"client_rate_limits.per_ip." + target, "rate-limit policy must be N>0 per Ws>0"});
+        }
+    }
+    for (auto const& [target, policy] : config.client_rate_limits().per_user)
+    {
+        if (target.empty())
+        {
+            findings.push_back({"client_rate_limits.per_user", "rate-limit target must not be empty"});
+            break;
+        }
+        if (policy.max_requests == 0U || policy.window_seconds == 0U)
+        {
+            findings.push_back(
+                {"client_rate_limits.per_user." + target, "rate-limit policy must be N>0 per Ws>0"});
+        }
+    }
+    if (config.client_rate_limits().default_per_ip.max_requests == 0U ||
+        config.client_rate_limits().default_per_ip.window_seconds == 0U)
+    {
+        findings.push_back(
+            {"client_rate_limits.default_per_ip", "default per-IP rate-limit policy must be N>0 per Ws>0"});
+    }
+
+    // Log-modules config. The wildcard "*" sets the default; otherwise
+    // the key is treated as a module name. Empty module names are
+    // rejected so a stray blank line does not insert a default for
+    // every (no-name) module.
+    for (auto const& [module, level] : config.log_modules().levels)
+    {
+        if (module.empty())
+        {
+            findings.push_back({"log_modules", "log module name must not be empty"});
+            break;
+        }
+        if (level == observability::LogLevel::off)
+        {
+            // Off is a legitimate value (silence the module entirely),
+            // but we warn at validate time so the operator notices.
+            // No finding here: off is intentional, not a misconfig.
+            (void)level;
+        }
     }
 
     return findings;

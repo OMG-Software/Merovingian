@@ -14,12 +14,14 @@ SCENARIO("Runtime media config parses bounded media limits", "[media][runtime]")
         auto security = merovingian::config::SecurityConfig{};
         security.media.max_upload_size = "25MiB";
         security.media.remote_fetch_timeout = "45s";
-        auto const config = merovingian::config::Config{
+        auto const config = merovingian::config::Config {
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},
             security,
-        };
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+};
 
         WHEN("the runtime media config is created")
         {

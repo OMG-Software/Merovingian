@@ -255,6 +255,13 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     });
 
     runtime.database = bootstrap_local_database(config, std::move(existing_state));
+    // Install the active LocalDatabase pointer in the audit sink so
+    // modules below `homeserver/` (notably `auth/registration_policy`)
+    // can route audit rows through the sink without taking a direct
+    // dependency on this runtime. The pointer is overwritten on each
+    // `start_runtime` call; the previous install becomes a no-op once
+    // a new runtime replaces the current thread's pointer.
+    install_local_audit_database(&runtime.database);
     if (!runtime.database.opened || !runtime.database.schema_validated ||
         !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "devices") ||
         !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") ||
@@ -374,11 +381,33 @@ auto admin_metrics_summary(HomeserverRuntime const& runtime) -> std::string
            " admin_actions_total=" + std::to_string(store.admin_actions.size());
 }
 
-auto admin_audit_summary(HomeserverRuntime const& runtime) -> std::string
+auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observability::AuditCategory> category,
+                         std::optional<std::string_view> event_type) -> std::string
 {
-    auto summary = std::string{"audit events="} + std::to_string(runtime.database.persistent_store.audit_log.size());
-    for (auto const& event : runtime.database.persistent_store.audit_log)
+    // Filter the audit log by the optional `category` and `event_type`
+    // parameters. The result line is prefixed with the count of *all*
+    // audit rows so the operator can see how many rows the filter
+    // excluded; the per-entry lines only include the matching rows.
+    auto const& log = runtime.database.persistent_store.audit_log;
+    auto summary = std::string{"audit events="} + std::to_string(log.size());
+    if (category.has_value())
     {
+        summary += " filter_category=" + std::string{observability::audit_category_name(*category)};
+    }
+    if (event_type.has_value())
+    {
+        summary += " filter_event_type=" + std::string{*event_type};
+    }
+    for (auto const& event : log)
+    {
+        if (category.has_value() && event.category != observability::audit_category_name(*category))
+        {
+            continue;
+        }
+        if (event_type.has_value() && event.event_type != *event_type)
+        {
+            continue;
+        }
         summary += " entry=" + event.category + ':' + event.event_type + ':' + event.actor + ':' + event.target + ':' +
                    event.reason;
     }
