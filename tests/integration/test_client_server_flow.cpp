@@ -432,12 +432,14 @@ SCENARIO("GET /_merovingian/admin/audit filters by category and event_type query
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         // This scenario exercises the audit-routing path, so install
-        // the sink against this test's stable stack address.
+        // the sink against this test's stable stack address. The
+        // scope guard detaches the sink on scenario exit, so the
+        // pointer never leaks into a later test in the same process.
         // `start_runtime` does not install on the caller's behalf
         // because the LocalDatabase is a value member of a returned
         // object; the call site that holds the runtime for the audit
         // row's lifetime is responsible for the install.
-        merovingian::homeserver::install_local_audit_database(&runtime.database);
+        auto audit_scope = merovingian::homeserver::LocalDatabaseScope{runtime.database};
 
         // Bootstrap the admin user so the audit endpoint will accept the
         // request without returning 401. After bootstrap, log in once to

@@ -68,11 +68,13 @@ SCENARIO("Registration policy remains disabled by default and token-gated when e
         auto const token_present_policy = merovingian::auth::RegistrationPolicy{true, true, true};
 
         // Tests that ran before us may have installed an audit sink
-        // pointed at a now-destroyed LocalDatabase. Reset to the
-        // process-wide default (a no-op) so the audit-routing call
-        // from `registration_policy.denied` does not dereference a
-        // dangling pointer. The auth test never exercises the audit
-        // log directly, so the no-op sink is correct here.
+        // pointed at a now-destroyed LocalDatabase. The auth test
+        // never exercises the audit log, so reset the sink to the
+        // process-wide default (a no-op) — the `local_audit_sink`
+        // early-returns on a null database anyway, but resetting
+        // makes the intent explicit and avoids the call to
+        // `append_local_audit` entirely. Sites that have a valid
+        // `LocalDatabase&` should use `LocalDatabaseScope` instead.
         merovingian::observability::set_audit_sink(&merovingian::observability::default_audit_sink);
 
         WHEN("registration policy is evaluated")

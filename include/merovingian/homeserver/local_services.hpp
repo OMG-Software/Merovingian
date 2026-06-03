@@ -44,6 +44,46 @@ auto log_diagnostic_audit(LocalDatabase& database, std::string_view logger, std:
 // code path. Pass `nullptr` to detach.
 auto install_local_audit_database(LocalDatabase* database) noexcept -> void;
 
+// Variant of `install_local_audit_database` that also returns the
+// previously-installed pointer. Implementation detail of
+// `LocalDatabaseScope`; not part of the public API.
+auto install_local_audit_database_returning_previous(LocalDatabase* database) noexcept -> LocalDatabase*;
+
+// RAII scope guard that wires the active `LocalDatabase` into the
+// audit sink on construction and restores the prior install on
+// destruction. Use this at any call site that holds a
+// `HomeserverRuntime` for the duration of a region of code that may
+// route audit rows (`log_diagnostic_audit` -> `local_audit_sink` ->
+// `append_local_audit`). The destructor restores the previous sink
+// install, so a succeeding test scenario cannot leak a now-dangling
+// database pointer into the next one.
+//
+// `start_client_server` already installs the sink for the common case
+// (the 250+ unit test scenarios in `test_client_server*.cpp` plus
+// `main.cpp`'s production entry). Use `LocalDatabaseScope` at any
+// site that constructs a runtime outside that path — e.g. the
+// integration test scenario that calls `start_runtime` directly.
+class LocalDatabaseScope final
+{
+  public:
+    explicit LocalDatabaseScope(LocalDatabase& database) noexcept
+        : m_previous{install_local_audit_database_returning_previous(&database)}
+    {
+    }
+    ~LocalDatabaseScope() noexcept
+    {
+        install_local_audit_database(m_previous);
+    }
+
+    LocalDatabaseScope(LocalDatabaseScope const&) = delete;
+    auto operator=(LocalDatabaseScope const&) -> LocalDatabaseScope& = delete;
+    LocalDatabaseScope(LocalDatabaseScope&&) = delete;
+    auto operator=(LocalDatabaseScope&&) -> LocalDatabaseScope& = delete;
+
+  private:
+    LocalDatabase* m_previous{nullptr};
+};
+
 // Test-only accessors for the audit-sink database pointer. Production
 // code uses `install_local_audit_database` to set it; tests read it
 // back to assert the sink was wired up. Not part of the public API.
