@@ -1420,3 +1420,8 @@ SPDX and CycloneDX inventories.
   asserts the invited local join transition, and the existing non-invite
   local join scenario now uses a `public_chat` room to match Matrix v1.18
   join rules.
+- Follow-up conformance cleanup: success-path join coverage now uses a
+  real `public_chat` room, the complement private-room join fixture
+  explicitly invites Bob before he joins, and the client-server suite now
+  asserts that uninvited joins to the default invite-only room are
+  rejected with `403`.

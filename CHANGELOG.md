@@ -12,6 +12,9 @@
 - Add a conformance regression for invited local join state and tighten
   the non-invite local join test to use a `public_chat` room, matching
   Matrix v1.18 join-rule semantics.
+- Fix the remaining conformance and complement join fixtures so success
+  paths only join public rooms or invited private rooms, instead of
+  depending on the old invite-only join bug.
 
 ## 0.5.1
 
