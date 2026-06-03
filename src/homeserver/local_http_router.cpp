@@ -431,6 +431,40 @@ namespace
         return starts_with(target, prefix) ? target.substr(prefix.size()) : std::string_view{};
     }
 
+    // Tiny, allocation-light query string parser used by the audit-filter
+    // handler. Splits on '&', then on '=' once per segment. Empty keys
+    // are dropped, empty values are kept. The returned views are
+    // substrings of the input — the caller must own the input buffer
+    // for the lifetime of the views.
+    [[nodiscard]] auto parse_audit_query_string(std::string_view query) -> std::vector<std::pair<std::string_view, std::string_view>>
+    {
+        auto out = std::vector<std::pair<std::string_view, std::string_view>>{};
+        auto remaining = query;
+        while (!remaining.empty())
+        {
+            auto const amp = remaining.find('&');
+            auto const segment = remaining.substr(0U, amp);
+            if (!segment.empty())
+            {
+                auto const eq = segment.find('=');
+                if (eq == std::string_view::npos)
+                {
+                    out.emplace_back(segment, std::string_view{});
+                }
+                else
+                {
+                    out.emplace_back(segment.substr(0U, eq), segment.substr(eq + 1U));
+                }
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            remaining = remaining.substr(amp + 1U);
+        }
+        return out;
+    }
+
     [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key)
         -> canonicaljson::Object const*
     {
@@ -1378,10 +1412,39 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                    ? response(200U, admin_metrics_summary(runtime))
                    : response(401U, "admin authentication required");
     }
-    if (request.method == "GET" && request.target == "/_merovingian/admin/audit")
+    if (request.method == "GET" && starts_with(request.target, "/_merovingian/admin/audit"))
     {
+        // Query string filter for the audit summary (0.5.0). The
+        // endpoint accepts `?category=`, `?event_type=` to narrow
+        // the result set. Malformed `category=` values return 400;
+        // unknown `event_type=` values are treated as a no-match
+        // filter and the response is empty (still 200).
+        auto const target = std::string_view{request.target};
+        auto const query_start = target.find('?');
+        auto category_filter = std::optional<observability::AuditCategory>{};
+        auto event_type_filter = std::optional<std::string_view>{};
+        if (query_start != std::string_view::npos)
+        {
+            auto const query = target.substr(query_start + 1U);
+            for (auto const& kv : parse_audit_query_string(query))
+            {
+                if (kv.first == "category")
+                {
+                    auto const parsed = observability::audit_category_from_name(kv.second);
+                    if (!parsed.has_value())
+                    {
+                        return response(400U, std::string{"unknown audit category: "} + std::string{kv.second});
+                    }
+                    category_filter = *parsed;
+                }
+                else if (kv.first == "event_type")
+                {
+                    event_type_filter = kv.second;
+                }
+            }
+        }
         return authenticated_admin_user(runtime, request.access_token).has_value()
-                   ? response(200U, admin_audit_summary(runtime))
+                   ? response(200U, admin_audit_summary(runtime, category_filter, event_type_filter))
                    : response(401U, "admin authentication required");
     }
     if (request.method == "GET" && request.target == "/_matrix/key/v2/server")

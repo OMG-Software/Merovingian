@@ -31,15 +31,6 @@ struct RateLimitState final
     -> RateLimitPolicy;
 [[nodiscard]] auto rate_limit_summary(RateLimitPolicy const& policy) -> std::string;
 
-// +-------------------------------------------------------------------------+
-// |  Per-endpoint rate-limit configuration (0.5.0)                          |
-// |                                                                         |
-// |  The legacy 0.4.x limiter used a request-counter window (effective cap |
-// |  "5 per 64 server-wide requests") which froze the bucket on a quiet   |
-// |  server and made single-user registration impossible. 0.5.0 replaces    |
-// |  this with a wall-clock window plus an opt-in per-user cap on /login.  |
-// |  Buckets are in-process so a server restart wipes the counter.         |
-// +-------------------------------------------------------------------------+
 struct RateLimitConfig final
 {
     // Per-IP cap, keyed by request target prefix (e.g. "/_matrix/client/v3/register").

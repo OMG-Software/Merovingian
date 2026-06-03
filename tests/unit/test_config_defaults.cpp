@@ -54,6 +54,8 @@ SCENARIO("Config validation rejects TLS listeners without configured certificate
                 listeners,
                 merovingian::config::DatabaseConfig{},
                 merovingian::config::SecurityConfig{},
+                merovingian::config::ClientRateLimitsConfig{},
+                merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
@@ -415,7 +417,7 @@ SCENARIO("Config validation rejects missing critical fields", "[config][validati
 
         WHEN("the config is constructed and validated")
         {
-            auto const config = merovingian::config::Config{server, listeners, database, security};
+            auto const config = merovingian::config::Config{server, listeners, database, security, {}, {}};
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
 
@@ -443,6 +445,8 @@ SCENARIO("Config validation rejects unsafe registration policy", "[config][valid
                 merovingian::config::ListenersConfig{},
                 merovingian::config::DatabaseConfig{},
                 security,
+                merovingian::config::ClientRateLimitsConfig{},
+                merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
@@ -471,6 +475,8 @@ SCENARIO("Config validation rejects token-protected registration without token f
                 merovingian::config::ListenersConfig{},
                 merovingian::config::DatabaseConfig{},
                 security,
+                merovingian::config::ClientRateLimitsConfig{},
+                merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
 
@@ -499,6 +505,8 @@ SCENARIO("Config validation rejects invalid media upload size", "[config][valida
                 merovingian::config::ListenersConfig{},
                 merovingian::config::DatabaseConfig{},
                 security,
+                merovingian::config::ClientRateLimitsConfig{},
+                merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
@@ -527,6 +535,8 @@ SCENARIO("Config validation rejects invalid federation transaction limits", "[co
                 merovingian::config::ListenersConfig{},
                 merovingian::config::DatabaseConfig{},
                 security,
+                merovingian::config::ClientRateLimitsConfig{},
+                merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
@@ -555,7 +565,7 @@ SCENARIO("Config validation rejects unsafe public URL, listener bind, and federa
 
         WHEN("the config is constructed and validated")
         {
-            auto const config = merovingian::config::Config{server, listeners, database, security};
+            auto const config = merovingian::config::Config{server, listeners, database, security, {}, {}};
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
 
@@ -581,7 +591,7 @@ SCENARIO("Config validation rejects public cleartext listeners", "[config][valid
 
         WHEN("the config is constructed and validated")
         {
-            auto const config = merovingian::config::Config{server, listeners, database, security};
+            auto const config = merovingian::config::Config{server, listeners, database, security, {}, {}};
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
 
@@ -616,6 +626,8 @@ SCENARIO("Config validation rejects weakened Matrix security defaults", "[config
                 merovingian::config::ListenersConfig{},
                 merovingian::config::DatabaseConfig{},
                 security,
+                merovingian::config::ClientRateLimitsConfig{},
+                merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);

@@ -59,6 +59,8 @@ SCENARIO("Media remote fetch timeout rejects invalid values", "[config][media][v
             merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},
             security,
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
 
         WHEN("the config is validated")
@@ -89,12 +91,16 @@ SCENARIO("Media remote fetch timeout changes are reloadable", "[config][media][r
             merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},
             current_security,
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
         auto const next = merovingian::config::Config{
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},
             next_security,
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
 
         WHEN("a reload plan is built")

@@ -17,12 +17,14 @@ SCENARIO("Runtime federation config parses validated transaction limits", "[fede
         security.federation.denied_servers = {"bad.example"};
         security.federation.max_transaction_size = "8MiB";
         security.federation.remote_timeout = "45s";
-        auto const config = merovingian::config::Config{
+        auto const config = merovingian::config::Config {
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},
             security,
-        };
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+};
 
         WHEN("the runtime federation config is created")
         {

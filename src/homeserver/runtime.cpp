@@ -2,7 +2,7 @@
 
 #include "merovingian/homeserver/runtime.hpp"
 
-#include "local_services.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
@@ -78,10 +78,25 @@ namespace
 
 } // namespace
 
+HomeserverRuntime::HomeserverRuntime()
+    : audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
+{
+}
+
+HomeserverRuntime::~HomeserverRuntime() = default;
+
 HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     : config(std::move(other.config))
     , listeners(std::move(other.listeners))
     , database(std::move(other.database))
+    // The source's `audit_sink_scope` is left as-is (still pointing
+    // at the source's `database` address). When the source runtime
+    // is destroyed, its scope's dtor will see the thread_local now
+    // points at the new `database` (this runtime's), and the
+    // `current != m_installed` check makes the clear a no-op.
+    // Re-install a fresh scope against the new `database` so the
+    // thread_local tracks the moved-into runtime, not the source.
+    , audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
     , federation(std::move(other.federation))
     , media_repository(std::move(other.media_repository))
     , hardening(std::move(other.hardening))
@@ -105,6 +120,13 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     config = std::move(other.config);
     listeners = std::move(other.listeners);
     database = std::move(other.database);
+    // `database` is now the new storage; re-seat the audit-sink
+    // install on it. The old scope (which pointed at the previous
+    // `database` address) is destroyed by `reset()` first; its dtor
+    // clears the thread_local only if the install is still ours, so
+    // it is always safe to call.
+    audit_sink_scope.reset();
+    audit_sink_scope = std::make_unique<LocalDatabaseScope>(database);
     federation = std::move(other.federation);
     media_repository = std::move(other.media_repository);
     hardening = std::move(other.hardening);
@@ -255,6 +277,13 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     });
 
     runtime.database = bootstrap_local_database(config, std::move(existing_state));
+    // The default ctor installed `audit_sink_scope` against the
+    // empty `LocalDatabase{}` placeholder. Now that `database` holds
+    // the real connection state, re-seat the scope so audit rows
+    // route through the *current* `database` member (which is the
+    // one the caller will see via NRVO in the returned
+    // `RuntimeStartResult`).
+    runtime.audit_sink_scope->reset(runtime.database);
     if (!runtime.database.opened || !runtime.database.schema_validated ||
         !database_has_table(runtime.database, "users") || !database_has_table(runtime.database, "devices") ||
         !database_has_table(runtime.database, "access_tokens") || !database_has_table(runtime.database, "rooms") ||
@@ -374,11 +403,33 @@ auto admin_metrics_summary(HomeserverRuntime const& runtime) -> std::string
            " admin_actions_total=" + std::to_string(store.admin_actions.size());
 }
 
-auto admin_audit_summary(HomeserverRuntime const& runtime) -> std::string
+auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observability::AuditCategory> category,
+                         std::optional<std::string_view> event_type) -> std::string
 {
-    auto summary = std::string{"audit events="} + std::to_string(runtime.database.persistent_store.audit_log.size());
-    for (auto const& event : runtime.database.persistent_store.audit_log)
+    // Filter the audit log by the optional `category` and `event_type`
+    // parameters. The result line is prefixed with the count of *all*
+    // audit rows so the operator can see how many rows the filter
+    // excluded; the per-entry lines only include the matching rows.
+    auto const& log = runtime.database.persistent_store.audit_log;
+    auto summary = std::string{"audit events="} + std::to_string(log.size());
+    if (category.has_value())
     {
+        summary += " filter_category=" + std::string{observability::audit_category_name(*category)};
+    }
+    if (event_type.has_value())
+    {
+        summary += " filter_event_type=" + std::string{*event_type};
+    }
+    for (auto const& event : log)
+    {
+        if (category.has_value() && event.category != observability::audit_category_name(*category))
+        {
+            continue;
+        }
+        if (event_type.has_value() && event.event_type != *event_type)
+        {
+            continue;
+        }
         summary += " entry=" + event.category + ':' + event.event_type + ':' + event.actor + ':' + event.target + ':' +
                    event.reason;
     }

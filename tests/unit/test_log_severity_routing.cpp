@@ -1,33 +1,4 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//
-// +-------------------------------------------------------------------------+
-// |  LOG SEVERITY ROUTING (0.5.0)                                           |
-// |                                                                         |
-// |  Spec (background): https://spec.matrix.org/v1.18/appendices/           |
-// |                     #structured-logs (none — observability is policy)   |
-// |  Implementation plan: docs/log-filtering-design.md                      |
-// |                                                                         |
-// |  0.4.x had a single DEBUG/INFO/WARN log firehose; the operator could    |
-// |  not tell a 401 from a 200, a rate-limit hit from a successful sync.    |
-// |  0.5.0 adds:                                                            |
-// |    (a) A `LogEventSeverity` enum and a `log_diagnostic(...)` overload    |
-// |        that takes an explicit severity (defaults to debug).            |
-// |    (b) The five high-signal failure call sites (rate_limit.exceeded,    |
-// |        login.rejected, access_token.rejected, request.rejected,         |
-// |        registration_policy.denied) additionally call append_local_audit  |
-// |        with category=policy at severity >= warning.                     |
-// |        warning, also appends a row to `audit_log`. The five known      |
-// |        failure call sites (rate_limit.exceeded, login.rejected,         |
-// |        access_token.rejected, request.rejected,                          |
-// |        registration_policy.denied) additionally call `append_local_audit`
-// |    (c) A `SingleLog::set_module_log_level(name, level)` API so the      |
-// |        operator can silence noisy modules (http_server, sync_notifier)  |
-// |        without recompiling.                                            |
-// |                                                                         |
-// |  These scenarios verify the helpers in isolation; the per-endpoint      |
-// |  audit-row asserts in the rate-limit and login integration tests cover  |
-// |  the end-to-end behaviour.                                              |
-// +-------------------------------------------------------------------------+
 
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"

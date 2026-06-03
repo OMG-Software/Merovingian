@@ -2,7 +2,7 @@
 
 #include "merovingian/homeserver/room_service.hpp"
 
-#include "local_services.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -2307,7 +2307,12 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
 [[nodiscard]] auto fetch_room_state(HomeserverRuntime const& runtime, std::string_view access_token,
                                     std::string_view room_id) -> OperationResult
 {
-    auto const user_id = authenticated_user(runtime, access_token);
+    // `authenticated_user` is non-const because the audit-routing helper
+    // (0.5.0) writes a row to audit_log on token rejection. The caller
+    // (the read-only fetch path) does not hold the runtime mutex; the
+    // const cast is safe because `audit_log` is an append-only log
+    // that does not race with the read-only state query.
+    auto const user_id = authenticated_user(const_cast<HomeserverRuntime&>(runtime), access_token);
     if (!user_id.has_value())
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);

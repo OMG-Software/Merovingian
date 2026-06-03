@@ -20,7 +20,9 @@ namespace
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
         security,
-    };
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+};
 }
 
 } // namespace
@@ -58,12 +60,14 @@ SCENARIO("Integrated local homeserver smoke flow rejects invalid runtime config 
     {
         auto listeners = merovingian::config::ListenersConfig{};
         listeners.client.bind = "0.0.0.0:not-a-port";
-        auto const config = merovingian::config::Config{
+        auto const config = merovingian::config::Config {
             merovingian::config::ServerConfig{},
             listeners,
             merovingian::config::DatabaseConfig{},
             merovingian::config::SecurityConfig{},
-        };
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+};
 
         WHEN("the local smoke flow is run")
         {

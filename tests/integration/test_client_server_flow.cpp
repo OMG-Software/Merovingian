@@ -2,7 +2,10 @@
 
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -20,7 +23,9 @@ namespace
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
         security,
-    };
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+};
 }
 
 } // namespace
@@ -55,12 +60,14 @@ SCENARIO("Integrated client-server flow fails closed on invalid config", "[homes
     {
         auto listeners = merovingian::config::ListenersConfig{};
         listeners.client.bind = "0.0.0.0:not-a-port";
-        auto const config = merovingian::config::Config{
+        auto const config = merovingian::config::Config {
             merovingian::config::ServerConfig{},
             listeners,
             merovingian::config::DatabaseConfig{},
             merovingian::config::SecurityConfig{},
-        };
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
+};
 
         WHEN("the client-server flow is run")
         {
@@ -410,6 +417,78 @@ SCENARIO("GET /rooms/{roomId}/state for an unknown room returns 403",
             {
                 REQUIRE(response.response.status == 403U);
                 REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("GET /_merovingian/admin/audit filters by category and event_type query parameters",
+         "[homeserver][admin][audit]")
+{
+    GIVEN("a started homeserver runtime with an admin user and a seeded audit row")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_runtime(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        // The audit-sink install is now bound to `started.runtime`'s
+        // lifetime via its `audit_sink_scope` member, so no explicit
+        // scope guard is needed at this call site. The sink is
+        // installed on runtime construction (against the local
+        // `started` storage, which is the caller's stable address
+        // via C++17 NRVO) and cleared on `started` going out of
+        // scope — so the pointer never leaks into a later test in
+        // the same process.
+
+        // Bootstrap the admin user so the audit endpoint will accept the
+        // request without returning 401. After bootstrap, log in once to
+        // mint the access_token used as the `access_token` field below.
+        auto const admin_bootstrap =
+            merovingian::homeserver::bootstrap_admin_user(runtime, "ops", "CorrectHorse7!");
+        REQUIRE(admin_bootstrap.ok);
+        auto const admin_login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {},
+                      "@ops:example.org|CorrectHorse7!|OPSDEV"});
+        REQUIRE(admin_login.status == 200U);
+        // The local-router login handler returns the access token in
+        // the response body as a plain string (no JSON wrapper). The
+        // /admin/audit endpoint accepts the token in the `access_token`
+        // field of the LocalHttpRequest, which is where the auth header
+        // would be parsed in production.
+        auto const admin_token = admin_login.body;
+
+        // Seed an `auth` row by issuing a bad login — the local-router
+        // path will route it through `log_diagnostic_audit` and append a
+        // `login.rejected` row at category=auth.
+        std::ignore = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {},
+                      "@nope:example.org|wrong-password|DEV1"});
+
+        WHEN("the audit endpoint is called with ?category=auth&event_type=login.rejected")
+        {
+            auto const response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET",
+                          "/_merovingian/admin/audit?category=auth&event_type=login.rejected",
+                          admin_token, {}});
+
+            THEN("the response is 200 and contains the seeded auth row")
+            {
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("filter_category=auth") != std::string::npos);
+                REQUIRE(response.body.find("filter_event_type=login.rejected") != std::string::npos);
+                REQUIRE(response.body.find("entry=auth:login.rejected") != std::string::npos);
+            }
+        }
+
+        WHEN("the audit endpoint is called with a bogus category")
+        {
+            auto const response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"GET", "/_merovingian/admin/audit?category=authz", admin_token, {}});
+
+            THEN("the response is 400 with a clear error message")
+            {
+                REQUIRE(response.status == 400U);
+                REQUIRE(response.body.find("unknown audit category") != std::string::npos);
             }
         }
     }

@@ -48,12 +48,16 @@ SCENARIO("Reload plan marks runtime policy changes as reloadable", "[config][rel
             merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},
             current_security,
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
         auto const next = merovingian::config::Config{
             merovingian::config::ServerConfig{},
             merovingian::config::ListenersConfig{},
             merovingian::config::DatabaseConfig{},
             next_security,
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
 
         WHEN("a reload plan is built")
@@ -98,12 +102,16 @@ SCENARIO("Reload plan flags restart-required identity and secret source changes"
             merovingian::config::ListenersConfig{},
             current_database,
             merovingian::config::SecurityConfig{},
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
         auto const next = merovingian::config::Config{
             next_server,
             merovingian::config::ListenersConfig{},
             next_database,
             merovingian::config::SecurityConfig{},
+            merovingian::config::ClientRateLimitsConfig{},
+            merovingian::config::LogModulesConfig{},
         };
 
         WHEN("a reload plan is built")

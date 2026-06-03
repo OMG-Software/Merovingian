@@ -29,7 +29,9 @@ namespace
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
         security,
-    };
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+};
 }
 
 [[nodiscard]] auto sqlite_registration_enabled_config(std::filesystem::path const& sqlite_path)
@@ -47,7 +49,9 @@ namespace
         merovingian::config::ListenersConfig{},
         database,
         security,
-    };
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
+};
 }
 
 [[nodiscard]] auto token_from_login_body(std::string const& body) -> std::string

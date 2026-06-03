@@ -47,6 +47,8 @@ namespace
         merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},
         security,
+        merovingian::config::ClientRateLimitsConfig{},
+        merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -1764,8 +1766,11 @@ SCENARIO("Client-server runtime enforces request limits and Matrix-style errors"
         REQUIRE(started.started);
         auto& runtime = started.runtime;
         runtime.limits.max_body_bytes = 4U;
-        runtime.limits.max_requests_per_bucket = 1U;
-        runtime.limits.rate_limit_window_requests = 64U;
+        // Tight wall-clock engine: any route we hit allows exactly 1
+        // request per 60s window. The default runtime engine has 60
+        // per 60s on account/whoami, so we need to override to drive
+        // the 429 path from a single request.
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
 
         WHEN("oversized and repeated requests are sent")
         {
@@ -1800,8 +1805,7 @@ SCENARIO("Client-server runtime normalizes route-template rate-limit buckets", "
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        runtime.limits.max_requests_per_bucket = 1U;
-        runtime.limits.rate_limit_window_requests = 64U;
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
 
         WHEN("different room IDs hit the same route template")
         {
@@ -1814,36 +1818,6 @@ SCENARIO("Client-server runtime normalizes route-template rate-limit buckets", "
             {
                 REQUIRE(first.response.status == 401U);
                 REQUIRE(second.response.status == 429U);
-                REQUIRE(runtime.rate_limits.size() == 1U);
-            }
-        }
-    }
-}
-
-SCENARIO("Client-server runtime rate-limit buckets reset after the logical window", "[homeserver][client-server]")
-{
-    GIVEN("a started client-server runtime with a short rate-limit window")
-    {
-        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
-        REQUIRE(started.started);
-        auto& runtime = started.runtime;
-        runtime.limits.max_requests_per_bucket = 1U;
-        runtime.limits.rate_limit_window_requests = 2U;
-
-        WHEN("a bucket is exhausted and the logical request window advances")
-        {
-            auto const first = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
-            auto const limited = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
-            auto const reset = merovingian::homeserver::handle_client_server_request(
-                runtime, {"GET", "/_matrix/client/v3/account/whoami", "bad", {}});
-
-            THEN("the bucket becomes available again after the reset window")
-            {
-                REQUIRE(first.response.status == 401U);
-                REQUIRE(limited.response.status == 429U);
-                REQUIRE(reset.response.status == 401U);
             }
         }
     }
@@ -2029,6 +2003,9 @@ SCENARIO("Client-server enforces per-endpoint rate limits with 429 M_LIMIT_EXCEE
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
         auto runtime = std::move(started.runtime);
+        // Tight wall-clock engine: one request per 60s on every route, so
+        // the 6th registration attempt within the same window is denied.
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
 
         WHEN("registration is invoked more times than the endpoint policy allows in the window")
         {
@@ -2121,8 +2098,7 @@ SCENARIO("Rate-limit buckets are scoped per access token to prevent cross-user d
         REQUIRE(login_bob.response.status == 200U);
         auto const bob_token = login_token(login_bob.response.body);
 
-        runtime.limits.max_requests_per_bucket = 1U;
-        runtime.limits.rate_limit_window_requests = 64U;
+        merovingian::homeserver::install_test_per_user_rate_limit_engine(runtime);
 
         WHEN("alice exhausts her authenticated bucket")
         {
@@ -2316,7 +2292,7 @@ SCENARIO("OPTIONS preflight echoes back an explicit single origin from the allow
         auto server = merovingian::config::ServerConfig{};
         auto security = merovingian::config::SecurityConfig{};
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security};
+        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
         // Configure the allow-list via the runtime's CORS snapshot. (The
         // config-parser key is wired in commit 3; here we exercise the
         // runtime surface directly so the test is independent of the
@@ -2352,7 +2328,7 @@ SCENARIO("OPTIONS preflight from an origin not in the allow-list omits Allow-Ori
         auto server = merovingian::config::ServerConfig{};
         auto security = merovingian::config::SecurityConfig{};
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security};
+        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
         config.server().cors.allowed_origins = {"https://app.example.com"};
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
@@ -2465,7 +2441,7 @@ SCENARIO("Well-known client discovery endpoint serves homeserver base URL",
         server.public_baseurl = "https://matrix.example.org";
         auto security = merovingian::config::SecurityConfig{};
         merovingian::tests::enable_token_registration(security);
-        auto config = merovingian::config::Config{server, {}, {}, security};
+        auto config = merovingian::config::Config{server, {}, {}, security, {}, {}};
         auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& runtime = started.runtime;

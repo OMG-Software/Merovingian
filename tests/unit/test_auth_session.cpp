@@ -3,6 +3,8 @@
 #include "merovingian/auth/session.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include "merovingian/observability/logger.hpp"
+#include "merovingian/observability/observability.hpp"
 
 #include <chrono>
 #include <string>
@@ -64,6 +66,20 @@ SCENARIO("Registration policy remains disabled by default and token-gated when e
         auto const default_policy = merovingian::auth::RegistrationPolicy{};
         auto const missing_token_policy = merovingian::auth::RegistrationPolicy{true, true, false};
         auto const token_present_policy = merovingian::auth::RegistrationPolicy{true, true, true};
+
+        // Tests that ran before us may have left the audit sink
+        // installed against a `LocalDatabase` that is now out of
+        // scope. The auth test never exercises the audit log, so
+        // reset the sink to the process-wide default (a no-op) —
+        // the `local_audit_sink` early-returns on a null database
+        // anyway, but resetting makes the intent explicit. With
+        // `HomeserverRuntime` owning the audit-sink install via its
+        // `audit_sink_scope` member, the install is normally cleared
+        // on runtime destruction; this call is a belt-and-braces
+        // defence for the rare test that constructs a `LocalDatabase`
+        // by some other path (e.g. a direct call to
+        // `bootstrap_local_database`).
+        merovingian::observability::set_audit_sink(&merovingian::observability::default_audit_sink);
 
         WHEN("registration policy is evaluated")
         {

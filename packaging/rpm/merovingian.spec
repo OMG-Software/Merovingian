@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.0
+Version:        0.5.1
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,7 +89,15 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Tue Jun 02 2026 James Chapman <claude@ping.me.uk> - 0.5.0-1
+* Wed Jun 03 2026 James Chapman <claude@ping.me.uk> - 0.5.1-1
+- Wire the wall-clock rate-limit engine, per-module log-level overrides, and audit-routing helper into production
+- New client_rate_limits.* config keys (per-IP and per-user, keyed by target prefix, format <N>/<Ws>s) replace the legacy request-counter window
+- New log_modules.* config keys for per-module and wildcard default log levels (restart required)
+- /_merovingian/admin/audit accepts ?category= and ?event_type= query-string filters; unknown categories return 400
+- Five high-signal failure call sites now route through observability::log_diagnostic_audit, which at severity warning or above appends a row to audit_log with the same actor / target / reason as the structured log line: rate_limit.exceeded, login.rejected, access_token.rejected, request.rejected, registration_policy.denied
+- New operator docs: docs/log-filtering.md
+
+* Tue Jun 02 2026 James Chapman <claude@ping.me.uk> - 0.4.62-1
 - /keys/upload now validates that one-time and fallback keys are signed by the device's own ed25519 identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE. Fixes the Element "No key bundle found for user" / "NoSignatureFound" bug seen on pong.ping.me.uk where a stale device row left behind OTKs that no peer could verify.
 
 * Tue Jun 02 2026 James Chapman <claude@ping.me.uk> - 0.4.61-1

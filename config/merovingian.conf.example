@@ -118,3 +118,22 @@ security.media.decode_in_sandbox=true
 security.logging.redact_tokens=true
 security.logging.redact_event_content=true
 security.logging.structured=true
+
+# Client-server rate limits (0.5.0)
+# Wall-clock per-IP and per-user caps keyed by request target prefix. The
+# default_per_ip fallback applies to every target not matched by per_ip.*
+# below. Format is "<max_requests>/<window_seconds>s". Changes take effect
+# on the next server restart — see docs/configuration.md#client-rate-limits.
+client_rate_limits.per_ip./_matrix/client/v3/login=20/60s
+client_rate_limits.per_ip./_matrix/client/v3/register=20/60s
+client_rate_limits.per_user./_matrix/client/v3/login=5/60s
+client_rate_limits.default_per_ip=60/60s
+
+# Per-module log level overrides (0.5.0)
+# Each entry maps a logger name to a level (trace|debug|info|notice|
+# warning|error|critical|off). The wildcard `*` sets the default level
+# every other module sees. Restart is required for changes to take effect
+# — see docs/log-filtering.md.
+# log_modules.http_server=info
+# log_modules.auth=debug
+# log_modules.*=info

@@ -843,6 +843,49 @@ a server restart. This matches how other HTTP-behaviour keys behave; see
 [Reloadability policy](#reloadability-policy) for the full set of
 reloadable keys.
 
+## Client rate limits (0.5.0)
+
+The wall-clock rate limiter uses two operator-supplied maps keyed by
+request target prefix, plus a per-IP fallback. Every entry takes the
+form `<max_requests>/<window_seconds>s`; the parser rejects a zero-window
+or zero-cap policy at startup rather than letting the engine loop.
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `client_rate_limits.per_ip.<target>` | `<N>/<Ws>s` | unset | Per-IP cap for any request whose target starts with `<target>`. The longest matching prefix wins. |
+| `client_rate_limits.per_user.<target>` | `<N>/<Ws>s` | unset | Per-user cap (keyed by access token) for the same target. Empty by default; populate `/_matrix/client/v3/login` to mitigate credential-stuffing. |
+| `client_rate_limits.default_per_ip` | `<N>/<Ws>s` | `60/60s` | Fallback for targets not matched by any `per_ip.*` entry. |
+
+The map keys are dotted to support target prefixes that themselves
+contain slashes — e.g.
+`client_rate_limits.per_ip./_matrix/client/v3/login=20/60s`.
+
+Rate-limit changes are not hot-reloadable: the engine is built once at
+`start_client_server` and stored in the runtime. Restart the server for
+changes to take effect.
+
+See `docs/log-filtering.md` for the operator recipe, including the
+default values for `/login`, `/register`, keys, devices, media, and
+federation.
+
+## Log module overrides (0.5.0)
+
+The process-wide `SingleLog` consumes a per-module level map at startup.
+Each entry names a module and one of `trace`, `debug`, `info`, `notice`,
+`warning`, `error`, `critical`, `off` (case-folded). The special key
+`*` sets the default level every other module sees.
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `log_modules.<module>` | log level | unset | Per-module override; takes the value's level at startup. |
+| `log_modules.*` | log level | unset | Sets the default level for modules not explicitly named. |
+
+Log level changes are not hot-reloadable: the bootstrap runs once at
+`start_client_server`. Restart the server for changes to take effect.
+
+See `docs/log-filtering.md` for the operator recipe and the full set of
+module names.
+
 ## Current keys
 
 See `config/merovingian.conf.example` for the complete accepted key list.

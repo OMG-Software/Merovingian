@@ -5,7 +5,11 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <vector>
+
+#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/observability/logger.hpp"
 
 namespace merovingian::config
 {
@@ -128,6 +132,31 @@ struct LoggingSecurityConfig final
     bool structured{true};
 };
 
+// Per-endpoint rate-limit policies. The values populate
+// `http::RateLimitEngine` at `start_client_server()` time; restart
+// required (see `src/config/reload_policy.cpp`). The 0.5.0 design doc
+// (`docs/log-filtering-design.md`) lists the operator-agreed defaults:
+// 20/min per IP for /login and /register, 5/min per user for /login,
+// 30/min for keys/devices, 20/min for media, 120/min for federation,
+// 60/min for everything else.
+struct ClientRateLimitsConfig final
+{
+    std::unordered_map<std::string, http::RateLimitPolicy> per_ip{};
+    std::unordered_map<std::string, http::RateLimitPolicy> per_user{};
+    http::RateLimitPolicy default_per_ip{60U, 60U};
+};
+
+// Per-module log level overrides. Populated from `log_modules.<name>=<level>`
+// keys in `merovingian.conf`. The wildcard key `*` sets the default for
+// modules without an explicit entry (equivalent to
+// `SingleLog::set_default_log_level`). Hot-reload is deliberately not
+// supported in 0.5.0: log_modules affects startup-time bootstrap only
+// and restart is required.
+struct LogModulesConfig final
+{
+    std::unordered_map<std::string, observability::LogLevel> levels{};
+};
+
 struct SecurityConfig final
 {
     RegistrationSecurityConfig registration{};
@@ -142,7 +171,8 @@ class Config final
 public:
     Config() = default;
 
-    Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security);
+    Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
+           ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules);
 
     [[nodiscard]] auto server() const noexcept -> ServerConfig const&;
     [[nodiscard]] auto server() noexcept -> ServerConfig&;
@@ -152,12 +182,18 @@ public:
     [[nodiscard]] auto database() noexcept -> DatabaseConfig&;
     [[nodiscard]] auto security() const noexcept -> SecurityConfig const&;
     [[nodiscard]] auto security() noexcept -> SecurityConfig&;
+    [[nodiscard]] auto client_rate_limits() const noexcept -> ClientRateLimitsConfig const&;
+    [[nodiscard]] auto client_rate_limits() noexcept -> ClientRateLimitsConfig&;
+    [[nodiscard]] auto log_modules() const noexcept -> LogModulesConfig const&;
+    [[nodiscard]] auto log_modules() noexcept -> LogModulesConfig&;
 
 private:
     ServerConfig m_server{};
     ListenersConfig m_listeners{};
     DatabaseConfig m_database{};
     SecurityConfig m_security{};
+    ClientRateLimitsConfig m_client_rate_limits{};
+    LogModulesConfig m_log_modules{};
 };
 
 struct ConfigValidationFinding final
@@ -196,6 +232,11 @@ struct DurationParseResult final
 [[nodiscard]] auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult;
 [[nodiscard]] auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseResult;
 [[nodiscard]] auto is_private_or_loopback_range(std::string_view range) noexcept -> bool;
+[[nodiscard]] auto parse_rate_limit_policy(std::string_view value) noexcept
+    -> std::optional<http::RateLimitPolicy>;
+[[nodiscard]] auto parse_log_level(std::string_view value) noexcept
+    -> std::optional<observability::LogLevel>;
+[[nodiscard]] auto log_level_name(observability::LogLevel level) noexcept -> std::string_view;
 [[nodiscard]] auto validate(Config const& config) -> std::vector<ConfigValidationFinding>;
 [[nodiscard]] auto is_valid(Config const& config) -> bool;
 
