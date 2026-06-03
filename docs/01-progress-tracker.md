@@ -1402,3 +1402,21 @@ package checksums, and artifact signatures in release notes. Tags matching
 Linux and FreeBSD tarballs and publishes them as a GitHub prerelease, while
 the published release event triggers `.github/workflows/sbom.yml` to attach
 SPDX and CycloneDX inventories.
+## 0.5.2 (in progress - codex/fix-local-invite-join-state)
+
+- Fix local invite acceptance: invited local users no longer get inserted
+  into `LocalRoom.members` before they have a `join` membership event.
+  That bug made `POST /rooms/{roomId}/join` short-circuit as
+  `room.join.already_member` while the room's current state still held the
+  original invite event, leaving clients stuck in a half-joined state.
+- Local join now persists a fresh `m.room.member` state event with
+  `content.membership = "join"` before updating the membership row, so
+  `GET /rooms/{roomId}/members` and `/sync` surface the accepted join
+  instead of the stale invite.
+- Runtime startup hydration now rebuilds in-memory room membership from
+  persisted `join` rows only, so the same invite/member confusion does not
+  return after restart.
+- New BDD coverage in `tests/unit/test_client_server_conformance.cpp`
+  asserts the invited local join transition, and the existing non-invite
+  local join scenario now uses a `public_chat` room to match Matrix v1.18
+  join rules.

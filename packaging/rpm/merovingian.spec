@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.1
+Version:        0.5.2
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 03 2026 James Chapman <claude@ping.me.uk> - 0.5.2-1
+- Fix local invite-to-join membership transitions: invited local users no longer count as joined before a join event exists
+- Local joins now persist a fresh m.room.member state event with content.membership=join, so /rooms/{roomId}/members and /sync stop surfacing stale invite state after accept
+- Runtime hydration now rebuilds LocalRoom.members from join memberships only, preventing the stale invite bug from reappearing after restart
+
 * Wed Jun 03 2026 James Chapman <claude@ping.me.uk> - 0.5.1-1
 - Wire the wall-clock rate-limit engine, per-module log-level overrides, and audit-routing helper into production
 - New client_rate_limits.* config keys (per-IP and per-user, keyed by target prefix, format <N>/<Ws>s) replace the legacy request-counter window

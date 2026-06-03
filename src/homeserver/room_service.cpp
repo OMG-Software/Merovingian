@@ -2,7 +2,6 @@
 
 #include "merovingian/homeserver/room_service.hpp"
 
-#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
@@ -19,6 +18,7 @@
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/local_http_router.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -313,6 +313,19 @@ namespace
             return std::nullopt;
         }
         return serialized.output;
+    }
+
+    [[nodiscard]] auto serialize_membership_event_json(std::string_view user_id, std::string_view membership)
+        -> std::optional<std::string>
+    {
+        auto content = canonicaljson::Object{};
+        content.push_back(canonicaljson::make_member("membership", canonicaljson::Value{std::string{membership}}));
+
+        auto event = canonicaljson::Object{};
+        event.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.member"}}));
+        event.push_back(canonicaljson::make_member("state_key", canonicaljson::Value{std::string{user_id}}));
+        event.push_back(canonicaljson::make_member("content", canonicaljson::Value{std::move(content)}));
+        return serialize_canonical_string(canonicaljson::Value{std::move(event)});
     }
 
     [[nodiscard]] auto room_version_number(std::string_view room_version) -> int
@@ -2017,8 +2030,9 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             return make_operation_result(false, {}, "room persistence failed", 500U);
         }
         // Create the local room record and persist the membership.
-        auto const membership_result =
-            database::store_membership(runtime.database.persistent_store, {std::string{room_id}, *user_id});
+        auto const membership_stream = runtime.database.next_stream_ordering++;
+        auto const membership_result = database::store_membership(
+            runtime.database.persistent_store, {std::string{room_id}, *user_id, "join", membership_stream});
         if (membership_result == database::MembershipStoreResult::error)
         {
             log_diagnostic("room.join.rejected", {
@@ -2078,8 +2092,43 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     }
     if (!room_has_member(*room, *user_id))
     {
-        auto const result =
-            database::store_membership(runtime.database.persistent_store, {std::string{room_id}, *user_id});
+        auto const join_event_json = serialize_membership_event_json(*user_id, "join");
+        if (!join_event_json.has_value())
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                                false},
+                                                     {"room_id", std::string{room_id},                    false},
+                                                     {"status",  "500",                                   false},
+                                                     {"reason",  "membership event serialization failed", false}
+            });
+            return make_operation_result(false, {}, "membership event serialization failed", 500U);
+        }
+        auto const composed = compose_signed_event(runtime, room_id, *user_id, *join_event_json);
+        if (!composed.has_value())
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                    false},
+                                                     {"room_id", std::string{room_id},        false},
+                                                     {"status",  "403",                       false},
+                                                     {"reason",  "membership event rejected", false}
+            });
+            return make_operation_result(false, {}, "membership event rejected", 403U);
+        }
+        if (!persist_composed_event(runtime, room_id, *user_id, *composed))
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                              false},
+                                                     {"room_id", std::string{room_id},                  false},
+                                                     {"status",  "500",                                 false},
+                                                     {"reason",  "membership event persistence failed", false}
+            });
+            return make_operation_result(false, {}, "membership event persistence failed", 500U);
+        }
+        room->events.push_back(composed->json);
+
+        auto const membership_stream = runtime.database.next_stream_ordering++;
+        auto const result = database::store_membership(runtime.database.persistent_store,
+                                                       {std::string{room_id}, *user_id, "join", membership_stream});
         if (result == database::MembershipStoreResult::error)
         {
             log_diagnostic("room.join.rejected", {
@@ -2114,7 +2163,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         }
         else
         {
-            log_diagnostic("room.join.already_member",
+            log_diagnostic("room.join.membership_updated",
                            {
                                {"actor",        *user_id,                             false},
                                {"room_id",      std::string{room_id},                 false},

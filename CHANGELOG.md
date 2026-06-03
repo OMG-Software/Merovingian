@@ -1,3 +1,18 @@
+## 0.5.2
+
+- Fix local invite-to-join membership transitions. Invited local users no
+  longer count as joined in `LocalRoom.members` before a real
+  `m.room.member` join event exists.
+- Local joins now persist a fresh `m.room.member` state event with
+  `content.membership = "join"`, so `GET /_matrix/client/v3/rooms/{roomId}/members`
+  and `/sync` stop surfacing stale invite state after the invitee accepts.
+- Runtime hydration now rebuilds `LocalRoom.members` from `join`
+  memberships only, preventing the stale invite/member confusion from
+  reappearing after restart.
+- Add a conformance regression for invited local join state and tighten
+  the non-invite local join test to use a `public_chat` room, matching
+  Matrix v1.18 join-rule semantics.
+
 ## 0.5.1
 
 - Wire the wall-clock rate-limit engine, per-module log-level
