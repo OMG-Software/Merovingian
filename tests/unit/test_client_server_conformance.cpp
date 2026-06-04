@@ -6286,13 +6286,37 @@ SCENARIO("GET /rooms/{roomId}/messages returns chunk array", "[conformance][clie
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b", token, {}});
 
-            THEN("the server returns 200 with a chunk array")
+            THEN("the server returns Matrix room events with event_id in both chunk and state")
             {
-                // Spec MUST: 200 with chunk array of room events.
+                // Spec MUST: /messages returns room events in the client event
+                // format, which includes event_id for timeline and state
+                // events. Clients reject these payloads when event_id is
+                // missing, even if the event otherwise parses.
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
                 auto const* chunk = object_member_as_array(body, "chunk");
                 REQUIRE(chunk != nullptr);
+                REQUIRE(!chunk->empty());
+                for (auto const& value : *chunk)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    REQUIRE(event != nullptr);
+                    auto const* event_id = string_member(*event, "event_id");
+                    REQUIRE(event_id != nullptr);
+                    REQUIRE(!event_id->empty());
+                }
+
+                auto const* state = object_member_as_array(body, "state");
+                REQUIRE(state != nullptr);
+                REQUIRE(!state->empty());
+                for (auto const& value : *state)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    REQUIRE(event != nullptr);
+                    auto const* event_id = string_member(*event, "event_id");
+                    REQUIRE(event_id != nullptr);
+                    REQUIRE(!event_id->empty());
+                }
             }
         }
     }

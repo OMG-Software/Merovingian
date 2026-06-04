@@ -1,3 +1,20 @@
+## 0.5.5
+
+- Fix `GET /_matrix/client/v3/rooms/{roomId}/messages` returning raw stored
+  event JSON without `event_id` in `chunk`. The endpoint now emits the same
+  client-facing room-event format as `/sync`, so Matrix clients stop rejecting
+  encrypted timeline events fetched through back-pagination or room history.
+- Exempt browser `OPTIONS` preflight requests from the client-server rate
+  limiter by handling them before bucket checks. Repeated preflights no longer
+  consume the real route quota or trigger `429 M_LIMIT_EXCEEDED` on the actual
+  login, room-history, or media-config request that follows.
+- Add strict regressions for both interop failures: `/messages` now has a
+  conformance assertion that every timeline and state event carries `event_id`,
+  and the runtime suite now proves repeated browser preflights stay `200` and
+  do not consume the target route's rate-limit bucket.
+- Bump packaging and binary version metadata to `0.5.5` for the new branch and
+  PR.
+
 ## 0.5.4
 
 - Persist local invite metadata for locally-created rooms so invitees see a
