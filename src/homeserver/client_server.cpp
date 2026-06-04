@@ -1767,6 +1767,54 @@ namespace
         return std::move(parsed.value);
     }
 
+    [[nodiscard]] auto build_current_state_events_array(database::PersistentStore const& store,
+                                                        sync::EventTypeFilter const& filter, std::string_view room_id)
+        -> canonicaljson::Array
+    {
+        auto state_events = canonicaljson::Array{};
+        for (auto const& state_entry : store.state)
+        {
+            if (state_entry.room_id != room_id)
+            {
+                continue;
+            }
+            auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& candidate) {
+                return candidate.event_id == state_entry.event_id;
+            });
+            if (event == store.events.end() ||
+                !sync::event_passes_filter(filter, state_entry.event_type, event->sender_user_id))
+            {
+                continue;
+            }
+            state_events.push_back(client_event_value(*event));
+        }
+        return state_events;
+    }
+
+    [[nodiscard]] auto joined_membership_changed_since(database::PersistentStore const& store, std::string_view room_id,
+                                                       std::string_view user_id, std::uint64_t since_ordering) -> bool
+    {
+        auto const state_entry = std::ranges::find_if(store.state, [&](database::PersistentStateEvent const& state) {
+            return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == user_id;
+        });
+        if (state_entry == store.state.end())
+        {
+            return false;
+        }
+        auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& candidate) {
+            return candidate.event_id == state_entry->event_id;
+        });
+        if (event == store.events.end() || event->stream_ordering <= since_ordering)
+        {
+            return false;
+        }
+        auto const parsed = canonicaljson::parse_lossless(event->json);
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        auto const* content = object == nullptr ? nullptr : object_member_as_object(*object, "content");
+        auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+        return membership != nullptr && *membership == "join";
+    }
+
     [[nodiscard]] auto build_to_device_events_array(database::PersistentStore& store, std::string_view user,
                                                     std::string_view device_id, std::uint64_t since_sync_stream_id,
                                                     std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
@@ -2027,29 +2075,17 @@ namespace
             auto room_account_data = build_account_data_events(store, filter.room.account_data, user, room.room_id,
                                                                since_sync_stream_id, max_observed_sync_stream_id);
 
-            // Build the room's current state events. For initial sync
-            // (no since token) include all current state so clients can
-            // derive room version, power levels, join rules, etc. For
-            // incremental sync the timeline events already carry any
-            // state changes.
+            // Build the room's current state events. Initial sync always
+            // includes the full state snapshot. Incremental sync also needs
+            // that snapshot when the room first becomes joined for this user:
+            // without m.room.encryption / power_levels / create state, real
+            // clients cannot configure crypto after accepting an invite.
+            auto const newly_joined =
+                since_token.has_value() && joined_membership_changed_since(store, room.room_id, user, since_ordering);
             auto state_events = canonicaljson::Array{};
-            if (!since_token.has_value())
+            if (!since_token.has_value() || newly_joined)
             {
-                for (auto const& state_entry : store.state)
-                {
-                    if (state_entry.room_id != room.room_id)
-                    {
-                        continue;
-                    }
-                    for (auto const& evt : store.events)
-                    {
-                        if (evt.event_id == state_entry.event_id)
-                        {
-                            state_events.push_back(client_event_value(evt));
-                            break;
-                        }
-                    }
-                }
+                state_events = build_current_state_events_array(store, filter.room.state, room.room_id);
             }
 
             // Incremental sync: suppress rooms that have nothing new to report.
@@ -2057,7 +2093,7 @@ namespace
             // the full membership state of every joined room on every 5-second
             // cycle, causing clients to receive the same stale payload repeatedly
             // and making it appear as if the room is stuck.
-            if (since_token.has_value() && timeline_events.empty() && room_account_data.empty())
+            if (since_token.has_value() && timeline_events.empty() && room_account_data.empty() && state_events.empty())
             {
                 continue;
             }
@@ -3470,11 +3506,13 @@ namespace
                 }
             }
         }
+        auto state =
+            build_current_state_events_array(rt.homeserver.database.persistent_store, sync::EventTypeFilter{}, room_id);
         return json_serialize(json_obj({
             json_member("chunk", json_arr(std::move(chunk))),
             json_member("start", json_str(start_token)),
             json_member("end", json_str(end_token)),
-            json_member("state", json_arr(canonicaljson::Array{})),
+            json_member("state", json_arr(std::move(state))),
         }));
     }
 

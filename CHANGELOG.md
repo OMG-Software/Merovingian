@@ -1,4 +1,4 @@
-## 0.5.3
+## 0.5.4
 
 - Persist local invite metadata for locally-created rooms so invitees see a
   populated `rooms.invite.*.invite_state.events` payload in `/sync`, instead of
@@ -22,7 +22,27 @@
 - Publish `rooms.knock` entries from `/sync` and treat `forget` as a durable
   membership-row removal after `leave` or `ban`, matching the Matrix v1.18
   room-membership surfaces exercised by the new tests.
-- Align the packaging scripts and RPM spec with version `0.5.3` so the package
+- Fix encrypted post-invite joins for real clients. When a user newly joins a
+  room, `/sync` now includes the full current room state snapshot for that
+  joined room, and `GET /rooms/{roomId}/messages` now includes current state
+  instead of an always-empty `state` array. This restores `m.room.encryption`
+  bootstrap for clients like Element and Cinny.
+- Record device-list changes when room sharing starts or ends. Local and remote
+  join/leave membership transitions now publish `device_lists.changed` and
+  `device_lists.left` updates for local observers when they begin or stop
+  sharing a room with another user, allowing clients to refresh device keys and
+  deliver room keys after invite acceptance.
+- Add end-to-end encrypted-room regressions for the actual failing path:
+  device-list refresh on post-invite join, first joined-room `/sync` bootstrap,
+  and `/messages` state bootstrap for encrypted rooms. These tests now fail if
+  room membership works but E2EE setup still breaks.
+- Extend the E2EE conformance coverage around post-invite room bootstrap. The
+  suite now asserts the full local `keys/changes` -> `keys/query` ->
+  `keys/claim` -> `sendToDevice` -> `/sync to_device.events` path, verifies
+  that `sendToDevice` only reaches the addressed local device and drains once,
+  and checks that `device_lists.left` is not emitted while users still share a
+  different room.
+- Align the packaging scripts and RPM spec with version `0.5.4` so the package
   workflow stops failing on stale `0.5.2` metadata after the branch version
   bump.
 
