@@ -5612,8 +5612,6 @@ SCENARIO("POST /rooms/{roomId}/unban returns 200 and allows the user to rejoin a
             auto const unban = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/rooms/" + room_id + "/unban", alice, R"({"user_id":"@bob:example.org"})"});
-            auto const rejoin = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
 
             THEN("bob returns to leave membership and can join again")
             {
@@ -5633,6 +5631,8 @@ SCENARIO("POST /rooms/{roomId}/unban returns 200 and allows the user to rejoin a
                 REQUIRE(membership_value != nullptr);
                 REQUIRE(*membership_value == "leave");
 
+                auto const rejoin = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
                 REQUIRE(rejoin.response.status == 200U);
             }
         }
