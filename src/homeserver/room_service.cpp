@@ -122,6 +122,10 @@ namespace
         -> std::optional<ComposedEvent>;
     [[nodiscard]] auto persist_composed_event(HomeserverRuntime& runtime, std::string_view room_id,
                                               std::string_view sender, ComposedEvent const& composed) -> bool;
+    [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
+                                                                std::string_view joining_user_id) -> bool;
+    [[nodiscard]] auto record_room_share_ended_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
+                                                              std::string_view departing_user_id) -> bool;
 
     [[nodiscard]] auto sodium_is_ready() noexcept -> bool
     {
@@ -559,6 +563,12 @@ namespace
             return make_operation_result(false, {}, "membership persistence failed", 500U);
         }
 
+        if ((membership == "leave" || membership == "ban") &&
+            !record_room_share_ended_device_changes(runtime, room_id, target_user_id))
+        {
+            return make_operation_result(false, {}, "device list change persistence failed", 500U);
+        }
+
         apply_runtime_membership(runtime.database, room_id, target_user_id, membership);
         if (membership == "invite")
         {
@@ -674,6 +684,83 @@ namespace
         {
             members.emplace_back(user_id);
         }
+    }
+
+    [[nodiscard]] auto is_local_user(LocalDatabase const& database, std::string_view user_id) noexcept -> bool
+    {
+        return std::ranges::any_of(database.users, [user_id](LocalUser const& user) {
+            return user.user_id == user_id;
+        });
+    }
+
+    [[nodiscard]] auto users_share_joined_room(LocalDatabase const& database, std::string_view left_user_id,
+                                               std::string_view right_user_id,
+                                               std::string_view excluding_room_id = {}) noexcept -> bool
+    {
+        return std::ranges::any_of(database.rooms, [&](LocalRoom const& room) {
+            return room.room_id != excluding_room_id && room_has_member(room, left_user_id) &&
+                   room_has_member(room, right_user_id);
+        });
+    }
+
+    [[nodiscard]] auto record_local_device_list_change(LocalDatabase& database, std::string_view observer_user_id,
+                                                       std::string_view subject_user_id, std::string_view change_type)
+        -> bool
+    {
+        if (observer_user_id == subject_user_id || !is_local_user(database, observer_user_id))
+        {
+            return true;
+        }
+        return database::record_device_list_change(
+            database.persistent_store,
+            {0U, std::string{observer_user_id}, std::string{subject_user_id}, std::string{change_type}});
+    }
+
+    [[nodiscard]] auto record_room_share_started_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
+                                                                std::string_view joining_user_id) -> bool
+    {
+        auto const* room = find_room(runtime.database, room_id);
+        if (room == nullptr)
+        {
+            return true;
+        }
+        for (auto const& member : room->members)
+        {
+            if (member == joining_user_id)
+            {
+                continue;
+            }
+            if (!record_local_device_list_change(runtime.database, member, joining_user_id, "changed") ||
+                !record_local_device_list_change(runtime.database, joining_user_id, member, "changed"))
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    [[nodiscard]] auto record_room_share_ended_device_changes(HomeserverRuntime& runtime, std::string_view room_id,
+                                                              std::string_view departing_user_id) -> bool
+    {
+        auto const* room = find_room(runtime.database, room_id);
+        if (room == nullptr)
+        {
+            return true;
+        }
+        for (auto const& member : room->members)
+        {
+            if (member == departing_user_id ||
+                users_share_joined_room(runtime.database, departing_user_id, member, room_id))
+            {
+                continue;
+            }
+            if (!record_local_device_list_change(runtime.database, member, departing_user_id, "left") ||
+                !record_local_device_list_change(runtime.database, departing_user_id, member, "left"))
+            {
+                return false;
+            }
+        }
+        return true;
     }
 
     [[nodiscard]] auto find_event_json(database::PersistentStore const& store, std::string_view event_id)
@@ -2245,6 +2332,16 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
         }
         runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members), {}});
+        if (!record_room_share_started_device_changes(runtime, room_id, *user_id))
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                                false},
+                                                     {"room_id", std::string{room_id},                    false},
+                                                     {"status",  "500",                                   false},
+                                                     {"reason",  "device list change persistence failed", false}
+            });
+            return make_operation_result(false, {}, "device list change persistence failed", 500U);
+        }
         append_local_audit(runtime.database, observability::AuditCategory::admin, "room.joined_remote", *user_id,
                            room_id, "joined via federation");
         log_diagnostic("room.join.accepted_remote",
@@ -2326,7 +2423,17 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             });
             return make_operation_result(false, {}, "membership update failed", 500U);
         }
-        room->members.push_back(*user_id);
+        append_unique_member(room->members, *user_id);
+        if (!record_room_share_started_device_changes(runtime, room_id, *user_id))
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                                false},
+                                                     {"room_id", std::string{room_id},                    false},
+                                                     {"status",  "500",                                   false},
+                                                     {"reason",  "device list change persistence failed", false}
+            });
+            return make_operation_result(false, {}, "device list change persistence failed", 500U);
+        }
         if (result == database::MembershipStoreResult::stored)
         {
             log_diagnostic("room.join.membership_persisted",

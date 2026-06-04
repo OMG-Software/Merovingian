@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.3
+Version:        0.5.4
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 04 2026 James Chapman <claude@ping.me.uk> - 0.5.4-1
+- Fix encrypted invite-accept E2EE bootstrap for local clients.
+- Add strict conformance coverage for local keys/changes, keys/query, keys/claim,
+  sendToDevice targeting/draining, and post-join room-key delivery.
+
 * Wed Jun 04 2026 James Chapman <claude@ping.me.uk> - 0.5.3-1
 - Persist local invite metadata for same-server invitees so /sync invites include invite_state.events
 - Allow POST /rooms/{roomId}/leave to reject invites as well as leave joined rooms

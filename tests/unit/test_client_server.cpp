@@ -43,12 +43,9 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -121,6 +118,38 @@ namespace
     auto const value_end = body.find('"', value_begin);
     REQUIRE(value_end != std::string::npos);
     return body.substr(value_begin, value_end - value_begin);
+}
+
+[[nodiscard]] auto sync_next_batch(std::string const& body) -> std::string
+{
+    return json_value(body, "\"next_batch\":\"");
+}
+
+auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                        std::string_view user_id, std::string_view device_id, std::string_view curve25519_key,
+                        std::string_view ed25519_key) -> void
+{
+    auto const body = std::string{R"({"device_keys":{"user_id":")"} + std::string{user_id} + R"(","device_id":")" +
+                      std::string{device_id} +
+                      R"(","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:)" +
+                      std::string{device_id} + R"(":")" + std::string{curve25519_key} + R"(","ed25519:)" +
+                      std::string{device_id} + R"(":")" + std::string{ed25519_key} + R"("}}})";
+    REQUIRE(merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", token, body})
+                .response.status == 200U);
+}
+
+auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                         std::string_view user_id, std::string_view device_id, std::string_view key_id,
+                         std::string_view key_value) -> void
+{
+    auto const body =
+        std::string{R"({"one_time_keys":{"signed_curve25519:)" + std::string{key_id} + R"(":{"key":")" +
+                    std::string{key_value} + R"(","signatures":{"})" + std::string{user_id} + R"(":{"ed25519:)" +
+                    std::string{device_id} + R"(":")" + std::string{key_value} + R"(_SIG"}}}}})"};
+    REQUIRE(merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", token, body})
+                .response.status == 200U);
 }
 
 using namespace merovingian::tests;
@@ -2204,21 +2233,21 @@ SCENARIO("OPTIONS preflight requests return 200 without requiring an access toke
 
 namespace
 {
-    // Lookup helper for LocalHttpResponse::headers (added in 0.4.60). Returns the
-    // header value or empty string when the header is absent. Case-sensitive
-    // because the wire emitter writes the canonical header name.
-    [[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response,
-                                       std::string_view name) -> std::string
+// Lookup helper for LocalHttpResponse::headers (added in 0.4.60). Returns the
+// header value or empty string when the header is absent. Case-sensitive
+// because the wire emitter writes the canonical header name.
+[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response, std::string_view name)
+    -> std::string
+{
+    for (auto const& [key, value] : response.headers)
     {
-        for (auto const& [key, value] : response.headers)
+        if (key == name)
         {
-            if (key == name)
-            {
-                return value;
-            }
+            return value;
         }
-        return {};
     }
+    return {};
+}
 } // namespace
 
 SCENARIO("OPTIONS preflight attaches Access-Control-Allow-Origin wildcard by default",
@@ -2307,14 +2336,14 @@ SCENARIO("OPTIONS preflight echoes back an explicit single origin from the allow
             auto request = merovingian::homeserver::LocalHttpRequest{};
             request.method = "OPTIONS";
             request.target = "/_matrix/client/v3/sync";
-            request.headers = {merovingian::http::Header{"Origin", "https://app.example.com"}};
-            auto const response =
-                merovingian::homeserver::handle_client_server_request(runtime, request);
+            request.headers = {
+                merovingian::http::Header{"Origin", "https://app.example.com"}
+            };
+            auto const response = merovingian::homeserver::handle_client_server_request(runtime, request);
 
             THEN("the response echoes the request Origin back as the allowed origin")
             {
-                REQUIRE(response_header(response.response, "Access-Control-Allow-Origin") ==
-                        "https://app.example.com");
+                REQUIRE(response_header(response.response, "Access-Control-Allow-Origin") == "https://app.example.com");
             }
         }
     }
@@ -2339,9 +2368,10 @@ SCENARIO("OPTIONS preflight from an origin not in the allow-list omits Allow-Ori
             auto request = merovingian::homeserver::LocalHttpRequest{};
             request.method = "OPTIONS";
             request.target = "/_matrix/client/v3/sync";
-            request.headers = {merovingian::http::Header{"Origin", "https://attacker.example"}};
-            auto const response =
-                merovingian::homeserver::handle_client_server_request(runtime, request);
+            request.headers = {
+                merovingian::http::Header{"Origin", "https://attacker.example"}
+            };
+            auto const response = merovingian::homeserver::handle_client_server_request(runtime, request);
 
             THEN("Access-Control-Allow-Origin is not set so the browser blocks the request")
             {
@@ -2399,8 +2429,7 @@ SCENARIO("format_response wire output emits configured headers in insertion orde
         WHEN("the OPTIONS preflight is formatted")
         {
             auto request = merovingian::homeserver::LocalHttpRequest{
-                "OPTIONS", "/_matrix/client/v3/sync", {}, {},
-                {merovingian::http::Header{"Origin", "vector://vector"}},
+                "OPTIONS", "/_matrix/client/v3/sync", {}, {}, {merovingian::http::Header{"Origin", "vector://vector"}},
             };
             auto const response = merovingian::homeserver::handle_client_server_request(runtime, request);
 
@@ -3569,18 +3598,20 @@ SCENARIO("E2EE device_keys round-trip: inviter upload is visible to invitee quer
                     .response.status == 200U);
 
         auto const inviter_login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST",
-                      "/_matrix/client/v3/login",
-                      {},
-                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"INVITER_DEV"})"});
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"INVITER_DEV"})"});
         REQUIRE(inviter_login.response.status == 200U);
         auto const inviter_token = login_token(inviter_login.response.body);
 
         auto const invitee_login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST",
-                      "/_matrix/client/v3/login",
-                      {},
-                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@invitee:example.org"},"password":"CorrectHorse8!","device_id":"INVITEE_DEV"})"});
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@invitee:example.org"},"password":"CorrectHorse8!","device_id":"INVITEE_DEV"})"});
         REQUIRE(invitee_login.response.status == 200U);
         auto const invitee_token = login_token(invitee_login.response.body);
 
@@ -3588,16 +3619,12 @@ SCENARIO("E2EE device_keys round-trip: inviter upload is visible to invitee quer
         {
             auto const upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"POST",
-                 "/_matrix/client/v3/keys/upload",
-                 inviter_token,
+                {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
                  R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":"BBBB_ED"}},"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_AAAA","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_AAAA"}}}}})"});
             REQUIRE(upload.response.status == 200U);
 
             auto const query = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/keys/query",
-                          invitee_token,
+                runtime, {"POST", "/_matrix/client/v3/keys/query", invitee_token,
                           R"({"device_keys":{"@inviter:example.org":["INVITER_DEV"]}})"});
             REQUIRE(query.response.status == 200U);
 
@@ -3614,16 +3641,14 @@ SCENARIO("E2EE device_keys round-trip: inviter upload is visible to invitee quer
             }
             AND_THEN("the persistent_store holds exactly one device_key row for the inviter")
             {
-                auto const count =
-                    merovingian::homeserver::key_api_record_count(runtime, "@inviter:example.org");
+                auto const count = merovingian::homeserver::key_api_record_count(runtime, "@inviter:example.org");
                 REQUIRE(count >= 1U);
             }
         }
     }
 }
 
-SCENARIO("E2EE one_time_keys are returned to a peer after upload",
-         "[homeserver][client-server][e2ee][one-time-keys]")
+SCENARIO("E2EE one_time_keys are returned to a peer after upload", "[homeserver][client-server][e2ee][one-time-keys]")
 {
     GIVEN("an inviter user who has uploaded a one_time_key")
     {
@@ -3637,20 +3662,20 @@ SCENARIO("E2EE one_time_keys are returned to a peer after upload",
                               merovingian::tests::registration_json("inviter", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST",
-                      "/_matrix/client/v3/login",
-                      {},
-                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
 
         WHEN("the device uploads a one_time_key")
         {
             auto const upload = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/keys/upload",
-                          token,
-                          R"({"one_time_keys":{"signed_curve25519:OTK1":{"key":"OTK_DATA_AAA","signatures":{"@inviter:example.org":{"ed25519:DEV1":"SIG_AAA"}}}}})"});
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"one_time_keys":{"signed_curve25519:OTK1":{"key":"OTK_DATA_AAA","signatures":{"@inviter:example.org":{"ed25519:DEV1":"SIG_AAA"}}}}})"});
             REQUIRE(upload.response.status == 200U);
             REQUIRE(upload.response.body.find("one_time_key_counts") != std::string::npos);
 
@@ -3681,10 +3706,11 @@ SCENARIO("E2EE cross-signing keys round-trip via /keys/device_signing/upload + /
                               merovingian::tests::registration_json("inviter", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST",
-                      "/_matrix/client/v3/login",
-                      {},
-                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"DEV1"})"});
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
 
@@ -3692,9 +3718,7 @@ SCENARIO("E2EE cross-signing keys round-trip via /keys/device_signing/upload + /
         {
             auto const upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"POST",
-                 "/_matrix/client/v3/keys/device_signing/upload",
-                 token,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
                  R"({"auth":{"type":"m.login.password","user":"@inviter:example.org","password":"CorrectHorse7!"},)"
                  R"("master_key":{"user_id":"@inviter:example.org","usage":["user"],"keys":{"ed25519:MASTER_KEY_ID":"MASTER_KEY_VALUE"}},)"
                  R"("self_signing_key":{"user_id":"@inviter:example.org","usage":["self_signing"],"keys":{"ed25519:SSK_KEY_ID":"SSK_KEY_VALUE"}},)"
@@ -3702,10 +3726,8 @@ SCENARIO("E2EE cross-signing keys round-trip via /keys/device_signing/upload + /
             REQUIRE(upload.response.status == 200U);
 
             auto const query = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/keys/query",
-                          token,
-                          R"({"device_keys":{"@inviter:example.org":[]}})"});
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/query", token, R"({"device_keys":{"@inviter:example.org":[]}})"});
             REQUIRE(query.response.status == 200U);
 
             THEN("the query response contains master_keys, self_signing_keys, and user_signing_keys")
@@ -3768,18 +3790,20 @@ SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips"
                     .response.status == 200U);
 
         auto const inviter_login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST",
-                      "/_matrix/client/v3/login",
-                      {},
-                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"INVITER_DEV"})"});
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@inviter:example.org"},"password":"CorrectHorse7!","device_id":"INVITER_DEV"})"});
         REQUIRE(inviter_login.response.status == 200U);
         auto const inviter_token = login_token(inviter_login.response.body);
 
         auto const invitee_login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST",
-                      "/_matrix/client/v3/login",
-                      {},
-                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@invitee:example.org"},"password":"CorrectHorse8!","device_id":"INVITEE_DEV"})"});
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@invitee:example.org"},"password":"CorrectHorse8!","device_id":"INVITEE_DEV"})"});
         REQUIRE(invitee_login.response.status == 200U);
         auto const invitee_token = login_token(invitee_login.response.body);
 
@@ -3788,46 +3812,34 @@ SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips"
             // 1. device_keys + one_time_keys for inviter
             auto const inviter_device_upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"POST",
-                 "/_matrix/client/v3/keys/upload",
-                 inviter_token,
+                {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
                  R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA","ed25519:INVITER_DEV":"BBBB"},"signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"SIG1"}}},"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_1"}}}}})"});
             REQUIRE(inviter_device_upload.response.status == 200U);
 
             // 2. cross-signing keys for inviter
             auto const inviter_cs_upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"POST",
-                 "/_matrix/client/v3/keys/device_signing/upload",
-                 inviter_token,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", inviter_token,
                  R"({"master_key":{"user_id":"@inviter:example.org","usage":["user"],"keys":{"ed25519:MASTER":"MASTER_VALUE"}},"self_signing_key":{"user_id":"@inviter:example.org","usage":["self_signing"],"keys":{"ed25519:SSK":"SSK_VALUE"}}})"});
             REQUIRE(inviter_cs_upload.response.status == 200U);
 
             // 3. cross-signing signatures for inviter (self-signing)
             auto const inviter_sigs = merovingian::homeserver::handle_client_server_request(
                 runtime,
-                {"POST",
-                 "/_matrix/client/v3/keys/signatures/upload",
-                 inviter_token,
+                {"POST", "/_matrix/client/v3/keys/signatures/upload", inviter_token,
                  R"({"@inviter:example.org":{"ed25519:SSK":{"device_keys":{"INVITER_DEV":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"ed25519:INVITER_DEV":"BBBB"}}}}}})"});
             REQUIRE(inviter_sigs.response.status == 200U);
 
             // 4. key backup version for inviter
             auto const inviter_backup = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST",
-                 "/_matrix/client/v3/room_keys/version",
-                 inviter_token,
-                 R"({"algorithm":"m.megolm_backup.v1","auth_data":{}})"});
+                runtime, {"POST", "/_matrix/client/v3/room_keys/version", inviter_token,
+                          R"({"algorithm":"m.megolm_backup.v1","auth_data":{}})"});
             REQUIRE(inviter_backup.response.status == 200U);
 
             // Now the invitee queries the inviter's bundle.
             auto const invitee_query = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST",
-                 "/_matrix/client/v3/keys/query",
-                 invitee_token,
-                 R"({"device_keys":{"@inviter:example.org":["INVITER_DEV"]}})"});
+                runtime, {"POST", "/_matrix/client/v3/keys/query", invitee_token,
+                          R"({"device_keys":{"@inviter:example.org":["INVITER_DEV"]}})"});
             REQUIRE(invitee_query.response.status == 200U);
 
             THEN("the invitee's query returns the inviter's full key bundle")
@@ -3852,6 +3864,539 @@ SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips"
                 // must be merged into the device_keys signature map under
                 // the SSK key id.
                 REQUIRE(body.find("\"ed25519:SSK\"") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Joining an encrypted room after both devices uploaded keys advertises device-list changes",
+         "[homeserver][client-server][e2ee][device-lists][regression]")
+{
+    GIVEN("two users with uploaded device keys who start sharing an encrypted room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", alice_token,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"ALICE_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:ALICE_DEV":"ALICE_CURVE","ed25519:ALICE_DEV":"ALICE_ED"}}})"})
+                .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", bob_token,
+                 R"({"device_keys":{"user_id":"@bob:example.org","device_id":"BOB_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:BOB_DEV":"BOB_CURVE","ed25519:BOB_DEV":"BOB_ED"}}})"})
+                .response.status == 200U);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token,
+                      R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const encrypted_room_id = room_id(create.response.body);
+
+        auto const alice_before_join = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
+        REQUIRE(alice_before_join.response.status == 200U);
+        auto const alice_before_join_body = parse_object(alice_before_join.response.body);
+        auto const* alice_from = string_member(alice_before_join_body, "next_batch");
+        REQUIRE(alice_from != nullptr);
+
+        auto const bob_invite_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", bob_token, {}});
+        REQUIRE(bob_invite_sync.response.status == 200U);
+        auto const bob_invite_sync_body = parse_object(bob_invite_sync.response.body);
+        auto const* bob_from = string_member(bob_invite_sync_body, "next_batch");
+        REQUIRE(bob_from != nullptr);
+
+        WHEN("bob joins the encrypted room")
+        {
+            auto const join = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + encrypted_room_id + "/join", bob_token, "{}"});
+
+            THEN("both users learn that the other user's device list must be refreshed")
+            {
+                REQUIRE(join.response.status == 200U);
+
+                auto const alice_incremental = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/sync?since=" + *alice_from, alice_token, {}});
+                REQUIRE(alice_incremental.response.status == 200U);
+                auto const alice_sync_body = parse_object(alice_incremental.response.body);
+                auto const* alice_device_lists = object_member_as_object(alice_sync_body, "device_lists");
+                REQUIRE(alice_device_lists != nullptr);
+                auto const* alice_changed = object_member_as_array(*alice_device_lists, "changed");
+                REQUIRE(alice_changed != nullptr);
+                auto const alice_saw_bob =
+                    std::ranges::any_of(*alice_changed, [](merovingian::canonicaljson::Value const& value) {
+                        auto const* user_id = std::get_if<std::string>(&value.storage());
+                        return user_id != nullptr && *user_id == "@bob:example.org";
+                    });
+                REQUIRE(alice_saw_bob);
+
+                auto const bob_incremental = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/sync?since=" + *bob_from, bob_token, {}});
+                REQUIRE(bob_incremental.response.status == 200U);
+                auto const bob_sync_body = parse_object(bob_incremental.response.body);
+                auto const* bob_device_lists = object_member_as_object(bob_sync_body, "device_lists");
+                REQUIRE(bob_device_lists != nullptr);
+                auto const* bob_changed = object_member_as_array(*bob_device_lists, "changed");
+                REQUIRE(bob_changed != nullptr);
+                auto const bob_saw_alice =
+                    std::ranges::any_of(*bob_changed, [](merovingian::canonicaljson::Value const& value) {
+                        auto const* user_id = std::get_if<std::string>(&value.storage());
+                        return user_id != nullptr && *user_id == "@alice:example.org";
+                    });
+                REQUIRE(bob_saw_alice);
+            }
+        }
+    }
+}
+
+SCENARIO("First post-join room bootstrap includes encryption state for encrypted rooms",
+         "[homeserver][client-server][e2ee][bootstrap][regression]")
+{
+    GIVEN("an invited user joining a private_chat room with m.room.encryption state")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token,
+                      R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const encrypted_room_id = room_id(create.response.body);
+
+        auto const bob_invite_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", bob_token, {}});
+        REQUIRE(bob_invite_sync.response.status == 200U);
+        auto const bob_invite_sync_body = parse_object(bob_invite_sync.response.body);
+        auto const* bob_from = string_member(bob_invite_sync_body, "next_batch");
+        REQUIRE(bob_from != nullptr);
+
+        WHEN("bob joins and performs his first incremental sync and messages fetch")
+        {
+            auto const join = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + encrypted_room_id + "/join", bob_token, "{}"});
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + *bob_from, bob_token, {}});
+            auto const messages = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + encrypted_room_id + "/messages?dir=b", bob_token, {}});
+
+            THEN("the joined-room bootstrap exposes m.room.encryption in /sync state and /messages state")
+            {
+                REQUIRE(join.response.status == 200U);
+                REQUIRE(sync.response.status == 200U);
+                REQUIRE(messages.response.status == 200U);
+
+                auto const sync_body = parse_object(sync.response.body);
+                auto const* rooms = object_member_as_object(sync_body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* join_rooms = object_member_as_object(*rooms, "join");
+                REQUIRE(join_rooms != nullptr);
+                auto const* room_entry = object_member_as_object(*join_rooms, encrypted_room_id);
+                REQUIRE(room_entry != nullptr);
+                auto const* state = object_member_as_object(*room_entry, "state");
+                REQUIRE(state != nullptr);
+                auto const* events = object_member_as_array(*state, "events");
+                REQUIRE(events != nullptr);
+                auto const sync_has_encryption =
+                    std::ranges::any_of(*events, [](merovingian::canonicaljson::Value const& value) {
+                        auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                        return event != nullptr && string_member(*event, "type") != nullptr &&
+                               *string_member(*event, "type") == "m.room.encryption";
+                    });
+                REQUIRE(sync_has_encryption);
+
+                auto const messages_body = parse_object(messages.response.body);
+                auto const* message_state = object_member_as_array(messages_body, "state");
+                REQUIRE(message_state != nullptr);
+                auto const messages_has_encryption =
+                    std::ranges::any_of(*message_state, [](merovingian::canonicaljson::Value const& value) {
+                        auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                        return event != nullptr && string_member(*event, "type") != nullptr &&
+                               *string_member(*event, "type") == "m.room.encryption";
+                    });
+                REQUIRE(messages_has_encryption);
+            }
+        }
+    }
+}
+
+SCENARIO("Encrypted invite join supports the full local room-key delivery sequence",
+         "[homeserver][client-server][e2ee][room-key][regression]")
+{
+    GIVEN("two local devices that uploaded keys before they started sharing an encrypted room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        upload_device_keys(runtime, alice_token, "@alice:example.org", "ALICE_DEV", "ALICE_CURVE", "ALICE_ED");
+        upload_device_keys(runtime, bob_token, "@bob:example.org", "BOB_DEV", "BOB_CURVE", "BOB_ED");
+        upload_one_time_key(runtime, bob_token, "@bob:example.org", "BOB_DEV", "BOB_OTK_AAAA", "BOB_OTK_VALUE");
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token,
+                      R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const encrypted_room_id = room_id(create.response.body);
+
+        auto const alice_initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
+        REQUIRE(alice_initial_sync.response.status == 200U);
+        auto const alice_from = sync_next_batch(alice_initial_sync.response.body);
+
+        auto const bob_initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", bob_token, {}});
+        REQUIRE(bob_initial_sync.response.status == 200U);
+        auto const bob_from = sync_next_batch(bob_initial_sync.response.body);
+
+        WHEN("bob joins and alice performs the normal query-claim-sendToDevice flow")
+        {
+            auto const join = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + encrypted_room_id + "/join", bob_token, "{}"});
+            REQUIRE(join.response.status == 200U);
+
+            auto const alice_join_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + alice_from, alice_token, {}});
+            REQUIRE(alice_join_sync.response.status == 200U);
+            auto const alice_join_sync_body = parse_object(alice_join_sync.response.body);
+            auto const* alice_device_lists = object_member_as_object(alice_join_sync_body, "device_lists");
+            REQUIRE(alice_device_lists != nullptr);
+            auto const* alice_changed = object_member_as_array(*alice_device_lists, "changed");
+            REQUIRE(alice_changed != nullptr);
+            REQUIRE(std::ranges::any_of(*alice_changed, [](merovingian::canonicaljson::Value const& value) {
+                auto const* user_id = std::get_if<std::string>(&value.storage());
+                return user_id != nullptr && *user_id == "@bob:example.org";
+            }));
+
+            auto const query = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/query", alice_token,
+                          R"({"device_keys":{"@bob:example.org":["BOB_DEV"]}})"});
+            REQUIRE(query.response.status == 200U);
+
+            auto const claim = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/claim", alice_token,
+                          R"({"one_time_keys":{"@bob:example.org":{"BOB_DEV":"signed_curve25519"}}})"});
+            REQUIRE(claim.response.status == 200U);
+
+            auto const send_to_device_body =
+                std::string{
+                    R"({"messages":{"@bob:example.org":{"BOB_DEV":{"algorithm":"m.megolm.v1.aes-sha2","room_id":")"} +
+                encrypted_room_id + R"(","session_id":"sid-1","session_key":"skey-1"}}}})";
+            auto const send_to_device = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/sendToDevice/m.room_key/txn-room-key-1", alice_token, send_to_device_body});
+            REQUIRE(send_to_device.response.status == 200U);
+
+            THEN("alice can fetch and claim bob's keys and bob receives the room key on /sync")
+            {
+                REQUIRE(query.response.body.find("BOB_CURVE") != std::string::npos);
+                REQUIRE(query.response.body.find("BOB_ED") != std::string::npos);
+                REQUIRE(claim.response.body.find("BOB_OTK_VALUE") != std::string::npos);
+
+                auto const bob_join_sync = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/sync?since=" + bob_from, bob_token, {}});
+                REQUIRE(bob_join_sync.response.status == 200U);
+                auto const bob_join_sync_body = parse_object(bob_join_sync.response.body);
+                auto const* bob_device_lists = object_member_as_object(bob_join_sync_body, "device_lists");
+                REQUIRE(bob_device_lists != nullptr);
+                auto const* bob_changed = object_member_as_array(*bob_device_lists, "changed");
+                REQUIRE(bob_changed != nullptr);
+                REQUIRE(std::ranges::any_of(*bob_changed, [](merovingian::canonicaljson::Value const& value) {
+                    auto const* user_id = std::get_if<std::string>(&value.storage());
+                    return user_id != nullptr && *user_id == "@alice:example.org";
+                }));
+
+                auto const* to_device = object_member_as_object(bob_join_sync_body, "to_device");
+                REQUIRE(to_device != nullptr);
+                auto const* events = object_member_as_array(*to_device, "events");
+                REQUIRE(events != nullptr);
+                REQUIRE(std::ranges::any_of(*events, [](merovingian::canonicaljson::Value const& value) {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    return event != nullptr && string_member(*event, "type") != nullptr &&
+                           *string_member(*event, "type") == "m.room_key" &&
+                           string_member(*event, "sender") != nullptr &&
+                           *string_member(*event, "sender") == "@alice:example.org";
+                }));
+            }
+        }
+    }
+}
+
+SCENARIO("Leaving one of two shared rooms does not emit device_lists.left",
+         "[homeserver][client-server][e2ee][device-lists][edge]")
+{
+    GIVEN("two users that still share another joined room after one leave")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto const room_one = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(room_one.response.status == 200U);
+        auto const room_one_id = room_id(room_one.response.body);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + room_one_id + "/join", bob_token, "{}"})
+                    .response.status == 200U);
+
+        auto const room_two = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(room_two.response.status == 200U);
+        auto const room_two_id = room_id(room_two.response.body);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + room_two_id + "/join", bob_token, "{}"})
+                    .response.status == 200U);
+
+        auto const before_leave_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
+        REQUIRE(before_leave_sync.response.status == 200U);
+        auto const from_token = sync_next_batch(before_leave_sync.response.body);
+
+        WHEN("bob leaves only one of the shared rooms")
+        {
+            auto const leave = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_one_id + "/leave", bob_token, "{}"});
+
+            THEN("alice does not see bob in device_lists.left because they still share room two")
+            {
+                REQUIRE(leave.response.status == 200U);
+                auto const changes = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + from_token + "&to=s999", alice_token, {}});
+                REQUIRE(changes.response.status == 200U);
+                auto const body = parse_object(changes.response.body);
+                auto const* left = object_member_as_array(body, "left");
+                REQUIRE(left != nullptr);
+                REQUIRE_FALSE(std::ranges::any_of(*left, [](merovingian::canonicaljson::Value const& value) {
+                    auto const* user_id = std::get_if<std::string>(&value.storage());
+                    return user_id != nullptr && *user_id == "@bob:example.org";
+                }));
+            }
+        }
+    }
+}
+
+SCENARIO("Stopping and resuming room sharing emits device_lists.left then changed",
+         "[homeserver][client-server][e2ee][device-lists][edge]")
+{
+    GIVEN("two users that stop sharing a public room and later share it again")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(room.response.status == 200U);
+        auto const room_id_value = room_id(room.response.body);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id_value + "/join", bob_token, "{}"})
+                    .response.status == 200U);
+
+        auto const before_leave_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
+        REQUIRE(before_leave_sync.response.status == 200U);
+        auto const leave_from = sync_next_batch(before_leave_sync.response.body);
+
+        WHEN("bob leaves and later rejoins the room")
+        {
+            auto const leave = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id_value + "/leave", bob_token, "{}"});
+            REQUIRE(leave.response.status == 200U);
+
+            auto const left_changes = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/keys/changes?from=" + leave_from + "&to=s999", alice_token, {}});
+            REQUIRE(left_changes.response.status == 200U);
+            auto const left_body = parse_object(left_changes.response.body);
+            auto const* left = object_member_as_array(left_body, "left");
+            REQUIRE(left != nullptr);
+            REQUIRE(std::ranges::any_of(*left, [](merovingian::canonicaljson::Value const& value) {
+                auto const* user_id = std::get_if<std::string>(&value.storage());
+                return user_id != nullptr && *user_id == "@bob:example.org";
+            }));
+
+            auto const after_leave_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", alice_token, {}});
+            REQUIRE(after_leave_sync.response.status == 200U);
+            auto const rejoin_from = sync_next_batch(after_leave_sync.response.body);
+
+            auto const rejoin = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id_value + "/join", bob_token, "{}"});
+
+            THEN("alice later sees bob in device_lists.changed again")
+            {
+                REQUIRE(rejoin.response.status == 200U);
+                auto const changed_response = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"GET", "/_matrix/client/v3/keys/changes?from=" + rejoin_from + "&to=s999", alice_token, {}});
+                REQUIRE(changed_response.response.status == 200U);
+                auto const changed_body = parse_object(changed_response.response.body);
+                auto const* changed = object_member_as_array(changed_body, "changed");
+                REQUIRE(changed != nullptr);
+                REQUIRE(std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& value) {
+                    auto const* user_id = std::get_if<std::string>(&value.storage());
+                    return user_id != nullptr && *user_id == "@bob:example.org";
+                }));
             }
         }
     }
@@ -3896,16 +4441,18 @@ SCENARIO("Login without device_id generates a unique opaque id, not a fixed lite
         WHEN("both users log in without sending a device_id")
         {
             auto const login_first = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/login",
-                          {},
-                          R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@first:example.org"},"password":"CorrectHorse7!"})"});
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@first:example.org"},"password":"CorrectHorse7!"})"});
             REQUIRE(login_first.response.status == 200U);
             auto const login_second = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/login",
-                          {},
-                          R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@second:example.org"},"password":"CorrectHorse7!"})"});
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@second:example.org"},"password":"CorrectHorse7!"})"});
             REQUIRE(login_second.response.status == 200U);
 
             THEN("each user gets a distinct device_id; the literal \"MEROVINGIAN\" is not used")
