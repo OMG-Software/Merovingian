@@ -1,4 +1,4 @@
-## 0.5.4 (in progress — codex/fix-invite-membership-state)
+## 0.5.5 (in progress — codex/fix-messages-eventid-and-preflight-rate-limit)
 
 - Local room creation now persists invite metadata for same-server invitees, so
   `/sync` can populate `rooms.invite.*.invite_state.events` for Element/Cinny
@@ -38,9 +38,25 @@
   `keys/claim` returning the recipient's device material, `sendToDevice`
   reaching only the addressed local device, `to_device.events` draining once,
   and the `device_lists.left` edge case where another shared room still exists.
-- Packaging workflow metadata is now consistent with version `0.5.4` across the
+- `GET /_matrix/client/v3/rooms/{roomId}/messages` now serializes timeline
+  events through the client event formatter instead of echoing raw stored event
+  JSON. That restores required `event_id` fields in `chunk`, which real Matrix
+  clients need to parse and decrypt encrypted room history correctly.
+- Browser `OPTIONS` preflights now bypass client-server rate limiting. The
+  runtime handles preflight before bucket accounting, so repeated cross-origin
+  checks no longer consume the actual route quota or trip `429
+  M_LIMIT_EXCEEDED` on the subsequent login, `/messages`, or media-config
+  request.
+- New strict regressions now pin both failures directly: a v1.18 conformance
+  scenario asserts that `/messages` returns `event_id` on every room event in
+  both `chunk` and `state`, and a runtime regression proves repeated
+  preflights stay `200` and do not consume the target route's rate-limit
+  bucket.
+- Packaging workflow metadata is now consistent with version `0.5.5` across the
   Debian, RPM, FreeBSD, and static Linux packaging scripts and the RPM spec, so
   the package validation job no longer trips over stale `0.5.2` references.
+
+## 0.5.4 (merged)
 
 ## 0.5.0 (in progress — feature/0.5.0-rate-limit-and-logging-config)
 
@@ -1473,3 +1489,23 @@ SPDX and CycloneDX inventories.
   joined user when `invite` or `knock` membership updates are applied.
   A focused regression in `tests/unit/test_review_regressions.cpp` now
   pins that joined-members-only behavior.
+## 0.5.5 (in progress — codex/fix-messages-eventid-and-preflight-rate-limit)
+
+- `GET /_matrix/client/v3/rooms/{roomId}/messages` now serializes timeline
+  events through the client event formatter instead of echoing raw stored event
+  JSON. That restores required `event_id` fields in `chunk`, which real Matrix
+  clients need to parse and decrypt encrypted room history correctly.
+- Browser `OPTIONS` preflights now bypass client-server rate limiting. The
+  runtime handles preflight before bucket accounting, so repeated cross-origin
+  checks no longer consume the actual route quota or trip `429
+  M_LIMIT_EXCEEDED` on the subsequent login, `/messages`, or media-config
+  request.
+- New strict regressions now pin both failures directly: a v1.18 conformance
+  scenario asserts that `/messages` returns `event_id` on every room event in
+  both `chunk` and `state`, and a runtime regression proves repeated
+  preflights stay `200` and do not consume the target route's rate-limit
+  bucket.
+- Version metadata is bumped to `0.5.5` across Meson, the binaries, packaging
+  manifests, and the packaging scripts for this PR.
+
+## 0.5.4 (merged)

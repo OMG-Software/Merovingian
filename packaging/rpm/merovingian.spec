@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.4
+Version:        0.5.5
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,16 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 04 2026 James Chapman <claude@ping.me.uk> - 0.5.5-1
+- Fix GET /rooms/{roomId}/messages to return client-format events with event_id
+  in both timeline chunk and state arrays, so Matrix clients can parse and
+  decrypt encrypted room history correctly.
+- Handle browser OPTIONS preflight before client-server rate limiting so
+  repeated cross-origin checks no longer consume the real route bucket or
+  trigger 429 M_LIMIT_EXCEEDED on the subsequent request.
+- Add strict regressions covering both interop failures: /messages event_id
+  serialization and preflight bucket bypass.
+
 * Wed Jun 04 2026 James Chapman <claude@ping.me.uk> - 0.5.4-1
 - Fix encrypted invite-accept E2EE bootstrap for local clients.
 - Add strict conformance coverage for local keys/changes, keys/query, keys/claim,

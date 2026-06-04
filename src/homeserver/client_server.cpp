@@ -3475,7 +3475,7 @@ namespace
                 start_token = std::to_string(event.stream_ordering);
             }
             end_token = std::to_string(event.stream_ordering);
-            chunk.push_back(parse_event_json_object(event.json));
+            chunk.push_back(client_event_value(event));
             return true;
         };
         if (backwards)
@@ -4298,6 +4298,19 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                              "request.rejected", req.access_token, req.target, "413:request body too large");
         return dispatch_err(req, rt, 413U, "M_TOO_LARGE", "request body too large");
     }
+    // CORS preflight: browsers send OPTIONS before any cross-origin POST/PUT/DELETE.
+    // Must return 200 before the access-token and rate-limit gates. Browsers
+    // may emit several preflights for the same route, and counting them
+    // against the real request bucket causes 429s before the actual
+    // application request is even attempted. The `Access-Control-*`
+    // response headers are attached by `dispatch_resp` from the runtime's
+    // CORS policy, so deployments behind a reverse proxy (nginx/Apache)
+    // no longer need the proxy to add CORS headers.
+    if (req.method == "OPTIONS")
+    {
+        return dispatch_resp(req, rt, 200U, {});
+    }
+
     auto guard = std::unique_lock<std::recursive_mutex>{rt.homeserver.mutex};
     if (!allow(rt, req))
     {
@@ -4318,16 +4331,6 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         guard.lock();
         return response;
     };
-
-    // CORS preflight: browsers send OPTIONS before any cross-origin POST/PUT/DELETE.
-    // Must return 200 before the access-token gate. The `Access-Control-*`
-    // response headers are attached by `dispatch_resp` from the runtime's
-    // CORS policy, so deployments behind a reverse proxy (nginx/Apache)
-    // no longer need the proxy to add CORS headers.
-    if (req.method == "OPTIONS")
-    {
-        return dispatch_resp(req, rt, 200U, {});
-    }
 
     // GET /.well-known/matrix/client tells clients where the homeserver lives.
     // Must be served before any auth check; the path is outside /_matrix/ so

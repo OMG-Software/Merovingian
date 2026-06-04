@@ -2231,6 +2231,48 @@ SCENARIO("OPTIONS preflight requests return 200 without requiring an access toke
     }
 }
 
+SCENARIO("OPTIONS preflight bypasses rate limiting and does not consume the route bucket",
+         "[homeserver][client-server][cors][preflight][rate-limit]")
+{
+    GIVEN("a started client-server runtime with a one-request rate-limit bucket")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
+
+        WHEN("a browser sends repeated preflights before the real login request")
+        {
+            auto const preflight_one = merovingian::homeserver::handle_client_server_request(
+                runtime, {"OPTIONS",
+                          "/_matrix/client/v3/login",
+                          {},
+                          {},
+                          {merovingian::http::Header{"Origin", "vector://vector"}}});
+            auto const preflight_two = merovingian::homeserver::handle_client_server_request(
+                runtime, {"OPTIONS",
+                          "/_matrix/client/v3/login",
+                          {},
+                          {},
+                          {merovingian::http::Header{"Origin", "vector://vector"}}});
+            auto const login = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@nobody:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+
+            THEN("the preflights stay 200 and the real request is evaluated normally instead of 429")
+            {
+                REQUIRE(preflight_one.response.status == 200U);
+                REQUIRE(preflight_two.response.status == 200U);
+                REQUIRE(login.response.status == 403U);
+                REQUIRE(login.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+
 namespace
 {
 // Lookup helper for LocalHttpResponse::headers (added in 0.4.60). Returns the
