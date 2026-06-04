@@ -11,6 +11,12 @@
   `ban`, including local join/leave flows and inbound federated membership
   updates, so stale invite rows no longer outlive the accepted or rejected
   invite.
+- The client-server conformance suite now has strict behavioral scenarios for
+  the remaining membership operations: `POST /rooms/{roomId}/invite`,
+  `/ban`, `/kick`, `/unban`, `/forget`, and `POST /knock/{roomIdOrAlias}`.
+  These no longer treat `404 M_UNRECOGNIZED` as an acceptable placeholder and
+  instead assert the state transitions and `/sync` surfaces required by Matrix
+  v1.18.
 
 ## 0.5.0 (in progress — feature/0.5.0-rate-limit-and-logging-config)
 

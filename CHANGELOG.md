@@ -11,6 +11,10 @@
 - Delete stale invite metadata when a user joins or leaves a room, including
   inbound federated membership transitions, so client-visible room classification
   no longer lags behind current membership.
+- Replace the remaining membership-operation placeholder tests with strict
+  Matrix v1.18 conformance scenarios for `invite`, `ban`, `kick`, `unban`,
+  `forget`, and `knock`, asserting membership state transitions and `/sync`
+  visibility instead of tolerating `404 M_UNRECOGNIZED`.
 
 ## 0.5.2
 
