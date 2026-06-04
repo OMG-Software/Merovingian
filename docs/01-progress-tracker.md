@@ -1,3 +1,31 @@
+## 0.5.3 (in progress — codex/fix-invite-membership-state)
+
+- Local room creation now persists invite metadata for same-server invitees, so
+  `/sync` can populate `rooms.invite.*.invite_state.events` for Element/Cinny
+  instead of surfacing an empty invite shell.
+- `POST /_matrix/client/v3/rooms/{roomId}/leave` now handles both joined-room
+  leaves and invite rejection. The local path persists a fresh
+  `m.room.member` leave state event where room state is available, updates the
+  durable membership row to `leave`, and wakes `/sync`.
+- Invite metadata is deleted when membership transitions to `join`, `leave`, or
+  `ban`, including local join/leave flows and inbound federated membership
+  updates, so stale invite rows no longer outlive the accepted or rejected
+  invite.
+- The client-server conformance suite now has strict behavioral scenarios for
+  the remaining membership operations: `POST /rooms/{roomId}/invite`,
+  `/ban`, `/kick`, `/unban`, `/forget`, and `POST /knock/{roomIdOrAlias}`.
+  These no longer treat `404 M_UNRECOGNIZED` as an acceptable placeholder and
+  instead assert the state transitions and `/sync` surfaces required by Matrix
+  v1.18.
+- The local client-server routes now implement those remaining membership
+  endpoints, including durable state-event persistence for `invite`, `ban`,
+  `kick`, `unban`, and `knock`, `rooms.knock` publication from `/sync`, and
+  membership-row deletion for `forget` after the caller has left or been
+  banned.
+- Packaging workflow metadata is now consistent with version `0.5.3` across the
+  Debian, RPM, FreeBSD, and static Linux packaging scripts and the RPM spec, so
+  the package validation job no longer trips over stale `0.5.2` references.
+
 ## 0.5.0 (in progress — feature/0.5.0-rate-limit-and-logging-config)
 
 - Wires the wall-clock rate-limit engine, per-module log-level

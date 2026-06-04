@@ -898,6 +898,40 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto delete_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id) -> bool
+{
+    auto const it = std::ranges::find_if(store.memberships, [&](PersistentMembership const& membership) {
+        return membership.room_id == room_id && membership.user_id == user_id;
+    });
+    if (it == store.memberships.end())
+    {
+        log_diagnostic("membership.delete.rejected", {
+                                                         {"room_id", std::string{room_id},   false},
+                                                         {"user_id", std::string{user_id},   false},
+                                                         {"reason",  "membership not found", false}
+        });
+        return false;
+    }
+    if (!record_and_persist(
+            store, record_statement("delete_membership", "DELETE FROM membership WHERE room_id = $1 AND user_id = $2",
+                                    {public_value(std::string{room_id}), public_value(std::string{user_id})})))
+    {
+        log_diagnostic("membership.delete.rejected", {
+                                                         {"room_id", std::string{room_id},                  false},
+                                                         {"user_id", std::string{user_id},                  false},
+                                                         {"reason",  "persistence backend rejected delete", false}
+        });
+        return false;
+    }
+    store.memberships.erase(it);
+    log_diagnostic("membership.deleted",
+                   {
+                       {"room_id", std::string{room_id}, false},
+                       {"user_id", std::string{user_id}, false}
+    });
+    return true;
+}
+
 [[nodiscard]] auto upsert_invite(PersistentStore& store, PersistentInvite invite) -> bool
 {
     auto const invite_state_json = serialize_invite_state_events_json(invite.invite_state_events_json);
@@ -963,6 +997,37 @@ namespace
                                          {"room_id",  existing->room_id,  false},
                                          {"user_id",  existing->user_id,  false},
                                          {"event_id", existing->event_id, false}
+    });
+    return true;
+}
+
+[[nodiscard]] auto delete_invite(PersistentStore& store, std::string_view room_id, std::string_view user_id) -> bool
+{
+    auto const existing = std::ranges::find_if(store.invites, [&](PersistentInvite const& invite) {
+        return invite.room_id == room_id && invite.user_id == user_id;
+    });
+    if (existing == store.invites.end())
+    {
+        return true;
+    }
+
+    if (!record_and_persist(store,
+                            record_statement("delete_invite", "DELETE FROM invites WHERE room_id = $1 AND user_id = $2",
+                                             {public_value(std::string{room_id}), public_value(std::string{user_id})})))
+    {
+        log_diagnostic("invite.rejected", {
+                                              {"room_id", std::string{room_id},                  false},
+                                              {"user_id", std::string{user_id},                  false},
+                                              {"reason",  "persistence backend rejected delete", false}
+        });
+        return false;
+    }
+
+    store.invites.erase(existing);
+    log_diagnostic("invite.deleted",
+                   {
+                       {"room_id", std::string{room_id}, false},
+                       {"user_id", std::string{user_id}, false}
     });
     return true;
 }

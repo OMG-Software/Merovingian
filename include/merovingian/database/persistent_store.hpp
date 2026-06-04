@@ -438,7 +438,10 @@ enum class MembershipStoreResult
 [[nodiscard]] auto store_membership(PersistentStore& store, PersistentMembership membership) -> MembershipStoreResult;
 [[nodiscard]] auto update_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id,
                                      std::string_view new_membership) -> bool;
+[[nodiscard]] auto delete_membership(PersistentStore& store, std::string_view room_id, std::string_view user_id)
+    -> bool;
 [[nodiscard]] auto upsert_invite(PersistentStore& store, PersistentInvite invite) -> bool;
+[[nodiscard]] auto delete_invite(PersistentStore& store, std::string_view room_id, std::string_view user_id) -> bool;
 [[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
     -> std::optional<PersistentInvite>;
 [[nodiscard]] auto store_room_with_membership(PersistentStore& store, PersistentRoom room,

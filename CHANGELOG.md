@@ -1,3 +1,31 @@
+## 0.5.3
+
+- Persist local invite metadata for locally-created rooms so invitees see a
+  populated `rooms.invite.*.invite_state.events` payload in `/sync`, instead of
+  an empty invite shell.
+- Allow `POST /_matrix/client/v3/rooms/{roomId}/leave` to reject an invite as
+  well as leave a joined room, matching the Matrix v1.18 membership flow.
+- Persist a real `m.room.member` leave state event on local leaves so current
+  room state, `/members`, and initial `/sync` stop reporting stale join or
+  invite membership after the user leaves.
+- Delete stale invite metadata when a user joins or leaves a room, including
+  inbound federated membership transitions, so client-visible room classification
+  no longer lags behind current membership.
+- Replace the remaining membership-operation placeholder tests with strict
+  Matrix v1.18 conformance scenarios for `invite`, `ban`, `kick`, `unban`,
+  `forget`, and `knock`, asserting membership state transitions and `/sync`
+  visibility instead of tolerating `404 M_UNRECOGNIZED`.
+- Implement `POST /_matrix/client/v3/rooms/{roomId}/invite`, `/ban`, `/kick`,
+  `/unban`, and `/forget`, plus `POST /_matrix/client/v3/knock/{roomIdOrAlias}`,
+  so the strict membership conformance scenarios now exercise real room-member
+  state transitions instead of missing endpoints.
+- Publish `rooms.knock` entries from `/sync` and treat `forget` as a durable
+  membership-row removal after `leave` or `ban`, matching the Matrix v1.18
+  room-membership surfaces exercised by the new tests.
+- Align the packaging scripts and RPM spec with version `0.5.3` so the package
+  workflow stops failing on stale `0.5.2` metadata after the branch version
+  bump.
+
 ## 0.5.2
 
 - Fix local invite-to-join membership transitions. Invited local users no

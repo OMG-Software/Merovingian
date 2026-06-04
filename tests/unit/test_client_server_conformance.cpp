@@ -51,12 +51,9 @@ using namespace merovingian::tests;
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -208,6 +205,44 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
     return *rid;
 }
 
+[[nodiscard]] auto create_knock_room(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token)
+    -> std::string
+{
+    auto const r = merovingian::homeserver::handle_client_server_request(
+        runtime,
+        {"POST", "/_matrix/client/v3/createRoom", token,
+         R"({"initial_state":[{"type":"m.room.join_rules","state_key":"","content":{"join_rule":"knock"}}]})"});
+    REQUIRE(r.response.status == 200U);
+    auto const body = parse_object(r.response.body);
+    auto const* rid = string_member(body, "room_id");
+    REQUIRE(rid != nullptr);
+    return *rid;
+}
+
+[[nodiscard]] auto find_membership(merovingian::database::PersistentStore const& store, std::string const& room_id,
+                                   std::string const& user_id) -> merovingian::database::PersistentMembership const*
+{
+    auto const membership = std::ranges::find_if(store.memberships, [&](auto const& current) {
+        return current.room_id == room_id && current.user_id == user_id;
+    });
+    return membership == store.memberships.end() ? nullptr : &(*membership);
+}
+
+[[nodiscard]] auto current_membership_event(merovingian::database::PersistentStore const& store,
+                                            std::string const& room_id, std::string const& user_id)
+    -> merovingian::canonicaljson::Object
+{
+    auto const state = std::ranges::find_if(store.state, [&](auto const& current) {
+        return current.room_id == room_id && current.event_type == "m.room.member" && current.state_key == user_id;
+    });
+    REQUIRE(state != store.state.end());
+    auto const event = std::ranges::find_if(store.events, [&](auto const& current) {
+        return current.event_id == state->event_id;
+    });
+    REQUIRE(event != store.events.end());
+    return parse_object(event->json);
+}
+
 // Sends a text message and returns the event_id.
 [[nodiscard]] auto send_message(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                                 std::string const& room_id) -> std::string
@@ -334,8 +369,7 @@ SCENARIO("POST /register with auth type but missing token returns 401 UIA challe
                 auto const* flows = object_member_as_array(body, "flows");
                 REQUIRE(flows != nullptr);
                 REQUIRE(flows->size() == 1U);
-                auto const* first_flow =
-                    std::get_if<merovingian::canonicaljson::Object>(&flows->front().storage());
+                auto const* first_flow = std::get_if<merovingian::canonicaljson::Object>(&flows->front().storage());
                 REQUIRE(first_flow != nullptr);
                 auto const* stages = object_member_as_array(*first_flow, "stages");
                 REQUIRE(stages != nullptr);
@@ -347,8 +381,7 @@ SCENARIO("POST /register with auth type but missing token returns 401 UIA challe
     }
 }
 
-SCENARIO("POST /register with wrong auth type returns 401 UIA challenge",
-         "[conformance][client-server][register]")
+SCENARIO("POST /register with wrong auth type returns 401 UIA challenge", "[conformance][client-server][register]")
 {
     GIVEN("a running client-server with token-gated registration enabled")
     {
@@ -358,11 +391,10 @@ SCENARIO("POST /register with wrong auth type returns 401 UIA challenge",
         WHEN("a registration request with an unsupported auth type is submitted")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/register",
-                 {},
-                 R"({"username":"bob","password":"CorrectHorse7!","auth":{"type":"m.login.dummy"}})"});
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
+                                  R"({"username":"bob","password":"CorrectHorse7!","auth":{"type":"m.login.dummy"}})"});
 
             THEN("the response is 401 with registration-token UIA flow metadata")
             {
@@ -5181,6 +5213,72 @@ SCENARIO("POST /rooms/{roomId}/join returns 403 for an invite-only room without 
     }
 }
 
+SCENARIO("Local invites appear in /sync invite_state for the invitee", "[conformance][client-server][room-membership]")
+{
+    GIVEN("a running client-server where alice creates a private room and invites bob")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
+
+        WHEN("bob performs an initial /sync")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+
+            THEN("the invited room appears under rooms.invite with invite_state events")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* invite_rooms = object_member_as_object(*rooms, "invite");
+                REQUIRE(invite_rooms != nullptr);
+                auto const* invited_room = object_member_as_object(*invite_rooms, *room_id);
+                REQUIRE(invited_room != nullptr);
+                auto const* invite_state = object_member_as_object(*invited_room, "invite_state");
+                REQUIRE(invite_state != nullptr);
+                auto const* events = object_member_as_array(*invite_state, "events");
+                REQUIRE(events != nullptr);
+                REQUIRE_FALSE(events->empty());
+
+                auto found_invite = false;
+                for (auto const& event_value : *events)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&event_value.storage());
+                    if (event == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* type = string_member(*event, "type");
+                    auto const* state_key = string_member(*event, "state_key");
+                    auto const* content = object_member_as_object(*event, "content");
+                    if (type == nullptr || state_key == nullptr || content == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* membership = string_member(*content, "membership");
+                    if (*type == "m.room.member" && *state_key == "@bob:example.org" && membership != nullptr &&
+                        *membership == "invite")
+                    {
+                        found_invite = true;
+                        break;
+                    }
+                }
+                REQUIRE(found_invite);
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/rooms/{roomId}/leave ----------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidleave
 SCENARIO("POST /rooms/{roomId}/leave returns 200 empty object", "[conformance][client-server][room-membership]")
@@ -5208,33 +5306,223 @@ SCENARIO("POST /rooms/{roomId}/leave returns 200 empty object", "[conformance][c
     }
 }
 
-// --- POST /_matrix/client/v3/rooms/{roomId}/ban ------------------------------
-// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidban
-// IMPLEMENTATION GAP: room ban not yet implemented.
-SCENARIO("POST /rooms/{roomId}/ban returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("POST /rooms/{roomId}/leave allows an invited user to reject the invite and clears invite metadata",
          "[conformance][client-server][room-membership]")
 {
-    GIVEN("a running client-server and a logged-in user with a room")
+    GIVEN("a running client-server where alice invites bob to a private room")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
 
-        WHEN("POST /rooms/{roomId}/ban is called")
+        WHEN("bob POSTs to /rooms/{roomId}/leave")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/ban", token, R"({"user_id":"@bob:example.org"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/leave", bob, "{}"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server records a leave membership event and removes the stored invite")
             {
-                // IMPLEMENTATION GAP: ban not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(body.empty());
+
+                auto const invite = merovingian::database::find_invite(
+                    started.runtime.homeserver.database.persistent_store, *room_id, "@bob:example.org");
+                REQUIRE_FALSE(invite.has_value());
+
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const membership = std::ranges::find_if(store.memberships, [&](auto const& current) {
+                    return current.room_id == *room_id && current.user_id == "@bob:example.org";
+                });
+                REQUIRE(membership != store.memberships.end());
+                REQUIRE(membership->membership == "leave");
+
+                auto const state = std::ranges::find_if(store.state, [&](auto const& current) {
+                    return current.room_id == *room_id && current.event_type == "m.room.member" &&
+                           current.state_key == "@bob:example.org";
+                });
+                REQUIRE(state != store.state.end());
+                auto const event = std::ranges::find_if(store.events, [&](auto const& current) {
+                    return current.event_id == state->event_id;
+                });
+                REQUIRE(event != store.events.end());
+                auto const event_body = parse_object(event->json);
+                auto const* content = object_member_as_object(event_body, "content");
+                REQUIRE(content != nullptr);
+                auto const* membership_value = string_member(*content, "membership");
+                REQUIRE(membership_value != nullptr);
+                REQUIRE(*membership_value == "leave");
+            }
+        }
+    }
+}
+
+SCENARIO("POST /rooms/{roomId}/join clears stale invite metadata and moves the room to rooms.join",
+         "[conformance][client-server][room-membership]")
+{
+    GIVEN("a running client-server where alice invites bob to a private room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
+
+        WHEN("bob joins the invited room and then performs an initial /sync")
+        {
+            auto const join = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/join", bob, "{}"});
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+
+            THEN("the invite metadata is gone and the room appears under rooms.join")
+            {
+                REQUIRE(join.response.status == 200U);
+                REQUIRE(sync.response.status == 200U);
+
+                auto const invite = merovingian::database::find_invite(
+                    started.runtime.homeserver.database.persistent_store, *room_id, "@bob:example.org");
+                REQUIRE_FALSE(invite.has_value());
+
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const membership = std::ranges::find_if(store.memberships, [&](auto const& current) {
+                    return current.room_id == *room_id && current.user_id == "@bob:example.org";
+                });
+                REQUIRE(membership != store.memberships.end());
+                REQUIRE(membership->membership == "join");
+
+                auto const state = std::ranges::find_if(store.state, [&](auto const& current) {
+                    return current.room_id == *room_id && current.event_type == "m.room.member" &&
+                           current.state_key == "@bob:example.org";
+                });
+                REQUIRE(state != store.state.end());
+                auto const event = std::ranges::find_if(store.events, [&](auto const& current) {
+                    return current.event_id == state->event_id;
+                });
+                REQUIRE(event != store.events.end());
+                auto const event_body = parse_object(event->json);
+                auto const* content = object_member_as_object(event_body, "content");
+                REQUIRE(content != nullptr);
+                auto const* membership_value = string_member(*content, "membership");
+                REQUIRE(membership_value != nullptr);
+                REQUIRE(*membership_value == "join");
+
+                auto const sync_body = parse_object(sync.response.body);
+                auto const* rooms = object_member_as_object(sync_body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* join_rooms = object_member_as_object(*rooms, "join");
+                REQUIRE(join_rooms != nullptr);
+                REQUIRE(object_member_as_object(*join_rooms, *room_id) != nullptr);
+                auto const* invite_rooms = object_member_as_object(*rooms, "invite");
+                REQUIRE(invite_rooms != nullptr);
+                REQUIRE(object_member_as_object(*invite_rooms, *room_id) == nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /rooms/{roomId}/leave persists a leave membership state event for joined users",
+         "[conformance][client-server][room-membership]")
+{
+    GIVEN("a running client-server with a joined room member")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_public_room(started.runtime, alice);
+
+        WHEN("alice leaves the room")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", alice, "{}"});
+
+            THEN("current room state for alice becomes a leave membership event")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const state = std::ranges::find_if(store.state, [&](auto const& current) {
+                    return current.room_id == room_id && current.event_type == "m.room.member" &&
+                           current.state_key == "@alice:example.org";
+                });
+                REQUIRE(state != store.state.end());
+                auto const event = std::ranges::find_if(store.events, [&](auto const& current) {
+                    return current.event_id == state->event_id;
+                });
+                REQUIRE(event != store.events.end());
+                auto const event_body = parse_object(event->json);
+                auto const* content = object_member_as_object(event_body, "content");
+                REQUIRE(content != nullptr);
+                auto const* membership_value = string_member(*content, "membership");
+                REQUIRE(membership_value != nullptr);
+                REQUIRE(*membership_value == "leave");
+            }
+        }
+    }
+}
+
+// --- POST /_matrix/client/v3/rooms/{roomId}/ban ------------------------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidban
+SCENARIO("POST /rooms/{roomId}/ban returns 200 and bans the target user",
+         "[conformance][client-server][room-membership]")
+{
+    GIVEN("a public room where bob has joined alice")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        WHEN("alice bans bob with a reason")
+        {
+            auto const ban = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/ban", alice,
+                                  R"({"user_id":"@bob:example.org","reason":"rule break"})"});
+            auto const rejoin = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
+
+            THEN("the server records bob as banned and blocks rejoin")
+            {
+                REQUIRE(ban.response.status == 200U);
+                auto const body = parse_object(ban.response.body);
+                REQUIRE(body.empty());
+
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const* membership = find_membership(store, room_id, "@bob:example.org");
+                REQUIRE(membership != nullptr);
+                REQUIRE(membership->membership == "ban");
+
+                auto const event = current_membership_event(store, room_id, "@bob:example.org");
+                auto const* content = object_member_as_object(event, "content");
+                REQUIRE(content != nullptr);
+                auto const* membership_value = string_member(*content, "membership");
+                auto const* reason = string_member(*content, "reason");
+                REQUIRE(membership_value != nullptr);
+                REQUIRE(*membership_value == "ban");
+                REQUIRE(reason != nullptr);
+                REQUIRE(*reason == "rule break");
+
+                REQUIRE(rejoin.response.status == 403U);
+                auto const rejoin_body = parse_object(rejoin.response.body);
+                REQUIRE(string_member(rejoin_body, "errcode") != nullptr);
+                REQUIRE(string_member(rejoin_body, "error") != nullptr);
             }
         }
     }
@@ -5242,31 +5530,58 @@ SCENARIO("POST /rooms/{roomId}/ban returns 404 M_UNRECOGNIZED (implementation ga
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/kick -----------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidkick
-// IMPLEMENTATION GAP: room kick not yet implemented.
-SCENARIO("POST /rooms/{roomId}/kick returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("POST /rooms/{roomId}/kick returns 200 and removes the target user from the room",
          "[conformance][client-server][room-membership]")
 {
-    GIVEN("a running client-server and a logged-in user with a room")
+    GIVEN("a public room where bob has joined alice")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
+        REQUIRE(join.response.status == 200U);
 
-        WHEN("POST /rooms/{roomId}/kick is called")
+        WHEN("alice kicks bob with a reason")
         {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/kick", token, R"({"user_id":"@bob:example.org"})"});
+            auto const kick = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/kick", alice,
+                                  R"({"user_id":"@bob:example.org","reason":"cool down"})"});
+            auto const joined_rooms = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/joined_rooms", bob, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("bob becomes leave membership and the room disappears from joined_rooms")
             {
-                // IMPLEMENTATION GAP: kick not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(kick.response.status == 200U);
+                auto const kick_body = parse_object(kick.response.body);
+                REQUIRE(kick_body.empty());
+
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const* membership = find_membership(store, room_id, "@bob:example.org");
+                REQUIRE(membership != nullptr);
+                REQUIRE(membership->membership == "leave");
+
+                auto const event = current_membership_event(store, room_id, "@bob:example.org");
+                auto const* content = object_member_as_object(event, "content");
+                REQUIRE(content != nullptr);
+                auto const* membership_value = string_member(*content, "membership");
+                auto const* reason = string_member(*content, "reason");
+                REQUIRE(membership_value != nullptr);
+                REQUIRE(*membership_value == "leave");
+                REQUIRE(reason != nullptr);
+                REQUIRE(*reason == "cool down");
+
+                REQUIRE(joined_rooms.response.status == 200U);
+                auto const joined_body = parse_object(joined_rooms.response.body);
+                auto const* rooms = object_member_as_array(joined_body, "joined_rooms");
+                REQUIRE(rooms != nullptr);
+                auto const still_joined = std::ranges::any_of(*rooms, [&](auto const& value) {
+                    auto const* current = std::get_if<std::string>(&value.storage());
+                    return current != nullptr && *current == room_id;
+                });
+                REQUIRE_FALSE(still_joined);
             }
         }
     }
@@ -5274,94 +5589,143 @@ SCENARIO("POST /rooms/{roomId}/kick returns 404 M_UNRECOGNIZED (implementation g
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/unban ----------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidunban
-// IMPLEMENTATION GAP: room unban not yet implemented.
-SCENARIO("POST /rooms/{roomId}/unban returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("POST /rooms/{roomId}/unban returns 200 and allows the user to rejoin a public room",
          "[conformance][client-server][room-membership]")
 {
-    GIVEN("a running client-server and a logged-in user with a room")
+    GIVEN("a public room where bob was banned by alice")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = create_public_room(started.runtime, alice);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/ban", alice,
+                                      R"({"user_id":"@bob:example.org","reason":"rule break"})"})
+                    .response.status == 200U);
 
-        WHEN("POST /rooms/{roomId}/unban is called")
+        WHEN("alice unbans bob")
         {
-            auto const response = merovingian::homeserver::handle_client_server_request(
+            auto const unban = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/unban", token, R"({"user_id":"@bob:example.org"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/unban", alice, R"({"user_id":"@bob:example.org"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("bob returns to leave membership and can join again")
             {
-                // IMPLEMENTATION GAP: unban not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(unban.response.status == 200U);
+                auto const unban_body = parse_object(unban.response.body);
+                REQUIRE(unban_body.empty());
+
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const* membership = find_membership(store, room_id, "@bob:example.org");
+                REQUIRE(membership != nullptr);
+                REQUIRE(membership->membership == "leave");
+
+                auto const event = current_membership_event(store, room_id, "@bob:example.org");
+                auto const* content = object_member_as_object(event, "content");
+                REQUIRE(content != nullptr);
+                auto const* membership_value = string_member(*content, "membership");
+                REQUIRE(membership_value != nullptr);
+                REQUIRE(*membership_value == "leave");
+
+                auto const rejoin = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob, "{}"});
+                REQUIRE(rejoin.response.status == 200U);
             }
         }
     }
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/invite ---------------------------
-// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsrooomidinvite
-// IMPLEMENTATION GAP: room invite not yet implemented.
-SCENARIO("POST /rooms/{roomId}/invite returns 404 M_UNRECOGNIZED (implementation gap)",
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidinvite
+SCENARIO("POST /rooms/{roomId}/invite returns 200 and publishes an invite to /sync",
          "[conformance][client-server][room-membership]")
 {
-    GIVEN("a running client-server and a logged-in user with a room")
+    GIVEN("a private room where alice invites bob by user_id")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = create_room(started.runtime, alice);
 
-        WHEN("POST /rooms/{roomId}/invite is called")
+        WHEN("alice POSTs /rooms/{roomId}/invite")
         {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", token,
+            auto const invite = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
                                   R"({"user_id":"@bob:example.org"})"});
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("bob is invited and the room appears in rooms.invite")
             {
-                // IMPLEMENTATION GAP: invite not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(invite.response.status == 200U);
+                auto const invite_body = parse_object(invite.response.body);
+                REQUIRE(invite_body.empty());
+
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const* membership = find_membership(store, room_id, "@bob:example.org");
+                REQUIRE(membership != nullptr);
+                REQUIRE(membership->membership == "invite");
+                REQUIRE(merovingian::database::find_invite(store, room_id, "@bob:example.org").has_value());
+
+                REQUIRE(sync.response.status == 200U);
+                auto const sync_body = parse_object(sync.response.body);
+                auto const* rooms = object_member_as_object(sync_body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* invite_rooms = object_member_as_object(*rooms, "invite");
+                REQUIRE(invite_rooms != nullptr);
+                auto const* invited_room = object_member_as_object(*invite_rooms, room_id);
+                REQUIRE(invited_room != nullptr);
+                auto const* invite_state = object_member_as_object(*invited_room, "invite_state");
+                REQUIRE(invite_state != nullptr);
+                auto const* events = object_member_as_array(*invite_state, "events");
+                REQUIRE(events != nullptr);
+                REQUIRE_FALSE(events->empty());
             }
         }
     }
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/forget ---------------------------
-// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsrooomidforgot
-// IMPLEMENTATION GAP: room forget not yet implemented.
-SCENARIO("POST /rooms/{roomId}/forget returns 404 M_UNRECOGNIZED (implementation gap)",
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidforget
+SCENARIO("POST /rooms/{roomId}/forget returns 200 after leave and removes the room from rooms.leave",
          "[conformance][client-server][room-membership]")
 {
-    GIVEN("a running client-server and a logged-in user with a room")
+    GIVEN("a room that alice has already left")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_public_room(started.runtime, alice);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", alice, "{}"})
+                    .response.status == 200U);
 
-        WHEN("POST /rooms/{roomId}/forget is called")
+        WHEN("alice forgets the room")
         {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/forget", token, "{}"});
+            auto const forget = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/forget", alice, "{}"});
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", R"json(/_matrix/client/v3/sync?filter={"room":{"include_leave":true}})json", alice, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the room is no longer surfaced under rooms.leave")
             {
-                // IMPLEMENTATION GAP: forget not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(forget.response.status == 200U);
+                auto const forget_body = parse_object(forget.response.body);
+                REQUIRE(forget_body.empty());
+
+                REQUIRE(sync.response.status == 200U);
+                auto const sync_body = parse_object(sync.response.body);
+                auto const* rooms = object_member_as_object(sync_body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* leave_rooms = object_member_as_object(*rooms, "leave");
+                REQUIRE(leave_rooms != nullptr);
+                REQUIRE(object_member_as_object(*leave_rooms, room_id) == nullptr);
             }
         }
     }
@@ -5369,29 +5733,44 @@ SCENARIO("POST /rooms/{roomId}/forget returns 404 M_UNRECOGNIZED (implementation
 
 // --- POST /_matrix/client/v3/knock/{roomIdOrAlias} ---------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3knockroomidoralias
-// IMPLEMENTATION GAP: room knock not yet implemented.
-SCENARIO("POST /knock/{roomIdOrAlias} returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("POST /knock/{roomIdOrAlias} returns room_id and surfaces the room under rooms.knock",
          "[conformance][client-server][room-membership]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a room whose join rule is knock")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const room_id = create_knock_room(started.runtime, alice);
 
-        WHEN("POST /knock/!someroom:example.org is called")
+        WHEN("bob knocks on the room")
         {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/knock/%21someroom%3Aexample.org", token, "{}"});
+            auto const knock = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/knock/" + room_id, bob, "{}"});
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the response returns room_id and /sync shows the knock")
             {
-                // IMPLEMENTATION GAP: knock not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(knock.response.status == 200U);
+                auto const knock_body = parse_object(knock.response.body);
+                auto const* knocked_room_id = string_member(knock_body, "room_id");
+                REQUIRE(knocked_room_id != nullptr);
+                REQUIRE(*knocked_room_id == room_id);
+
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const* membership = find_membership(store, room_id, "@bob:example.org");
+                REQUIRE(membership != nullptr);
+                REQUIRE(membership->membership == "knock");
+
+                REQUIRE(sync.response.status == 200U);
+                auto const sync_body = parse_object(sync.response.body);
+                auto const* rooms = object_member_as_object(sync_body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* knock_rooms = object_member_as_object(*rooms, "knock");
+                REQUIRE(knock_rooms != nullptr);
+                REQUIRE(object_member_as_object(*knock_rooms, room_id) != nullptr);
             }
         }
     }
@@ -8931,170 +9310,6 @@ SCENARIO("PUT /rooms/{roomId}/redact/{eventId}/{txnId} conformance")
             THEN("the server returns 404 M_UNRECOGNIZED")
             {
                 // IMPLEMENTATION GAP: redact not routed
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-// ============================================================================
-// 27     Room membership — gaps
-// ============================================================================
-
-SCENARIO("POST /rooms/{roomId}/ban conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("POST /rooms/{roomId}/ban is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/ban", token,
-                                  R"({"user_id":"@bob:example.org","reason":"test"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                // IMPLEMENTATION GAP: ban not routed
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-SCENARIO("POST /rooms/{roomId}/kick conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("POST /rooms/{roomId}/kick is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/kick", token,
-                                  R"({"user_id":"@bob:example.org","reason":"test"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-SCENARIO("POST /rooms/{roomId}/unban conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("POST /rooms/{roomId}/unban is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/unban", token, R"({"user_id":"@bob:example.org"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-SCENARIO("POST /rooms/{roomId}/invite conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("POST /rooms/{roomId}/invite is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", token,
-                                  R"({"user_id":"@bob:example.org"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-SCENARIO("POST /rooms/{roomId}/forget conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("POST /rooms/{roomId}/forget is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/forget", token, "{}"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-SCENARIO("POST /knock/{roomIdOrAlias} conformance")
-{
-    GIVEN("a started homeserver with an authenticated user")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-
-        WHEN("POST /knock/{roomIdOrAlias} is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/knock/!room:example.org", token, "{}"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
                 REQUIRE(response.response.status == 404);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");

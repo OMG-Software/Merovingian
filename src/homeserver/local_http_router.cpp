@@ -436,7 +436,8 @@ namespace
     // are dropped, empty values are kept. The returned views are
     // substrings of the input — the caller must own the input buffer
     // for the lifetime of the views.
-    [[nodiscard]] auto parse_audit_query_string(std::string_view query) -> std::vector<std::pair<std::string_view, std::string_view>>
+    [[nodiscard]] auto parse_audit_query_string(std::string_view query)
+        -> std::vector<std::pair<std::string_view, std::string_view>>
     {
         auto out = std::vector<std::pair<std::string_view, std::string_view>>{};
         auto remaining = query;
@@ -1063,6 +1064,11 @@ namespace
                     if (!upsert_membership(store, room_id, *envelope.state_key, membership, event_stream_ordering))
                     {
                         return {false, 500U, "membership persistence failed", {}, {}};
+                    }
+                    if ((membership == "join" || membership == "leave" || membership == "ban") &&
+                        !database::delete_invite(store, room_id, *envelope.state_key))
+                    {
+                        return {false, 500U, "invite metadata cleanup failed", {}, {}};
                     }
                     apply_runtime_membership(rt->database, room_id, *envelope.state_key, membership);
                     membership_changed = true;
