@@ -50,6 +50,18 @@ struct ValidatedMakeJoinResponse final
                              std::vector<std::string> const& via_servers = {}) -> OperationResult;
 [[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
     -> OperationResult;
+[[nodiscard]] auto invite_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
+                               std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
+[[nodiscard]] auto ban_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
+                            std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
+[[nodiscard]] auto kick_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
+                             std::string_view target_user_id, std::string_view reason = {}) -> OperationResult;
+[[nodiscard]] auto unban_user(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
+                              std::string_view target_user_id) -> OperationResult;
+[[nodiscard]] auto forget_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
+    -> OperationResult;
+[[nodiscard]] auto knock_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
+    -> OperationResult;
 // Parses the `server_name=` and `via=` query parameters (each may repeat) from a
 // raw query string into an ordered, de-duplicated list of server names. Values are
 // percent-decoded. `server_name` is the legacy spelling; `via` (MSC4156) is current.

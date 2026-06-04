@@ -17,6 +17,14 @@
   These no longer treat `404 M_UNRECOGNIZED` as an acceptable placeholder and
   instead assert the state transitions and `/sync` surfaces required by Matrix
   v1.18.
+- The local client-server routes now implement those remaining membership
+  endpoints, including durable state-event persistence for `invite`, `ban`,
+  `kick`, `unban`, and `knock`, `rooms.knock` publication from `/sync`, and
+  membership-row deletion for `forget` after the caller has left or been
+  banned.
+- Packaging workflow metadata is now consistent with version `0.5.3` across the
+  Debian, RPM, FreeBSD, and static Linux packaging scripts and the RPM spec, so
+  the package validation job no longer trips over stale `0.5.2` references.
 
 ## 0.5.0 (in progress — feature/0.5.0-rate-limit-and-logging-config)
 

@@ -867,6 +867,30 @@ namespace
         return result;
     }
 
+    [[nodiscard]] auto build_knock_state_events_array(database::PersistentStore const& store, std::string_view room_id)
+        -> canonicaljson::Array
+    {
+        auto result = canonicaljson::Array{};
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id)
+            {
+                continue;
+            }
+            auto const event_json = event_json_for_id(store, state.event_id);
+            if (!event_json.has_value())
+            {
+                continue;
+            }
+            auto const parsed = canonicaljson::parse_lossless(*event_json);
+            if (parsed.error == canonicaljson::ParseError::none)
+            {
+                result.push_back(parsed.value);
+            }
+        }
+        return result;
+    }
+
     [[nodiscard]] auto ascii_equal_case_insensitive(std::string_view left, std::string_view right) noexcept -> bool
     {
         if (left.size() != right.size())
@@ -971,6 +995,28 @@ namespace
             return std::nullopt;
         }
         return serialized_value(*value);
+    }
+
+    struct MembershipActionBody final
+    {
+        std::string user_id{};
+        std::string reason{};
+    };
+
+    [[nodiscard]] auto parse_membership_action_body(std::string_view body) -> std::optional<MembershipActionBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* user_id = string_member(*object, "user_id");
+        if (user_id == nullptr || user_id->empty())
+        {
+            return std::nullopt;
+        }
+        auto const* reason = string_member(*object, "reason");
+        return MembershipActionBody{*user_id, reason == nullptr ? std::string{} : *reason};
     }
 
     [[nodiscard]] auto object_member_object(canonicaljson::Object const& object, std::string_view key) noexcept
@@ -1425,6 +1471,10 @@ namespace
         if (starts_with(out, "/_matrix/client/v3/join/"))
         {
             out = "/_matrix/client/v3/join/{roomIdOrAlias}";
+        }
+        if (starts_with(out, "/_matrix/client/v3/knock/"))
+        {
+            out = "/_matrix/client/v3/knock/{roomIdOrAlias}";
         }
         return out;
     }
@@ -2033,8 +2083,10 @@ namespace
         // via `include_leave: true`; we now actually honour that flag.
         auto invite_members = canonicaljson::Object{};
         auto leave_members = canonicaljson::Object{};
+        auto knock_members = canonicaljson::Object{};
         auto invite_count = std::size_t{0U};
         auto leave_count = std::size_t{0U};
+        auto knock_count = std::size_t{0U};
         for (auto const& membership : store.memberships)
         {
             if (membership.user_id != user)
@@ -2068,6 +2120,18 @@ namespace
                     ++leave_count;
                 }
             }
+            else if (membership.membership == "knock")
+            {
+                if (knock_count < rt.limits.max_sync_rooms)
+                {
+                    knock_members.push_back(json_member(
+                        membership.room_id,
+                        json_obj({json_member("knock_state",
+                                              json_obj({json_member("events", json_arr(build_knock_state_events_array(
+                                                                                  store, membership.room_id)))}))})));
+                    ++knock_count;
+                }
+            }
         }
 
         auto to_device_events =
@@ -2092,7 +2156,7 @@ namespace
                                      json_member("join", json_obj(std::move(join_members))),
                                      json_member("invite", json_obj(std::move(invite_members))),
                                      json_member("leave", json_obj(std::move(leave_members))),
-                                     json_member("knock", json_obj({})),
+                                     json_member("knock", json_obj(std::move(knock_members))),
                                  })),
             json_member("presence", json_obj({json_member("events", json_arr(std::move(presence_events)))})),
             json_member("account_data", json_obj({json_member("events", json_arr(std::move(global_account_data)))})),
@@ -5135,6 +5199,11 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto constexpr join_s = std::string_view{"/join"};
         auto constexpr send_s = std::string_view{"/send"};
         auto constexpr state_s = std::string_view{"/state"};
+        auto constexpr invite_s = std::string_view{"/invite"};
+        auto constexpr ban_s = std::string_view{"/ban"};
+        auto constexpr kick_s = std::string_view{"/kick"};
+        auto constexpr unban_s = std::string_view{"/unban"};
+        auto constexpr forget_s = std::string_view{"/forget"};
         auto constexpr leave_s = std::string_view{"/leave"};
         auto constexpr read_markers_s = std::string_view{"/read_markers"};
         auto constexpr receipt_s = std::string_view{"/receipt/"};
@@ -5509,6 +5578,87 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                 return dispatch_resp(req, rt, 200U, messages_json(rt, *messages_room, req.target));
             }
         }
+        if (req.method == "POST" && suffix.size() > invite_s.size() &&
+            suffix.substr(suffix.size() - invite_s.size()) == invite_s)
+        {
+            auto const room_id =
+                core::percent_decode_path_component(suffix.substr(0U, suffix.size() - invite_s.size()));
+            auto const body = parse_membership_action_body(req.body);
+            if (!body.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invite body must contain user_id");
+            }
+            auto const result = merovingian::homeserver::invite_user(rt.homeserver, req.access_token, room_id,
+                                                                     body->user_id, body->reason);
+            if (!result.ok)
+            {
+                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
+        }
+        if (req.method == "POST" && suffix.size() > ban_s.size() &&
+            suffix.substr(suffix.size() - ban_s.size()) == ban_s)
+        {
+            auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - ban_s.size()));
+            auto const body = parse_membership_action_body(req.body);
+            if (!body.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "ban body must contain user_id");
+            }
+            auto const result = merovingian::homeserver::ban_user(rt.homeserver, req.access_token, room_id,
+                                                                  body->user_id, body->reason);
+            if (!result.ok)
+            {
+                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
+        }
+        if (req.method == "POST" && suffix.size() > kick_s.size() &&
+            suffix.substr(suffix.size() - kick_s.size()) == kick_s)
+        {
+            auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - kick_s.size()));
+            auto const body = parse_membership_action_body(req.body);
+            if (!body.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "kick body must contain user_id");
+            }
+            auto const result = merovingian::homeserver::kick_user(rt.homeserver, req.access_token, room_id,
+                                                                   body->user_id, body->reason);
+            if (!result.ok)
+            {
+                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
+        }
+        if (req.method == "POST" && suffix.size() > unban_s.size() &&
+            suffix.substr(suffix.size() - unban_s.size()) == unban_s)
+        {
+            auto const room_id = core::percent_decode_path_component(suffix.substr(0U, suffix.size() - unban_s.size()));
+            auto const body = parse_membership_action_body(req.body);
+            if (!body.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "unban body must contain user_id");
+            }
+            auto const result =
+                merovingian::homeserver::unban_user(rt.homeserver, req.access_token, room_id, body->user_id);
+            if (!result.ok)
+            {
+                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
+        }
+        if (req.method == "POST" && suffix.size() > forget_s.size() &&
+            suffix.substr(suffix.size() - forget_s.size()) == forget_s)
+        {
+            auto const room_id =
+                core::percent_decode_path_component(suffix.substr(0U, suffix.size() - forget_s.size()));
+            auto const result = merovingian::homeserver::forget_room(rt.homeserver, req.access_token, room_id);
+            if (!result.ok)
+            {
+                return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+            }
+            return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
+        }
         // POST /_matrix/client/v3/rooms/{roomId}/leave
         // Removes the caller from the room. Non-members receive 403; unknown rooms 404.
         if (req.method == "POST" && suffix.size() > leave_s.size() &&
@@ -5818,6 +5968,23 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     // GET   /_matrix/client/v3/user/{userId}/filter/{filterId} — retrieve a stored filter
     // PUT   /_matrix/client/v3/user/{userId}/account_data/{type} — store account data
     // GET   /_matrix/client/v3/user/{userId}/account_data/{type} — retrieve account data
+    auto constexpr knock_by_id_prefix = std::string_view{"/_matrix/client/v3/knock/"};
+    if (req.method == "POST" && starts_with(req.target, knock_by_id_prefix))
+    {
+        auto const room_id =
+            core::percent_decode_path_component(std::string_view{req.target}.substr(knock_by_id_prefix.size()));
+        if (room_id.empty())
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "room id or alias must not be empty");
+        }
+        auto const result = merovingian::homeserver::knock_room(rt.homeserver, req.access_token, room_id);
+        if (!result.ok)
+        {
+            return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("room_id", json_str(result.value))})));
+    }
+
     auto constexpr user_prefix = std::string_view{"/_matrix/client/v3/user/"};
     if (starts_with(req.target, user_prefix))
     {

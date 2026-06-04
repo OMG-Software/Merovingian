@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.2
+Version:        0.5.3
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 04 2026 James Chapman <claude@ping.me.uk> - 0.5.3-1
+- Persist local invite metadata for same-server invitees so /sync invites include invite_state.events
+- Allow POST /rooms/{roomId}/leave to reject invites as well as leave joined rooms
+- Persist leave membership state events on local leaves and clear stale invite metadata on join/leave/ban
+- Replace placeholder membership gap tests with strict Matrix v1.18 conformance coverage for invite, ban, kick, unban, forget, and knock
+
 * Wed Jun 03 2026 James Chapman <claude@ping.me.uk> - 0.5.2-1
 - Fix local invite-to-join membership transitions: invited local users no longer count as joined before a join event exists
 - Local joins now persist a fresh m.room.member state event with content.membership=join, so /rooms/{roomId}/members and /sync stop surfacing stale invite state after accept

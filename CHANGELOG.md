@@ -15,6 +15,16 @@
   Matrix v1.18 conformance scenarios for `invite`, `ban`, `kick`, `unban`,
   `forget`, and `knock`, asserting membership state transitions and `/sync`
   visibility instead of tolerating `404 M_UNRECOGNIZED`.
+- Implement `POST /_matrix/client/v3/rooms/{roomId}/invite`, `/ban`, `/kick`,
+  `/unban`, and `/forget`, plus `POST /_matrix/client/v3/knock/{roomIdOrAlias}`,
+  so the strict membership conformance scenarios now exercise real room-member
+  state transitions instead of missing endpoints.
+- Publish `rooms.knock` entries from `/sync` and treat `forget` as a durable
+  membership-row removal after `leave` or `ban`, matching the Matrix v1.18
+  room-membership surfaces exercised by the new tests.
+- Align the packaging scripts and RPM spec with version `0.5.3` so the package
+  workflow stops failing on stale `0.5.2` metadata after the branch version
+  bump.
 
 ## 0.5.2
 
