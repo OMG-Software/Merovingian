@@ -1,3 +1,17 @@
+## 0.5.3
+
+- Persist local invite metadata for locally-created rooms so invitees see a
+  populated `rooms.invite.*.invite_state.events` payload in `/sync`, instead of
+  an empty invite shell.
+- Allow `POST /_matrix/client/v3/rooms/{roomId}/leave` to reject an invite as
+  well as leave a joined room, matching the Matrix v1.18 membership flow.
+- Persist a real `m.room.member` leave state event on local leaves so current
+  room state, `/members`, and initial `/sync` stop reporting stale join or
+  invite membership after the user leaves.
+- Delete stale invite metadata when a user joins or leaves a room, including
+  inbound federated membership transitions, so client-visible room classification
+  no longer lags behind current membership.
+
 ## 0.5.2
 
 - Fix local invite-to-join membership transitions. Invited local users no

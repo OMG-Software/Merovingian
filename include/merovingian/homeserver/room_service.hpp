@@ -48,6 +48,8 @@ struct ValidatedMakeJoinResponse final
 // and therefore cannot be routed from the room ID alone.
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                              std::vector<std::string> const& via_servers = {}) -> OperationResult;
+[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
+    -> OperationResult;
 // Parses the `server_name=` and `via=` query parameters (each may repeat) from a
 // raw query string into an ordered, de-duplicated list of server names. Values are
 // percent-decoded. `server_name` is the legacy spelling; `via` (MSC4156) is current.
@@ -68,8 +70,7 @@ struct ValidatedMakeJoinResponse final
                                               federation::ServerDiscoveryNetwork* discovery_network,
                                               federation::OutboundTransaction const& transaction,
                                               std::string_view key_id, std::string_view secret_key,
-                                              std::string_view diagnostic_event)
-    -> std::pair<bool, std::string>;
+                                              std::string_view diagnostic_event) -> std::pair<bool, std::string>;
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;

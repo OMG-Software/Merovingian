@@ -435,6 +435,38 @@ namespace
         return {};
     }
 
+    [[nodiscard]] auto event_json_for_id(database::PersistentStore const& store, std::string_view event_id)
+        -> std::optional<std::string>
+    {
+        auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
+            return current.event_id == event_id;
+        });
+        return event == store.events.end() ? std::nullopt : std::optional<std::string>{event->json};
+    }
+
+    [[nodiscard]] auto invite_state_events_for_room(database::PersistentStore const& store, std::string_view room_id,
+                                                    std::string_view invitee) -> std::vector<std::string>
+    {
+        auto events = std::vector<std::string>{};
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id)
+            {
+                continue;
+            }
+            if (state.event_type == "m.room.member" && state.state_key == invitee)
+            {
+                continue;
+            }
+            auto const event_json = event_json_for_id(store, state.event_id);
+            if (event_json.has_value())
+            {
+                events.push_back(*event_json);
+            }
+        }
+        return events;
+    }
+
     // Per the Matrix spec v1.18 Sec. 4.4 auth_events, only specific event types
     // belong in auth_events depending on the event being composed:
     //   m.room.create:  none
@@ -1546,6 +1578,23 @@ namespace
         {
             return make_operation_result(false, {}, "invite membership persistence failed", 500U);
         }
+        auto const invite_state = std::ranges::find_if(
+            runtime.database.persistent_store.state, [&](database::PersistentStateEvent const& state) {
+                return state.room_id == room_id && state.event_type == "m.room.member" && state.state_key == invitee;
+            });
+        if (invite_state == runtime.database.persistent_store.state.end())
+        {
+            return make_operation_result(false, {}, "invite state event missing", 500U);
+        }
+        auto const invite_json = event_json_for_id(runtime.database.persistent_store, invite_state->event_id);
+        if (!invite_json.has_value() ||
+            !database::upsert_invite(runtime.database.persistent_store,
+                                     {room_id, invitee, *user_id, invite_state->event_id, *invite_json,
+                                      invite_state_events_for_room(runtime.database.persistent_store, room_id, invitee),
+                                      membership_stream}))
+        {
+            return make_operation_result(false, {}, "invite metadata persistence failed", 500U);
+        }
         apply_runtime_membership(runtime.database, room_id, invitee, "invite");
         invited_anyone = true;
     }
@@ -2069,6 +2118,16 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                     database::update_membership(runtime.database.persistent_store, room_id, joined_member, "join");
             }
         }
+        if (!database::delete_invite(runtime.database.persistent_store, room_id, *user_id))
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                         false},
+                                                     {"room_id", std::string{room_id},             false},
+                                                     {"status",  "500",                            false},
+                                                     {"reason",  "invite metadata cleanup failed", false}
+            });
+            return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
+        }
         runtime.database.rooms.push_back({std::string{room_id}, *user_id, std::move(joined_members), {}});
         append_local_audit(runtime.database, observability::AuditCategory::admin, "room.joined_remote", *user_id,
                            room_id, "joined via federation");
@@ -2170,6 +2229,26 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                                {"member_count", std::to_string(room->members.size()), false}
             });
         }
+        if (!database::delete_invite(runtime.database.persistent_store, room_id, *user_id))
+        {
+            log_diagnostic("room.join.rejected", {
+                                                     {"actor",   *user_id,                         false},
+                                                     {"room_id", std::string{room_id},             false},
+                                                     {"status",  "500",                            false},
+                                                     {"reason",  "invite metadata cleanup failed", false}
+            });
+            return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
+        }
+    }
+    else if (!database::delete_invite(runtime.database.persistent_store, room_id, *user_id))
+    {
+        log_diagnostic("room.join.rejected", {
+                                                 {"actor",   *user_id,                         false},
+                                                 {"room_id", std::string{room_id},             false},
+                                                 {"status",  "500",                            false},
+                                                 {"reason",  "invite metadata cleanup failed", false}
+        });
+        return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
     }
     else
     {
@@ -2189,6 +2268,128 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     });
     // Membership change from local join is visible in /sync; advance
     // the sync stream counter so the publish wakes clients.
+    runtime.database.persistent_store.next_sync_stream_id += 1U;
+    if (runtime.sync_notifier != nullptr)
+    {
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
+                                       runtime.database.persistent_store.next_sync_stream_id);
+    }
+    return make_operation_result(true, std::string{room_id});
+}
+
+[[nodiscard]] auto leave_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id)
+    -> OperationResult
+{
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+    log_diagnostic("room.leave.started", {
+                                             {"room_id",          std::string{room_id},                    false},
+                                             {"has_access_token", access_token.empty() ? "false" : "true", false}
+    });
+    auto const user_id = authenticated_user(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        log_diagnostic("room.leave.rejected", {
+                                                  {"room_id", std::string{room_id}, false},
+                                                  {"status",  "401",                false},
+                                                  {"reason",  "unauthenticated",    false}
+        });
+        return make_operation_result(false, {}, "unauthenticated", 401U);
+    }
+
+    auto const membership = std::ranges::find_if(runtime.database.persistent_store.memberships,
+                                                 [&](database::PersistentMembership const& current) {
+                                                     return current.room_id == room_id && current.user_id == *user_id;
+                                                 });
+    if (membership == runtime.database.persistent_store.memberships.end())
+    {
+        log_diagnostic("room.leave.rejected", {
+                                                  {"actor",   *user_id,             false},
+                                                  {"room_id", std::string{room_id}, false},
+                                                  {"status",  "404",                false},
+                                                  {"reason",  "room not found",     false}
+        });
+        return make_operation_result(false, {}, "room not found", 404U);
+    }
+    if (membership->membership != "join" && membership->membership != "invite")
+    {
+        log_diagnostic("room.leave.rejected", {
+                                                  {"actor",   *user_id,                        false},
+                                                  {"room_id", std::string{room_id},            false},
+                                                  {"status",  "403",                           false},
+                                                  {"reason",  "user is not joined or invited", false}
+        });
+        return make_operation_result(false, {}, "user is not joined or invited", 403U);
+    }
+
+    auto* room = find_room(runtime.database, room_id);
+    if (room != nullptr)
+    {
+        auto const leave_event_json = serialize_membership_event_json(*user_id, "leave");
+        if (!leave_event_json.has_value())
+        {
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,                                false},
+                                                      {"room_id", std::string{room_id},                    false},
+                                                      {"status",  "500",                                   false},
+                                                      {"reason",  "membership event serialization failed", false}
+            });
+            return make_operation_result(false, {}, "membership event serialization failed", 500U);
+        }
+        auto const composed = compose_signed_event(runtime, room_id, *user_id, *leave_event_json);
+        if (!composed.has_value())
+        {
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,                    false},
+                                                      {"room_id", std::string{room_id},        false},
+                                                      {"status",  "403",                       false},
+                                                      {"reason",  "membership event rejected", false}
+            });
+            return make_operation_result(false, {}, "membership event rejected", 403U);
+        }
+        if (!persist_composed_event(runtime, room_id, *user_id, *composed))
+        {
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,                              false},
+                                                      {"room_id", std::string{room_id},                  false},
+                                                      {"status",  "500",                                 false},
+                                                      {"reason",  "membership event persistence failed", false}
+            });
+            return make_operation_result(false, {}, "membership event persistence failed", 500U);
+        }
+        room->events.push_back(composed->json);
+        auto const member = std::ranges::find(room->members, *user_id);
+        if (member != room->members.end())
+        {
+            room->members.erase(member);
+        }
+    }
+
+    if (!database::update_membership(runtime.database.persistent_store, room_id, *user_id, "leave"))
+    {
+        log_diagnostic("room.leave.rejected", {
+                                                  {"actor",   *user_id,                      false},
+                                                  {"room_id", std::string{room_id},          false},
+                                                  {"status",  "500",                         false},
+                                                  {"reason",  "failed to update membership", false}
+        });
+        return make_operation_result(false, {}, "failed to update membership", 500U);
+    }
+    if (!database::delete_invite(runtime.database.persistent_store, room_id, *user_id))
+    {
+        log_diagnostic("room.leave.rejected", {
+                                                  {"actor",   *user_id,                         false},
+                                                  {"room_id", std::string{room_id},             false},
+                                                  {"status",  "500",                            false},
+                                                  {"reason",  "invite metadata cleanup failed", false}
+        });
+        return make_operation_result(false, {}, "invite metadata cleanup failed", 500U);
+    }
+
+    append_local_audit(runtime.database, observability::AuditCategory::admin, "room.left", *user_id, room_id, "left");
+    log_diagnostic("room.leave.accepted", {
+                                              {"actor",   *user_id,             false},
+                                              {"room_id", std::string{room_id}, false}
+    });
     runtime.database.persistent_store.next_sync_stream_id += 1U;
     if (runtime.sync_notifier != nullptr)
     {

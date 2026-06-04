@@ -967,6 +967,37 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto delete_invite(PersistentStore& store, std::string_view room_id, std::string_view user_id) -> bool
+{
+    auto const existing = std::ranges::find_if(store.invites, [&](PersistentInvite const& invite) {
+        return invite.room_id == room_id && invite.user_id == user_id;
+    });
+    if (existing == store.invites.end())
+    {
+        return true;
+    }
+
+    if (!record_and_persist(store,
+                            record_statement("delete_invite", "DELETE FROM invites WHERE room_id = $1 AND user_id = $2",
+                                             {public_value(std::string{room_id}), public_value(std::string{user_id})})))
+    {
+        log_diagnostic("invite.rejected", {
+                                              {"room_id", std::string{room_id},                  false},
+                                              {"user_id", std::string{user_id},                  false},
+                                              {"reason",  "persistence backend rejected delete", false}
+        });
+        return false;
+    }
+
+    store.invites.erase(existing);
+    log_diagnostic("invite.deleted",
+                   {
+                       {"room_id", std::string{room_id}, false},
+                       {"user_id", std::string{user_id}, false}
+    });
+    return true;
+}
+
 [[nodiscard]] auto find_invite(PersistentStore const& store, std::string_view room_id, std::string_view user_id)
     -> std::optional<PersistentInvite>
 {

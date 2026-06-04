@@ -51,12 +51,9 @@ using namespace merovingian::tests;
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -334,8 +331,7 @@ SCENARIO("POST /register with auth type but missing token returns 401 UIA challe
                 auto const* flows = object_member_as_array(body, "flows");
                 REQUIRE(flows != nullptr);
                 REQUIRE(flows->size() == 1U);
-                auto const* first_flow =
-                    std::get_if<merovingian::canonicaljson::Object>(&flows->front().storage());
+                auto const* first_flow = std::get_if<merovingian::canonicaljson::Object>(&flows->front().storage());
                 REQUIRE(first_flow != nullptr);
                 auto const* stages = object_member_as_array(*first_flow, "stages");
                 REQUIRE(stages != nullptr);
@@ -347,8 +343,7 @@ SCENARIO("POST /register with auth type but missing token returns 401 UIA challe
     }
 }
 
-SCENARIO("POST /register with wrong auth type returns 401 UIA challenge",
-         "[conformance][client-server][register]")
+SCENARIO("POST /register with wrong auth type returns 401 UIA challenge", "[conformance][client-server][register]")
 {
     GIVEN("a running client-server with token-gated registration enabled")
     {
@@ -358,11 +353,10 @@ SCENARIO("POST /register with wrong auth type returns 401 UIA challenge",
         WHEN("a registration request with an unsupported auth type is submitted")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST",
-                 "/_matrix/client/v3/register",
-                 {},
-                 R"({"username":"bob","password":"CorrectHorse7!","auth":{"type":"m.login.dummy"}})"});
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/register",
+                                  {},
+                                  R"({"username":"bob","password":"CorrectHorse7!","auth":{"type":"m.login.dummy"}})"});
 
             THEN("the response is 401 with registration-token UIA flow metadata")
             {
@@ -5181,6 +5175,72 @@ SCENARIO("POST /rooms/{roomId}/join returns 403 for an invite-only room without 
     }
 }
 
+SCENARIO("Local invites appear in /sync invite_state for the invitee", "[conformance][client-server][room-membership]")
+{
+    GIVEN("a running client-server where alice creates a private room and invites bob")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
+
+        WHEN("bob performs an initial /sync")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+
+            THEN("the invited room appears under rooms.invite with invite_state events")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* invite_rooms = object_member_as_object(*rooms, "invite");
+                REQUIRE(invite_rooms != nullptr);
+                auto const* invited_room = object_member_as_object(*invite_rooms, *room_id);
+                REQUIRE(invited_room != nullptr);
+                auto const* invite_state = object_member_as_object(*invited_room, "invite_state");
+                REQUIRE(invite_state != nullptr);
+                auto const* events = object_member_as_array(*invite_state, "events");
+                REQUIRE(events != nullptr);
+                REQUIRE_FALSE(events->empty());
+
+                auto found_invite = false;
+                for (auto const& event_value : *events)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&event_value.storage());
+                    if (event == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* type = string_member(*event, "type");
+                    auto const* state_key = string_member(*event, "state_key");
+                    auto const* content = object_member_as_object(*event, "content");
+                    if (type == nullptr || state_key == nullptr || content == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* membership = string_member(*content, "membership");
+                    if (*type == "m.room.member" && *state_key == "@bob:example.org" && membership != nullptr &&
+                        *membership == "invite")
+                    {
+                        found_invite = true;
+                        break;
+                    }
+                }
+                REQUIRE(found_invite);
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/rooms/{roomId}/leave ----------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidleave
 SCENARIO("POST /rooms/{roomId}/leave returns 200 empty object", "[conformance][client-server][room-membership]")
@@ -5203,6 +5263,174 @@ SCENARIO("POST /rooms/{roomId}/leave returns 200 empty object", "[conformance][c
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
                 REQUIRE(body.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("POST /rooms/{roomId}/leave allows an invited user to reject the invite and clears invite metadata",
+         "[conformance][client-server][room-membership]")
+{
+    GIVEN("a running client-server where alice invites bob to a private room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
+
+        WHEN("bob POSTs to /rooms/{roomId}/leave")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/leave", bob, "{}"});
+
+            THEN("the server records a leave membership event and removes the stored invite")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(body.empty());
+
+                auto const invite = merovingian::database::find_invite(
+                    started.runtime.homeserver.database.persistent_store, *room_id, "@bob:example.org");
+                REQUIRE_FALSE(invite.has_value());
+
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const membership = std::ranges::find_if(store.memberships, [&](auto const& current) {
+                    return current.room_id == *room_id && current.user_id == "@bob:example.org";
+                });
+                REQUIRE(membership != store.memberships.end());
+                REQUIRE(membership->membership == "leave");
+
+                auto const state = std::ranges::find_if(store.state, [&](auto const& current) {
+                    return current.room_id == *room_id && current.event_type == "m.room.member" &&
+                           current.state_key == "@bob:example.org";
+                });
+                REQUIRE(state != store.state.end());
+                auto const event = std::ranges::find_if(store.events, [&](auto const& current) {
+                    return current.event_id == state->event_id;
+                });
+                REQUIRE(event != store.events.end());
+                auto const event_body = parse_object(event->json);
+                auto const* content = object_member_as_object(event_body, "content");
+                REQUIRE(content != nullptr);
+                auto const* membership_value = string_member(*content, "membership");
+                REQUIRE(membership_value != nullptr);
+                REQUIRE(*membership_value == "leave");
+            }
+        }
+    }
+}
+
+SCENARIO("POST /rooms/{roomId}/join clears stale invite metadata and moves the room to rooms.join",
+         "[conformance][client-server][room-membership]")
+{
+    GIVEN("a running client-server where alice invites bob to a private room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
+                              R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
+
+        WHEN("bob joins the invited room and then performs an initial /sync")
+        {
+            auto const join = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/join", bob, "{}"});
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+
+            THEN("the invite metadata is gone and the room appears under rooms.join")
+            {
+                REQUIRE(join.response.status == 200U);
+                REQUIRE(sync.response.status == 200U);
+
+                auto const invite = merovingian::database::find_invite(
+                    started.runtime.homeserver.database.persistent_store, *room_id, "@bob:example.org");
+                REQUIRE_FALSE(invite.has_value());
+
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const membership = std::ranges::find_if(store.memberships, [&](auto const& current) {
+                    return current.room_id == *room_id && current.user_id == "@bob:example.org";
+                });
+                REQUIRE(membership != store.memberships.end());
+                REQUIRE(membership->membership == "join");
+
+                auto const state = std::ranges::find_if(store.state, [&](auto const& current) {
+                    return current.room_id == *room_id && current.event_type == "m.room.member" &&
+                           current.state_key == "@bob:example.org";
+                });
+                REQUIRE(state != store.state.end());
+                auto const event = std::ranges::find_if(store.events, [&](auto const& current) {
+                    return current.event_id == state->event_id;
+                });
+                REQUIRE(event != store.events.end());
+                auto const event_body = parse_object(event->json);
+                auto const* content = object_member_as_object(event_body, "content");
+                REQUIRE(content != nullptr);
+                auto const* membership_value = string_member(*content, "membership");
+                REQUIRE(membership_value != nullptr);
+                REQUIRE(*membership_value == "join");
+
+                auto const sync_body = parse_object(sync.response.body);
+                auto const* rooms = object_member_as_object(sync_body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* join_rooms = object_member_as_object(*rooms, "join");
+                REQUIRE(join_rooms != nullptr);
+                REQUIRE(object_member_as_object(*join_rooms, *room_id) != nullptr);
+                auto const* invite_rooms = object_member_as_object(*rooms, "invite");
+                REQUIRE(invite_rooms != nullptr);
+                REQUIRE(object_member_as_object(*invite_rooms, *room_id) == nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /rooms/{roomId}/leave persists a leave membership state event for joined users",
+         "[conformance][client-server][room-membership]")
+{
+    GIVEN("a running client-server with a joined room member")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_public_room(started.runtime, alice);
+
+        WHEN("alice leaves the room")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", alice, "{}"});
+
+            THEN("current room state for alice becomes a leave membership event")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+                auto const state = std::ranges::find_if(store.state, [&](auto const& current) {
+                    return current.room_id == room_id && current.event_type == "m.room.member" &&
+                           current.state_key == "@alice:example.org";
+                });
+                REQUIRE(state != store.state.end());
+                auto const event = std::ranges::find_if(store.events, [&](auto const& current) {
+                    return current.event_id == state->event_id;
+                });
+                REQUIRE(event != store.events.end());
+                auto const event_body = parse_object(event->json);
+                auto const* content = object_member_as_object(event_body, "content");
+                REQUIRE(content != nullptr);
+                auto const* membership_value = string_member(*content, "membership");
+                REQUIRE(membership_value != nullptr);
+                REQUIRE(*membership_value == "leave");
             }
         }
     }
