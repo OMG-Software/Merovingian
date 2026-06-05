@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.6
+Version:        0.5.7
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,13 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 05 2026 James Chapman <claude@ping.me.uk> - 0.5.7-1
+- Percent-decode the client account-data type path segment before persistence
+  and lookup, so secret-storage descriptors like m.secret_storage.key.<id>
+  round-trip correctly through PUT/GET and /sync account_data.events.
+- Add strict regressions covering percent-encoded secret-storage account-data
+  types in both the runtime and conformance suites.
+
 * Thu Jun 05 2026 James Chapman <claude@ping.me.uk> - 0.5.6-1
 - Report device_one_time_keys_count.signed_curve25519 = 0 for fresh devices so
   Matrix clients know they must upload one-time keys during E2EE bootstrap.

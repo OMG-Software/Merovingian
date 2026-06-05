@@ -6106,7 +6106,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         if (auto const ad_pos = suffix.find(account_data_m); ad_pos != std::string_view::npos)
         {
             auto const encoded_user = suffix.substr(0U, ad_pos);
-            auto const type = std::string{suffix.substr(ad_pos + account_data_m.size())};
+            auto const type = core::percent_decode_path_component(suffix.substr(ad_pos + account_data_m.size()));
             if (encoded_user.find('/') == std::string_view::npos && !type.empty())
             {
                 auto const path_user = core::percent_decode_path_component(encoded_user);

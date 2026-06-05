@@ -1,3 +1,15 @@
+## 0.5.7
+
+- Percent-decode `/_matrix/client/v3/user/{userId}/account_data/{type}` before
+  persistence and lookup. Secret-storage descriptors such as
+  `m.secret_storage.key.<key_id>` now survive percent-encoded path segments and
+  round-trip correctly through `PUT`, `GET`, and `/sync account_data.events`.
+- Add strict regressions for the secret-storage bootstrap path: the runtime
+  suite now proves a percent-encoded secret-storage key type is surfaced back
+  as the decoded Matrix event type in `/sync`, and the conformance suite
+  asserts the encoded `PUT`/`GET` round-trip required by the Matrix v1.18
+  client-server account-data endpoints.
+
 ## 0.5.6
 
 - Report `device_one_time_keys_count.signed_curve25519 = 0` on `/sync` for
