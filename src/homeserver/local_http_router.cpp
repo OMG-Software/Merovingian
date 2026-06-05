@@ -639,23 +639,26 @@ namespace
                 });
                 if (typing)
                 {
+                    rt->database.persistent_store.next_sync_stream_id += 1U;
+                    auto const stream_id = rt->database.persistent_store.next_sync_stream_id;
                     if (existing != rt->typing_users.end())
                     {
                         existing->typing = true;
+                        existing->stream_id = stream_id;
                     }
                     else
                     {
-                        rt->typing_users.push_back({room_id, user_id, true});
+                        rt->typing_users.push_back({room_id, user_id, true, stream_id});
                     }
                 }
                 else
                 {
+                    rt->database.persistent_store.next_sync_stream_id += 1U;
                     if (existing != rt->typing_users.end())
                     {
                         rt->typing_users.erase(existing);
                     }
                 }
-                rt->database.persistent_store.next_sync_stream_id += 1U;
                 if (rt->sync_notifier != nullptr)
                 {
                     rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,
@@ -734,16 +737,19 @@ namespace
                 auto existing = std::ranges::find_if(rt->receipts, [&](auto const& r) {
                     return r.room_id == room_id && r.user_id == user_id;
                 });
+                rt->database.persistent_store.next_sync_stream_id += 1U;
+                auto const stream_id = rt->database.persistent_store.next_sync_stream_id;
                 if (existing != rt->receipts.end())
                 {
                     existing->event_id = event_id;
                     existing->ts = ts;
+                    existing->stream_id = stream_id;
                 }
                 else
                 {
-                    rt->receipts.push_back({std::string{room_id}, "m.read", std::string{user_id}, event_id, ts});
+                    rt->receipts.push_back(
+                        {std::string{room_id}, "m.read", std::string{user_id}, event_id, ts, stream_id});
                 }
-                rt->database.persistent_store.next_sync_stream_id += 1U;
                 if (rt->sync_notifier != nullptr)
                 {
                     rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,

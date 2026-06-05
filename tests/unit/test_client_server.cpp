@@ -99,6 +99,17 @@ namespace
     return value;
 }
 
+[[nodiscard]] auto percent_encode_room_identifier(std::string value) -> std::string
+{
+    auto bang = value.find('!');
+    while (bang != std::string::npos)
+    {
+        value.replace(bang, 1U, "%21");
+        bang = value.find('!', bang + 3U);
+    }
+    return percent_encode_colons(std::move(value));
+}
+
 [[nodiscard]] auto event_id(std::string const& body) -> std::string
 {
     auto const key = std::string{"\"event_id\":\""};
@@ -1673,8 +1684,9 @@ SCENARIO("Client-server runtime wires server-blind E2EE key API routes", "[homes
         WHEN("the device uploads server-blind key material and queries keys")
         {
             auto const upload = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/keys/upload", token,
-                          R"({"device_keys":{"sensitive":"curve25519-secret"},"one_time_keys":{}})"});
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"curve25519-secret","ed25519:DEVICE1":"ed25519-public"},"signatures":{}},"one_time_keys":{}})"});
             auto const query = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/keys/query", token,
                           R"({"device_keys":{"@alice:example.org":["DEVICE1"]}})"});
@@ -1767,7 +1779,9 @@ SCENARIO("Client-server runtime persists client action audit events", "[homeserv
             auto const update = merovingian::homeserver::handle_client_server_request(
                 runtime, {"PUT", "/_matrix/client/v3/devices/DEVICE1", token, R"({"display_name":"Alice laptop"})"});
             auto const upload = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/keys/upload", token, R"({"device_keys":{"secret":"value"}})"});
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"curve-secret-value","ed25519:DEVICE1":"device-signing-key"},"signatures":{}}})"});
 
             THEN("client-server audit events are durable and redact key payloads")
             {
@@ -2684,14 +2698,18 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
             // Simulate a real Cinny OTK bundle: device keys + many one-time keys.
             // The body must exceed 4096 bytes to prove the old limit is gone.
             auto large_body = std::string{
-                R"({"device_keys":{"@alice:example.org":{"DEVICE1":{"algorithms":[],"device_id":"DEVICE1","keys":{},"signatures":{},"user_id":"@alice:example.org"}}},"one_time_keys":{)"};
+                R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":")" +
+                std::string(64U, 'c') + R"(","ed25519:DEVICE1":")" + std::string(64U, 'd') +
+                R"("},"signatures":{}},"one_time_keys":{)"};
             for (int i = 0; i < 40; ++i)
             {
                 if (i != 0)
                 {
                     large_body += ',';
                 }
-                large_body += "\"signed_curve25519:KEY" + std::to_string(i) + "\":\"" + std::string(80U, 'a') + "\"";
+                large_body += "\"signed_curve25519:KEY" + std::to_string(i) + "\":{\"key\":\"" + std::string(80U, 'a') +
+                              "\",\"signatures\":{\"@alice:example.org\":{\"ed25519:DEVICE1\":\"sig" +
+                              std::to_string(i) + "\"}}}";
             }
             large_body += "}}";
             REQUIRE(large_body.size() > 4096U);
@@ -4509,6 +4527,176 @@ SCENARIO("Login without device_id generates a unique opaque id, not a fixed lite
                 REQUIRE(first_did != second_did);
                 REQUIRE_FALSE(first_did.empty());
                 REQUIRE_FALSE(second_did.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Keys upload rejects device keys that do not belong to the authenticated device",
+         "[homeserver][client-server][e2ee][keys][validation]")
+{
+    GIVEN("a logged-in user on device ALICE_DEV")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the upload body claims a different device_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"OTHER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:OTHER_DEV":"curve","ed25519:OTHER_DEV":"ed"},"signatures":{}}})"});
+
+            THEN("the server rejects the inconsistent device identity")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+
+        WHEN("the upload body claims a different user_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"device_keys":{"user_id":"@mallory:example.org","device_id":"ALICE_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:ALICE_DEV":"curve","ed25519:ALICE_DEV":"ed"},"signatures":{}}})"});
+
+            THEN("the server rejects the inconsistent user identity")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_INVALID_PARAM") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Room members response is derived from current state even when the membership projection is stale",
+         "[homeserver][client-server][rooms][members][regression]")
+{
+    GIVEN("a room whose m.room.member state exists for both users")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token,
+                      R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const created_room_id = room_id(create.response.body);
+
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/rooms/" + created_room_id + "/join", bob_token, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        REQUIRE(has_state_event(runtime.homeserver.database.persistent_store, created_room_id, "m.room.member",
+                                "@alice:example.org"));
+        REQUIRE(has_state_event(runtime.homeserver.database.persistent_store, created_room_id, "m.room.member",
+                                "@bob:example.org"));
+
+        runtime.homeserver.database.persistent_store.memberships.erase(
+            std::remove_if(runtime.homeserver.database.persistent_store.memberships.begin(),
+                           runtime.homeserver.database.persistent_store.memberships.end(),
+                           [&created_room_id](merovingian::database::PersistentMembership const& membership) {
+                               return membership.room_id == created_room_id;
+                           }),
+            runtime.homeserver.database.persistent_store.memberships.end());
+
+        WHEN("the creator requests /members with the same filters real clients send")
+        {
+            auto const encoded_room_id = percent_encode_room_identifier(created_room_id);
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/rooms/" + encoded_room_id + "/members?not_membership=leave&at=11_11_c",
+                          alice_token,
+                          {}});
+
+            THEN("the server returns the current m.room.member state events rather than an empty chunk")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+
+                auto saw_alice = false;
+                auto saw_bob = false;
+                for (auto const& value : *chunk)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    REQUIRE(event != nullptr);
+                    auto const* type = string_member(*event, "type");
+                    auto const* state_key = string_member(*event, "state_key");
+                    auto const* event_id_value = string_member(*event, "event_id");
+                    auto const* content = object_member_as_object(*event, "content");
+                    auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+                    REQUIRE(type != nullptr);
+                    REQUIRE(state_key != nullptr);
+                    REQUIRE(event_id_value != nullptr);
+                    REQUIRE(membership != nullptr);
+                    REQUIRE(*type == "m.room.member");
+
+                    if (*state_key == "@alice:example.org")
+                    {
+                        saw_alice = true;
+                        REQUIRE(*membership == "join");
+                    }
+                    if (*state_key == "@bob:example.org")
+                    {
+                        saw_bob = true;
+                        REQUIRE(*membership == "join");
+                    }
+                }
+
+                REQUIRE(saw_alice);
+                REQUIRE(saw_bob);
             }
         }
     }

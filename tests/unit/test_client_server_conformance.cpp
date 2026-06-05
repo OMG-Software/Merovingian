@@ -687,7 +687,7 @@ SCENARIO("POST /keys/upload response contains one_time_key_counts object", "[con
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", token,
-                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:DEVICE1":"base64key"},"signatures":{}},"one_time_keys":{}})"});
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"base64key","ed25519:DEVICE1":"device-signing-key"},"signatures":{}},"one_time_keys":{}})"});
 
             THEN("the response is 200 with one_time_key_counts as an object")
             {
@@ -802,7 +802,7 @@ SCENARIO("POST /keys/upload then POST /keys/query returns the uploaded device ke
             merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", token,
-                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:DEVICE1":"base64+pubkey"},"signatures":{}},"one_time_keys":{}})"})
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"base64+pubkey","ed25519:DEVICE1":"device-signing-key"},"signatures":{}},"one_time_keys":{}})"})
                 .response.status == 200U);
 
         WHEN("the device queries keys for that user")
@@ -845,7 +845,7 @@ SCENARIO("POST /keys/upload with OTKs then POST /keys/claim returns and consumes
             merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", token,
-                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:DEVICE1":"pubkey1"},"signatures":{}},"one_time_keys":{"signed_curve25519:AAAAAAAA":{"key":"otk+base64+key","signatures":{}}}})"})
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"pubkey1","ed25519:DEVICE1":"device-signing-key"},"signatures":{}},"one_time_keys":{"signed_curve25519:AAAAAAAA":{"key":"otk+base64+key","signatures":{"@alice:example.org":{"ed25519:DEVICE1":"otk-signature"}}}}})"})
                 .response.status == 200U);
 
         WHEN("another device claims a one-time key for DEVICE1")
@@ -3186,7 +3186,7 @@ SCENARIO("GET /keys/changes reflects device-key uploads made after the from toke
             std::ignore = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", bob,
-                 R"({"device_keys":{"user_id":"@bob:example.org","device_id":"bob_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2"],"keys":{"curve25519:bob_DEV":"BOBKEY"},"signatures":{}}})"});
+                 R"({"device_keys":{"user_id":"@bob:example.org","device_id":"bob_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:bob_DEV":"BOBKEY","ed25519:bob_DEV":"BOB_ED"},"signatures":{}}})"});
 
             THEN("GET /keys/changes from the pre-upload token includes Bob in changed")
             {
@@ -6439,6 +6439,93 @@ SCENARIO("POST /rooms/{roomId}/receipt/{receiptType}/{eventId} stores receipt an
                 REQUIRE(receipt.room_id == room_id);
                 REQUIRE(receipt.receipt_type == "m.read");
                 REQUIRE(receipt.event_id == event_id);
+            }
+        }
+    }
+}
+
+SCENARIO("Incremental /sync surfaces room read receipts inside ephemeral events",
+         "[conformance][client-server][sync][room-participation][receipts]")
+{
+    GIVEN("two joined users and a room event that one user reads")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice, R"({"preset":"public_chat"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* room_id = string_member(create_body, "room_id");
+        REQUIRE(room_id != nullptr);
+
+        auto const join = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/join", bob, "{}"});
+        REQUIRE(join.response.status == 200U);
+
+        auto const alice_initial_sync = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"GET", "/_matrix/client/v3/sync", alice, {}});
+        REQUIRE(alice_initial_sync.response.status == 200U);
+        auto const alice_from = sync_next_batch(alice_initial_sync.response.body);
+
+        auto const send = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"PUT", "/_matrix/client/v3/rooms/" + *room_id + "/send/m.room.message/txn-receipt-1",
+                              alice, R"({"msgtype":"m.text","body":"hello"})"});
+        REQUIRE(send.response.status == 200U);
+        auto const send_body = parse_object(send.response.body);
+        auto const* event_id = string_member(send_body, "event_id");
+        REQUIRE(event_id != nullptr);
+
+        WHEN("bob posts an m.read receipt and alice performs incremental sync")
+        {
+            auto const receipt = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + *room_id + "/receipt/m.read/" + *event_id, bob, "{}"});
+            REQUIRE(receipt.response.status == 200U);
+
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync?since=" + alice_from, alice, {}});
+
+            THEN("the joined room contains an m.receipt ephemeral event for the message")
+            {
+                REQUIRE(sync.response.status == 200U);
+                auto const body = parse_object(sync.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* joins = object_member_as_object(*rooms, "join");
+                REQUIRE(joins != nullptr);
+                auto const* room_entry = object_member_as_object(*joins, *room_id);
+                REQUIRE(room_entry != nullptr);
+                auto const* ephemeral = object_member_as_object(*room_entry, "ephemeral");
+                REQUIRE(ephemeral != nullptr);
+                auto const* events = object_member_as_array(*ephemeral, "events");
+                REQUIRE(events != nullptr);
+
+                auto saw_receipt = false;
+                for (auto const& value : *events)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    REQUIRE(event != nullptr);
+                    auto const* type = string_member(*event, "type");
+                    if (type == nullptr || *type != "m.receipt")
+                    {
+                        continue;
+                    }
+                    auto const* content = object_member_as_object(*event, "content");
+                    REQUIRE(content != nullptr);
+                    auto const* receipt_event = object_member_as_object(*content, *event_id);
+                    REQUIRE(receipt_event != nullptr);
+                    auto const* reads = object_member_as_object(*receipt_event, "m.read");
+                    REQUIRE(reads != nullptr);
+                    auto const* bob_receipt = object_member_as_object(*reads, "@bob:example.org");
+                    REQUIRE(bob_receipt != nullptr);
+                    REQUIRE(int_member(*bob_receipt, "ts") != nullptr);
+                    saw_receipt = true;
+                }
+
+                REQUIRE(saw_receipt);
             }
         }
     }
