@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.8
+Version:        0.5.9
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 05 2026 James Chapman <claude@ping.me.uk> - 0.5.9-1
+- Bind client key APIs and /account/whoami to the authenticated session device
+  instead of a guessed first device, fixing registration-issued tokens and
+  multi-device E2EE bootstrap.
+- Add strict regressions proving registration and multi-device sessions can
+  upload device keys for the correct authenticated device.
 * Fri Jun 05 2026 James Chapman <claude@ping.me.uk> - 0.5.8-1
 - Fix local Matrix room and E2EE interop by normalizing device key bundles,
   surfacing joined-room ephemerals in /sync, and returning client-formatted
