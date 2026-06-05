@@ -1,4 +1,18 @@
-## 0.5.6 (in progress — codex/fix-e2ee-bootstrap-key-query)
+## 0.5.7 (in progress — codex/fix-secret-storage-account-data-type)
+
+- The global account-data route now percent-decodes the `{type}` path segment
+  before persistence and lookup. Secret-storage descriptors such as
+  `m.secret_storage.key.<key_id>` therefore round-trip correctly through
+  `PUT /_matrix/client/v3/user/{userId}/account_data/{type}`,
+  `GET /_matrix/client/v3/user/{userId}/account_data/{type}`, and `/sync`
+  `account_data.events`, instead of leaking the still-encoded `%2F` form back
+  to the client.
+- Strict coverage now includes both a runtime regression for the `/sync`
+  secret-storage bootstrap surface and a v1.18 conformance scenario proving the
+  account-data endpoints accept a percent-encoded type path segment and return
+  the stored descriptor unchanged.
+
+## 0.5.6 (merged)
 
 - `/sync` now reports `device_one_time_keys_count.signed_curve25519 = 0` for a
   fresh logged-in device with no uploaded one-time keys, so Matrix clients get
