@@ -497,14 +497,25 @@
       "auth_from": "refreshed_token",
       "body": {
         "device_keys": {
-          "algorithms": ["m.olm.v1.curve25519-aes-sha2"],
+          "algorithms": ["m.olm.v1.curve25519-aes-sha2", "m.megolm.v1.aes-sha2"],
           "device_id": "DEVICE1",
-          "keys": {"curve25519:DEVICE1": "curve-key"},
+          "keys": {"curve25519:DEVICE1": "curve-key", "ed25519:DEVICE1": "ed-key"},
           "signatures": {},
           "user_id": "@alice:example.org"
         },
-        "one_time_keys": {"signed_curve25519:AAAA": "one-time-key"},
-        "fallback_keys": {"signed_curve25519:BBBB": "fallback-key"}
+        "one_time_keys": {
+          "signed_curve25519:AAAA": {
+            "key": "one-time-key",
+            "signatures": {"@alice:example.org": {"ed25519:DEVICE1": "one-time-signature"}}
+          }
+        },
+        "fallback_keys": {
+          "signed_curve25519:BBBB": {
+            "key": "fallback-key",
+            "fallback": true,
+            "signatures": {"@alice:example.org": {"ed25519:DEVICE1": "fallback-signature"}}
+          }
+        }
       },
       "expect_status": 200,
       "expect_keys_present": ["one_time_key_counts"]

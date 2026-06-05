@@ -25,13 +25,10 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-};
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
 }
 
 [[nodiscard]] auto sqlite_registration_enabled_config(std::filesystem::path const& sqlite_path)
@@ -45,13 +42,9 @@ namespace
     merovingian::tests::enable_token_registration(security);
 
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        database,
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-};
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},  database, security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
 }
 
 [[nodiscard]] auto token_from_login_body(std::string const& body) -> std::string
@@ -190,7 +183,7 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
                 auto const upload = merovingian::homeserver::handle_client_server_request(
                     runtime,
                     {"POST", "/_matrix/client/v3/keys/upload", token,
-                     R"({"device_keys":{"algorithms":["m.megolm.v1.aes-sha2"]},"one_time_keys":{"signed_curve25519:AAA":{"key":"otk"}},"fallback_keys":{"signed_curve25519:FB":{"key":"fallback"}}})"});
+                     R"({"device_keys":{"algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"device_id":"KEYS1","keys":{"curve25519:KEYS1":"curve-key","ed25519:KEYS1":"ed-key"},"signatures":{},"user_id":"@keys:example.org"},"one_time_keys":{"signed_curve25519:AAA":{"key":"otk","signatures":{"@keys:example.org":{"ed25519:KEYS1":"otk-sig"}}}},"fallback_keys":{"signed_curve25519:FB":{"key":"fallback","fallback":true,"signatures":{"@keys:example.org":{"ed25519:KEYS1":"fallback-sig"}}}}})"});
 
                 REQUIRE(registered.response.status == 200U);
                 REQUIRE(login.response.status == 200U);
@@ -362,8 +355,9 @@ SCENARIO("Persistent homeserver store records the client-server flow",
                 auto const& all_tokens = runtime.homeserver.database.persistent_store.access_tokens;
                 REQUIRE(all_tokens.size() == 2U);
                 // Exactly one token must be revoked (the one used for /logout).
-                auto const revoked = std::count_if(all_tokens.begin(), all_tokens.end(),
-                                                   [](auto const& t) { return t.revoked; });
+                auto const revoked = std::count_if(all_tokens.begin(), all_tokens.end(), [](auto const& t) {
+                    return t.revoked;
+                });
                 REQUIRE(revoked == 1U);
                 // Both tokens must use the v2 hash format.
                 auto const all_v2 = std::all_of(all_tokens.begin(), all_tokens.end(), [](auto const& t) {

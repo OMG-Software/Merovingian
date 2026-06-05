@@ -1,3 +1,21 @@
+## 0.5.8
+
+- Fix `GET /_matrix/client/v3/rooms/{roomId}/members` so it parses
+  `membership` and `not_membership` exactly, decodes the room identifier
+  correctly, and returns client-format `m.room.member` state events with
+  `event_id` instead of an empty or malformed chunk when current state exists.
+- Surface joined-room `m.receipt` and `m.typing` ephemerals in `/sync`, backed
+  by per-entry sync stream IDs so incremental syncs deliver the updates Matrix
+  clients expect during ordinary room use.
+- Tighten `/keys/upload` and `/keys/query` interop by validating uploaded
+  device-key identity against the authenticated session and normalizing returned
+  local device bundles to authoritative `user_id`, `device_id`, and
+  `ed25519:`/`curve25519:` key identifiers.
+- Add strict regressions for stale-membership `/members`, incremental `/sync`
+  receipts, device-key identity validation, and a client-shaped end-to-end
+  integration flow covering login, invite/join, `keys/query`, `keys/claim`,
+  `sendToDevice`, encrypted messaging, read receipts, and leave.
+
 ## 0.5.7
 
 - Percent-decode `/_matrix/client/v3/user/{userId}/account_data/{type}` before

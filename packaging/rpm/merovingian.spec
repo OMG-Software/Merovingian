@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.7
+Version:        0.5.8
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,13 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 05 2026 James Chapman <claude@ping.me.uk> - 0.5.8-1
+- Fix local Matrix room and E2EE interop by normalizing device key bundles,
+  surfacing joined-room ephemerals in /sync, and returning client-formatted
+  membership state from /members.
+- Add strict regressions and an end-to-end client-shaped flow covering login,
+  invite/join, keys/query, keys/claim, sendToDevice, encrypted messaging,
+  read receipts, and leave.
 * Fri Jun 05 2026 James Chapman <claude@ping.me.uk> - 0.5.7-1
 - Percent-decode the client account-data type path segment before persistence
   and lookup, so secret-storage descriptors like m.secret_storage.key.<id>

@@ -1,3 +1,24 @@
+## 0.5.8 (in progress — codex/fix-room-e2ee-interop-flow)
+
+- `/keys/upload` now rejects device-key identity mismatches and `/keys/query`
+  now normalizes returned local device bundles to authoritative `user_id`,
+  `device_id`, and `ed25519:` / `curve25519:` key identifiers. That closes the
+  Element/Cinny interop gap where clients received `200` from `/keys/query`
+  but still concluded there was no usable bundle for the joined peer device.
+- `/sync` now publishes joined-room `ephemeral.events` for `m.receipt` and
+  `m.typing`, backed by per-entry sync stream IDs so incremental syncs surface
+  only fresh updates while still conforming to the Matrix v1.18 client-server
+  contract.
+- `GET /rooms/{roomId}/members` now parses `membership` and `not_membership`
+  exactly, strips the room path separator correctly, and emits client-format
+  membership events with `event_id` from current room state rather than raw or
+  empty membership chunks.
+- The suite now includes a strict client-shaped integration flow that proves
+  login, invite/join, key query/claim, `sendToDevice` room-key delivery,
+  encrypted messaging, read receipts, and leave all work together, alongside
+  targeted regressions for `/members`, `/sync` receipts, and device-key
+  identity validation.
+
 ## 0.5.7 (in progress — codex/fix-secret-storage-account-data-type)
 
 - The global account-data route now percent-decodes the `{type}` path segment
@@ -13,7 +34,6 @@
   the stored descriptor unchanged.
 
 ## 0.5.6 (merged)
-
 - `/sync` now reports `device_one_time_keys_count.signed_curve25519 = 0` for a
   fresh logged-in device with no uploaded one-time keys, so Matrix clients get
   an explicit bootstrap signal instead of an empty count object.
@@ -22,7 +42,7 @@
   scenario that proves nested Olm ciphertext survives into `/sync`
   `to_device.events`.
 
-## 0.5.5 (in progress — codex/fix-messages-eventid-and-preflight-rate-limit)
+## 0.5.5 (in progress Ã¢â‚¬â€ codex/fix-messages-eventid-and-preflight-rate-limit)
 
 - Local room creation now persists invite metadata for same-server invitees, so
   `/sync` can populate `rooms.invite.*.invite_state.events` for Element/Cinny
@@ -82,7 +102,7 @@
 
 ## 0.5.4 (merged)
 
-## 0.5.0 (in progress — feature/0.5.0-rate-limit-and-logging-config)
+## 0.5.0 (in progress Ã¢â‚¬â€ feature/0.5.0-rate-limit-and-logging-config)
 
 - Wires the wall-clock rate-limit engine, per-module log-level
   overrides, and audit-row routing into production. The PR #190 commit
@@ -110,7 +130,7 @@
   new SCENARIO in `tests/integration/test_client_server_flow.cpp` for
   the round-trip audit-filter request.
 
-## 0.4.62 (in progress — fix/otk-signature-claim)
+## 0.4.62 (in progress Ã¢â‚¬â€ fix/otk-signature-claim)
 
 - Server now rejects `one_time_keys` and `fallback_keys` whose signature
   is not made by the device's own ed25519 identity key. The device's
@@ -176,7 +196,7 @@ deployment milestone.
 
 #### TODO
 
-_None — all Alpha gates are closed. The alpha release itself remains a
+_None Ã¢â‚¬â€ all Alpha gates are closed. The alpha release itself remains a
 separate operator decision once this branch is approved._
 
 #### DONE
@@ -292,7 +312,7 @@ separate operator decision once this branch is approved._
   verify shape and the round-trip: Bob joins Alice's room, uploads keys, and
   appears in Alice's `changed` array.
 - `GET /rooms/{roomId}/state/{eventType}/{stateKey}` implemented inline in
-  `client_server.cpp`: looks up `PersistentStateEvent` → `PersistentEvent`,
+  `client_server.cpp`: looks up `PersistentStateEvent` Ã¢â€ â€™ `PersistentEvent`,
   parses the full event JSON, and returns the `content` object. Returns 404
   `M_NOT_FOUND` for absent events, 403 `M_FORBIDDEN` for unknown rooms. Two
   former implementation-gap conformance tests are now real passing assertions.
@@ -301,8 +321,8 @@ separate operator decision once this branch is approved._
   or `trusted_private_chat` preset is now verified via
   `GET /state/m.room.encryption/` in the conformance suite. This class of
   regression will be caught by CI before it reaches users.
-- E2EE round-trip conformance tests added: `keys/upload` → `keys/query` round-
-  trip, `keys/upload` → `keys/claim` OTK consumption, `sendToDevice` → sync
+- E2EE round-trip conformance tests added: `keys/upload` Ã¢â€ â€™ `keys/query` round-
+  trip, `keys/upload` Ã¢â€ â€™ `keys/claim` OTK consumption, `sendToDevice` Ã¢â€ â€™ sync
   `to_device` delivery, and `keys/changes` device-list propagation. These cover
   the full Olm session establishment path for local users.
 - Federation E2EE proxying implemented: `POST /keys/query` and `POST /keys/claim`
@@ -325,7 +345,7 @@ separate operator decision once this branch is approved._
   transaction IDs that survive process restarts without colliding with earlier
   deliveries, and the client `PUT /sendToDevice/{eventType}/{txnId}` token is
   preserved as the EDU `message_id` for remote idempotency.
-- `.clangd` tab indentation fixed — YAML spec prohibits tabs; spaces now used
+- `.clangd` tab indentation fixed Ã¢â‚¬â€ YAML spec prohibits tabs; spaces now used
   throughout so clangd parses the file and the diagnostic suppressions work.
 - FreeBSD portability regression: the `createRoom` follow-up review coverage
   now includes its required standard-library header (`<algorithm>`) so
@@ -376,7 +396,7 @@ separate operator decision once this branch is approved._
   to get stuck in an infinite empty-sync loop: the client's subsequent `since`
   token pointed to a stream ordering that would never be reached, so the
   long-poll check never fired. Every other usage of `next_stream_ordering`
-  already applied the `- 1U` correction — only the token construction was
+  already applied the `- 1U` correction Ã¢â‚¬â€ only the token construction was
   missing it.
 - Sync long-poll decoupled from main request pool (0.4.26): A dedicated
   32-thread `sync_pool` is created alongside the 8-thread main pool. When a
@@ -430,11 +450,11 @@ separate operator decision once this branch is approved._
   redaction (drops `origin`, keeps `invite` in power_levels, keeps all
   `m.room.create` content), content hash base64 alphabet (RFC 4648 standard,
   not URL-safe), event ID base64 alphabet (URL-safe), canonical JSON spec
-  vectors (key sorting, Unicode normalisation, `-0`→`0`, integer-only
+  vectors (key sorting, Unicode normalisation, `-0`Ã¢â€ â€™`0`, integer-only
   representation), and event signing spec vectors (payload construction for
   v1-v2 and v11+ formats). These tests catch regressions that would cause
   `BadSignatureError` on federation peers.
-- Remote join content hash (0.4.25): the `make_join` → `send_join` remote
+- Remote join content hash (0.4.25): the `make_join` Ã¢â€ â€™ `send_join` remote
   join path now computes and attaches `hashes.sha256` before signing the join
   event, fixing Synapse rejection with "Malformed 'hashes': `<class
   'NoneType'>`".
@@ -656,7 +676,7 @@ separate operator decision once this branch is approved._
   `is_production_ready()`, and `is_alpha_ready()`. `merovingian-server`
   refuses to start when any check reports `disabled`, logs
   alpha-exception checks at warning level with a documented note, and
-  prints a `production_ready=…/alpha_ready=…` readiness summary. The
+  prints a `production_ready=Ã¢â‚¬Â¦/alpha_ready=Ã¢â‚¬Â¦` readiness summary. The
   deferred controls and their beta/production retirement plans are
   documented in `docs/hardening-alpha-exceptions.md`, which the
   release-readiness script requires.
@@ -690,7 +710,7 @@ a non-production environment.
 - Login `device_id` collision fix (0.4.61).
   `POST /_matrix/client/v3/login` no longer defaults `device_id` to
   the literal string `"MEROVINGIAN"` when the client omits it.
-  Matrix v1.18 §5.3.2 requires the server to mint a unique opaque
+  Matrix v1.18 Ã‚Â§5.3.2 requires the server to mint a unique opaque
   id in that case; the literal caused every device-id-less login to
   collide on a single shared device row, so two users (or two
   device-id-less devices of the same user) shared one `device_keys`
@@ -734,7 +754,7 @@ a non-production environment.
 - Matrix UI-Interactive Authentication for `POST /register`: absent `auth` field
   returns 401 with `m.login.registration_token` flow, `params`, and `session`.
   Incomplete auth (missing `token` for `m.login.registration_token` or wrong
-  `auth.type`) also returns 401 with the UIA challenge — not 403.
+  `auth.type`) also returns 401 with the UIA challenge Ã¢â‚¬â€ not 403.
 - `POST /account/password` for authenticated password change with Argon2id
   hashing and persistent-store write-through.
 - `PUT /profile/{userId}/displayname` and `PUT /profile/{userId}/avatar_url`
@@ -791,7 +811,7 @@ a non-production environment.
   classified, validated, and dispatched to the appropriate runtime handler.
 - Feature (0.4.4): Outbound membership wired into `join_room` for remote rooms.
   Local users joining a room not in the database now perform a synchronous
-  `make_join` → sign → `send_join` flow with the remote homeserver.
+  `make_join` Ã¢â€ â€™ sign Ã¢â€ â€™ `send_join` flow with the remote homeserver.
 - Fix (0.4.46): PDU dispatch now includes invited users in `room->members` so
   federated events are delivered to invitees' home servers. Previously only
   "join" members were added at runtime, causing invitees' servers to never
@@ -818,7 +838,7 @@ a non-production environment.
 - Infra (0.4.52): Added a ThreadSanitizer `tsan` job to
   `.github/workflows/sanitizers.yml` (`-Db_sanitize=thread`) with a
   dependency-scoped suppressions file at `tests/sanitizer/tsan.supp`. The prior
-  sanitizer job ran only ASan+UBSan, which cannot detect data races — the reason
+  sanitizer job ran only ASan+UBSan, which cannot detect data races Ã¢â‚¬â€ the reason
   the `OutboundClient` race went uncaught. Documented the concurrency-testing
   expectation in `docs/testing-standards.md`.
 - Test (0.4.52): Added a workflow tooling guard in
@@ -888,7 +908,7 @@ a non-production environment.
   them yet. The runtime falls back to the durable user record and returns an
   empty `displayname` / `avatar_url` object instead of treating the known user
   as absent.
-- Fix (0.4.51): `m.receipt` federation EDU content format — the receipt content
+- Fix (0.4.51): `m.receipt` federation EDU content format Ã¢â‚¬â€ the receipt content
   was built as `{roomId:{userId:{event_ids,ts}}}` but the spec requires
   `{roomId:{receiptType:{userId:{event_ids,data:{ts}}}}}`. The missing
   receipt-type nesting and `ts` outside `data` caused Synapse to 500 every
@@ -896,7 +916,7 @@ a non-production environment.
   blocking all subsequent federation (including E2EE to-device key exchange).
   Extracted `build_receipt_edu_content` pure helper; used by both `/receipt/`
   and `/read_markers` endpoints.
-- Fix (0.4.50): Key backup routing — `PUT /room_keys/keys?version=N` returned 404
+- Fix (0.4.50): Key backup routing Ã¢â‚¬â€ `PUT /room_keys/keys?version=N` returned 404
   because `match_key_api_route` compared path templates against the full target
   including the query string. Fix strips the query portion before exact-match.
   `PUT /room_keys/keys/{roomId}/{sessionId}` was also storing `?version=N` as
@@ -992,7 +1012,7 @@ a non-production environment.
   `room_account_data` are empty, so `rooms.join` is empty in the response
   rather than returning 476 bytes of stale state on each timeout.
 - Fix (0.4.28): Inbound `send_join` (v2) response was missing the `"event"`
-  field. Per Matrix federation spec §11.5.1 the resident server must echo the
+  field. Per Matrix federation spec Ã‚Â§11.5.1 the resident server must echo the
   accepted join event back in the response body. `MembershipAcceptResult` gains
   `signed_event_json`; `handle_send_membership` serialises it under `"event"`
   for `send_join` only; `send_leave` and `send_knock` are unaffected.
@@ -1030,7 +1050,7 @@ a non-production environment.
   the lock, and `dispatch_local_http_request()` handles the wait/retry cycle
   transparently.
 - Fix (0.4.8): `SocketHandle` fd ownership transferred incorrectly to pool
-  workers — `native_handle()` followed by reset closed the fd before the
+  workers Ã¢â‚¬â€ `native_handle()` followed by reset closed the fd before the
   worker could read. Added `SocketHandle::release()` to transfer ownership
   without premature close.
 - Fix (0.4.16): The server Ed25519 signing key secret is now persisted in
@@ -1159,8 +1179,8 @@ be published as production releases while any blocking gate remains open.
   signed payload is the canonical JSON object `{content?, destination, method,
   origin, uri}`, signed with the server's real Ed25519 secret key and verified
   against the remote's published `/_matrix/key/v2/server` public key. The prior
-  shared-secret `verify_token` derivation — which could not interoperate with
-  other homeservers — has been removed. PDU event signatures are verified via
+  shared-secret `verify_token` derivation Ã¢â‚¬â€ which could not interoperate with
+  other homeservers Ã¢â‚¬â€ has been removed. PDU event signatures are verified via
   libsodium against known or on-demand-discovered keys; rotated keys trigger
   re-fetch through `make_persistent_remote_key_resolver` when `valid_until_ts`
   has passed or the `key_id` no longer matches, and the refreshed key is
@@ -1185,10 +1205,10 @@ be published as production releases while any blocking gate remains open.
 With the Alpha gates closed, Beta priorities take over from here:
 
 1. Complete Matrix v1.18 conformance for client-server endpoints currently
-   marked `partial` — promote them to `covered` with conformance fixtures.
+   marked `partial` Ã¢â‚¬â€ promote them to `covered` with conformance fixtures.
 2. Add Matrix federation conformance fixtures covering join, leave, invite,
    backfill, and key-rotation scenarios end to end.
-3. Retire one hardening alpha exception per minor release — start with the
+3. Retire one hardening alpha exception per minor release Ã¢â‚¬â€ start with the
    ELF program-header probe (linker hardening / RELRO) and Linux
    seccomp-bpf filter. Update `docs/hardening-alpha-exceptions.md` when an
    exception lands.
@@ -1246,7 +1266,7 @@ adapters.
 
 | Area | Endpoint or behavior | Status | Notes |
 | --- | --- | --- | --- |
-| Authentication | `POST /_matrix/client/v3/register` | `spec-covered` | Matrix JSON body is parsed, registration-token UI auth is enforced from the configured token file, and empty `{}` registration probes now correctly return 401 with the `m.login.registration_token` flow, `params`, and a `session` token per Matrix UI-auth instead of a premature 400. When `inhibit_login` is absent or false the 200 response includes `access_token` and `device_id` per spec §5.5.1. Public registration creates non-admin users, local registration is reachable through the client listener, SQLite-backed local users survive restart, and happy-path plus UI-auth challenge cases are covered by the v1.18 fixture. Needs PostgreSQL coverage. |
+| Authentication | `POST /_matrix/client/v3/register` | `spec-covered` | Matrix JSON body is parsed, registration-token UI auth is enforced from the configured token file, and empty `{}` registration probes now correctly return 401 with the `m.login.registration_token` flow, `params`, and a `session` token per Matrix UI-auth instead of a premature 400. When `inhibit_login` is absent or false the 200 response includes `access_token` and `device_id` per spec Ã‚Â§5.5.1. Public registration creates non-admin users, local registration is reachable through the client listener, SQLite-backed local users survive restart, and happy-path plus UI-auth challenge cases are covered by the v1.18 fixture. Needs PostgreSQL coverage. |
 | Authentication | `GET /_matrix/client/v3/register/available` | `spec-covered` | Unauthenticated username-availability probing now returns `{"available":true}` for free localparts and spec-shaped `M_USER_IN_USE` / `M_INVALID_USERNAME` errors for taken or invalid names. Runtime and Matrix v1.18 conformance coverage are in place. |
 | Authentication | `GET /_matrix/client/v1/register/m.login.registration_token/validity` | `spec-covered` | Registration-token validity discovery now returns `{"valid":<bool>}` against the configured token file before the auth gate, with runtime and Matrix v1.18 conformance coverage for valid and invalid tokens. |
 | Authentication | `POST /_matrix/client/v3/register/email/requestToken` | `spec-covered` | Homeserver-managed registration email validation now accepts Matrix request-token bodies, validates `client_secret` grammar plus the email address, creates an opaque `sid`, and reuses the same validation session for repeated attempts on the same triple. Runtime and Matrix v1.18 conformance coverage are in place. |
@@ -1256,7 +1276,7 @@ adapters.
 | Authentication | `POST /_matrix/client/v3/logout/all` | `spec-covered` | Runtime global logout revokes all user access and refresh tokens, marks active sessions revoked, appends durable auth audit, and is covered by the v1.18 client-server fixture. |
 | Authentication | `POST /_matrix/client/v3/refresh` | `spec-covered` | Login issues a refresh token, `/refresh` rotates refresh/access tokens through persisted token hashes, revokes the old device access tokens, and is covered by the v1.18 client-server fixture with missing/reused refresh-token rejection. |
 | Account | `GET /_matrix/client/v3/account/whoami` | `spec-covered` | Local token identity works through the client listener, is covered after SQLite restart, and is covered by the v1.18 fixture. |
-| Account | `POST /_matrix/client/v3/account/password` | `spec-covered` | Authenticated password change validates the new value, hashes with Argon2id, and writes through to the in-memory runtime and the persistent store. Returns 401 without auth (`M_MISSING_TOKEN` when no bearer token is supplied, `M_UNKNOWN_TOKEN` when the token is present but unrecognised, per spec §5.7.2), 400 for weak passwords, and 200 on success. Covered by the v1.18 fixture and integration tests. Needs UI-auth re-authentication and `logout_devices` handling. |
+| Account | `POST /_matrix/client/v3/account/password` | `spec-covered` | Authenticated password change validates the new value, hashes with Argon2id, and writes through to the in-memory runtime and the persistent store. Returns 401 without auth (`M_MISSING_TOKEN` when no bearer token is supplied, `M_UNKNOWN_TOKEN` when the token is present but unrecognised, per spec Ã‚Â§5.7.2), 400 for weak passwords, and 200 on success. Covered by the v1.18 fixture and integration tests. Needs UI-auth re-authentication and `logout_devices` handling. |
 | Devices | `GET /_matrix/client/v3/devices` | `spec-covered` | Device listing works through the client listener, is hydrated from SQLite devices, and is covered by the v1.18 client-server fixture. Needs Matrix device-list stream semantics. |
 | Devices | `GET /_matrix/client/v3/devices/{deviceId}` | `spec-covered` | Runtime single-device fetch returns the Matrix device object or `M_NOT_FOUND` and is covered by the v1.18 client-server fixture. |
 | Devices | `PUT /_matrix/client/v3/devices/{deviceId}` | `spec-covered` | Display-name update persists through the persistent store, updates the runtime mirror, appends durable audit, and is covered by the v1.18 client-server fixture with malformed-body rejection. |
@@ -1295,7 +1315,7 @@ adapters.
 | --- | --- | --- | --- |
 | Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (inbound) | `partial` | Inbound transaction handling is runtime-wired through federation-only listener dispatch with request policy, duplicate handling, canonical JSON request-signature verification, JSON PDU event-signature verification for known and on-demand discovered keys with rotation-triggered refresh, X-Matrix header parsing, TLS-bound origin validation, PDU/EDU parsing, `pdu_sink` hook persisting PDUs to the durable store, `state_conflict_resolver` merging via state-resolution v2, and conflict audit. Outbound dispatch feeding this surface now also uses opaque restart-safe federation transaction IDs rather than local session counters, preventing false duplicate suppression after a restart. Needs richer EDU side effects, room-version-specific PDU verification, and conformance coverage. |
 | Transactions | `PUT /_matrix/federation/v1/send/{txnId}` (outbound) | `partial` | `perform_outbound_transaction` composes the libcurl-backed `merovingian::http::OutboundClient` with X-Matrix Authorization through `make_federation_signature`, retry-state mutation through `apply_outbound_result`, and circuit-breaker short-circuit through `destination_should_retry`. `DispatchWorker` provides a bounded retry queue, requeues circuit-open transactions for the destination retry deadline, persists pending rows and destination retry state, and production startup replays pending rows before starting the worker. Per-platform TLS integration coverage exercises valid round-trip, hostname mismatch, untrusted self-signed, and 3xx rejection. Needs Matrix conformance coverage. |
-| Joins/leaves/invites | Federation join, leave, invite, and backfill flows | `integrated` | `make_join`, `make_leave`, `make_knock`, `send_join` (v1+v2), `send_leave` (v1+v2), `send_knock`, `invite` (v1+v2), and `backfill` are dispatched through runtime hooks: `membership_template_provider` builds the event template, `membership_acceptor` persists the event, updates runtime membership for accepted joins/leaves, and returns auth-chain/state; `invite_handler` signs the invite event, persists local invite membership, and wakes sync; `backfill_provider` serves PDUs from durable rows. The `auth_chain` in the send_join response is now built by walking the `auth_event_ids` graph from current state events (BFS), not by dumping all room events — non-state events never appear in the chain. Unwired endpoints return 501. BDD callback coverage in `test_federation_runtime_callbacks.cpp`, auth-chain coverage in `test_federation_membership_endpoints.cpp`, and delivery coverage in `test_outbound_dispatch.cpp`. Needs full Matrix conformance fixtures and richer production leave/knock state semantics. |
+| Joins/leaves/invites | Federation join, leave, invite, and backfill flows | `integrated` | `make_join`, `make_leave`, `make_knock`, `send_join` (v1+v2), `send_leave` (v1+v2), `send_knock`, `invite` (v1+v2), and `backfill` are dispatched through runtime hooks: `membership_template_provider` builds the event template, `membership_acceptor` persists the event, updates runtime membership for accepted joins/leaves, and returns auth-chain/state; `invite_handler` signs the invite event, persists local invite membership, and wakes sync; `backfill_provider` serves PDUs from durable rows. The `auth_chain` in the send_join response is now built by walking the `auth_event_ids` graph from current state events (BFS), not by dumping all room events Ã¢â‚¬â€ non-state events never appear in the chain. Unwired endpoints return 501. BDD callback coverage in `test_federation_runtime_callbacks.cpp`, auth-chain coverage in `test_federation_membership_endpoints.cpp`, and delivery coverage in `test_outbound_dispatch.cpp`. Needs full Matrix conformance fixtures and richer production leave/knock state semantics. |
 | Server discovery | Well-known, DNS, TLS, and key discovery | `partial` | Server discovery now fetches `https://<server>/.well-known/matrix/server` through the pinned outbound client, parses `m.server`, falls back to `_matrix-fed._tcp.<host>` SRV records, resolves A/AAAA addresses, handles public IPv6 pins, rejects private/loopback IPv4 and IPv6 addresses before exposing the pin set to `OutboundClient`, and feeds remote key fetch/cache for on-demand inbound verification. Needs TLS-bound origin validation, richer Matrix edge-case fixtures, and live network conformance coverage. |
 | Signing verification | Request and event signatures | `partial` | Federation requests are signed and verified with the Matrix-spec X-Matrix scheme: the signed payload is the canonical JSON object `{content?, destination, method, origin, uri}`, signed with the server's real Ed25519 secret key and verified against the remote's published public key. The prior shared-secret `verify_token` derivation has been removed. JSON PDUs verify Matrix event signatures against known or on-demand-discovered remote keys; `make_persistent_remote_key_resolver` re-fetches when `valid_until_ts` has passed or the `key_id` no longer matches. Remote server-key responses must self-sign every listed verify key before caching. TLS-bound origin validation rejects requests where the TLS peer name differs from the X-Matrix origin. Needs room-version-specific PDU hash verification, a live interoperability test against an external homeserver, and conformance coverage. |
 | Profile query | `GET /_matrix/federation/v1/query/profile` (inbound) | `partial` | A signed inbound `query/profile` request is dispatched through the `profile_query_provider` runtime hook, which reads the local user's `displayname`/`avatar_url` from the persistent store. The optional `field` parameter restricts the response; unknown users return 404 `M_NOT_FOUND`; an unwired hook returns 501. BDD callback coverage in `test_federation_runtime_callbacks.cpp`. Needs `query/directory` and the remaining federation query endpoints, plus conformance fixtures. |
@@ -1319,10 +1339,10 @@ adapters.
 ### send_join response uses pre-join state snapshot (0.4.50)
 
 - `send_join` response now returns room state **prior to** the new join event,
-  as required by spec §11.5.1. Previously the join event was persisted before
+  as required by spec Ã‚Â§11.5.1. Previously the join event was persisted before
   building `state` and `auth_chain`, so the joining user appeared as
   `membership=join` in the state array. Synapse uses the returned state to
-  recalculate expected `auth_events` — finding the join event itself as the
+  recalculate expected `auth_events` Ã¢â‚¬â€ finding the join event itself as the
   current member state produces a circular reference: Synapse calculates the
   join should reference itself, mismatches the claimed `auth_events`, and logs a
   WARNING. The fix snapshots state IDs before `store_event_with_state` and uses
@@ -1513,7 +1533,7 @@ SPDX and CycloneDX inventories.
   joined user when `invite` or `knock` membership updates are applied.
   A focused regression in `tests/unit/test_review_regressions.cpp` now
   pins that joined-members-only behavior.
-## 0.5.5 (in progress — codex/fix-messages-eventid-and-preflight-rate-limit)
+## 0.5.5 (in progress Ã¢â‚¬â€ codex/fix-messages-eventid-and-preflight-rate-limit)
 
 - `GET /_matrix/client/v3/rooms/{roomId}/messages` now serializes timeline
   events through the client event formatter instead of echoing raw stored event

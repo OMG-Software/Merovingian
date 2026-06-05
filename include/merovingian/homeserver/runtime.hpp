@@ -107,6 +107,7 @@ struct InboundTypingUser final
     std::string room_id{};
     std::string user_id{};
     bool typing{false};
+    std::uint64_t stream_id{0U};
 };
 
 struct InboundReceipt final
@@ -116,6 +117,7 @@ struct InboundReceipt final
     std::string user_id{};
     std::string event_id{};
     std::uint64_t ts{0U};
+    std::uint64_t stream_id{0U};
 };
 
 // RAII scope guard that wires the active `LocalDatabase` into the
@@ -200,8 +202,8 @@ struct SessionRefreshResult final
 [[nodiscard]] auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string;
 [[nodiscard]] auto admin_metrics_summary(HomeserverRuntime const& runtime) -> std::string;
 [[nodiscard]] auto admin_audit_summary(HomeserverRuntime const& runtime,
-                                    std::optional<observability::AuditCategory> category = std::nullopt,
-                                    std::optional<std::string_view> event_type = std::nullopt) -> std::string;
+                                       std::optional<observability::AuditCategory> category = std::nullopt,
+                                       std::optional<std::string_view> event_type = std::nullopt) -> std::string;
 auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
                               std::string_view membership) -> void;
 
