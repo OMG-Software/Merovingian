@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.5
+Version:        0.5.6
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jun 05 2026 James Chapman <claude@ping.me.uk> - 0.5.6-1
+- Report device_one_time_keys_count.signed_curve25519 = 0 for fresh devices so
+  Matrix clients know they must upload one-time keys during E2EE bootstrap.
+- Add strict client-shaped coverage for local PUT /sendToDevice/m.room.encrypted
+  delivery into /sync to_device.events.
+
 * Wed Jun 04 2026 James Chapman <claude@ping.me.uk> - 0.5.5-1
 - Fix GET /rooms/{roomId}/messages to return client-format events with event_id
   in both timeline chunk and state arrays, so Matrix clients can parse and

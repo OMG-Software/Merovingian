@@ -1,3 +1,16 @@
+## 0.5.6
+
+- Report `device_one_time_keys_count.signed_curve25519 = 0` on `/sync` for
+  fresh logged-in devices that have not uploaded any one-time keys yet. This
+  gives Matrix clients an explicit bootstrap signal instead of an empty count
+  object during E2EE startup.
+- Add strict client-shaped coverage for local encrypted to-device delivery by
+  asserting that `PUT /_matrix/client/v3/sendToDevice/m.room.encrypted/{txnId}`
+  preserves the nested Olm ciphertext object through `/sync to_device.events`.
+- Add a regression proving that a fresh device's `/sync`
+  `device_one_time_keys_count` includes `signed_curve25519: 0` rather than
+  omitting the algorithm entirely.
+
 ## 0.5.5
 
 - Fix `GET /_matrix/client/v3/rooms/{roomId}/messages` returning raw stored

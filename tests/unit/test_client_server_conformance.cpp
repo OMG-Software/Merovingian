@@ -1452,6 +1452,34 @@ SCENARIO("GET /sync returns spec-shaped room category objects", "[conformance][c
     }
 }
 
+SCENARIO("GET /sync reports signed_curve25519 count as zero for a fresh local device",
+         "[conformance][client-server][sync][e2ee][counts]")
+{
+    GIVEN("a logged-in device that has not uploaded any one-time keys yet")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("the device performs an initial sync")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("device_one_time_keys_count includes signed_curve25519 with value zero")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* otk_counts = object_member_as_object(body, "device_one_time_keys_count");
+                REQUIRE(otk_counts != nullptr);
+                auto const* signed_curve25519 = int_member(*otk_counts, "signed_curve25519");
+                REQUIRE(signed_curve25519 != nullptr);
+                REQUIRE(*signed_curve25519 == 0);
+            }
+        }
+    }
+}
+
 SCENARIO("GET /sync returns full event content and correct room version in state",
          "[conformance][client-server][sync][room-version]")
 {
@@ -8707,6 +8735,62 @@ SCENARIO("PUT /sendToDevice targets only the addressed local device and drains o
                 auto const* device_one_events_again = object_member_as_array(*device_one_to_device_again, "events");
                 REQUIRE(device_one_events_again != nullptr);
                 REQUIRE(device_one_events_again->empty());
+            }
+        }
+    }
+}
+
+SCENARIO("PUT /sendToDevice/m.room.encrypted preserves the nested Olm ciphertext for /sync",
+         "[conformance][client-server][e2ee][send-to-device]")
+{
+    GIVEN("a running homeserver with Alice and Bob registered")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const bob = register_and_login(started.runtime, "bob");
+
+        WHEN("Alice sends a client-shaped encrypted to-device payload to Bob")
+        {
+            auto const send = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/txn-client-olm-1", alice,
+                 R"({"messages":{"@bob:example.org":{"bob_DEV":{"algorithm":"m.olm.v1.curve25519-aes-sha2","sender_key":"curve25519:alice","ciphertext":{"curve25519:bob_DEV":{"body":"olm-ciphertext","type":0}}}}}})"});
+            REQUIRE(send.response.status == 200U);
+
+            THEN("Bob's next /sync exposes the encrypted to-device event intact")
+            {
+                auto const sync = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+                REQUIRE(sync.response.status == 200U);
+                auto const body = parse_object(sync.response.body);
+                auto const* to_device = object_member_as_object(body, "to_device");
+                REQUIRE(to_device != nullptr);
+                auto const* events = object_member_as_array(*to_device, "events");
+                REQUIRE(events != nullptr);
+                REQUIRE(events->size() == 1U);
+
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&(*events)[0].storage());
+                REQUIRE(event != nullptr);
+                auto const* type = string_member(*event, "type");
+                REQUIRE(type != nullptr);
+                REQUIRE(*type == "m.room.encrypted");
+                auto const* sender = string_member(*event, "sender");
+                REQUIRE(sender != nullptr);
+                REQUIRE(*sender == "@alice:example.org");
+
+                auto const* content = object_member_as_object(*event, "content");
+                REQUIRE(content != nullptr);
+                auto const* algorithm = string_member(*content, "algorithm");
+                REQUIRE(algorithm != nullptr);
+                REQUIRE(*algorithm == "m.olm.v1.curve25519-aes-sha2");
+                auto const* ciphertext = object_member_as_object(*content, "ciphertext");
+                REQUIRE(ciphertext != nullptr);
+                auto const* recipient_ciphertext = object_member_as_object(*ciphertext, "curve25519:bob_DEV");
+                REQUIRE(recipient_ciphertext != nullptr);
+                auto const* cipher_body = string_member(*recipient_ciphertext, "body");
+                REQUIRE(cipher_body != nullptr);
+                REQUIRE(*cipher_body == "olm-ciphertext");
             }
         }
     }
