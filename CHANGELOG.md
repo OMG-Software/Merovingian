@@ -8,6 +8,11 @@
 - Add strict regressions for two live client paths that were previously
   uncovered: a post-registration session using `whoami` plus `/keys/upload`,
   and a multi-device account uploading keys from the second logged-in device.
+- Add a strict end-to-end integration flow for the registration-shaped client
+  path: registration-issued `access_token` plus `device_id`, `/keys/upload`,
+  `/keys/query`, `/keys/claim`, invite/join bootstrap, `sendToDevice`
+  `m.room_key`, encrypted room send, read receipt propagation, `/members`, and
+  leave in one Matrix v1.18 user flow.
 
 ## 0.5.8
 

@@ -38,6 +38,27 @@ using namespace merovingian::tests;
     return *value;
 }
 
+struct SessionCredentials final
+{
+    std::string access_token{};
+    std::string device_id{};
+    std::string user_id{};
+};
+
+[[nodiscard]] auto register_session(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& localpart,
+                                    std::string const& password) -> SessionCredentials
+{
+    auto const registration = merovingian::homeserver::handle_client_server_request(
+        runtime,
+        {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json(localpart, password)});
+    REQUIRE(registration.response.status == 200U);
+    return {
+        response_string_field(registration.response.body, "access_token"),
+        response_string_field(registration.response.body, "device_id"),
+        std::string{"@"} + localpart + ":example.org",
+    };
+}
+
 [[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& runtime,
                                       std::string const& localpart, std::string const& password,
                                       std::string const& device_id) -> std::string
@@ -312,6 +333,251 @@ SCENARIO("Integrated Matrix v1.18 interop flow covers login join key exchange me
                     runtime, {"GET",
                               "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.member/%40bob%3Aexample.org",
                               alice,
+                              {}});
+                REQUIRE(bob_member_state.response.status == 200U);
+                auto const bob_member_state_body = parse_object(bob_member_state.response.body);
+                auto const* membership = string_member(bob_member_state_body, "membership");
+                REQUIRE(membership != nullptr);
+                REQUIRE(*membership == "leave");
+            }
+        }
+    }
+}
+
+SCENARIO("Integrated Matrix v1.18 interop flow works with registration-issued sessions and joined-room bootstrap",
+         "[homeserver][client-server][integration][conformance][e2ee][registration]")
+{
+    GIVEN("two users relying on the access tokens and device ids returned by registration")
+    {
+        auto const config = registration_enabled_config();
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice = register_session(runtime, "alice_reg", "CorrectHorse7!");
+        auto const bob = register_session(runtime, "bob_reg", "CorrectHorse8!");
+
+        upload_device_keys(runtime, alice.access_token, alice.user_id, alice.device_id, "ALICE_REG_CURVE",
+                           "ALICE_REG_ED");
+        upload_device_keys(runtime, bob.access_token, bob.user_id, bob.device_id, "BOB_REG_CURVE", "BOB_REG_ED");
+        upload_one_time_key(runtime, bob.access_token, bob.user_id, bob.device_id, "BOB_REG_OTK_AAAA",
+                            "BOB_REG_OTK_VALUE");
+
+        auto const create_body = std::string{"{\"preset\":\"private_chat\",\"invite\":[\""} + bob.user_id +
+                                 "\"],\"initial_state\":[{\"type\":\"m.room.encryption\",\"state_key\":\"\","
+                                 "\"content\":{\"algorithm\":\"m.megolm.v1.aes-sha2\"}}]}";
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice.access_token, create_body});
+        REQUIRE(create.response.status == 200U);
+        auto const room_id = response_string_field(create.response.body, "room_id");
+
+        auto const alice_initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", alice.access_token, {}});
+        REQUIRE(alice_initial_sync.response.status == 200U);
+        auto const alice_from = sync_next_batch(alice_initial_sync.response.body);
+
+        auto const bob_initial_sync = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", bob.access_token, {}});
+        REQUIRE(bob_initial_sync.response.status == 200U);
+        auto const bob_initial_sync_body = parse_object(bob_initial_sync.response.body);
+        auto const* bob_initial_rooms = object_member_as_object(bob_initial_sync_body, "rooms");
+        REQUIRE(bob_initial_rooms != nullptr);
+        auto const* bob_initial_invites = object_member_as_object(*bob_initial_rooms, "invite");
+        REQUIRE(bob_initial_invites != nullptr);
+        auto const* bob_invited_room = object_member_as_object(*bob_initial_invites, room_id);
+        REQUIRE(bob_invited_room != nullptr);
+        auto const* invite_state = object_member_as_object(*bob_invited_room, "invite_state");
+        REQUIRE(invite_state != nullptr);
+        auto const* invite_events = object_member_as_array(*invite_state, "events");
+        REQUIRE(invite_events != nullptr);
+        REQUIRE_FALSE(invite_events->empty());
+        auto const bob_from = sync_next_batch(bob_initial_sync.response.body);
+
+        WHEN("the invitee joins and the room bootstraps E2EE using only registration-issued sessions")
+        {
+            auto const join = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/join", bob.access_token, "{}"});
+            REQUIRE(join.response.status == 200U);
+
+            auto const members = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/rooms/" + room_id + "/members?not_membership=leave",
+                          alice.access_token,
+                          {}});
+            REQUIRE(members.response.status == 200U);
+            auto const members_body = parse_object(members.response.body);
+            auto const* member_chunk = object_member_as_array(members_body, "chunk");
+            REQUIRE(member_chunk != nullptr);
+            REQUIRE(std::ranges::any_of(*member_chunk, [&alice](merovingian::canonicaljson::Value const& value) {
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
+                auto const* event_id = event == nullptr ? nullptr : string_member(*event, "event_id");
+                return state_key != nullptr && event_id != nullptr && *state_key == alice.user_id;
+            }));
+            REQUIRE(std::ranges::any_of(*member_chunk, [&bob](merovingian::canonicaljson::Value const& value) {
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
+                auto const* event_id = event == nullptr ? nullptr : string_member(*event, "event_id");
+                auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+                return state_key != nullptr && event_id != nullptr && membership != nullptr &&
+                       *state_key == bob.user_id && *membership == "join";
+            }));
+
+            auto const bob_join_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + bob_from, bob.access_token, {}});
+            REQUIRE(bob_join_sync.response.status == 200U);
+            auto const bob_join_sync_body = parse_object(bob_join_sync.response.body);
+            auto const* bob_rooms = object_member_as_object(bob_join_sync_body, "rooms");
+            REQUIRE(bob_rooms != nullptr);
+            auto const* bob_joins = object_member_as_object(*bob_rooms, "join");
+            REQUIRE(bob_joins != nullptr);
+            auto const* bob_room_entry = object_member_as_object(*bob_joins, room_id);
+            REQUIRE(bob_room_entry != nullptr);
+            auto const* bob_state = object_member_as_object(*bob_room_entry, "state");
+            REQUIRE(bob_state != nullptr);
+            auto const* bob_state_events = object_member_as_array(*bob_state, "events");
+            REQUIRE(bob_state_events != nullptr);
+            REQUIRE(std::ranges::any_of(*bob_state_events, [](merovingian::canonicaljson::Value const& value) {
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+                return type != nullptr && *type == "m.room.create";
+            }));
+            REQUIRE(std::ranges::any_of(*bob_state_events, [](merovingian::canonicaljson::Value const& value) {
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+                return type != nullptr && *type == "m.room.encryption";
+            }));
+            REQUIRE(std::ranges::any_of(*bob_state_events, [&bob](merovingian::canonicaljson::Value const& value) {
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+                auto const* state_key = event == nullptr ? nullptr : string_member(*event, "state_key");
+                auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                auto const* membership = content == nullptr ? nullptr : string_member(*content, "membership");
+                return type != nullptr && state_key != nullptr && content != nullptr && membership != nullptr &&
+                       *type == "m.room.member" && *state_key == bob.user_id && *membership == "join";
+            }));
+
+            auto const changes = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/keys/changes?from=" + alice_from + "&to=s999", alice.access_token, {}});
+            REQUIRE(changes.response.status == 200U);
+            REQUIRE(changes.response.body.find(bob.user_id) != std::string::npos);
+
+            auto const query_body_json =
+                std::string{"{\"device_keys\":{\""} + bob.user_id + "\":[\"" + bob.device_id + "\"]}}";
+            auto const query = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/query", alice.access_token, query_body_json});
+            REQUIRE(query.response.status == 200U);
+            auto const query_body = parse_object(query.response.body);
+            auto const* device_keys = object_member_as_object(query_body, "device_keys");
+            REQUIRE(device_keys != nullptr);
+            auto const* bob_devices = object_member_as_object(*device_keys, bob.user_id);
+            REQUIRE(bob_devices != nullptr);
+            auto const* bob_device = object_member_as_object(*bob_devices, bob.device_id);
+            REQUIRE(bob_device != nullptr);
+            auto const* bob_keys = object_member_as_object(*bob_device, "keys");
+            REQUIRE(bob_keys != nullptr);
+            REQUIRE(string_member(*bob_keys, "curve25519:" + bob.device_id) != nullptr);
+            REQUIRE(string_member(*bob_keys, "ed25519:" + bob.device_id) != nullptr);
+
+            auto const claim_body_json = std::string{"{\"one_time_keys\":{\""} + bob.user_id + "\":{\"" +
+                                         bob.device_id + "\":\"signed_curve25519\"}}}";
+            auto const claim = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/claim", alice.access_token, claim_body_json});
+            REQUIRE(claim.response.status == 200U);
+            REQUIRE(claim.response.body.find("BOB_REG_OTK_VALUE") != std::string::npos);
+
+            auto const send_to_device_body =
+                std::string{"{\"messages\":{\""} + bob.user_id + "\":{\"" + bob.device_id +
+                "\":{\"algorithm\":\"m.megolm.v1.aes-sha2\",\"room_id\":\"" + room_id +
+                "\",\"session_id\":\"sid-reg-interop-1\",\"session_key\":\"skey-reg-interop-1\"}}}}";
+            auto const send_to_device = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/sendToDevice/m.room_key/txn-reg-room-key", alice.access_token,
+                          send_to_device_body});
+            REQUIRE(send_to_device.response.status == 200U);
+
+            auto const bob_key_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/sync?since=" + sync_next_batch(bob_join_sync.response.body),
+                          bob.access_token,
+                          {}});
+            REQUIRE(bob_key_sync.response.status == 200U);
+            auto const bob_key_sync_body = parse_object(bob_key_sync.response.body);
+            auto const* to_device = object_member_as_object(bob_key_sync_body, "to_device");
+            REQUIRE(to_device != nullptr);
+            auto const* to_device_events = object_member_as_array(*to_device, "events");
+            REQUIRE(to_device_events != nullptr);
+            REQUIRE(std::ranges::any_of(*to_device_events, [](merovingian::canonicaljson::Value const& value) {
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+                auto const* content = event == nullptr ? nullptr : object_member_as_object(*event, "content");
+                auto const* session_id = content == nullptr ? nullptr : string_member(*content, "session_id");
+                return type != nullptr && content != nullptr && session_id != nullptr && *type == "m.room_key" &&
+                       *session_id == "sid-reg-interop-1";
+            }));
+
+            auto const send_body =
+                std::string{"{\"algorithm\":\"m.megolm.v1.aes-sha2\",\"ciphertext\":\"opaque-ciphertext\","
+                            "\"device_id\":\""} +
+                alice.device_id + "\",\"sender_key\":\"ALICE_REG_CURVE\",\"session_id\":\"sid-reg-interop-1\"}";
+            auto const send = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.encrypted/txn-reg-interop-event",
+                          alice.access_token, send_body});
+            REQUIRE(send.response.status == 200U);
+            auto const event_id = response_string_field(send.response.body, "event_id");
+
+            auto const bob_message_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v3/sync?since=" + sync_next_batch(bob_key_sync.response.body),
+                          bob.access_token,
+                          {}});
+            REQUIRE(bob_message_sync.response.status == 200U);
+            auto const bob_message_sync_body = parse_object(bob_message_sync.response.body);
+            auto const* bob_message_rooms = object_member_as_object(bob_message_sync_body, "rooms");
+            REQUIRE(bob_message_rooms != nullptr);
+            auto const* bob_message_joins = object_member_as_object(*bob_message_rooms, "join");
+            REQUIRE(bob_message_joins != nullptr);
+            auto const* bob_message_room = object_member_as_object(*bob_message_joins, room_id);
+            REQUIRE(bob_message_room != nullptr);
+            auto const* timeline = object_member_as_object(*bob_message_room, "timeline");
+            REQUIRE(timeline != nullptr);
+            auto const* events = object_member_as_array(*timeline, "events");
+            REQUIRE(events != nullptr);
+            REQUIRE(std::ranges::any_of(*events, [&event_id](merovingian::canonicaljson::Value const& value) {
+                auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                auto const* current_event_id = event == nullptr ? nullptr : string_member(*event, "event_id");
+                auto const* type = event == nullptr ? nullptr : string_member(*event, "type");
+                return current_event_id != nullptr && type != nullptr && *current_event_id == event_id &&
+                       *type == "m.room.encrypted";
+            }));
+
+            auto const receipt = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/receipt/m.read/" + event_id,
+                          bob.access_token, "{}"});
+            REQUIRE(receipt.response.status == 200U);
+
+            auto const alice_receipt_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + alice_from, alice.access_token, {}});
+            REQUIRE(alice_receipt_sync.response.status == 200U);
+            REQUIRE(alice_receipt_sync.response.body.find("\"m.receipt\"") != std::string::npos);
+            REQUIRE(alice_receipt_sync.response.body.find(bob.user_id) != std::string::npos);
+
+            auto const leave = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/leave", bob.access_token, "{}"});
+            REQUIRE(leave.response.status == 200U);
+
+            THEN("the full registration-shaped encrypted-room flow works end to end")
+            {
+                auto const bob_joined_rooms = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/joined_rooms", bob.access_token, {}});
+                REQUIRE(bob_joined_rooms.response.status == 200U);
+                REQUIRE(bob_joined_rooms.response.body.find(room_id) == std::string::npos);
+
+                auto const bob_member_state = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET",
+                              "/_matrix/client/v3/rooms/" + room_id + "/state/m.room.member/%40bob_reg%3Aexample.org",
+                              alice.access_token,
                               {}});
                 REQUIRE(bob_member_state.response.status == 200U);
                 auto const bob_member_state_body = parse_object(bob_member_state.response.body);

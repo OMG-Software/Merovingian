@@ -10,6 +10,12 @@
   the returned `device_id`, and a multi-device account can upload keys from the
   second logged-in device without being rebound to the first device on the
   account.
+- Integration coverage now also includes the full registration-issued
+  encrypted-room flow that the live clients were exercising: two users rely on
+  the tokens returned by `POST /register`, upload device keys, claim a
+  one-time key, accept an invite, bootstrap `m.room.encryption`, receive
+  `m.room_key` over `sendToDevice`, send an encrypted event, propagate a read
+  receipt, query `/members`, and leave the room.
 
 ## 0.5.8 (in progress — codex/fix-room-e2ee-interop-flow)
 
