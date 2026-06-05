@@ -1953,6 +1953,13 @@ namespace
                                         std::string_view device_id) -> canonicaljson::Object
     {
         auto counts = std::unordered_map<std::string, std::int64_t>{};
+        if (!device_id.empty())
+        {
+            // Fresh devices need an explicit zero count so clients know they
+            // must upload signed one-time keys before encrypted rooms can
+            // bootstrap cross-device sessions.
+            counts.emplace("signed_curve25519", 0);
+        }
         for (auto const& key : store.one_time_keys)
         {
             if (key.user_id != user || key.device_id != device_id)

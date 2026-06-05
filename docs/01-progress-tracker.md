@@ -1,3 +1,13 @@
+## 0.5.6 (in progress — codex/fix-e2ee-bootstrap-key-query)
+
+- `/sync` now reports `device_one_time_keys_count.signed_curve25519 = 0` for a
+  fresh logged-in device with no uploaded one-time keys, so Matrix clients get
+  an explicit bootstrap signal instead of an empty count object.
+- Strict conformance coverage now includes the fresh-device zero-count case for
+  `/sync` and a client-shaped local `PUT /sendToDevice/m.room.encrypted/{txnId}`
+  scenario that proves nested Olm ciphertext survives into `/sync`
+  `to_device.events`.
+
 ## 0.5.5 (in progress — codex/fix-messages-eventid-and-preflight-rate-limit)
 
 - Local room creation now persists invite metadata for same-server invitees, so
