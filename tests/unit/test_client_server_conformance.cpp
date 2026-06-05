@@ -7115,6 +7115,45 @@ SCENARIO("GET /user/{userId}/account_data/{type} retrieves stored account data",
     }
 }
 
+SCENARIO("PUT and GET /user/{userId}/account_data/{type} percent-decode the type path segment",
+         "[conformance][client-server][account-data]")
+{
+    GIVEN("a running client-server and a logged-in user storing a secret-storage key descriptor")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        auto constexpr encoded_type =
+            "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.secret_storage.key.key%2Fid";
+        auto constexpr body = R"({"algorithm":"m.secret_storage.v1.aes-hmac-sha2","name":"Recovery key"})";
+
+        WHEN("the client stores and retrieves the same percent-encoded account-data type")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(started.runtime,
+                                                                                   {"PUT", encoded_type, token, body});
+            auto const get = merovingian::homeserver::handle_client_server_request(started.runtime,
+                                                                                   {"GET", encoded_type, token, {}});
+
+            THEN("the server persists and returns the descriptor under the decoded type")
+            {
+                REQUIRE(put.response.status == 200U);
+                auto const put_body = parse_object(put.response.body);
+                REQUIRE(put_body.empty());
+
+                REQUIRE(get.response.status == 200U);
+                auto const get_body = parse_object(get.response.body);
+                auto const* algorithm = string_member(get_body, "algorithm");
+                auto const* name = string_member(get_body, "name");
+                REQUIRE(algorithm != nullptr);
+                REQUIRE(name != nullptr);
+                REQUIRE(*algorithm == "m.secret_storage.v1.aes-hmac-sha2");
+                REQUIRE(*name == "Recovery key");
+            }
+        }
+    }
+}
+
 // --- PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/account_data/{type} --
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3useruseridrooms roomidaccount_datatype
 // IMPLEMENTATION GAP: per-room account data not yet implemented.

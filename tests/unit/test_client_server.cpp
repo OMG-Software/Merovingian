@@ -3226,6 +3226,65 @@ SCENARIO("Account data endpoint stores and retrieves global account data", "[hom
     }
 }
 
+SCENARIO("Account data endpoint percent-decodes the type path segment for secret storage keys",
+         "[homeserver][client-server][account-data][secret-storage]")
+{
+    GIVEN("a logged-in client-server user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto constexpr encoded_type_url =
+            "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.secret_storage.key.key%2Fid";
+        auto constexpr secret_storage_body =
+            R"({"algorithm":"m.secret_storage.v1.aes-hmac-sha2","name":"Recovery key"})";
+
+        WHEN("PUT and GET are performed with a percent-encoded account-data type")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", encoded_type_url, token, secret_storage_body});
+            auto const get =
+                merovingian::homeserver::handle_client_server_request(runtime, {"GET", encoded_type_url, token, {}});
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("the stored type is decoded for retrieval and sync account_data events")
+            {
+                REQUIRE(put.response.status == 200U);
+                REQUIRE(get.response.status == 200U);
+                REQUIRE(get.response.body.find("m.secret_storage.v1.aes-hmac-sha2") != std::string::npos);
+
+                auto const sync_body = parse_object(sync.response.body);
+                auto const* account_data = object_member_as_object(sync_body, "account_data");
+                REQUIRE(account_data != nullptr);
+                auto const* events = object_member_as_array(*account_data, "events");
+                REQUIRE(events != nullptr);
+                REQUIRE(std::ranges::any_of(*events, [](merovingian::canonicaljson::Value const& value) {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    return event != nullptr && string_member(*event, "type") != nullptr &&
+                           *string_member(*event, "type") == "m.secret_storage.key.key/id";
+                }));
+            }
+        }
+    }
+}
+
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3room_keysversion
 SCENARIO("POST /room_keys/version returns a version identifier to the client",
          "[homeserver][client-server][key-api][key-backup]")
