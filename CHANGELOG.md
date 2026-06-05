@@ -1,3 +1,19 @@
+## 0.5.9
+
+- Fix authenticated device binding for `GET /_matrix/client/v3/account/whoami`
+  and all client key API routes. The server now resolves `device_id` from the
+  bearer-token session instead of guessing from the account's first known
+  device, which fixes registration-issued sessions and multi-device E2EE
+  bootstrap.
+- Add strict regressions for two live client paths that were previously
+  uncovered: a post-registration session using `whoami` plus `/keys/upload`,
+  and a multi-device account uploading keys from the second logged-in device.
+- Add a strict end-to-end integration flow for the registration-shaped client
+  path: registration-issued `access_token` plus `device_id`, `/keys/upload`,
+  `/keys/query`, `/keys/claim`, invite/join bootstrap, `sendToDevice`
+  `m.room_key`, encrypted room send, read receipt propagation, `/members`, and
+  leave in one Matrix v1.18 user flow.
+
 ## 0.5.8
 
 - Fix `GET /_matrix/client/v3/rooms/{roomId}/members` so it parses

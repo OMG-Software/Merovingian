@@ -128,6 +128,15 @@ using namespace merovingian::tests;
     return *next_batch;
 }
 
+[[nodiscard]] auto response_string_field(std::string const& body, std::string_view key) -> std::string
+{
+    auto const parsed = parse_object(body);
+    auto const* value = string_member(parsed, key);
+    REQUIRE(value != nullptr);
+    REQUIRE(!value->empty());
+    return *value;
+}
+
 auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                         std::string_view user_id, std::string_view device_id, std::string_view curve25519_key,
                         std::string_view ed25519_key) -> void
@@ -664,6 +673,55 @@ SCENARIO("GET /whoami returns required spec fields", "[conformance][client-serve
                 auto const* device_id = string_member(body, "device_id");
                 REQUIRE(device_id != nullptr);
                 REQUIRE(!device_id->empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Registration-issued session reports its device and can upload device keys for that device",
+         "[conformance][client-server][whoami][e2ee][keys]")
+{
+    GIVEN("a successful registration response that includes an access token and device_id")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        auto const registration = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST",
+             "/_matrix/client/v3/register",
+             {},
+             R"({"username":"alice","password":"CorrectHorse7!","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
+        REQUIRE(registration.response.status == 200U);
+
+        auto const token = response_string_field(registration.response.body, "access_token");
+        auto const device_id = response_string_field(registration.response.body, "device_id");
+
+        WHEN("the client uses that registration-issued token for whoami and keys/upload")
+        {
+            auto const whoami = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/account/whoami", token, {}});
+            auto const upload_body =
+                std::string{"{\"device_keys\":{\"user_id\":\"@alice:example.org\",\"device_id\":\""} + device_id +
+                "\",\"algorithms\":[\"m.olm.v1.curve25519-aes-sha2\",\"m.megolm.v1.aes-sha2\"],\"keys\":{"
+                "\"curve25519:" +
+                device_id + "\":\"" + device_id + "_CURVE\",\"ed25519:" + device_id + "\":\"" + device_id +
+                "_ED\"},\"signatures\":{}},\"one_time_keys\":{}}";
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/keys/upload", token, upload_body});
+
+            THEN("both responses are bound to the same authenticated device")
+            {
+                REQUIRE(whoami.response.status == 200U);
+                auto const whoami_body = parse_object(whoami.response.body);
+                auto const* whoami_device = string_member(whoami_body, "device_id");
+                REQUIRE(whoami_device != nullptr);
+                REQUIRE(*whoami_device == device_id);
+
+                REQUIRE(upload.response.status == 200U);
+                auto const upload_response = parse_object(upload.response.body);
+                auto const* counts = object_member_as_object(upload_response, "one_time_key_counts");
+                REQUIRE(counts != nullptr);
             }
         }
     }

@@ -1,3 +1,22 @@
+## 0.5.9 (in progress — codex/fix-authenticated-key-api-device-binding)
+
+- `GET /_matrix/client/v3/account/whoami` and the client key API routes now
+  resolve `device_id` from the authenticated bearer-token session rather than
+  `rt.devices` order. That fixes the live Cinny/Element failure where a
+  registration-issued token or later device login was validated against the
+  wrong device and `/keys/upload` returned `M_INVALID_PARAM`.
+- The runtime suite now has strict regressions for both failing shapes: the
+  default post-registration session can call `whoami` and `/keys/upload` using
+  the returned `device_id`, and a multi-device account can upload keys from the
+  second logged-in device without being rebound to the first device on the
+  account.
+- Integration coverage now also includes the full registration-issued
+  encrypted-room flow that the live clients were exercising: two users rely on
+  the tokens returned by `POST /register`, upload device keys, claim a
+  one-time key, accept an invite, bootstrap `m.room.encryption`, receive
+  `m.room_key` over `sendToDevice`, send an encrypted event, propagate a read
+  receipt, query `/members`, and leave the room.
+
 ## 0.5.8 (in progress — codex/fix-room-e2ee-interop-flow)
 
 - `/keys/upload` now rejects device-key identity mismatches and `/keys/query`

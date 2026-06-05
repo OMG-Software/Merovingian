@@ -4646,6 +4646,127 @@ SCENARIO("Keys upload rejects device keys that do not belong to the authenticate
     }
 }
 
+SCENARIO("Registration-issued session token binds whoami and keys upload to the returned device",
+         "[homeserver][client-server][e2ee][keys][registration-session]")
+{
+    GIVEN("a newly registered user using the default post-registration session")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const registration = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(registration.response.status == 200U);
+
+        auto const token = login_token(registration.response.body);
+        auto const device_id = login_device_id(registration.response.body);
+        REQUIRE_FALSE(device_id.empty());
+
+        WHEN("the client calls whoami and uploads device keys using that registration token")
+        {
+            auto const whoami = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/whoami", token, {}});
+            auto const upload_body =
+                std::string{"{\"device_keys\":{\"user_id\":\"@alice:example.org\",\"device_id\":\""} + device_id +
+                "\",\"algorithms\":[\"m.olm.v1.curve25519-aes-sha2\",\"m.megolm.v1.aes-sha2\"],\"keys\":{"
+                "\"curve25519:" +
+                device_id + "\":\"" + device_id + "_CURVE\",\"ed25519:" + device_id + "\":\"" + device_id +
+                "_ED\"},\"signatures\":{}},\"one_time_keys\":{}}";
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", token, upload_body});
+
+            THEN("both routes honor the registration session device identity")
+            {
+                REQUIRE(whoami.response.status == 200U);
+                auto const whoami_body = parse_object(whoami.response.body);
+                auto const* whoami_device = string_member(whoami_body, "device_id");
+                REQUIRE(whoami_device != nullptr);
+                REQUIRE(*whoami_device == device_id);
+
+                REQUIRE(upload.response.status == 200U);
+                auto const upload_response = parse_object(upload.response.body);
+                auto const* counts = object_member_as_object(upload_response, "one_time_key_counts");
+                REQUIRE(counts != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("Key API routes use the authenticated session device instead of the first account device",
+         "[homeserver][client-server][e2ee][keys][multi-device]")
+{
+    GIVEN("one user logged into two devices")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        auto const first_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"FIRST_DEV"})"});
+        REQUIRE(first_login.response.status == 200U);
+        auto const first_token = login_token(first_login.response.body);
+
+        auto const second_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"SECOND_DEV"})"});
+        REQUIRE(second_login.response.status == 200U);
+        auto const second_token = login_token(second_login.response.body);
+
+        WHEN("the second device calls whoami and uploads its own device keys")
+        {
+            auto const whoami = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/whoami", second_token, {}});
+            auto const upload_body = std::string{
+                "{\"device_keys\":{\"user_id\":\"@alice:example.org\",\"device_id\":\"SECOND_DEV\","
+                "\"algorithms\":[\"m.olm.v1.curve25519-aes-sha2\",\"m.megolm.v1.aes-sha2\"],"
+                "\"keys\":{\"curve25519:SECOND_DEV\":\"curve-second\",\"ed25519:SECOND_DEV\":\"ed-second\"},"
+                "\"signatures\":{}},\"one_time_keys\":{}}"};
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", second_token, upload_body});
+            auto const query = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/keys/query", first_token,
+                          R"({"device_keys":{"@alice:example.org":["SECOND_DEV"]}})"});
+
+            THEN("the authenticated device is reported and the second device keys persist")
+            {
+                REQUIRE(whoami.response.status == 200U);
+                auto const whoami_body = parse_object(whoami.response.body);
+                auto const* whoami_device = string_member(whoami_body, "device_id");
+                REQUIRE(whoami_device != nullptr);
+                REQUIRE(*whoami_device == "SECOND_DEV");
+
+                REQUIRE(upload.response.status == 200U);
+
+                REQUIRE(query.response.status == 200U);
+                auto const query_body = parse_object(query.response.body);
+                auto const* device_keys = object_member_as_object(query_body, "device_keys");
+                REQUIRE(device_keys != nullptr);
+                auto const* alice_devices = object_member_as_object(*device_keys, "@alice:example.org");
+                REQUIRE(alice_devices != nullptr);
+                REQUIRE(object_member_as_object(*alice_devices, "SECOND_DEV") != nullptr);
+            }
+        }
+    }
+}
+
 SCENARIO("Room members response is derived from current state even when the membership projection is stale",
          "[homeserver][client-server][rooms][members][regression]")
 {

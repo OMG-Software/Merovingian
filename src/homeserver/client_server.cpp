@@ -1539,12 +1539,11 @@ namespace
         return it == rt.devices.end() ? nullptr : &(*it);
     }
 
-    [[nodiscard]] auto first_device_id(ClientServerRuntime const& rt, std::string_view user) -> std::string
+    [[nodiscard]] auto authenticated_request_device_id(ClientServerRuntime const& rt, std::string_view access_token)
+        -> std::string
     {
-        auto const it = std::ranges::find_if(rt.devices, [user](ClientDevice const& d) {
-            return d.user_id == user;
-        });
-        return it == rt.devices.end() ? std::string{} : it->device_id;
+        auto const session = authenticated_session(rt.homeserver, access_token);
+        return session.has_value() ? session->device_id : std::string{};
     }
 
     [[nodiscard]] auto devices_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
@@ -4934,7 +4933,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/whoami")
     {
-        auto const whoami_device = first_device_id(rt, *user);
+        auto const whoami_device = authenticated_request_device_id(rt, req.access_token);
         log_diagnostic("account.whoami", {
                                              {"actor", *user, false}
         });
@@ -5187,7 +5186,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
     auto const key_route = auth::match_key_api_route(req.method, req.target);
     if (key_route.matched)
     {
-        auto const device_id = first_device_id(rt, *user);
+        auto const device_id = authenticated_request_device_id(rt, req.access_token);
         return complete(handle_key_api_route(rt, key_route.route, *user, device_id, req));
     }
     if (req.method == "GET" && req.target == "/_matrix/client/v3/devices")
