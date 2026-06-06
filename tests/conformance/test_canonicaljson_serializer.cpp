@@ -249,18 +249,35 @@ SCENARIO("Canonical JSON escapes all control characters U+0000 through U+001F as
 // Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
 // URL:  https://spec.matrix.org/v1.18/appendices/#grammar
 //
-// Object keys are sorted by their Unicode code points (effectively byte-by-byte
-// on UTF-8 strings). Keys with bytes that sort higher lexicographically come last.
-// This includes multi-byte UTF-8 characters: e.g., é (U+00E9, bytes C3 A9) sorts
-// after all ASCII characters.
+// Object keys MUST be sorted by their Unicode code points. For UTF-8 strings
+// this is equivalent to byte-by-byte lexicographic order, because UTF-8 encodes
+// code points such that byte order preserves code point order.
+//
+// Sort order for the keys used below:
+//   "A"  = U+0041 → 0x41                   (ASCII uppercase)
+//   "a"  = U+0061 → 0x61                   (ASCII lowercase)
+//   "z"  = U+007A → 0x7A                   (ASCII lowercase, highest ASCII key)
+//   "é"  = U+00E9 → 0xC3 0xA9              (2-byte UTF-8, first byte 0xC3 > 0x7A)
+//   "中"  = U+4E2D → 0xE4 0xB8 0xAD        (3-byte UTF-8, first byte 0xE4 > 0xC3)
+//
+// The JSON is constructed with raw UTF-8 bytes so the sort behaviour is verified
+// end-to-end without relying on \u-escape parsing or collation libraries.
 SCENARIO("Canonical JSON sorts object keys by Unicode code point (byte order)",
          "[conformance][canonicaljson][key-sorting]")
 {
-    GIVEN("an object with ASCII and multi-byte UTF-8 keys")
+    GIVEN("an object with ASCII and multi-byte UTF-8 keys in intentionally wrong order")
     {
-        // "z" = 0x7A, "é" starts with 0xC3 — 'é' sorts after 'z' in byte order.
-        // "A" = 0x41, "a" = 0x61 — uppercase sorts before lowercase in Unicode.
-        auto const json = std::string{"{\"z\":3,\"A\":1,\"a\":2}"};
+        // Raw UTF-8: é = 0xC3 0xA9, 中 = 0xE4 0xB8 0xAD.
+        // The keys are listed out of Unicode order to prove the serializer sorts them.
+        auto const json = std::string{
+            "{"
+            "\"z\":3,"
+            "\"A\":1,"
+            "\"\xE4\xB8\xAD\":5,"
+            "\"a\":2,"
+            "\"\xC3\xA9\":4"
+            "}"
+        };
         auto const parsed = merovingian::canonicaljson::parse_lossless(json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
@@ -268,11 +285,20 @@ SCENARIO("Canonical JSON sorts object keys by Unicode code point (byte order)",
         {
             auto const result = merovingian::canonicaljson::serialize_canonical(parsed.value);
 
-            THEN("keys are in Unicode code point order: 'A' (0x41) < 'a' (0x61) < 'z' (0x7A)")
+            THEN("keys appear in Unicode code point order including multi-byte keys")
             {
                 REQUIRE(result.error == merovingian::canonicaljson::CanonicalJsonError::none);
-                // Spec MUST: sort by Unicode code point: uppercase before lowercase.
-                REQUIRE(result.output == R"({"A":1,"a":2,"z":3})");
+                // Spec MUST: "A" (0x41) < "a" (0x61) < "z" (0x7A) < "é" (0xC3…) < "中" (0xE4…)
+                auto const expected = std::string{
+                    "{"
+                    "\"A\":1,"
+                    "\"a\":2,"
+                    "\"z\":3,"
+                    "\"\xC3\xA9\":4,"
+                    "\"\xE4\xB8\xAD\":5"
+                    "}"
+                };
+                REQUIRE(result.output == expected);
             }
         }
     }

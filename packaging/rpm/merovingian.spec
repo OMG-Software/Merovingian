@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.11
+Version:        0.5.12
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.12-1
+- Fix canonical JSON multi-byte UTF-8 key sort test: add actual e-acute and CJK keys
+- Fix misleading helper comment in sync filter conformance test
+
 * Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.11-1
 - Split localpart_is_valid into localpart_is_valid_new and localpart_is_valid_federated per spec
 - Add user_id_is_valid_federated for historical federation user IDs
