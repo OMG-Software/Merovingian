@@ -1,3 +1,23 @@
+## 0.5.11
+
+- Split `localpart_is_valid()` into two spec-faithful validators:
+  - `localpart_is_valid_new()` — enforces the Matrix v1.18 normative set
+    (`a-z`, `0-9`, `._-=/+`). Rejects uppercase, empty, and all other
+    characters. Used at registration time.
+  - `localpart_is_valid_federated()` — accepts the historical set: any valid
+    UTF-8 code point that is not `:` or NUL, with no surrogate code points.
+    Empty localparts are accepted for maximum federation compatibility.
+- Add `user_id_is_valid_federated()` — same structural constraints as
+  `user_id_is_valid()` but uses the federated localpart validator.
+- Fix `user_id_is_valid()` to call `localpart_is_valid_new()`: it previously
+  accepted uppercase localparts (e.g. `@Alice:example.org`) because the
+  shared helper permitted uppercase for historical reasons. The strict
+  validator is now used for all local/registration paths.
+- Update registration callers in `client_server.cpp` to use
+  `localpart_is_valid_new()` explicitly.
+- Add conformance tests: new-localpart rejection of uppercase, federated
+  acceptance of `#`, `!`, Unicode, empty; rejection of `:` and NUL.
+
 ## 0.5.10
 
 - Fix v12 `m.room.create` inbound PDU rejection: `parse_event_envelope()` required

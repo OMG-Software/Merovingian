@@ -71,25 +71,42 @@ SCENARIO("Auth server-name validator rejects malformed host and port shapes", "[
     }
 }
 
-SCENARIO("Auth user ID validator accepts Matrix-compliant mixed-case localparts", "[auth]")
+SCENARIO("Auth user ID validator enforces lowercase-only localparts for new IDs", "[auth]")
 {
-    GIVEN("valid mixed-case localparts and malformed server names")
+    GIVEN("a lowercase-only user ID, an uppercase user ID, and a malformed server name")
     {
-        auto constexpr valid_user = "@alice_1.-=/+:example.org";
-        auto constexpr uppercase_user = "@Alice:example.org";
+        auto constexpr valid_user          = "@alice_1.-=/+:example.org";
+        auto constexpr uppercase_user      = "@Alice:example.org";
         auto constexpr malformed_server_user = "@alice:example.org:abc";
 
-        WHEN("user IDs are validated")
+        WHEN("user IDs are validated with the strict new-ID validator")
         {
-            auto const valid_user_result = merovingian::auth::user_id_is_valid(valid_user);
-            auto const uppercase_user_result = merovingian::auth::user_id_is_valid(uppercase_user);
+            auto const valid_user_result           = merovingian::auth::user_id_is_valid(valid_user);
+            auto const uppercase_user_result       = merovingian::auth::user_id_is_valid(uppercase_user);
             auto const malformed_server_user_result = merovingian::auth::user_id_is_valid(malformed_server_user);
 
-            THEN("mixed-case localparts are accepted and malformed server names are rejected")
+            THEN("lowercase localparts are accepted; uppercase and malformed server names are rejected")
             {
+                // New-ID path: lowercase + allowed punctuation is valid.
                 REQUIRE(valid_user_result);
-                REQUIRE(uppercase_user_result);
+                // New-ID path: uppercase localpart is rejected — spec restricts new IDs to a-z.
+                // Do NOT change to REQUIRE — accepting uppercase at registration creates
+                // ambiguous identifiers and breaks future case-folding.
+                REQUIRE_FALSE(uppercase_user_result);
+                // Malformed server name is always rejected.
                 REQUIRE_FALSE(malformed_server_user_result);
+            }
+        }
+
+        WHEN("the uppercase user ID is validated with the federated validator")
+        {
+            auto const fed_result = merovingian::auth::user_id_is_valid_federated(uppercase_user);
+
+            THEN("it is accepted — historical IDs are valid for federation paths")
+            {
+                // The federated validator accepts historical uppercase localparts.
+                // Use this on inbound federation, not on local registration.
+                REQUIRE(fed_result);
             }
         }
     }

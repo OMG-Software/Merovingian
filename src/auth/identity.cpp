@@ -46,10 +46,110 @@ namespace
         return byte > 0x20U && byte < 0x7FU;
     }
 
-    [[nodiscard]] auto is_localpart_character(char value) noexcept -> bool
+    // Spec: Matrix v1.18 § Identifier Grammar — new user ID localpart character set.
+    // Only lowercase ASCII, digits, and the listed punctuation are permitted for
+    // new user IDs. Uppercase is NOT allowed; it was removed from the spec to
+    // allow future case-folding without ambiguity.
+    [[nodiscard]] auto is_new_localpart_character(char value) noexcept -> bool
     {
-        return is_ascii_lower(value) || is_ascii_upper(value) || is_ascii_digit(value) || value == '.' ||
-               value == '_' || value == '-' || value == '=' || value == '/' || value == '+';
+        return is_ascii_lower(value) || is_ascii_digit(value) || value == '.' || value == '_' ||
+               value == '-' || value == '=' || value == '/' || value == '+';
+    }
+
+    // Validates a byte sequence as a federated localpart.
+    //
+    // Spec: Matrix v1.18 § User Identifiers (historical note)
+    // URL:  https://spec.matrix.org/v1.18/appendices/#user-identifiers
+    //
+    // Historical deployments issued user IDs with characters outside the normative
+    // set (uppercase, punctuation such as '#', Unicode). Servers SHOULD accept these
+    // over federation. The only hard constraints in all eras are:
+    //   - ':' is forbidden — it is the separator between localpart and server_name
+    //   - NUL is forbidden — it truncates C strings and corrupts storage
+    //   - Code units must form valid UTF-8 (no overlong sequences, no surrogates,
+    //     no code points above U+10FFFF)
+    //
+    // Empty localparts are technically non-conformant but accepted for maximum
+    // compatibility with unusual historical deployments.
+    [[nodiscard]] auto is_valid_federated_localpart_bytes(std::string_view bytes) noexcept -> bool
+    {
+        auto i = std::size_t{0};
+        while (i < bytes.size())
+        {
+            auto const byte = static_cast<unsigned char>(bytes[i]);
+
+            // Reject NUL (corrupts C-string handling) and ':' (breaks user ID parsing).
+            if (byte == 0x00U || byte == 0x3AU)
+            {
+                return false;
+            }
+
+            // Determine UTF-8 sequence length and extract the leading code-point bits.
+            std::size_t  seq_len    = 0;
+            std::uint32_t code_point = 0;
+
+            if (byte < 0x80U) // ASCII (single byte)
+            {
+                seq_len    = 1;
+                code_point = byte;
+            }
+            else if ((byte & 0xE0U) == 0xC0U) // 2-byte sequence
+            {
+                seq_len    = 2;
+                code_point = byte & 0x1FU;
+            }
+            else if ((byte & 0xF0U) == 0xE0U) // 3-byte sequence
+            {
+                seq_len    = 3;
+                code_point = byte & 0x0FU;
+            }
+            else if ((byte & 0xF8U) == 0xF0U) // 4-byte sequence
+            {
+                seq_len    = 4;
+                code_point = byte & 0x07U;
+            }
+            else
+            {
+                // 0x80–0xBF (lone continuation), 0xF8–0xFF (invalid in UTF-8)
+                return false;
+            }
+
+            // Validate and accumulate continuation bytes.
+            for (std::size_t j = 1; j < seq_len; ++j)
+            {
+                if (i + j >= bytes.size())
+                {
+                    return false; // Truncated sequence at end of input
+                }
+                auto const cont = static_cast<unsigned char>(bytes[i + j]);
+                if ((cont & 0xC0U) != 0x80U)
+                {
+                    return false; // Expected continuation byte, got something else
+                }
+                code_point = (code_point << 6U) | (cont & 0x3FU);
+            }
+
+            // Reject overlong encodings (e.g. 2-byte encoding of an ASCII character).
+            if (seq_len == 2U && code_point < 0x80U)    { return false; }
+            if (seq_len == 3U && code_point < 0x800U)   { return false; }
+            if (seq_len == 4U && code_point < 0x10000U) { return false; }
+
+            // Reject surrogate code points U+D800–U+DFFF.
+            // These are permanently reserved and cannot appear in valid UTF-8.
+            if (code_point >= 0xD800U && code_point <= 0xDFFFU)
+            {
+                return false;
+            }
+
+            // Reject code points above U+10FFFF (outside Unicode range).
+            if (code_point > 0x10FFFFU)
+            {
+                return false;
+            }
+
+            i += seq_len;
+        }
+        return true;
     }
 
     [[nodiscard]] auto port_is_valid(std::string_view port) noexcept -> bool
@@ -165,11 +265,32 @@ auto server_name_is_valid(std::string_view server_name) noexcept -> bool
     return hostname_is_valid(hostname) && port_is_valid(port);
 }
 
-auto localpart_is_valid(std::string_view localpart) noexcept -> bool
+// Spec: Matrix v1.18 § Identifier Grammar
+// URL:  https://spec.matrix.org/v1.18/appendices/#user-identifiers
+//
+// New localparts MUST use only: a-z, 0-9, '.', '_', '-', '=', '/', '+'.
+// Uppercase is not permitted for new user IDs.
+// Use this for registration and all local auth paths.
+auto localpart_is_valid_new(std::string_view localpart) noexcept -> bool
 {
-    return !localpart.empty() && localpart.size() <= 255U && std::ranges::all_of(localpart, is_localpart_character);
+    return !localpart.empty() && localpart.size() <= 255U &&
+           std::ranges::all_of(localpart, is_new_localpart_character);
 }
 
+// Spec: Matrix v1.18 § User Identifiers (historical compatibility)
+// URL:  https://spec.matrix.org/v1.18/appendices/#user-identifiers
+//
+// Historical user IDs may contain characters outside the normative set.
+// Servers SHOULD accept them when received over federation.
+// Any valid UTF-8 code point is accepted except ':' and NUL.
+// Empty localparts are accepted for maximum compatibility.
+auto localpart_is_valid_federated(std::string_view localpart) noexcept -> bool
+{
+    return is_valid_federated_localpart_bytes(localpart);
+}
+
+// Strict validator for local/registration paths.
+// Uses localpart_is_valid_new(); rejects uppercase and non-normative characters.
 auto user_id_is_valid(std::string_view user_id) noexcept -> bool
 {
     if (user_id.size() < 4U || user_id.size() > 255U || user_id.front() != '@')
@@ -185,7 +306,29 @@ auto user_id_is_valid(std::string_view user_id) noexcept -> bool
 
     auto const localpart = user_id.substr(1U, separator - 1U);
     auto const server_name = user_id.substr(separator + 1U);
-    return localpart_is_valid(localpart) && server_name_is_valid(server_name);
+    return localpart_is_valid_new(localpart) && server_name_is_valid(server_name);
+}
+
+// Permissive validator for inbound federation paths.
+// Uses localpart_is_valid_federated(); accepts historical characters and empty localparts.
+auto user_id_is_valid_federated(std::string_view user_id) noexcept -> bool
+{
+    if (user_id.empty() || user_id.size() > 255U || user_id.front() != '@')
+    {
+        return false;
+    }
+
+    auto const separator = user_id.find(':');
+    // Must have a colon with at least one server-name character after it.
+    // Empty localpart (separator == 1) is allowed for historical compatibility.
+    if (separator == std::string_view::npos || separator + 1U >= user_id.size())
+    {
+        return false;
+    }
+
+    auto const localpart = user_id.substr(1U, separator - 1U);
+    auto const server_name = user_id.substr(separator + 1U);
+    return localpart_is_valid_federated(localpart) && server_name_is_valid(server_name);
 }
 
 auto device_id_is_valid(std::string_view device_id) noexcept -> bool

@@ -181,9 +181,18 @@ SCENARIO("Server name grammar: invalid server names are rejected",
 //
 // user_id     = "@" localpart ":" server_name
 // localpart   = 1*user_id_char
-// user_id_char = ALPHA / DIGIT / "-" / "." / "=" / "_" / "/" / "+" (historical)
+// user_id_char = a-z / 0-9 / "-" / "." / "=" / "_" / "/" / "+"
 //
 // The full user ID (including "@" and ":") MUST NOT exceed 255 bytes.
+//
+// New user IDs MUST use only lowercase ASCII. Servers receiving user IDs
+// over federation SHOULD accept historical localparts that include characters
+// outside this normative set (e.g. uppercase ASCII, Unicode, '#', etc.),
+// because older deployments may have issued such IDs.
+//
+// Two distinct validators implement this split:
+//   localpart_is_valid_new()       — enforces the normative (new-ID) set
+//   localpart_is_valid_federated() — accepts the historical set
 // ---------------------------------------------------------------------------
 
 SCENARIO("User ID grammar: valid user IDs are accepted",
@@ -275,15 +284,20 @@ SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected",
     }
 }
 
+// ---------------------------------------------------------------------------
 // Spec: Matrix CS API v1.18 Appendices § User Identifiers
 // URL: https://spec.matrix.org/v1.18/appendices/#user-identifiers
 //
-// New user ID localparts MUST only use: a-z, 0-9, ., _, =, -, /, +
-// Historical user IDs MAY contain additional characters (e.g. uppercase ASCII).
-// Servers SHOULD accept historical localparts from federation.
-// The localpart_is_valid() helper accepts the full historical set so that
-// incoming federation user IDs are not incorrectly rejected.
-SCENARIO("User ID localpart: normative new-ID characters are accepted",
+// NEW localpart (used at registration / local paths):
+//   MUST contain only: a-z, 0-9, ., _, =, -, /, +
+//   MUST NOT be empty.
+//   MUST NOT contain uppercase letters (spec restriction introduced to allow
+//   future case-folding without ambiguity).
+//
+// Use localpart_is_valid_new() for all new-ID creation and local auth paths.
+// ---------------------------------------------------------------------------
+
+SCENARIO("New user ID localpart: normative character set is accepted",
          "[conformance][identifiers][user-id][localpart]")
 {
     GIVEN("localparts using the normative v1.18 character set (lowercase only)")
@@ -295,64 +309,236 @@ SCENARIO("User ID localpart: normative new-ID characters are accepted",
             "alice-bob",
             "alice_bob",
             "alice=bob",
+            "alice/bob",
+            "alice+bob",
         };
 
-        WHEN("each localpart is validated")
+        WHEN("each localpart is validated as a new user ID localpart")
         {
             THEN("all normative v1.18 localpart characters are accepted")
             {
                 for (auto const& lp : normative_valid)
                 {
                     // Spec MUST: a-z, 0-9, ., _, =, -, /, + are all normatively valid.
-                    REQUIRE(merovingian::auth::localpart_is_valid(lp));
+                    REQUIRE(merovingian::auth::localpart_is_valid_new(lp));
                 }
             }
         }
     }
 }
 
-// NOTE: This is a historical-compatibility test, not a normative conformance test.
-// The spec says new localparts MUST be lowercase; uppercase localparts exist in
-// older deployments and servers SHOULD accept them for federation.
-SCENARIO("User ID localpart: historical uppercase localparts are accepted for federation compatibility",
-         "[identifiers][user-id][localpart][historical]")
+SCENARIO("New user ID localpart: uppercase letters are rejected",
+         "[conformance][identifiers][user-id][localpart]")
 {
-    GIVEN("an uppercase localpart from a historical deployment")
+    GIVEN("localparts containing uppercase ASCII letters")
     {
-        WHEN("the localpart is validated")
+        auto const uppercase_cases = std::vector<std::string_view>{
+            "ALICE",
+            "Alice",
+            "alicE",
+            "A",
+        };
+
+        WHEN("each localpart is validated as a new user ID localpart")
         {
-            THEN("localpart_is_valid accepts it for historical/federation compatibility")
+            THEN("uppercase letters are rejected — new IDs must be lowercase")
             {
-                // Historical compatibility — NOT a new-user-ID conformance requirement.
-                // New registrations MUST NOT create uppercase localparts.
-                REQUIRE(merovingian::auth::localpart_is_valid("ALICE"));
+                for (auto const& lp : uppercase_cases)
+                {
+                    // Spec MUST: new localparts MUST be lowercase. Uppercase is forbidden
+                    // for new user IDs. Do NOT relax — allowing uppercase at registration
+                    // breaks case-folding guarantees and creates ambiguous identifiers.
+                    REQUIRE_FALSE(merovingian::auth::localpart_is_valid_new(lp));
+                }
             }
         }
     }
 }
 
-SCENARIO("User ID localpart: forbidden characters are rejected",
+SCENARIO("New user ID localpart: forbidden characters are rejected",
          "[conformance][identifiers][user-id][localpart]")
 {
-    GIVEN("localparts containing characters not in the allowed set")
+    GIVEN("localparts containing characters not in the allowed normative set")
     {
         auto const invalid = std::vector<std::string_view>{
             "",           // empty localpart is forbidden
             "alice bob",  // space is forbidden
             "@alice",     // sigil is forbidden in localpart
             "alice@",     // sigil is forbidden in localpart
-            "alice#bob",  // '#' is forbidden
+            "alice#bob",  // '#' is not in the normative character set
         };
 
-        WHEN("each localpart is validated")
+        WHEN("each localpart is validated as a new user ID localpart")
         {
-            THEN("all forbidden localpart characters are rejected")
+            THEN("all forbidden characters are rejected")
             {
                 for (auto const& lp : invalid)
                 {
-                    // Spec MUST: spaces, '@', '#' and other unlisted characters are forbidden in localparts.
-                    REQUIRE_FALSE(merovingian::auth::localpart_is_valid(lp));
+                    // Spec MUST: spaces, '@', '#' and other unlisted characters are forbidden
+                    // in new user ID localparts.
+                    REQUIRE_FALSE(merovingian::auth::localpart_is_valid_new(lp));
                 }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix CS API v1.18 Appendices § User Identifiers (historical)
+// URL: https://spec.matrix.org/v1.18/appendices/#user-identifiers
+//
+// HISTORICAL localpart (federation / inbound paths):
+//   Older servers issued user IDs with characters outside the normative set.
+//   Servers SHOULD accept these when received over federation.
+//   The permitted set is: any valid UTF-8 code point that is not ':' or NUL,
+//   excluding surrogate code points (U+D800–U+DFFF).
+//   Empty localparts are non-conformant but accepted for maximum compatibility.
+//
+// Use localpart_is_valid_federated() for inbound federation user ID parsing.
+// ---------------------------------------------------------------------------
+
+SCENARIO("Federated user ID localpart: historical character set is accepted",
+         "[conformance][identifiers][user-id][localpart][historical]")
+{
+    GIVEN("localparts using characters outside the normative set")
+    {
+        WHEN("uppercase localparts are validated for federation")
+        {
+            THEN("historical uppercase localparts are accepted")
+            {
+                // Spec SHOULD: servers must accept historical user IDs received over
+                // federation that predate the lowercase restriction.
+                REQUIRE(merovingian::auth::localpart_is_valid_federated("ALICE"));
+                REQUIRE(merovingian::auth::localpart_is_valid_federated("Alice"));
+            }
+        }
+
+        WHEN("localparts with non-normative punctuation are validated for federation")
+        {
+            THEN("historically permitted characters are accepted")
+            {
+                // Spec SHOULD: '#', '!', '~' and other non-normative characters exist in
+                // historical deployments and must be accepted over federation.
+                REQUIRE(merovingian::auth::localpart_is_valid_federated("alice#matrix"));
+                REQUIRE(merovingian::auth::localpart_is_valid_federated("alice!tag"));
+                REQUIRE(merovingian::auth::localpart_is_valid_federated("alice~home"));
+            }
+        }
+
+        WHEN("localparts with valid multi-byte UTF-8 characters are validated for federation")
+        {
+            THEN("valid Unicode code points are accepted")
+            {
+                // Spec SHOULD: any legal non-surrogate Unicode must be accepted.
+                // U+00E9 LATIN SMALL LETTER E WITH ACUTE — 2-byte UTF-8: 0xC3 0xA9
+                REQUIRE(merovingian::auth::localpart_is_valid_federated("caf\xC3\xA9"));
+                // U+4E2D CJK UNIFIED IDEOGRAPH — 3-byte UTF-8: 0xE4 0xB8 0xAD
+                REQUIRE(merovingian::auth::localpart_is_valid_federated("\xE4\xB8\xAD"));
+            }
+        }
+
+        WHEN("an empty localpart is validated for federation")
+        {
+            THEN("it is accepted for maximum compatibility")
+            {
+                // Historical deployments may have issued @:server IDs. The federated
+                // validator accepts them even though they are technically non-conformant.
+                REQUIRE(merovingian::auth::localpart_is_valid_federated(""));
+            }
+        }
+    }
+}
+
+SCENARIO("Federated user ID localpart: structurally forbidden characters are rejected",
+         "[conformance][identifiers][user-id][localpart][historical]")
+{
+    GIVEN("localparts that break user ID parsing regardless of era")
+    {
+        WHEN("a localpart containing ':' is validated for federation")
+        {
+            THEN("it is rejected — colon breaks user ID parsing in all eras")
+            {
+                // Spec MUST: ':' is forbidden in localparts — it is the separator between
+                // localpart and server_name. Permitting it would corrupt user ID parsing.
+                REQUIRE_FALSE(merovingian::auth::localpart_is_valid_federated("alice:evil"));
+                REQUIRE_FALSE(merovingian::auth::localpart_is_valid_federated(":"));
+            }
+        }
+
+        WHEN("a localpart containing a NUL byte is validated for federation")
+        {
+            THEN("it is rejected — NUL terminates C strings and corrupts storage")
+            {
+                // Spec MUST: NUL is forbidden. It causes C-string truncation and
+                // can bypass security checks in string-handling code.
+                auto const with_nul = std::string{"alice\x00bob", 9};
+                REQUIRE_FALSE(merovingian::auth::localpart_is_valid_federated(with_nul));
+            }
+        }
+
+        WHEN("a localpart with invalid UTF-8 bytes is validated for federation")
+        {
+            THEN("it is rejected — the spec requires legal Unicode")
+            {
+                // Spec: "any legal non-surrogate Unicode" — invalid UTF-8 byte sequences
+                // are not legal Unicode and must be rejected.
+                // 0xFF is never valid in UTF-8.
+                REQUIRE_FALSE(merovingian::auth::localpart_is_valid_federated("\xFF"));
+                // Surrogate code point U+D800 encoded as CESU-8: ED A0 80
+                REQUIRE_FALSE(merovingian::auth::localpart_is_valid_federated("\xED\xA0\x80"));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix v1.18 Appendices — User Identifiers (federated user_id)
+// URL:  https://spec.matrix.org/v1.18/appendices/#user-identifiers
+//
+// user_id_is_valid_federated() applies the same structural constraints as
+// user_id_is_valid() (255-byte limit, '@' sigil, ':' separator, valid
+// server_name) but uses the federated localpart validator, so historical
+// characters and empty localparts are accepted.
+// ---------------------------------------------------------------------------
+
+SCENARIO("Federated user ID: structural grammar is enforced with historical localpart rules",
+         "[conformance][identifiers][user-id][historical]")
+{
+    GIVEN("user IDs that would be rejected by the strict new-ID validator")
+    {
+        WHEN("a user ID with an uppercase localpart is validated for federation")
+        {
+            THEN("it is accepted by the federated validator")
+            {
+                // Spec SHOULD: historical uppercase localparts are valid for federation.
+                // user_id_is_valid() (strict) rejects this; user_id_is_valid_federated() accepts it.
+                REQUIRE(merovingian::auth::user_id_is_valid_federated("@Alice:example.org"));
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid("@Alice:example.org"));
+            }
+        }
+
+        WHEN("a user ID with non-normative punctuation is validated for federation")
+        {
+            THEN("it is accepted by the federated validator")
+            {
+                // Spec SHOULD: historical user IDs with '#' in the localpart must be accepted.
+                REQUIRE(merovingian::auth::user_id_is_valid_federated("@alice#tag:example.org"));
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid("@alice#tag:example.org"));
+            }
+        }
+    }
+
+    GIVEN("user IDs that violate structural invariants regardless of era")
+    {
+        WHEN("structurally malformed user IDs are validated for federation")
+        {
+            THEN("they are rejected even by the federated validator")
+            {
+                // These are structurally broken, not merely historically unusual.
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated(""));           // empty
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated("alice:x"));    // missing '@'
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated("@alice"));     // no server
+                REQUIRE_FALSE(merovingian::auth::user_id_is_valid_federated("@alice:"));    // empty server
             }
         }
     }

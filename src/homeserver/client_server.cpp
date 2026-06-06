@@ -4610,7 +4610,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "username is required");
         }
-        if (!auth::localpart_is_valid(*username))
+        if (!auth::localpart_is_valid_new(*username))
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
         }
@@ -4721,7 +4721,7 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "registration body must contain username and password");
         }
-        if (!auth::localpart_is_valid(body->localpart))
+        if (!auth::localpart_is_valid_new(body->localpart))
         {
             return dispatch_err(req, rt, 400U, "M_INVALID_USERNAME", "desired username is not valid");
         }

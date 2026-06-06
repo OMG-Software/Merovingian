@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.10
+Version:        0.5.11
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.11-1
+- Split localpart_is_valid into localpart_is_valid_new and localpart_is_valid_federated per spec
+- Add user_id_is_valid_federated for historical federation user IDs
+- Fix localpart_is_valid_new to reject uppercase (new IDs must be lowercase per spec)
+
 * Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.10-1
 - Fix v12 m.room.create PDU: allow absent room_id, derive it from reference hash
 - Enforce v12 auth_events exclusion of create event at inbound parse time
