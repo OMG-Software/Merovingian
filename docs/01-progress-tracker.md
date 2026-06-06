@@ -1,3 +1,31 @@
+## v0.5.15 (in progress — feat/conformance-coverage-gaps)
+
+### Federation conformance coverage gaps
+
+Added 7 new `SCENARIO` blocks to `tests/conformance/test_federation_conformance.cpp`
+covering endpoints that had handler implementations but no conformance tests:
+
+| Endpoint | Tags | Status |
+|----------|------|--------|
+| GET /event/{eventId} | `[query_event]` | done |
+| GET /state/{roomId} | `[query_state]` | done |
+| GET /state_ids/{roomId} | `[state_ids]` | done |
+| POST /get_missing_events/{roomId} | `[get_missing_events]` | done |
+| GET /query/profile | `[query_profile]` | done |
+| GET /make_knock/{roomId}/{userId} | `[make_knock]` | done |
+| PUT /send_knock/{roomId}/{eventId} | `[send_knock]` | done |
+
+All 47/47 tests pass. No implementation changes required.
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `tests/conformance/test_federation_conformance.cpp` | 7 new SCENARIO blocks |
+| `CHANGELOG.md` | v0.5.15 entry |
+| `packaging/rpm/merovingian.spec` | v0.5.15 changelog entry |
+| Version files (9) | bumped to 0.5.15 |
+
 ## 0.5.14 (in progress — feat/conformance-coverage-gaps)
 
 ### Client-server conformance coverage gap set 2
@@ -25,6 +53,7 @@ spec-conformance test coverage. All 47 tests pass.
 | File | Change |
 |------|--------|
 | `tests/conformance/test_client_server_conformance.cpp` | 12 new SCENARIO blocks |
+
 
 ## 0.5.13 (merged — in progress)
 

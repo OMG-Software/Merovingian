@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.14
+Version:        0.5.15
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.15-1
+- Add 7 federation conformance scenarios: query_event, query_state, state_ids,
+  get_missing_events, query/profile (with field-filter and 404), make_knock, send_knock
+
 * Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.14-1
 - Add 12 client-server conformance scenarios: devices, capabilities, joined_rooms,
   publicRooms, directory, register/available, account_data, profile, pushrules, errors

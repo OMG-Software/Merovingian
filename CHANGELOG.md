@@ -1,3 +1,14 @@
+## 0.5.15
+
+- Add federation conformance test coverage for 7 previously untested endpoints:
+  - GET /event/{eventId} — 200 with PDU body for known event; 404 M_NOT_FOUND unknown; 501 no provider
+  - GET /state/{roomId} — 200 with state body for known room; 404 M_NOT_FOUND unknown; 501 no provider
+  - GET /state_ids/{roomId} — 200 with pdu_ids + auth_chain_ids arrays; 404 unknown; 501 no provider
+  - POST /get_missing_events/{roomId} — 200 with events array; 501 no provider
+  - GET /query/profile — 200 with displayname+avatar_url; field=displayname filter; 404 unknown; 400 bad field; 501 no provider
+  - GET /make_knock/{roomId}/{userId} — 200 with room_version + event template; 501 no provider
+  - PUT /send_knock/{roomId}/{eventId} — 200 accepted; event absent from response; 501 no acceptor
+
 ## 0.5.14
 
 - Add client-server conformance test coverage for 12 previously untested endpoints:
