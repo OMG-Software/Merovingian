@@ -82,17 +82,6 @@ namespace
         return !std::holds_alternative<std::nullptr_t>(value.storage());
     }
 
-    [[nodiscard]] auto event_object(StateEventReference const& event) noexcept -> canonicaljson::Object const*
-    {
-        return value_is_object(event.event_json);
-    }
-
-    [[nodiscard]] auto event_has_member(StateEventReference const& event, std::string_view key) noexcept -> bool
-    {
-        auto const* obj = event_object(event);
-        return obj != nullptr && object_member(*obj, key) != nullptr;
-    }
-
     [[nodiscard]] auto select_v1_winner(StateEventReference const& existing,
                                         StateEventReference const& candidate) noexcept -> StateEventReference const&
     {
@@ -498,23 +487,20 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
     // Step 4: Apply mainline ordering for power_levels events
     mainline_order(sorted, unconflicted);
 
-    // Step 5: Iterate through sorted conflicted events, auth-check each against current resolved state
+    // Step 5: Iterate through sorted conflicted events, auth-check each against current resolved state.
+    // All candidates for each key must be iterated — a later (lower-power) candidate can still
+    // overwrite an earlier one if it passes auth. Do NOT short-circuit on resolved.contains(key).
     for (auto const& event : sorted)
     {
-        if (resolved.contains(event.key))
-        {
-            continue;
-        }
-
+        // Events whose JSON representation is null/invalid cannot be applied.
         if (!value_has_content(event.event_json))
         {
-            resolved[event.key] = event;
             continue;
         }
 
         auto auth_map = build_auth_event_map_from_state(event.event_json, resolved);
         auto const decision = authorize_event_against_auth_events(event.event_json, policy, auth_map);
-        if (decision.allowed || !event_has_member(event, "content"))
+        if (decision.allowed)
         {
             resolved[event.key] = event;
         }

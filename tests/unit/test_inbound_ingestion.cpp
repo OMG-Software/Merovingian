@@ -118,7 +118,10 @@ SCENARIO("EDU content validators enforce per-type shape", "[federation][inbound-
 {
     GIVEN("a valid m.typing content object")
     {
-        auto const content = std::string{R"({"room_id":"!room:example.org","user_ids":["@alice:example.org"]})"};
+        // Spec: SS API v1.18 §m.typing — content is { room_id, user_id, typing }.
+        // (CS API uses user_ids array; SS API uses per-user user_id + bool.)
+        auto const content =
+            std::string{R"({"room_id":"!room:example.org","user_id":"@alice:example.org","typing":true})"};
 
         THEN("the validator accepts it")
         {
@@ -165,7 +168,9 @@ SCENARIO("EDU envelope parser rejects unknown types and malformed content", "[fe
 {
     WHEN("a known type with valid content is parsed")
     {
-        auto const content = std::string{R"({"room_id":"!room:example.org","user_ids":["@alice:example.org"]})"};
+        // Spec: SS API v1.18 §m.typing — content is { room_id, user_id, typing }.
+        auto const content =
+            std::string{R"({"room_id":"!room:example.org","user_id":"@alice:example.org","typing":true})"};
         auto const envelope =
             merovingian::federation::parse_inbound_edu_envelope("m.typing", "remote.example.org", content);
 

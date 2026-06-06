@@ -399,12 +399,14 @@ SCENARIO("Federation send transaction routes EDUs to the installed edu_sink", "[
 
         WHEN("a transaction with one EDU is sent")
         {
+            // Spec: SS API v1.18 §m.typing — EDU content is { room_id, user_id, typing }.
             auto const body = std::string{"{\"origin\":\"remote.example.org\","
                                           "\"origin_server_ts\":1000,"
                                           "\"pdus\":[],"
                                           "\"edus\":[{\"edu_type\":\"m.typing\","
                                           "\"content\":{\"room_id\":\"!test:local.example.org\","
-                                          "\"user_ids\":[\"@alice:remote.example.org\"]}}]}"};
+                                          "\"user_id\":\"@alice:remote.example.org\","
+                                          "\"typing\":true}}]}"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_send_request("txn_005", body));
 
