@@ -10487,7 +10487,7 @@ SCENARIO("GET /register/available reports username availability correctly",
 
         WHEN("the invalid username Alice (uppercase) is checked")
         {
-            // Spec §Identifier Grammar: new localparts MUST be lowercase-only
+            // Spec §Identifier Grammar: localparts for new accounts MUST be lowercase-only
             auto const resp = merovingian::homeserver::handle_client_server_request(
                 rt,
                 {"GET", "/_matrix/client/v3/register/available?username=Alice", {}, {}});
