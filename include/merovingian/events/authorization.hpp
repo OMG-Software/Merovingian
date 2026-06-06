@@ -18,6 +18,7 @@ enum class MembershipState
     invite,
     join,
     ban,
+    knock,
     restricted,
 };
 

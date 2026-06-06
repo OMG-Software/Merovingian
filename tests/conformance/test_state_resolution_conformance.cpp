@@ -505,3 +505,225 @@ SCENARIO("State resolution result never contains duplicate (type, state_key) pai
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Spec: State resolution v2 — conflicting events resolved by depth
+// URL:  https://spec.matrix.org/v1.18/server-server-api/
+//         #state-resolution-algorithm-for-room-versions-2-through-10
+//
+// When two state groups conflict on the same (type, state_key) pair, the v2
+// algorithm processes auth events first (by reverse topological power sort)
+// then non-auth events (by mainline ordering). In the absence of a power-level
+// differential, events at greater depth take precedence.
+// ---------------------------------------------------------------------------
+
+SCENARIO("State resolution v2: conflicting membership events are resolved to a single winner",
+         "[conformance][state-resolution][v2]")
+{
+    GIVEN("two state groups with a shared create event and conflicting membership events")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        // Shared create event anchors both groups.
+        auto const create = make_create_event("@alice:example.org", "$create:example.org", 500);
+
+        // Group A: @charlie has membership=join (depth=10).
+        auto const join_event = make_state_event(
+            "m.room.member", "@charlie:example.org", "$charlie_join:example.org",
+            "@charlie:example.org", 1000, 10);
+
+        // Group B: @charlie has membership=leave (depth=5).
+        auto const leave_event = make_state_event(
+            "m.room.member", "@charlie:example.org", "$charlie_leave:example.org",
+            "@charlie:example.org", 2000, 5);
+
+        auto request         = merovingian::events::StateResolutionRequest{};
+        request.room_version = "10";
+
+        auto group_a     = merovingian::events::StateGroup{};
+        group_a.group_id = "branch-a";
+        group_a.state.push_back(create);
+        group_a.state.push_back(join_event);
+
+        auto group_b     = merovingian::events::StateGroup{};
+        group_b.group_id = "branch-b";
+        group_b.state.push_back(create);
+        group_b.state.push_back(leave_event);
+
+        request.state_groups.push_back(std::move(group_a));
+        request.state_groups.push_back(std::move(group_b));
+
+        WHEN("resolve_state_v2 is called")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("the result is resolved")
+            {
+                // Spec MUST: v2 must always produce a resolved state, never leave it unresolved.
+                REQUIRE(result.resolved);
+            }
+
+            THEN("the resolved state contains exactly one entry for the member key")
+            {
+                // Spec MUST: no two events in the resolved state may share the same
+                // (type, state_key) pair. The conflict is resolved to exactly one winner.
+                auto charlie_count = std::size_t{0};
+                for (auto const& ref : result.resolved_state)
+                {
+                    if (ref.key.event_type == "m.room.member" &&
+                        ref.key.state_key == "@charlie:example.org")
+                    {
+                        ++charlie_count;
+                    }
+                }
+                REQUIRE(charlie_count == 1U);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: State resolution v2 — unconflicted state passes through unchanged,
+// conflicted state goes through the resolution algorithm.
+// ---------------------------------------------------------------------------
+
+SCENARIO("State resolution v2: unconflicted state survives and conflicted state is resolved",
+         "[conformance][state-resolution][v2]")
+{
+    GIVEN("two state groups sharing a create event but conflicting on a membership")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        // Shared unconflicted event: both groups have the same create.
+        auto const create = make_state_event(
+            "m.room.create", "", "$create:example.org",
+            "@alice:example.org", 500, 0);
+
+        // Conflicting: Group A has @bob=join (depth 8), Group B has @bob=leave (depth 3).
+        auto const bob_join = make_state_event(
+            "m.room.member", "@bob:example.org", "$bob_join:example.org",
+            "@bob:example.org", 1000, 8);
+        auto const bob_leave = make_state_event(
+            "m.room.member", "@bob:example.org", "$bob_leave:example.org",
+            "@bob:example.org", 2000, 3);
+
+        auto request         = merovingian::events::StateResolutionRequest{};
+        request.room_version = "10";
+
+        auto group_a     = merovingian::events::StateGroup{};
+        group_a.group_id = "branch-a";
+        group_a.state.push_back(create);
+        group_a.state.push_back(bob_join);
+
+        auto group_b     = merovingian::events::StateGroup{};
+        group_b.group_id = "branch-b";
+        group_b.state.push_back(create);
+        group_b.state.push_back(bob_leave);
+
+        request.state_groups.push_back(std::move(group_a));
+        request.state_groups.push_back(std::move(group_b));
+
+        WHEN("resolve_state_v2 is called")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("the result is resolved with exactly two state entries")
+            {
+                REQUIRE(result.resolved);
+                // Expect: the create event + the winning bob membership.
+                REQUIRE(result.resolved_state.size() == 2U);
+            }
+
+            THEN("the create event appears in the resolved state (unconflicted)")
+            {
+                auto const found_create = std::ranges::any_of(
+                    result.resolved_state,
+                    [](merovingian::events::StateEventReference const& r)
+                    {
+                        return r.key.event_type == "m.room.create" && r.key.state_key == "";
+                    });
+                REQUIRE(found_create);
+            }
+
+            THEN("exactly one winner is chosen for @bob's membership (no duplicates)")
+            {
+                // Spec MUST: the v2 algorithm must choose exactly one winner for each
+                // conflicted (type, state_key) pair. Both join and leave are candidates;
+                // the specific winner is determined by the auth-chain power sort and
+                // mainline ordering — we assert the invariant (one winner), not a
+                // specific outcome, as it depends on the full auth DAG.
+                auto bob_count = std::size_t{0};
+                for (auto const& ref : result.resolved_state)
+                {
+                    if (ref.key.event_type == "m.room.member" &&
+                        ref.key.state_key == "@bob:example.org")
+                    {
+                        ++bob_count;
+                    }
+                }
+                REQUIRE(bob_count == 1U);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: partition_conflicted_state correctly separates conflicted from
+// unconflicted state across multiple state groups.
+// ---------------------------------------------------------------------------
+
+SCENARIO("partition_conflicted_state separates shared state from conflicting state",
+         "[conformance][state-resolution][v2]")
+{
+    GIVEN("two state groups with one event identical in both and one that differs")
+    {
+        // Shared: exact same event reference in both groups (unconflicted).
+        auto const shared_create = make_state_event(
+            "m.room.create", "", "$create:example.org",
+            "@alice:example.org", 500, 0);
+
+        // Conflicting: same key, different event_id in each group.
+        auto const alice_join = make_state_event(
+            "m.room.member", "@alice:example.org", "$alice_join:example.org",
+            "@alice:example.org", 600, 1);
+        auto const alice_leave = make_state_event(
+            "m.room.member", "@alice:example.org", "$alice_leave:example.org",
+            "@alice:example.org", 700, 2);
+
+        auto group_a     = merovingian::events::StateGroup{};
+        group_a.group_id = "branch-a";
+        group_a.state.push_back(shared_create);
+        group_a.state.push_back(alice_join);
+
+        auto group_b     = merovingian::events::StateGroup{};
+        group_b.group_id = "branch-b";
+        group_b.state.push_back(shared_create);
+        group_b.state.push_back(alice_leave);
+
+        auto const groups = std::vector<merovingian::events::StateGroup>{group_a, group_b};
+
+        WHEN("partition_conflicted_state is called")
+        {
+            auto const [unconflicted, conflicted] =
+                merovingian::events::partition_conflicted_state(groups);
+
+            THEN("the create event is unconflicted (same event_id in both groups)")
+            {
+                // Spec: an event appearing in all groups with the same value is unconflicted.
+                auto const create_key = merovingian::events::StateKey{"m.room.create", ""};
+                REQUIRE(unconflicted.count(create_key) == 1U);
+                REQUIRE(unconflicted.at(create_key).event_id == "$create:example.org");
+            }
+
+            THEN("the member event is conflicted (different event_id in each group)")
+            {
+                // Spec: events with differing values across groups must go through resolution.
+                auto const member_key =
+                    merovingian::events::StateKey{"m.room.member", "@alice:example.org"};
+                REQUIRE(conflicted.count(member_key) == 1U);
+            }
+        }
+    }
+}

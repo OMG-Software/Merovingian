@@ -1300,3 +1300,229 @@ SCENARIO("Auth rules: room version 11 and 12 are supported",
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Auth rule step 2: every non-create event requires a create event in auth_events.
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// ---------------------------------------------------------------------------
+
+SCENARIO("Auth rules reject a non-create event when auth_events contains no create event",
+         "[events][auth][validation][conformance]")
+{
+    GIVEN("a message event and an empty auth event map (no create event)")
+    {
+        auto const message_json = make_message_event("@alice:example.org");
+        auto const parsed       = merovingian::canonicaljson::parse_lossless(message_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+        // auth_events.create is empty — simulate a room where no create event is provided.
+        auto auth_events = merovingian::events::AuthEventMap{};
+
+        WHEN("the message event is authorized without a room create event")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — the auth chain must include a create event")
+            {
+                // Spec MUST: if there is no m.room.create event in the auth chain, reject
+                // all events except m.room.create itself.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Knock join rule (room v7+)
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules, membership
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// ---------------------------------------------------------------------------
+
+SCENARIO("Auth rules allow a knock when join_rule is knock and sender matches state_key",
+         "[events][auth][membership][knock][conformance]")
+{
+    GIVEN("a room with join_rule=knock and a user who wishes to knock")
+    {
+        auto const create_json     = make_create_event("@alice:example.org");
+        auto const join_rules_json = make_join_rules_event("knock");
+
+        auto const parsed_create     = merovingian::canonicaljson::parse_lossless(create_json);
+        auto const parsed_join_rules = merovingian::canonicaljson::parse_lossless(join_rules_json);
+        REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
+        REQUIRE(parsed_join_rules.error == merovingian::canonicaljson::ParseError::none);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events           = merovingian::events::AuthEventMap{};
+        auth_events.create         = parsed_create.value;
+        auth_events.join_rules     = parsed_join_rules.value;
+        // sender_member is absent — the user is not yet in the room.
+
+        // Knock event: sender and state_key are the same user.
+        auto const knock_json = make_member_event("@bob:example.org", "@bob:example.org", "knock");
+        auto const parsed_knock = merovingian::canonicaljson::parse_lossless(knock_json);
+        REQUIRE(parsed_knock.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the knock event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed_knock.value, *policy, auth_events);
+
+            THEN("the knock is allowed — join_rule permits knocking")
+            {
+                // Spec MUST: membership=knock is allowed when join_rule is "knock"
+                // and sender matches state_key.
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules reject a knock when join_rule is not knock or knock_restricted",
+         "[events][auth][membership][knock][conformance]")
+{
+    GIVEN("a room with join_rule=public and a knock event")
+    {
+        auto const create_json     = make_create_event("@alice:example.org");
+        auto const join_rules_json = make_join_rules_event("public");
+
+        auto const parsed_create     = merovingian::canonicaljson::parse_lossless(create_json);
+        auto const parsed_join_rules = merovingian::canonicaljson::parse_lossless(join_rules_json);
+        REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
+        REQUIRE(parsed_join_rules.error == merovingian::canonicaljson::ParseError::none);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events       = merovingian::events::AuthEventMap{};
+        auth_events.create     = parsed_create.value;
+        auth_events.join_rules = parsed_join_rules.value;
+
+        auto const knock_json   = make_member_event("@bob:example.org", "@bob:example.org", "knock");
+        auto const parsed_knock = merovingian::canonicaljson::parse_lossless(knock_json);
+        REQUIRE(parsed_knock.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the knock event is authorized in a public room")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed_knock.value, *policy, auth_events);
+
+            THEN("the knock is rejected — the room does not allow knocking")
+            {
+                // Spec MUST: membership=knock is only valid when join_rule is
+                // "knock" or "knock_restricted". A public room MUST reject it.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Kick power-level comparison: sender PL must STRICTLY exceed target PL.
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 5
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// ---------------------------------------------------------------------------
+
+SCENARIO("Auth rules reject a kick when the sender's power level equals the target's",
+         "[events][auth][membership][kick][conformance]")
+{
+    GIVEN("a room where both sender and target hold power level 50")
+    {
+        auto const create_json  = make_create_event("@alice:example.org");
+        // Sender @kicker and target @target both at PL 50; kick level is also 50.
+        auto const pl_json      = make_power_levels_event(
+            "@alice:example.org", 50, 50, 50, 50, 0, 100, 0, "@kicker:example.org", 50);
+        auto const target_member_json =
+            make_member_event("@target:example.org", "@target:example.org", "join");
+
+        auto parsed_create        = merovingian::canonicaljson::parse_lossless(create_json);
+        auto parsed_pl            = merovingian::canonicaljson::parse_lossless(pl_json);
+        auto parsed_target_member = merovingian::canonicaljson::parse_lossless(target_member_json);
+        REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
+        REQUIRE(parsed_pl.error == merovingian::canonicaljson::ParseError::none);
+        REQUIRE(parsed_target_member.error == merovingian::canonicaljson::ParseError::none);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events              = merovingian::events::AuthEventMap{};
+        auth_events.create            = parsed_create.value;
+        auth_events.power_levels      = parsed_pl.value;
+        auth_events.target_member     = parsed_target_member.value;
+
+        // The kick event: @kicker sets @target's membership to leave.
+        auto const kick_json   = make_member_event("@kicker:example.org", "@target:example.org", "leave");
+        auto const parsed_kick = merovingian::canonicaljson::parse_lossless(kick_json);
+        REQUIRE(parsed_kick.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the kick event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed_kick.value, *policy, auth_events);
+
+            THEN("the kick is rejected — sender PL must STRICTLY exceed target PL")
+            {
+                // Spec MUST: to kick, sender's power level must be strictly greater than
+                // the target's current power level. Equal levels are not sufficient.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ban power-level comparison: sender PL must STRICTLY exceed target PL.
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 5
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// ---------------------------------------------------------------------------
+
+SCENARIO("Auth rules reject a ban when the sender's power level equals the target's",
+         "[events][auth][membership][ban][conformance]")
+{
+    GIVEN("a room where the banner and target both hold power level 50")
+    {
+        auto const create_json  = make_create_event("@alice:example.org");
+        // @banner at PL 50; target @victim also at PL 50; ban level 50.
+        auto const pl_json      = make_power_levels_event(
+            "@alice:example.org", 50, 50, 50, 50, 0, 100, 0, "@banner:example.org", 50);
+        auto const target_member_json =
+            make_member_event("@victim:example.org", "@victim:example.org", "join");
+
+        auto parsed_create        = merovingian::canonicaljson::parse_lossless(create_json);
+        auto parsed_pl            = merovingian::canonicaljson::parse_lossless(pl_json);
+        auto parsed_target_member = merovingian::canonicaljson::parse_lossless(target_member_json);
+        REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
+        REQUIRE(parsed_pl.error == merovingian::canonicaljson::ParseError::none);
+        REQUIRE(parsed_target_member.error == merovingian::canonicaljson::ParseError::none);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("10");
+        REQUIRE(policy != nullptr);
+
+        auto auth_events              = merovingian::events::AuthEventMap{};
+        auth_events.create            = parsed_create.value;
+        auth_events.power_levels      = parsed_pl.value;
+        auth_events.target_member     = parsed_target_member.value;
+
+        // The ban event: @banner sets @victim's membership to ban.
+        auto const ban_json   = make_member_event("@banner:example.org", "@victim:example.org", "ban");
+        auto const parsed_ban = merovingian::canonicaljson::parse_lossless(ban_json);
+        REQUIRE(parsed_ban.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("the ban event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed_ban.value, *policy, auth_events);
+
+            THEN("the ban is rejected — sender PL must STRICTLY exceed target PL")
+            {
+                // Spec MUST: to ban, sender's power level must be strictly greater than
+                // the target's current power level. Equal levels are not sufficient.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}

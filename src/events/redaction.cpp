@@ -62,7 +62,10 @@ namespace
         }
         if (event_type == "m.room.join_rules")
         {
-            return key == "join_rule" || key == "allow";
+            // Spec: "join_rule" preserved all versions; "allow" key only in v11+.
+            // https://spec.matrix.org/v1.18/rooms/v11/#redactions
+            return key == "join_rule" ||
+                   (policy.redaction_rules == rooms::RedactionRules::room_v11_plus && key == "allow");
         }
         if (event_type == "m.room.power_levels")
         {
@@ -73,6 +76,18 @@ namespace
         if (event_type == "m.room.history_visibility")
         {
             return key == "history_visibility";
+        }
+        if (event_type == "m.room.aliases")
+        {
+            // Spec v1-v10: "aliases" key preserved. v11+: entire content stripped (no keys kept).
+            // https://spec.matrix.org/v1.18/rooms/v11/#redactions
+            return policy.redaction_rules != rooms::RedactionRules::room_v11_plus && key == "aliases";
+        }
+        if (event_type == "m.room.third_party_invite")
+        {
+            // Spec (all versions): m.room.third_party_invite preserves "signed" from content.
+            // URL: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+            return key == "signed";
         }
         if (event_type == "m.room.redaction")
         {

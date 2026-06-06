@@ -10119,3 +10119,646 @@ SCENARIO("PUT /directory/list/room/{roomId} conformance")
         }
     }
 }
+
+
+// =============================================================================
+// Client-Server API — Coverage gap set 2: Devices, Profile, Account Data,
+// Capabilities, Public Rooms, Room Directory, Register Available,
+// Joined Rooms, Push Rules, Error Semantics
+// =============================================================================
+
+// Spec: Matrix Client-Server API v1.18
+// Section: GET /_matrix/client/v3/devices
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3devices
+//
+// The server MUST return a "devices" array. Each entry MUST include "device_id".
+SCENARIO("GET /devices returns a devices array containing the authenticated device",
+         "[conformance][client-server][devices]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("GET /devices is called")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/devices", token, {}});
+
+            THEN("response is 200 with a devices array containing the login device")
+            {
+                // Spec MUST: response contains "devices" array
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                auto const* devs_val = object_member(body, "devices");
+                REQUIRE(devs_val != nullptr);
+                auto const* devs =
+                    std::get_if<merovingian::canonicaljson::Array>(&devs_val->storage());
+                REQUIRE(devs != nullptr);
+                REQUIRE(!devs->empty());
+
+                // Spec MUST: each device entry carries device_id
+                auto const* first_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&(*devs)[0].storage());
+                REQUIRE(first_obj != nullptr);
+                auto const* did = string_member(*first_obj, "device_id");
+                REQUIRE(did != nullptr);
+                REQUIRE(*did == "DEVICE1");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: GET /_matrix/client/v3/devices/{deviceId}
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3devicesdeviceid
+//
+// Known device_id MUST return 200 with device object. Unknown MUST return 404 M_NOT_FOUND.
+SCENARIO("GET /devices/{deviceId} returns the device or 404 for unknown",
+         "[conformance][client-server][devices]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("GET /devices/DEVICE1 is called")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/devices/DEVICE1", token, {}});
+
+            THEN("response is 200 with device_id in the body")
+            {
+                // Spec MUST: known device returns 200 with device object
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                auto const* did = string_member(body, "device_id");
+                REQUIRE(did != nullptr);
+                REQUIRE(*did == "DEVICE1");
+            }
+        }
+
+        WHEN("GET /devices/NOSUCHDEVICE is called")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/devices/NOSUCHDEVICE", token, {}});
+
+            THEN("response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: unknown device_id returns 404
+                REQUIRE(resp.response.status == 404U);
+                auto const body = parse_object(resp.response.body);
+                auto const* err = string_member(body, "errcode");
+                REQUIRE(err != nullptr);
+                REQUIRE(*err == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: GET /_matrix/client/v3/capabilities
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3capabilities
+//
+// MUST return a "capabilities" object with "m.room_versions" containing a non-empty
+// "default" string and a non-empty "available" version-to-stability map.
+SCENARIO("GET /capabilities returns required capability fields including m.room_versions",
+         "[conformance][client-server][capabilities]")
+{
+    GIVEN("a started server")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("GET /capabilities is called")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/capabilities", token, {}});
+
+            THEN("response is 200 with capabilities.m.room_versions.default and .available")
+            {
+                // Spec MUST: top-level "capabilities" object is present
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                auto const* caps = object_member_as_object(body, "capabilities");
+                REQUIRE(caps != nullptr);
+
+                // Spec MUST: m.room_versions has "default" (string) and "available" (object)
+                auto const* rv = object_member_as_object(*caps, "m.room_versions");
+                REQUIRE(rv != nullptr);
+                auto const* def = string_member(*rv, "default");
+                REQUIRE(def != nullptr);
+                REQUIRE(!def->empty());
+                auto const* avail = object_member_as_object(*rv, "available");
+                REQUIRE(avail != nullptr);
+                REQUIRE(!avail->empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: GET /_matrix/client/v3/joined_rooms
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3joined_rooms
+//
+// MUST return "joined_rooms" array of room IDs the caller is currently joined to.
+SCENARIO("GET /joined_rooms lists all rooms the authenticated user is joined to",
+         "[conformance][client-server][rooms][joined]")
+{
+    GIVEN("a user who has created a room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/createRoom", token,
+                 R"({"preset":"private_chat"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const create_body = parse_object(create.response.body);
+        auto const* created_rid = string_member(create_body, "room_id");
+        REQUIRE(created_rid != nullptr);
+
+        WHEN("GET /joined_rooms is called")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/joined_rooms", token, {}});
+
+            THEN("response is 200 with the created room in joined_rooms")
+            {
+                // Spec MUST: "joined_rooms" is an array of room IDs
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                auto const* rooms_val = object_member(body, "joined_rooms");
+                REQUIRE(rooms_val != nullptr);
+                auto const* rooms =
+                    std::get_if<merovingian::canonicaljson::Array>(&rooms_val->storage());
+                REQUIRE(rooms != nullptr);
+
+                // Spec MUST: newly created room appears in joined_rooms
+                auto const found =
+                    std::ranges::any_of(*rooms, [&](merovingian::canonicaljson::Value const& v) {
+                        auto const* s = std::get_if<std::string>(&v.storage());
+                        return s != nullptr && *s == *created_rid;
+                    });
+                REQUIRE(found);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: GET /_matrix/client/v3/publicRooms
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3publicrooms
+//
+// MUST return "chunk" (array of public room summaries) and "total_room_count_estimate"
+// (integer). Each chunk entry MUST have "room_id".
+SCENARIO("GET /publicRooms returns chunk array and total_room_count_estimate",
+         "[conformance][client-server][rooms][public]")
+{
+    GIVEN("a server with a public room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/createRoom", token,
+                         R"({"preset":"public_chat","name":"Public Test"})"})
+                    .response.status == 200U);
+
+        WHEN("GET /publicRooms is called")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/publicRooms", token, {}});
+
+            THEN("response is 200 with chunk and total_room_count_estimate")
+            {
+                // Spec MUST: 200 with "chunk" array and "total_room_count_estimate" integer
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+
+                auto const* chunk_val = object_member(body, "chunk");
+                REQUIRE(chunk_val != nullptr);
+                auto const* chunk =
+                    std::get_if<merovingian::canonicaljson::Array>(&chunk_val->storage());
+                REQUIRE(chunk != nullptr);
+                REQUIRE(!chunk->empty());
+
+                auto const* est_val = object_member(body, "total_room_count_estimate");
+                REQUIRE(est_val != nullptr);
+                auto const* est = std::get_if<std::int64_t>(&est_val->storage());
+                REQUIRE(est != nullptr);
+                REQUIRE(*est >= 1);
+
+                // Spec MUST: each chunk entry carries "room_id"
+                auto const* first =
+                    std::get_if<merovingian::canonicaljson::Object>(&(*chunk)[0].storage());
+                REQUIRE(first != nullptr);
+                REQUIRE(string_member(*first, "room_id") != nullptr);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: GET /_matrix/client/v3/directory/room/{roomAlias}
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3directoryroomroomalias
+//
+// Known alias MUST return {"room_id": "...", "servers": [...]}. Unknown MUST return 404.
+SCENARIO("GET /directory/room resolves a known alias and 404s for unknown",
+         "[conformance][client-server][directory]")
+{
+    GIVEN("a room created with room_alias_name testroom")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt, {"POST", "/_matrix/client/v3/createRoom", token,
+                         R"({"room_alias_name":"testroom"})"})
+                    .response.status == 200U);
+
+        WHEN("the alias %23testroom%3Aexample.org is resolved")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"GET",
+                 "/_matrix/client/v3/directory/room/%23testroom%3Aexample.org",
+                 token, {}});
+
+            THEN("response is 200 with room_id and servers array")
+            {
+                // Spec MUST: known alias returns room_id and servers array
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                auto const* rid = string_member(body, "room_id");
+                REQUIRE(rid != nullptr);
+                REQUIRE(!rid->empty());
+                auto const* srvs_val = object_member(body, "servers");
+                REQUIRE(srvs_val != nullptr);
+                auto const* srvs =
+                    std::get_if<merovingian::canonicaljson::Array>(&srvs_val->storage());
+                REQUIRE(srvs != nullptr);
+                REQUIRE(!srvs->empty());
+            }
+        }
+
+        WHEN("an unknown alias is resolved")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"GET",
+                 "/_matrix/client/v3/directory/room/%23nosuchroom%3Aexample.org",
+                 token, {}});
+
+            THEN("response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: unknown alias returns 404
+                REQUIRE(resp.response.status == 404U);
+                auto const body = parse_object(resp.response.body);
+                auto const* err = string_member(body, "errcode");
+                REQUIRE(err != nullptr);
+                REQUIRE(*err == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: GET /_matrix/client/v3/register/available
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3registeravailable
+//
+// Free username MUST return {"available": true}. Taken MUST return 400 M_USER_IN_USE.
+// Invalid localpart MUST return 400 M_INVALID_USERNAME.
+SCENARIO("GET /register/available reports username availability correctly",
+         "[conformance][client-server][register]")
+{
+    GIVEN("a server where alice is already registered")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        std::ignore = logged_in_token(rt); // registers alice; token unused in this scenario
+
+        WHEN("a free username bob is checked")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/register/available?username=bob", {}, {}});
+
+            THEN("response is 200 with available: true")
+            {
+                // Spec MUST: free username returns {"available": true}
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                auto const* avail_val = object_member(body, "available");
+                REQUIRE(avail_val != nullptr);
+                auto const* avail = std::get_if<bool>(&avail_val->storage());
+                REQUIRE(avail != nullptr);
+                REQUIRE(*avail == true);
+            }
+        }
+
+        WHEN("the already-taken username alice is checked")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/register/available?username=alice", {}, {}});
+
+            THEN("response is 400 M_USER_IN_USE")
+            {
+                // Spec MUST: taken username returns 400 M_USER_IN_USE
+                REQUIRE(resp.response.status == 400U);
+                auto const body = parse_object(resp.response.body);
+                auto const* err = string_member(body, "errcode");
+                REQUIRE(err != nullptr);
+                REQUIRE(*err == "M_USER_IN_USE");
+            }
+        }
+
+        WHEN("the invalid username Alice (uppercase) is checked")
+        {
+            // Spec §Identifier Grammar: localparts for new accounts MUST be lowercase-only
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"GET", "/_matrix/client/v3/register/available?username=Alice", {}, {}});
+
+            THEN("response is 400 M_INVALID_USERNAME")
+            {
+                // Spec MUST: invalid localpart returns 400 M_INVALID_USERNAME
+                REQUIRE(resp.response.status == 400U);
+                auto const body = parse_object(resp.response.body);
+                auto const* err = string_member(body, "errcode");
+                REQUIRE(err != nullptr);
+                REQUIRE(*err == "M_INVALID_USERNAME");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: PUT /_matrix/client/v3/user/{userId}/account_data/{type}
+// URL: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3useruseridaccount_datatype
+// Section: GET /_matrix/client/v3/user/{userId}/account_data/{type}
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3useruseridaccount_datatype
+//
+// PUT MUST store arbitrary JSON and return 200 {}. GET MUST return it verbatim.
+// GET on an unset type MUST return 404 M_NOT_FOUND.
+SCENARIO("PUT/GET /user/{userId}/account_data/{type} stores and retrieves user account data",
+         "[conformance][client-server][account-data]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        auto const url = std::string{
+            "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.custom.type"};
+
+        WHEN("PUT stores JSON content")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT", url, token, R"({"key":"value","count":42})"});
+
+            THEN("PUT returns 200 and GET returns the stored content")
+            {
+                // Spec MUST: PUT returns 200
+                REQUIRE(put.response.status == 200U);
+
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    rt, {"GET", url, token, {}});
+
+                // Spec MUST: GET returns the stored content verbatim
+                REQUIRE(get.response.status == 200U);
+                REQUIRE(get.response.body.find("value") != std::string::npos);
+                REQUIRE(get.response.body.find("42") != std::string::npos);
+            }
+        }
+
+        WHEN("GET is called for a type that was never stored")
+        {
+            auto const get = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"GET",
+                 "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.never.set",
+                 token, {}});
+
+            THEN("response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: unset account data type returns 404
+                REQUIRE(get.response.status == 404U);
+                auto const body = parse_object(get.response.body);
+                auto const* err = string_member(body, "errcode");
+                REQUIRE(err != nullptr);
+                REQUIRE(*err == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: PUT /_matrix/client/v3/profile/{userId}/displayname
+// URL: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3profileuseriddisplayname
+// Section: GET /_matrix/client/v3/profile/{userId}/displayname
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3profileuseriddisplayname
+//
+// PUT MUST update the displayname and return 200. GET MUST return the current value.
+SCENARIO("PUT /profile/{userId}/displayname updates and GET retrieves it",
+         "[conformance][client-server][profile]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("PUT sets the displayname to Alice Wonderland")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"PUT",
+                 "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
+                 token,
+                 R"({"displayname":"Alice Wonderland"})"});
+
+            THEN("PUT returns 200 and GET reflects the new displayname")
+            {
+                // Spec MUST: PUT displayname returns 200
+                REQUIRE(put.response.status == 200U);
+
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    rt,
+                    {"GET",
+                     "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
+                     token, {}});
+                REQUIRE(get.response.status == 200U);
+
+                // Spec MUST: response contains the updated "displayname"
+                auto const body = parse_object(get.response.body);
+                auto const* dn = string_member(body, "displayname");
+                REQUIRE(dn != nullptr);
+                REQUIRE(*dn == "Alice Wonderland");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: GET /_matrix/client/v3/profile/{userId}
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3profileuserid
+//
+// Full profile GET is unauthenticated per spec. MUST include "displayname" and
+// "avatar_url". Unknown user MUST return 404 M_NOT_FOUND.
+SCENARIO("GET /profile/{userId} is unauthenticated and returns displayname and avatar_url",
+         "[conformance][client-server][profile]")
+{
+    GIVEN("a registered user alice")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        std::ignore = logged_in_token(rt); // registers alice; token unused in this scenario
+
+        WHEN("GET /profile/{userId} is called without an access token")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org", {}, {}});
+
+            THEN("response is 200 with displayname and avatar_url present")
+            {
+                // Spec MUST: profile lookup succeeds without authentication
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                // Spec MUST: response contains "displayname" and "avatar_url" keys
+                REQUIRE(object_member(body, "displayname") != nullptr);
+                REQUIRE(object_member(body, "avatar_url") != nullptr);
+            }
+        }
+
+        WHEN("GET /profile/{userId} is called for an unknown user")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/profile/%40nobody%3Aexample.org", {}, {}});
+
+            THEN("response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: unknown user profile returns 404
+                REQUIRE(resp.response.status == 404U);
+                auto const body = parse_object(resp.response.body);
+                auto const* err = string_member(body, "errcode");
+                REQUIRE(err != nullptr);
+                REQUIRE(*err == "M_NOT_FOUND");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: GET /_matrix/client/v3/pushrules/
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3pushrules
+//
+// MUST return a "global" ruleset. "global" MUST contain all five standard
+// push rule category keys: override, content, room, sender, underride.
+SCENARIO("GET /pushrules/ returns a global ruleset with all five push rule categories",
+         "[conformance][client-server][pushrules]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("GET /pushrules/ is called")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/pushrules/", token, {}});
+
+            THEN("response is 200 with global containing all five categories")
+            {
+                // Spec MUST: response contains "global" ruleset object
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                auto const* global = object_member_as_object(body, "global");
+                REQUIRE(global != nullptr);
+
+                // Spec MUST: global contains override, content, room, sender, underride
+                REQUIRE(object_member(*global, "override") != nullptr);
+                REQUIRE(object_member(*global, "content") != nullptr);
+                REQUIRE(object_member(*global, "room") != nullptr);
+                REQUIRE(object_member(*global, "sender") != nullptr);
+                REQUIRE(object_member(*global, "underride") != nullptr);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Section: Standard error response
+// URL: https://spec.matrix.org/v1.18/client-server-api/#standard-error-response
+//
+// Every error response MUST be a JSON object with "errcode" (string) and "error"
+// (human-readable string). HTTP status code MUST reflect the error class.
+// Tested: invalid token (401), cross-user write (403 M_FORBIDDEN).
+SCENARIO("Matrix error responses always carry errcode and error fields",
+         "[conformance][client-server][error]")
+{
+    GIVEN("a started server with a registered user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("a request is made with a bad access token")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/account/whoami", "bad_token_xyz", {}});
+
+            THEN("response is 401 with errcode and human-readable error string")
+            {
+                // Spec MUST: invalid token returns 401 with standard error object
+                REQUIRE(resp.response.status == 401U);
+                auto const body = parse_object(resp.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(!errcode->empty());
+                // Spec MUST: "error" is a human-readable string
+                auto const* error = string_member(body, "error");
+                REQUIRE(error != nullptr);
+            }
+        }
+
+        WHEN("alice tries to write account data for bob (a different user)")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"PUT",
+                 "/_matrix/client/v3/user/%40bob%3Aexample.org/account_data/m.test",
+                 token,
+                 R"({"x":1})"});
+
+            THEN("response is 403 M_FORBIDDEN")
+            {
+                // Spec MUST: acting as another user returns 403 M_FORBIDDEN
+                REQUIRE(resp.response.status == 403U);
+                auto const body = parse_object(resp.response.body);
+                auto const* err = string_member(body, "errcode");
+                REQUIRE(err != nullptr);
+                REQUIRE(*err == "M_FORBIDDEN");
+            }
+        }
+    }
+}

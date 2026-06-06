@@ -822,3 +822,607 @@ SCENARIO("unwired endpoints return 501 Not Implemented", "[federation][conforman
         }
     }
 }
+
+// --- query/event -------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: GET /_matrix/federation/v1/event/{eventId}
+// URL: https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1eventeventid
+//
+// The resident server MUST return the PDU for a known event_id as a JSON object
+// whose 'pdus' array contains exactly that event. An unknown event_id MUST
+// return 404 M_NOT_FOUND. A missing provider MUST return 501.
+SCENARIO("GET /event/{eventId} returns the PDU when the event_query_provider is wired",
+         "[federation][conformance][query_event]")
+{
+    GIVEN("a runtime with event_query_provider installed returning a known PDU body")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        // Provider returns a non-empty body for the known event, empty for unknown.
+        runtime.event_query_provider = [](std::string_view ev_id) -> std::string {
+            if (ev_id == "$known_event:local.example.org")
+                return R"({"type":"m.room.message","room_id":"!conformance:local.example.org"})";
+            return {};
+        };
+
+        WHEN("a signed GET /event/$known_event:local.example.org is dispatched")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/event/$known_event:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 200 with the PDU body")
+            {
+                // Spec MUST: HTTP 200 for a known event.
+                REQUIRE(response.status == 200U);
+                // Spec MUST: body is non-empty JSON.
+                REQUIRE(!response.body.empty());
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+            }
+        }
+
+        WHEN("a signed GET /event/ request names an unknown event")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/event/$no_such_event:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 when the event is not known to this server.
+                REQUIRE(response.status == 404U);
+                // Spec MUST: error body contains M_NOT_FOUND errcode.
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a runtime with no event_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("a signed GET /event/{eventId} is dispatched")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/event/$some_event:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 501 Not Implemented")
+            {
+                // Architectural invariant: an unwired provider MUST yield 501 so
+                // the remote can distinguish unsupported from routing errors.
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// --- query/state -------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: GET /_matrix/federation/v1/state/{roomId}
+// URL: https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1stateroomid
+//
+// The resident server MUST return 200 with the current state for a known room.
+// An unknown room MUST return 404 M_NOT_FOUND. Missing provider → 501.
+SCENARIO("GET /state/{roomId} returns room state when the state_query_provider is wired",
+         "[federation][conformance][query_state]")
+{
+    GIVEN("a runtime with state_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        runtime.state_query_provider = [](std::string_view queried_room_id) -> std::string {
+            if (queried_room_id == "!conformance:local.example.org")
+                return R"({"auth_chain":[],"pdus":[]})";
+            return {};
+        };
+
+        WHEN("state is requested for the known room")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/state/!conformance:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 200 with parseable state body")
+            {
+                // Spec MUST: HTTP 200 for a room this server participates in.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+            }
+        }
+
+        WHEN("state is requested for an unknown room")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/state/!unknown:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 when the room is not known to this server.
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a runtime with no state_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("state is requested")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/state/!conformance:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 501 Not Implemented")
+            {
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// --- state_ids ---------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: GET /_matrix/federation/v1/state_ids/{roomId}
+// URL: https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1state_idsroomid
+//
+// The resident server MUST return 200 with pdu_ids and auth_chain_ids arrays for
+// a known room. An unknown room MUST return 404. Missing provider → 501.
+SCENARIO("GET /state_ids/{roomId} returns event-ID lists when the state_ids_query_provider is wired",
+         "[federation][conformance][state_ids]")
+{
+    GIVEN("a runtime with state_ids_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        runtime.state_ids_query_provider = [](std::string_view queried_room_id) -> std::string {
+            if (queried_room_id == "!conformance:local.example.org")
+                return R"({"pdu_ids":["$create:local.example.org"],"auth_chain_ids":[]})";
+            return {};
+        };
+
+        WHEN("state_ids is requested for the known room")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/state_ids/!conformance:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 200 containing pdu_ids and auth_chain_ids")
+            {
+                // Spec MUST: HTTP 200 with the event-ID lists.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                // Spec MUST: pdu_ids array is present.
+                REQUIRE(json_get(*root, std::string{"pdu_ids"}) != nullptr);
+                // Spec MUST: auth_chain_ids array is present.
+                REQUIRE(json_get(*root, std::string{"auth_chain_ids"}) != nullptr);
+            }
+        }
+
+        WHEN("state_ids is requested for an unknown room")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/state_ids/!unknown:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 for a room not known to this server.
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a runtime with no state_ids_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("state_ids is requested")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/state_ids/!conformance:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 501 Not Implemented")
+            {
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// --- get_missing_events ------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: POST /_matrix/federation/v1/get_missing_events/{roomId}
+// URL: https://spec.matrix.org/v1.18/server-server-api/#post_matrixfederationv1get_missing_eventsroomid
+//
+// The resident server MUST return 200 with an 'events' array of PDUs that the
+// requesting server is missing. Missing provider → 501.
+SCENARIO("POST /get_missing_events/{roomId} returns missing PDUs when the provider is wired",
+         "[federation][conformance][get_missing_events]")
+{
+    GIVEN("a runtime with missing_events_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        auto provider_invoked = std::make_shared<bool>(false);
+        runtime.missing_events_query_provider =
+            [provider_invoked](std::string_view /*room_id*/,
+                               std::string_view /*body*/) -> std::string {
+            *provider_invoked = true;
+            return R"({"events":[]})";
+        };
+
+        WHEN("a signed POST /get_missing_events request is dispatched")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/get_missing_events/!conformance:local.example.org"};
+            auto const body =
+                std::string{R"({"limit":10,"min_depth":1,"earliest_events":[],"latest_events":[]})"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_post_request(origin, key_id, key_seed, target, body));
+
+            THEN("the response is 200 and the provider was invoked")
+            {
+                // Spec MUST: HTTP 200.
+                REQUIRE(response.status == 200U);
+                REQUIRE(*provider_invoked);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                // Spec MUST: 'events' array is present.
+                REQUIRE(json_get(*root, std::string{"events"}) != nullptr);
+            }
+        }
+    }
+
+    GIVEN("a runtime with no missing_events_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("a signed POST /get_missing_events request is dispatched")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/get_missing_events/!conformance:local.example.org"};
+            auto const body =
+                std::string{R"({"limit":10,"min_depth":1,"earliest_events":[],"latest_events":[]})"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_post_request(origin, key_id, key_seed, target, body));
+
+            THEN("the response is 501 Not Implemented")
+            {
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// --- query/profile -----------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: GET /_matrix/federation/v1/query/profile
+// URL: https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1queryprofile
+//
+// The resident server MUST return 200 with displayname and avatar_url for a
+// known local user. Unknown users MUST return 404 M_NOT_FOUND. An invalid
+// 'field' query parameter MUST return 400. Missing provider → 501.
+SCENARIO("GET /query/profile returns user profile fields when the profile_query_provider is wired",
+         "[federation][conformance][query_profile]")
+{
+    GIVEN("a runtime with profile_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        runtime.profile_query_provider =
+            [](std::string_view user_id) -> merovingian::federation::FederationProfile {
+            if (user_id == "@alice:local.example.org")
+                return {true, "Alice", "mxc://local.example.org/avatar"};
+            return {false, {}, {}};
+        };
+
+        WHEN("a profile request is made for a known local user")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 200 with displayname and avatar_url")
+            {
+                // Spec MUST: HTTP 200 with profile fields.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                // Spec MUST: displayname field present when no field filter is set.
+                auto const* dn = json_get(*root, std::string{"displayname"});
+                REQUIRE(dn != nullptr);
+                REQUIRE(std::get_if<std::string>(&dn->storage()) != nullptr);
+                // Spec MUST: avatar_url field present when no field filter is set.
+                auto const* av = json_get(*root, std::string{"avatar_url"});
+                REQUIRE(av != nullptr);
+                REQUIRE(std::get_if<std::string>(&av->storage()) != nullptr);
+            }
+        }
+
+        WHEN("a profile request uses field=displayname to filter the response")
+        {
+            auto const target = std::string{
+                "/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org&field=displayname"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 200 containing only displayname")
+            {
+                // Spec: when field=displayname only that field is returned.
+                REQUIRE(response.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                REQUIRE(json_get(*root, std::string{"displayname"}) != nullptr);
+                // avatar_url MUST NOT appear when field=displayname.
+                REQUIRE(json_get(*root, std::string{"avatar_url"}) == nullptr);
+            }
+        }
+
+        WHEN("a profile request is made for an unknown user")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=@nobody:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 when the user is not known to this server.
+                REQUIRE(response.status == 404U);
+                REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+
+        WHEN("a profile request supplies an invalid field parameter")
+        {
+            auto const target = std::string{
+                "/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org&field=badfield"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 400 because the field value is not recognised")
+            {
+                // Spec: field MUST be one of 'displayname' or 'avatar_url'.
+                // Any other value is a client error.
+                REQUIRE(response.status == 400U);
+            }
+        }
+    }
+
+    GIVEN("a runtime with no profile_query_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("a profile request is dispatched")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 501 Not Implemented")
+            {
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// --- make_knock --------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: GET /_matrix/federation/v1/make_knock/{roomId}/{userId}
+// URL: https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_knockroomiduserid
+//
+// The resident server MUST respond 200 with:
+//   room_version  - the version string of the room
+//   event         - a partial knock event template for the knocking server to sign
+// Missing provider → 501.
+SCENARIO("GET /make_knock returns knock template when membership_template_provider is wired",
+         "[federation][conformance][make_knock]")
+{
+    GIVEN("a runtime with membership_template_provider wired for make_knock")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        auto template_invoked = std::make_shared<bool>(false);
+        runtime.membership_template_provider =
+            [template_invoked](merovingian::federation::FederationEndpoint endpoint,
+                               std::string_view target_room_id, std::string_view user_id,
+                               std::vector<std::string> const& /*supported_room_versions*/)
+            -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            *template_invoked = true;
+            // Provider MUST only be called with make_knock endpoint here.
+            REQUIRE(endpoint == merovingian::federation::FederationEndpoint::make_knock);
+            auto tmpl = merovingian::federation::MembershipEventTemplate{};
+            tmpl.room_id      = std::string{target_room_id};
+            tmpl.user_id      = std::string{user_id};
+            tmpl.membership   = "knock";
+            tmpl.room_version = "12";
+            return tmpl;
+        };
+
+        WHEN("a signed GET /make_knock request is dispatched")
+        {
+            auto const knocking_user = std::string{"@remote:"} + origin;
+            auto const target =
+                "/_matrix/federation/v1/make_knock/" + std::string{room_id} + "/" + knocking_user +
+                "?ver=12";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the runtime returns 200 with room_version and event template")
+            {
+                // Spec MUST: HTTP 200 for a valid make_knock request.
+                REQUIRE(response.status == 200U);
+                REQUIRE(*template_invoked);
+
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                // Spec MUST: room_version is present.
+                auto const* rv = json_get(*root, std::string{"room_version"});
+                REQUIRE(rv != nullptr);
+                REQUIRE(std::get_if<std::string>(&rv->storage()) != nullptr);
+
+                // Spec MUST: event template is present.
+                auto const* ev = json_get(*root, std::string{"event"});
+                REQUIRE(ev != nullptr);
+                REQUIRE(std::get_if<merovingian::canonicaljson::Object>(&ev->storage()) != nullptr);
+            }
+        }
+    }
+
+    GIVEN("a runtime with no membership_template_provider installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("a signed GET /make_knock request is dispatched")
+        {
+            auto const target = "/_matrix/federation/v1/make_knock/" + std::string{room_id} +
+                                 "/@remote:" + origin + "?ver=12";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 501 Not Implemented")
+            {
+                // Architectural invariant: no handler → 501.
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// --- send_knock --------------------------------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: PUT /_matrix/federation/v1/send_knock/{roomId}/{eventId}
+// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1send_knockroomideventid
+//
+// The resident server MUST respond 200 when the knock event is accepted.
+// The response body MUST NOT include 'event' (that field is send_join-only).
+// Missing acceptor → 501.
+SCENARIO("PUT /send_knock processes the knock and returns 200 when the acceptor is wired",
+         "[federation][conformance][send_knock]")
+{
+    GIVEN("a runtime with membership_acceptor wired for send_knock")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        auto accept_invoked = std::make_shared<bool>(false);
+        runtime.membership_acceptor =
+            [accept_invoked](merovingian::federation::FederationEndpoint endpoint,
+                             [[maybe_unused]] std::string_view target_room_id,
+                             [[maybe_unused]] std::string_view event_id,
+                             [[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::MembershipAcceptResult {
+            *accept_invoked = true;
+            // Acceptor MUST only be called with send_knock here.
+            REQUIRE(endpoint == merovingian::federation::FederationEndpoint::send_knock);
+            return {true, 200U, {}, {}, {}};
+        };
+
+        WHEN("a signed PUT /send_knock request is dispatched")
+        {
+            auto const event_id   = std::string{"$knock_event:"} + origin;
+            auto const target     = "/_matrix/federation/v1/send_knock/" +
+                                    std::string{room_id} + "/" + event_id;
+            // Minimal well-formed knock PDU envelope.
+            auto const body = std::string{
+                R"({"type":"m.room.member",)"
+                R"("room_id":"!conformance:local.example.org",)"
+                R"("sender":"@remote:remote.example.org",)"
+                R"("state_key":"@remote:remote.example.org",)"
+                R"("content":{"membership":"knock"},)"
+                R"("depth":2,"hashes":{"sha256":"x"},)"
+                R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put_request(origin, key_id, key_seed, target, body));
+
+            THEN("the runtime returns 200 and the acceptor was invoked")
+            {
+                // Spec MUST: HTTP 200.
+                REQUIRE(response.status == 200U);
+                REQUIRE(*accept_invoked);
+
+                // Spec: 'event' MUST NOT appear in send_knock response
+                // (it is send_join-only per §11.5.1).
+                REQUIRE(response.body.find("\"event\"") == std::string::npos);
+            }
+        }
+    }
+
+    GIVEN("a runtime with no membership_acceptor installed")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("a signed PUT /send_knock request is dispatched")
+        {
+            auto const event_id = std::string{"$knock_event:"} + origin;
+            auto const target   = "/_matrix/federation/v1/send_knock/" +
+                                   std::string{room_id} + "/" + event_id;
+            auto const body = std::string{
+                R"({"type":"m.room.member",)"
+                R"("room_id":"!conformance:local.example.org",)"
+                R"("sender":"@remote:remote.example.org",)"
+                R"("state_key":"@remote:remote.example.org",)"
+                R"("content":{"membership":"knock"},)"
+                R"("depth":2,"hashes":{"sha256":"x"},)"
+                R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_put_request(origin, key_id, key_seed, target, body));
+
+            THEN("the response is 501 Not Implemented")
+            {
+                // Architectural invariant: no acceptor → 501.
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}

@@ -388,3 +388,239 @@ SCENARIO("Redaction: unsigned is never preserved in any room version",
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Spec: m.room.join_rules — preserved content fields differ by version
+// v1–v10: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+//   m.room.join_rules preserves: join_rule
+// v11+:   https://spec.matrix.org/v1.18/rooms/v11/#redactions
+//   m.room.join_rules preserves: join_rule, allow
+// ---------------------------------------------------------------------------
+
+SCENARIO("Redaction v1-v10: m.room.join_rules preserves only join_rule from content",
+         "[conformance][redaction][v10][join-rules]")
+{
+    GIVEN("an m.room.join_rules event with join_rule, allow, and an extra field")
+    {
+        auto constexpr event_json = std::string_view{
+            R"({"event_id":"$ev:x","type":"m.room.join_rules","room_id":"!r:x","sender":"@a:x",)"
+            R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+            R"("hashes":{"sha256":"h"},"signatures":{},)"
+            R"("content":{"join_rule":"restricted","allow":[{"type":"m.room_membership","room_id":"!p:x"}],"extra":"strip"}})"};
+
+        WHEN("the event is redacted under v10")
+        {
+            auto const result = redact_event(event_json, "10");
+
+            THEN("join_rule is preserved; allow and extra are stripped")
+            {
+                // Spec (v1-v10): m.room.join_rules preserves ONLY join_rule from content.
+                REQUIRE(has_field(result, "join_rule"));
+                // Spec MUST: allow is NOT in the v10 preserved set.
+                REQUIRE_FALSE(has_field(result, "allow"));
+                REQUIRE_FALSE(has_field(result, "extra"));
+            }
+        }
+    }
+}
+
+SCENARIO("Redaction v11+: m.room.join_rules preserves both join_rule and allow",
+         "[conformance][redaction][v11][join-rules]")
+{
+    GIVEN("an m.room.join_rules event with join_rule, allow, and an extra field")
+    {
+        auto constexpr event_json = std::string_view{
+            R"({"event_id":"$ev:x","type":"m.room.join_rules","room_id":"!r:x","sender":"@a:x",)"
+            R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+            R"("hashes":{"sha256":"h"},"signatures":{},)"
+            R"("content":{"join_rule":"restricted","allow":[{"type":"m.room_membership","room_id":"!p:x"}],"extra":"strip"}})"};
+
+        WHEN("the event is redacted under v11 and v12")
+        {
+            auto const result_v11 = redact_event(event_json, "11");
+            auto const result_v12 = redact_event(event_json, "12");
+
+            THEN("both join_rule and allow are preserved; extra is stripped")
+            {
+                // Spec (v11+): m.room.join_rules preserves join_rule AND allow.
+                REQUIRE(has_field(result_v11, "join_rule"));
+                REQUIRE(has_field(result_v11, "allow"));
+                REQUIRE_FALSE(has_field(result_v11, "extra"));
+                // v12 inherits v11 redaction rules.
+                REQUIRE(has_field(result_v12, "join_rule"));
+                REQUIRE(has_field(result_v12, "allow"));
+                REQUIRE_FALSE(has_field(result_v12, "extra"));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: m.room.history_visibility — history_visibility preserved in all versions
+// v10: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// v11: https://spec.matrix.org/v1.18/rooms/v11/#redactions
+// ---------------------------------------------------------------------------
+
+SCENARIO("Redaction: m.room.history_visibility preserves history_visibility in all versions",
+         "[conformance][redaction][all-versions][history-visibility]")
+{
+    GIVEN("an m.room.history_visibility event with extra content")
+    {
+        auto constexpr event_json = std::string_view{
+            R"({"event_id":"$ev:x","type":"m.room.history_visibility","room_id":"!r:x","sender":"@a:x",)"
+            R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+            R"("hashes":{"sha256":"h"},"signatures":{},)"
+            R"("content":{"history_visibility":"shared","extra":"strip"}})"};
+
+        WHEN("the event is redacted under v10 and v11")
+        {
+            auto const result_v10 = redact_event(event_json, "10");
+            auto const result_v11 = redact_event(event_json, "11");
+
+            THEN("history_visibility is preserved in both versions; extra is stripped")
+            {
+                // Spec MUST: m.room.history_visibility preserves history_visibility in v10 and v11+.
+                REQUIRE(has_field(result_v10, "history_visibility"));
+                REQUIRE(has_field(result_v11, "history_visibility"));
+                REQUIRE_FALSE(has_field(result_v10, "extra"));
+                REQUIRE_FALSE(has_field(result_v11, "extra"));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: m.room.aliases — preserved in v1–v10, NOT preserved in v11+
+// v10: aliases preserved; v11: not listed → stripped
+// ---------------------------------------------------------------------------
+
+SCENARIO("Redaction: m.room.aliases preserves aliases in v10 but strips it in v11",
+         "[conformance][redaction][v10][v11][aliases]")
+{
+    GIVEN("an m.room.aliases event")
+    {
+        auto constexpr event_json = std::string_view{
+            R"({"event_id":"$ev:x","type":"m.room.aliases","room_id":"!r:x","sender":"@a:x",)"
+            R"("state_key":"example.org","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+            R"("hashes":{"sha256":"h"},"signatures":{},)"
+            R"("content":{"aliases":["#general:example.org"],"extra":"strip"}})"};
+
+        WHEN("the event is redacted under v10 vs v11")
+        {
+            auto const result_v10 = redact_event(event_json, "10");
+            auto const result_v11 = redact_event(event_json, "11");
+
+            THEN("aliases is preserved in v10 but stripped in v11")
+            {
+                // Spec (v1-v10): m.room.aliases preserves aliases from content.
+                REQUIRE(has_field(result_v10, "aliases"));
+                REQUIRE_FALSE(has_field(result_v10, "extra"));
+                // Spec (v11+): m.room.aliases is no longer listed; the aliases field is stripped.
+                REQUIRE_FALSE(has_field(result_v11, "aliases"));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: m.room.third_party_invite — signed preserved in all versions
+// URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// ---------------------------------------------------------------------------
+
+SCENARIO("Redaction: m.room.third_party_invite preserves signed from content",
+         "[conformance][redaction][all-versions][third-party-invite]")
+{
+    GIVEN("an m.room.third_party_invite event")
+    {
+        auto constexpr event_json = std::string_view{
+            R"({"event_id":"$ev:x","type":"m.room.third_party_invite","room_id":"!r:x","sender":"@a:x",)"
+            R"("state_key":"tok","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+            R"("hashes":{"sha256":"h"},"signatures":{},)"
+            R"("content":{"display_name":"Alice","key_validity_url":"https://x/k","public_key":"abc",)"
+            R"("signed":{"mxid":"@a:x","signatures":{},"token":"tok"},"extra":"strip"}})"};
+
+        WHEN("the event is redacted under v10 and v11")
+        {
+            auto const result_v10 = redact_event(event_json, "10");
+            auto const result_v11 = redact_event(event_json, "11");
+
+            THEN("signed is preserved in both versions; other content fields are stripped")
+            {
+                // Spec MUST: m.room.third_party_invite preserves signed from content.
+                REQUIRE(has_field(result_v10, "signed"));
+                REQUIRE(has_field(result_v11, "signed"));
+                // display_name, public_key, and key_validity_url are stripped.
+                REQUIRE_FALSE(has_field(result_v10, "display_name"));
+                REQUIRE_FALSE(has_field(result_v11, "display_name"));
+                REQUIRE_FALSE(has_field(result_v10, "extra"));
+                REQUIRE_FALSE(has_field(result_v11, "extra"));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: state_key is a top-level protected field in all room versions
+// URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// ---------------------------------------------------------------------------
+
+SCENARIO("Redaction: state_key is preserved as a top-level field in all versions",
+         "[conformance][redaction][all-versions]")
+{
+    GIVEN("a state event with a non-empty state_key")
+    {
+        auto constexpr event_json = std::string_view{
+            R"({"event_id":"$ev:x","type":"m.room.member","room_id":"!r:x","sender":"@a:x",)"
+            R"("state_key":"@a:x","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+            R"("hashes":{"sha256":"h"},"signatures":{},"content":{"membership":"join"}})"};
+
+        WHEN("the event is redacted under v10, v11, and v12")
+        {
+            auto const r10 = redact_event(event_json, "10");
+            auto const r11 = redact_event(event_json, "11");
+            auto const r12 = redact_event(event_json, "12");
+
+            THEN("state_key is preserved in all versions")
+            {
+                // Spec MUST: state_key is a protected top-level field across all room versions.
+                REQUIRE(has_field(r10, "state_key"));
+                REQUIRE(has_field(r11, "state_key"));
+                REQUIRE(has_field(r12, "state_key"));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: v12 inherits v11 redaction rules
+// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+// ---------------------------------------------------------------------------
+
+SCENARIO("Redaction v12: m.room.power_levels preserves invite as in v11",
+         "[conformance][redaction][v12]")
+{
+    GIVEN("an m.room.power_levels event with an invite field")
+    {
+        auto constexpr event_json = std::string_view{
+            R"({"event_id":"$ev:x","type":"m.room.power_levels","room_id":"!r:x","sender":"@a:x",)"
+            R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+            R"("hashes":{"sha256":"h"},"signatures":{},)"
+            R"("content":{"ban":50,"events":{},"events_default":0,"invite":50,"kick":50,)"
+            R"("redact":50,"state_default":50,"users":{},"users_default":0,"extra":"strip"}})"};
+
+        WHEN("the event is redacted under v12")
+        {
+            auto const result = redact_event(event_json, "12");
+
+            THEN("invite is preserved (v12 inherits v11 rules) and extra is stripped")
+            {
+                // Spec (v12): redaction rules same as v11.
+                // m.room.power_levels preserves invite (added in v11).
+                REQUIRE(has_field(result, "invite"));
+                REQUIRE(has_field(result, "ban"));
+                REQUIRE(has_field(result, "users"));
+                REQUIRE_FALSE(has_field(result, "extra"));
+            }
+        }
+    }
+}
