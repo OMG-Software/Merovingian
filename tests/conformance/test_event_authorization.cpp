@@ -31,13 +31,42 @@
 // --- auth-rule hook dispatch --------------------------------------------------
 // Spec: Matrix Room Version 6, Sec. 10.4 Authorization rules
 // URL:  https://spec.matrix.org/v1.18/rooms/v6/#authorization-rules
+// Spec: Matrix Room Version 12 (MSC4289/MSC4291)
+// URL:  https://spec.matrix.org/v1.18/rooms/v12/
 //
-// Room versions v6 and later share the same authorization rule set.
+// Room versions v6–v11 share the room_v6_plus authorization rule set.
+// Room version v12 builds on v6+ rules and adds creator privilege (MSC4289) and
+// implicit create (MSC4291); it reports a distinct hook name for auditability.
 // The implementation MUST dispatch to the correct versioned rule hook rather
 // than hard-coding a single rule set, to remain correct as room versions evolve.
-SCENARIO("Event authorization uses room-version-specific auth-rule hooks", "[events][auth]")
+SCENARIO("Event authorization uses room-version-specific auth-rule hooks", "[events][auth][conformance]")
 {
-    GIVEN("a modern room version policy and authorization request")
+    GIVEN("a room v6 policy and authorization request")
+    {
+        auto const* room_v6 = merovingian::rooms::find_room_version_policy("6");
+        REQUIRE(room_v6 != nullptr);
+        auto request = merovingian::events::EventAuthorizationRequest{};
+        request.room_version = "6";
+        request.event_type = "m.room.message";
+        request.sender = "@alice:example.org";
+        request.power_level = {50, 0};
+
+        WHEN("the event is authorized")
+        {
+            auto const decision = merovingian::events::authorize_event(*room_v6, request);
+
+            THEN("the room v6+ auth hook is reported")
+            {
+                // Spec: room v6–v11 use the auth_rules.room_v6_plus rule set.
+                // Do NOT change the hook name — it identifies which auth rules
+                // were applied and appears in audit trails.
+                REQUIRE(decision.allowed);
+                REQUIRE(decision.rule_hook == "auth_rules.room_v6_plus");
+            }
+        }
+    }
+
+    GIVEN("a room v12 policy and authorization request")
     {
         auto const* room_v12 = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(room_v12 != nullptr);
@@ -51,13 +80,14 @@ SCENARIO("Event authorization uses room-version-specific auth-rule hooks", "[eve
         {
             auto const decision = merovingian::events::authorize_event(*room_v12, request);
 
-            THEN("the room-version auth hook is reported")
+            THEN("the room v12 auth hook is reported — distinct from v6+ for auditability")
             {
-                // Spec: room v6+ share the auth_rules.room_v6_plus rule set.
-                // Do NOT change the hook name - it identifies which auth rules
-                // were applied and appears in audit trails.
+                // Spec: room v12 uses auth_rules.room_v12 to signal that creator-privilege
+                // and implicit-create semantics are active. Do NOT collapse this back to
+                // room_v6_plus — the hook name appears in audit logs and must identify the
+                // exact rule set applied.
                 REQUIRE(decision.allowed);
-                REQUIRE(decision.rule_hook == "auth_rules.room_v6_plus");
+                REQUIRE(decision.rule_hook == "auth_rules.room_v12");
             }
         }
     }
@@ -165,14 +195,65 @@ SCENARIO("Membership policy primitives cover joins, invites, removals, and restr
 // --- auth event selection -----------------------------------------------------
 // Spec: Matrix Server-Server API v1.18 Sec. 4.4 auth_events
 // URL:  https://spec.matrix.org/v1.18/server-server-api/#auth-events
+// Spec: Matrix Room Version 12 (MSC4291)
+// URL:  https://spec.matrix.org/v1.18/rooms/v12/
 //
-// For m.room.member invite the REQUIRED auth event set is:
+// For m.room.member invite in room versions 1–11 the REQUIRED auth event set is:
 //   {m.room.create, m.room.power_levels, m.room.join_rules, m.room.member(target)}
-// Third-party invites additionally require m.room.third_party_invite.
+//
+// In room version 12 the create event is implicit (the room ID IS the create event
+// reference hash) and MUST NOT appear in auth_events. The v12 required set is:
+//   {m.room.power_levels, m.room.join_rules, m.room.member(target)}
+//
+// Third-party invites add m.room.third_party_invite to whichever base set applies.
 // A wrong or incomplete auth_events set causes remote auth failure.
-SCENARIO("Auth event selection registers required auth events for membership events", "[events][auth][auth-events]")
+
+// --- room versions 1–11 (create event is explicit) ---
+SCENARIO("Auth event selection includes m.room.create for room versions 1–11", "[events][auth][auth-events][conformance]")
 {
-    GIVEN("membership authorization requests")
+    GIVEN("a v10 m.room.member invite request")
+    {
+        auto normal_invite = merovingian::events::EventAuthorizationRequest{};
+        normal_invite.room_version = "10";
+        normal_invite.event_type = "m.room.member";
+        normal_invite.state_key = "@bob:example.org";
+        normal_invite.membership.requested_membership = merovingian::events::MembershipState::invite;
+
+        auto third_party_invite = normal_invite;
+        third_party_invite.membership.third_party_invite = true;
+
+        WHEN("auth events are selected")
+        {
+            auto const normal_selection    = merovingian::events::select_auth_events(normal_invite);
+            auto const third_party_selection = merovingian::events::select_auth_events(third_party_invite);
+
+            THEN("normal invite requires {create, power_levels, join_rules, member}")
+            {
+                // Spec MUST: create is always explicit in auth_events for v1–v11.
+                // Do NOT remove create — an incomplete set causes remote auth failure.
+                REQUIRE(normal_selection.required.size() == 4U);
+                REQUIRE(normal_selection.required[0].kind == merovingian::events::AuthEventKind::create);
+                REQUIRE(normal_selection.required[1].kind == merovingian::events::AuthEventKind::power_levels);
+                REQUIRE(normal_selection.required[2].kind == merovingian::events::AuthEventKind::join_rules);
+                REQUIRE(normal_selection.required[3].kind == merovingian::events::AuthEventKind::member);
+                REQUIRE(normal_selection.required[3].state_key == "@bob:example.org");
+            }
+
+            THEN("3PID invite additionally requires m.room.third_party_invite")
+            {
+                // Spec MUST: 3PID invite adds third_party_invite on top of the base 4.
+                REQUIRE(third_party_selection.required.size() == 5U);
+                REQUIRE(third_party_selection.required[4].kind ==
+                        merovingian::events::AuthEventKind::third_party_invite);
+            }
+        }
+    }
+}
+
+// --- room version 12 (create event is implicit — derived from the room ID) ---
+SCENARIO("Auth event selection omits m.room.create for room version 12", "[events][auth][auth-events][room-version][conformance]")
+{
+    GIVEN("a v12 m.room.member invite request")
     {
         auto normal_invite = merovingian::events::EventAuthorizationRequest{};
         normal_invite.room_version = "12";
@@ -185,23 +266,26 @@ SCENARIO("Auth event selection registers required auth events for membership eve
 
         WHEN("auth events are selected")
         {
-            auto const normal_selection = merovingian::events::select_auth_events(normal_invite);
+            auto const normal_selection      = merovingian::events::select_auth_events(normal_invite);
             auto const third_party_selection = merovingian::events::select_auth_events(third_party_invite);
 
-            THEN("normal invites avoid 3PID auth and third-party invites request it")
+            THEN("normal invite requires {power_levels, join_rules, member} — no create")
             {
-                // Spec MUST: exactly 4 auth events for a normal invite.
-                // Do NOT change the size or order - auth event sets are normative.
-                // An incomplete set causes the event to fail auth on remote servers.
-                REQUIRE(normal_selection.required.size() == 4U);
-                REQUIRE(normal_selection.required[0].kind == merovingian::events::AuthEventKind::create);
-                REQUIRE(normal_selection.required[1].kind == merovingian::events::AuthEventKind::power_levels);
-                REQUIRE(normal_selection.required[2].kind == merovingian::events::AuthEventKind::join_rules);
-                REQUIRE(normal_selection.required[3].kind == merovingian::events::AuthEventKind::member);
-                REQUIRE(normal_selection.required[3].state_key == "@bob:example.org");
-                // Spec MUST: 3PID invite additionally requires m.room.third_party_invite.
-                REQUIRE(third_party_selection.required.size() == 5U);
-                REQUIRE(third_party_selection.required[4].kind ==
+                // Spec MUST: in v12 the create event is implicit in the room ID and
+                // MUST NOT be listed in auth_events. Including it would be a protocol
+                // violation — remote servers would reject the event.
+                REQUIRE(normal_selection.required.size() == 3U);
+                REQUIRE(normal_selection.required[0].kind == merovingian::events::AuthEventKind::power_levels);
+                REQUIRE(normal_selection.required[1].kind == merovingian::events::AuthEventKind::join_rules);
+                REQUIRE(normal_selection.required[2].kind == merovingian::events::AuthEventKind::member);
+                REQUIRE(normal_selection.required[2].state_key == "@bob:example.org");
+            }
+
+            THEN("3PID invite additionally requires m.room.third_party_invite")
+            {
+                // Spec MUST: 3PID invite adds third_party_invite on top of the v12 base 3.
+                REQUIRE(third_party_selection.required.size() == 4U);
+                REQUIRE(third_party_selection.required[3].kind ==
                         merovingian::events::AuthEventKind::third_party_invite);
             }
         }

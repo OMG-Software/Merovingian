@@ -26,6 +26,10 @@ namespace
             return "room_v1";
         case rooms::AuthRules::room_v6_plus:
             return "room_v6_plus";
+        case rooms::AuthRules::room_v12:
+            // Distinct hook for auditability: v12 adds creator privilege (MSC4289)
+            // and implicit create (MSC4291) on top of the v6+ rule base.
+            return "room_v12";
         }
 
         return "unknown";
@@ -433,12 +437,13 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         return make_denied("2", "room has no create event");
     }
 
-    // Step 3: For v6+, only reject cross-domain senders when the room explicitly
-    // disables federation via content.m.federate = false. When m.federate is absent
-    // or true the check does not apply and cross-domain senders are permitted.
+    // Step 3: For v6+ and v12, only reject cross-domain senders when the room
+    // explicitly disables federation via content.m.federate = false. When m.federate
+    // is absent or true the check does not apply and cross-domain senders are permitted.
     // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
     // URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
-    if (policy.auth_rules == rooms::AuthRules::room_v6_plus)
+    if (policy.auth_rules == rooms::AuthRules::room_v6_plus ||
+        policy.auth_rules == rooms::AuthRules::room_v12)
     {
         auto const* create_obj = value_is_object(auth_events.create);
         auto is_non_federated = false;
@@ -910,7 +915,17 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
 auto select_auth_events(EventAuthorizationRequest const& request) -> AuthEventSelection
 {
     auto selection = AuthEventSelection{};
-    selection.required.push_back({AuthEventKind::create, "m.room.create", ""});
+
+    // v12 (MSC4291): the create event is implicit in the room ID and MUST NOT be
+    // listed in auth_events. For all earlier room versions create is always required.
+    // Spec: https://spec.matrix.org/v1.18/rooms/v12/
+    auto const* policy = rooms::find_room_version_policy(request.room_version);
+    auto const create_is_implicit = (policy != nullptr && policy->create_event_is_room_id);
+
+    if (!create_is_implicit)
+    {
+        selection.required.push_back({AuthEventKind::create, "m.room.create", ""});
+    }
 
     if (requires_power_levels(request.event_type))
     {
