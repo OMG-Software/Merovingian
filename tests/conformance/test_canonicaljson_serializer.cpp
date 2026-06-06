@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+//
+// +-------------------------------------------------------------------------+
+// |          MATRIX CANONICAL JSON SERIALIZER CONFORMANCE TESTS            |
+// |                                                                         |
+// |  Spec: Matrix v1.18 Appendices — Canonical JSON                        |
+// |  URL:  https://spec.matrix.org/v1.18/appendices/#canonical-json        |
+// |        https://spec.matrix.org/v1.18/appendices/#grammar               |
+// |                                                                         |
+// |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
+// |                                                                         |
+// |  Every REQUIRE in this file encodes a MUST from the Matrix             |
+// |  canonical JSON specification. If a test fails:                         |
+// |                                                                         |
+// |    -> Fix the IMPLEMENTATION so it matches the spec.                     |
+// |    -> Do NOT weaken, comment out, or remove assertions to make CI pass.  |
+// |    -> Do NOT change an expected value without first verifying that the   |
+// |      spec itself has changed and citing the updated section.             |
+// |                                                                         |
+// |  The spec section is cited above each SCENARIO. Cross-check it before   |
+// |  concluding that a failing assertion is wrong.                           |
+// +-------------------------------------------------------------------------+
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -186,6 +207,109 @@ SCENARIO("Canonical JSON error names are stable", "[canonicaljson]")
                 REQUIRE(no_error_name == "none");
                 REQUIRE(duplicate_key_name == "duplicate_object_key");
                 REQUIRE(invalid_string_name == "invalid_string");
+            }
+        }
+    }
+}
+SCENARIO("Canonical JSON escapes all control characters U+0000 through U+001F as \\u00XX",
+         "[conformance][canonicaljson][escaping]")
+{
+    GIVEN("string values containing control characters")
+    {
+        // Values are built from raw bytes to avoid C++ escape sequence ambiguity.
+        auto nul_str   = merovingian::canonicaljson::Value{std::string("\x00", 1U)};     // U+0000
+        auto tab_str   = merovingian::canonicaljson::Value{std::string("\x09", 1U)};     // U+0009
+        auto lf_str    = merovingian::canonicaljson::Value{std::string("\x0a", 1U)};     // U+000A
+        auto cr_str    = merovingian::canonicaljson::Value{std::string("\x0d", 1U)};     // U+000D
+        auto us_str    = merovingian::canonicaljson::Value{std::string("\x1f", 1U)};     // U+001F
+        // Space (U+0020) is the first character ABOVE the control range — MUST NOT be escaped.
+        auto space_str = merovingian::canonicaljson::Value{std::string(" ", 1U)};         // U+0020
+
+        WHEN("each string is serialized canonically")
+        {
+            auto const nul_out   = merovingian::canonicaljson::serialize_canonical(nul_str);
+            auto const tab_out   = merovingian::canonicaljson::serialize_canonical(tab_str);
+            auto const lf_out    = merovingian::canonicaljson::serialize_canonical(lf_str);
+            auto const cr_out    = merovingian::canonicaljson::serialize_canonical(cr_str);
+            auto const us_out    = merovingian::canonicaljson::serialize_canonical(us_str);
+            auto const space_out = merovingian::canonicaljson::serialize_canonical(space_str);
+
+            THEN("control characters are escaped per JSON canonical rules")
+            {
+                REQUIRE(nul_out.output == "\"\\u0000\"");
+                REQUIRE(tab_out.output == "\"\\t\"");
+                REQUIRE(lf_out.output == "\"\\n\"");
+                REQUIRE(cr_out.output == "\"\\r\"");
+                REQUIRE(us_out.output == "\"\\u001f\"");
+                REQUIRE(space_out.output == "\" \"");
+            }        }
+    }
+}
+
+// Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
+// URL:  https://spec.matrix.org/v1.18/appendices/#grammar
+//
+// Object keys are sorted by their Unicode code points (effectively byte-by-byte
+// on UTF-8 strings). Keys with bytes that sort higher lexicographically come last.
+// This includes multi-byte UTF-8 characters: e.g., é (U+00E9, bytes C3 A9) sorts
+// after all ASCII characters.
+SCENARIO("Canonical JSON sorts object keys by Unicode code point (byte order)",
+         "[conformance][canonicaljson][key-sorting]")
+{
+    GIVEN("an object with ASCII and multi-byte UTF-8 keys")
+    {
+        // "z" = 0x7A, "é" starts with 0xC3 — 'é' sorts after 'z' in byte order.
+        // "A" = 0x41, "a" = 0x61 — uppercase sorts before lowercase in Unicode.
+        auto const json = std::string{"{\"z\":3,\"A\":1,\"a\":2}"};
+        auto const parsed = merovingian::canonicaljson::parse_lossless(json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("serialized canonically")
+        {
+            auto const result = merovingian::canonicaljson::serialize_canonical(parsed.value);
+
+            THEN("keys are in Unicode code point order: 'A' (0x41) < 'a' (0x61) < 'z' (0x7A)")
+            {
+                REQUIRE(result.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                // Spec MUST: sort by Unicode code point: uppercase before lowercase.
+                REQUIRE(result.output == R"({"A":1,"a":2,"z":3})");
+            }
+        }
+    }
+}
+
+// Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
+// URL:  https://spec.matrix.org/v1.18/appendices/#grammar
+//
+// No insignificant whitespace: no spaces or newlines around ':' or ','
+// in the output. The output MUST be the most compact valid JSON.
+SCENARIO("Canonical JSON output contains no insignificant whitespace",
+         "[conformance][canonicaljson][whitespace]")
+{
+    GIVEN("a populated object and array")
+    {
+        auto const obj_json = std::string{R"({"a":1,"b":2})"};
+        auto const arr_json = std::string{R"([1,2,3])"};
+
+        auto const obj_parsed = merovingian::canonicaljson::parse_lossless(obj_json);
+        auto const arr_parsed = merovingian::canonicaljson::parse_lossless(arr_json);
+        REQUIRE(obj_parsed.error == merovingian::canonicaljson::ParseError::none);
+        REQUIRE(arr_parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        WHEN("each is serialized canonically")
+        {
+            auto const obj_out = merovingian::canonicaljson::serialize_canonical(obj_parsed.value);
+            auto const arr_out = merovingian::canonicaljson::serialize_canonical(arr_parsed.value);
+
+            THEN("no whitespace appears in either output")
+            {
+                REQUIRE(obj_out.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                REQUIRE(arr_out.error == merovingian::canonicaljson::CanonicalJsonError::none);
+                // Spec MUST: no whitespace outside string values.
+                REQUIRE(obj_out.output.find(' ') == std::string::npos);
+                REQUIRE(obj_out.output.find('\n') == std::string::npos);
+                REQUIRE(arr_out.output.find(' ') == std::string::npos);
+                REQUIRE(arr_out.output.find('\n') == std::string::npos);
             }
         }
     }

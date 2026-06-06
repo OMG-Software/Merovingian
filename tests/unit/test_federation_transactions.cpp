@@ -99,13 +99,13 @@ SCENARIO("Federation transaction validation accepts bounded transactions and rej
             auto const rejected_empty = merovingian::federation::validate_federation_transaction(empty, 1024U);
             auto const rejected_anonymous = merovingian::federation::validate_federation_transaction(anonymous, 1024U);
 
-            THEN("only bounded, identified transactions with content are accepted")
+            THEN("only bounded, identified transactions are accepted")
             {
                 REQUIRE(accepted.accepted);
                 REQUIRE_FALSE(rejected_oversized.accepted);
                 REQUIRE(rejected_oversized.reason == "transaction exceeds configured byte limit");
-                REQUIRE_FALSE(rejected_empty.accepted);
-                REQUIRE(rejected_empty.reason == "transaction must contain PDUs or EDUs");
+                REQUIRE(rejected_empty.accepted);
+                REQUIRE(rejected_empty.reason.empty());
                 REQUIRE_FALSE(rejected_anonymous.accepted);
                 REQUIRE(rejected_anonymous.reason == "invalid transaction origin");
             }

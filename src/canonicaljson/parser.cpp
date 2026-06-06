@@ -20,6 +20,8 @@ namespace
 {
 
     constexpr auto max_depth = std::size_t{64U};
+    constexpr auto max_safe_integer = std::int64_t{9007199254740991LL};  // (2^53)-1
+    constexpr auto min_safe_integer = std::int64_t{-9007199254740991LL}; // -(2^53)+1
 
     struct YyjsonDocumentDeleter final
     {
@@ -135,6 +137,10 @@ namespace
         if (error != std::errc{} || ptr != token.data() + token.size())
         {
             return {{}, ParseError::invalid_number};
+        }
+        if (parsed < min_safe_integer || parsed > max_safe_integer)
+        {
+            return {{}, ParseError::integer_out_of_range};
         }
         return {Value{parsed}, ParseError::none};
     }

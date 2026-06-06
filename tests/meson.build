@@ -82,11 +82,8 @@ if get_option ('build_tests')
       'unit/test_auth.cpp',
       'unit/test_auth_client_server_api.cpp',
       'unit/test_auth_session.cpp',
-      'unit/test_canonicaljson_parser.cpp',
-      'unit/test_canonicaljson_serializer.cpp',
       'unit/test_audit_filter.cpp',
       'unit/test_client_server.cpp',
-      'unit/test_client_server_conformance.cpp',
       'unit/test_config_defaults.cpp',
       'unit/test_config_media_timeout.cpp',
       'unit/test_config_client_rate_limits.cpp',
@@ -98,10 +95,6 @@ if get_option ('build_tests')
       'unit/test_database_backend_config.cpp',
       'unit/test_database_persistence.cpp',
       'unit/test_dispatch_worker.cpp',
-      'unit/test_event_auth_rules.cpp',
-      'unit/test_event_authorization.cpp',
-      'unit/test_events.cpp',
-      'unit/test_federation_conformance.cpp',
       'unit/test_federation_event_query.cpp',
       'unit/test_federation_inbound_request.cpp',
       'unit/test_federation_invite_join.cpp',
@@ -110,7 +103,6 @@ if get_option ('build_tests')
       'unit/test_federation_runtime_callbacks.cpp',
       'unit/test_otk_signature_validation.cpp',
       'unit/test_outbound_dispatch.cpp',
-      'unit/test_x_matrix_auth_parsing.cpp',
       'unit/test_federation_security.cpp',
       'unit/test_federation_transactions.cpp',
       'unit/test_file_descriptor.cpp',
@@ -126,7 +118,6 @@ if get_option ('build_tests')
       'unit/test_key_api.cpp',
       'unit/test_log_severity_routing.cpp',
       'unit/test_local_database_scope.cpp',
-      'unit/test_key_publication_conformance.cpp',
       'unit/test_media_repository.cpp',
       'unit/test_media_security.cpp',
       'unit/test_not_null.cpp',
@@ -143,7 +134,6 @@ if get_option ('build_tests')
       'unit/test_runtime_federation.cpp',
       'unit/test_runtime_hardening.cpp',
       'unit/test_runtime_listeners.cpp',
-      'unit/test_server_discovery.cpp',
       'unit/test_runtime_media.cpp',
       'unit/test_secret_buffer.cpp',
       'unit/test_shutdown_signal.cpp',
@@ -162,6 +152,37 @@ if get_option ('build_tests')
   )
 
   test('unit-tests', unit_tests, timeout: 120)
+
+  conformance_tests = executable(
+    'merovingian-conformance-tests',
+    sources: files(
+      'conformance/test_main.cpp',
+      'conformance/test_canonicaljson_parser.cpp',
+      'conformance/test_canonicaljson_serializer.cpp',
+      'conformance/test_client_server_conformance.cpp',
+      'conformance/test_event_auth_rules.cpp',
+      'conformance/test_event_authorization.cpp',
+      'conformance/test_event_relationships_conformance.cpp',
+      'conformance/test_events.cpp',
+      'conformance/test_federation_conformance.cpp',
+      'conformance/test_federation_transaction_conformance.cpp',
+      'conformance/test_identifier_grammar.cpp',
+      'conformance/test_key_publication_conformance.cpp',
+      'conformance/test_pdu_format_conformance.cpp',
+      'conformance/test_redaction_conformance.cpp',
+      'conformance/test_room_version_table_conformance.cpp',
+      'conformance/test_server_discovery.cpp',
+      'conformance/test_signing_json_conformance.cpp',
+      'conformance/test_state_resolution_conformance.cpp',
+      'conformance/test_sync_filter_conformance.cpp',
+      'conformance/test_x_matrix_auth_parsing.cpp',
+    ),
+    include_directories: inc,
+    dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
+    link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+  )
+
+  test('conformance-tests', conformance_tests, timeout: 120)
 
   integration_tests = executable(
     'merovingian-integration-tests',

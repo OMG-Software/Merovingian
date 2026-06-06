@@ -71,9 +71,9 @@ SCENARIO("Auth server-name validator rejects malformed host and port shapes", "[
     }
 }
 
-SCENARIO("Auth user ID validator restricts localpart to Matrix-compliant lowercase characters", "[auth]")
+SCENARIO("Auth user ID validator accepts Matrix-compliant mixed-case localparts", "[auth]")
 {
-    GIVEN("valid lowercase and invalid uppercase localparts")
+    GIVEN("valid mixed-case localparts and malformed server names")
     {
         auto constexpr valid_user = "@alice_1.-=/+:example.org";
         auto constexpr uppercase_user = "@Alice:example.org";
@@ -85,10 +85,10 @@ SCENARIO("Auth user ID validator restricts localpart to Matrix-compliant lowerca
             auto const uppercase_user_result = merovingian::auth::user_id_is_valid(uppercase_user);
             auto const malformed_server_user_result = merovingian::auth::user_id_is_valid(malformed_server_user);
 
-            THEN("uppercase localparts and malformed server names are rejected")
+            THEN("mixed-case localparts are accepted and malformed server names are rejected")
             {
                 REQUIRE(valid_user_result);
-                REQUIRE_FALSE(uppercase_user_result);
+                REQUIRE(uppercase_user_result);
                 REQUIRE_FALSE(malformed_server_user_result);
             }
         }

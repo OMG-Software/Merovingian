@@ -85,7 +85,18 @@ SCENARIO("GET /_matrix/key/v2/server returns the spec-required published signing
 
                 auto const* valid_until_value = json_get(*root, "valid_until_ts");
                 REQUIRE(valid_until_value != nullptr);
-                REQUIRE(std::get_if<std::int64_t>(&valid_until_value->storage()) != nullptr);
+                auto const* valid_until_int = std::get_if<std::int64_t>(&valid_until_value->storage());
+                REQUIRE(valid_until_int != nullptr);
+                // Spec MUST: valid_until_ts MUST be a positive integer (milliseconds since epoch).
+                // A zero or negative value means the key is already expired, which MUST NOT happen.
+                REQUIRE(*valid_until_int > std::int64_t{0});
+                // Spec SHOULD: servers MUST NOT publish keys with valid_until_ts more than 7 days
+                // in the future (604800000 ms). Keys must also not already be expired (> now).
+                // We can't assert against real wall-clock time here, so we check it's in a
+                // plausible non-zero range: at least 60 seconds from "epoch" (epoch+60000ms).
+                // This catches a regression where the server publishes a zero or epoch-relative ts.
+                auto constexpr min_valid_ms = std::int64_t{60000};
+                REQUIRE(*valid_until_int >= min_valid_ms);
 
                 auto const* verify_keys_value = json_get(*root, "verify_keys");
                 REQUIRE(verify_keys_value != nullptr);

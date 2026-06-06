@@ -39,7 +39,7 @@ SCENARIO("EDU transaction bodies key each EDU by edu_type so Synapse accepts the
         WHEN("a typing EDU transaction body is built")
         {
             auto const body = merovingian::federation::build_edu_transaction_body(
-                "m.typing", R"({"room_id":"!r:home","typing":true})");
+                "origin.example.org", "m.typing", R"({"room_id":"!r:home","typing":true})");
 
             THEN("the body carries the EDU under the spec-required edu_type key, never a bare type key")
             {
@@ -53,6 +53,8 @@ SCENARIO("EDU transaction bodies key each EDU by edu_type so Synapse accepts the
             AND_THEN("the EDU content is preserved and no PDUs are included")
             {
                 REQUIRE(body->find(R"("typing":true)") != std::string::npos);
+                REQUIRE(body->find(R"("origin":"origin.example.org")") != std::string::npos);
+                REQUIRE(body->find(R"("origin_server_ts":)") != std::string::npos);
                 REQUIRE(body->find(R"("room_id":"!r:home")") != std::string::npos);
                 REQUIRE(body->find(R"("pdus":[])") != std::string::npos);
             }
@@ -60,7 +62,8 @@ SCENARIO("EDU transaction bodies key each EDU by edu_type so Synapse accepts the
 
         WHEN("the EDU content JSON is malformed")
         {
-            auto const body = merovingian::federation::build_edu_transaction_body("m.receipt", "{not json");
+            auto const body =
+                merovingian::federation::build_edu_transaction_body("origin.example.org", "m.receipt", "{not json");
 
             THEN("no transaction body is produced")
             {
@@ -72,8 +75,7 @@ SCENARIO("EDU transaction bodies key each EDU by edu_type so Synapse accepts the
 
 // Spec: https://spec.matrix.org/v1.18/server-server-api/#receipts
 // Required shape: { roomId: { receiptType: { userId: { event_ids: [eventId], data: { ts: N } } } } }
-SCENARIO("receipt EDU content follows Matrix spec nested structure",
-         "[federation][outbound][edu][spec][receipt]")
+SCENARIO("receipt EDU content follows Matrix spec nested structure", "[federation][outbound][edu][spec][receipt]")
 {
     GIVEN("a room ID, receipt type, user ID, event ID and timestamp")
     {
@@ -88,14 +90,16 @@ SCENARIO("receipt EDU content follows Matrix spec nested structure",
             THEN("content matches the exact canonical JSON the spec requires")
             {
                 REQUIRE(content.has_value());
-                REQUIRE(*content ==
-                        R"({"!room:server":{"m.read":{"@user:server":{"data":{"ts":1234567890},"event_ids":["$event:server"]}}}})");
+                REQUIRE(
+                    *content ==
+                    R"({"!room:server":{"m.read":{"@user:server":{"data":{"ts":1234567890},"event_ids":["$event:server"]}}}})");
             }
 
             AND_THEN("the content wraps into a valid m.receipt EDU transaction body with edu_type key")
             {
                 REQUIRE(content.has_value());
-                auto const tx = merovingian::federation::build_edu_transaction_body("m.receipt", *content);
+                auto const tx =
+                    merovingian::federation::build_edu_transaction_body("origin.example.org", "m.receipt", *content);
                 REQUIRE(tx.has_value());
                 REQUIRE(tx->find(R"("edu_type":"m.receipt")") != std::string::npos);
                 REQUIRE(tx->find(R"("type":"m.receipt")") == std::string::npos);
@@ -110,8 +114,9 @@ SCENARIO("receipt EDU content follows Matrix spec nested structure",
             THEN("the receipt type key is preserved verbatim in the canonical output")
             {
                 REQUIRE(content.has_value());
-                REQUIRE(*content ==
-                        R"({"!room:server":{"m.read.private":{"@user:server":{"data":{"ts":9000},"event_ids":["$event:server"]}}}})");
+                REQUIRE(
+                    *content ==
+                    R"({"!room:server":{"m.read.private":{"@user:server":{"data":{"ts":9000},"event_ids":["$event:server"]}}}})");
             }
         }
     }

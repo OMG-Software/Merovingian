@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
@@ -7,8 +8,6 @@
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
-
-#include "federation_signing_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -73,6 +72,11 @@ namespace
     // A minimal valid JSON request body. The Matrix request-signing scheme
     // embeds the body as a parsed JSON object, so test bodies must be JSON.
     return R"({"origin":")" + origin + R"("})";
+}
+
+[[nodiscard]] auto transaction_body(std::string const& origin, std::string const& pdu_json) -> std::string
+{
+    return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + pdu_json + "]}";
 }
 
 [[nodiscard]] auto comma_delimited_pdu(std::string const& origin) -> std::string
@@ -246,8 +250,7 @@ SCENARIO("Signed federation request verification rejects stale bad mismatched an
         {
             auto const accepted = merovingian::federation::verify_signed_federation_request(valid, key);
             auto const rejected_expired = merovingian::federation::verify_signed_federation_request(valid, expired_key);
-            auto const rejected_mismatch =
-                merovingian::federation::verify_signed_federation_request(mismatched, key);
+            auto const rejected_mismatch = merovingian::federation::verify_signed_federation_request(mismatched, key);
             auto const rejected_bad_signature =
                 merovingian::federation::verify_signed_federation_request(bad_signature, key);
             auto const rejected_uncanonical =
@@ -257,13 +260,13 @@ SCENARIO("Signed federation request verification rejects stale bad mismatched an
             {
                 REQUIRE(accepted.accepted);
                 REQUIRE_FALSE(rejected_expired.accepted);
-                REQUIRE(rejected_expired.status == 502U);
+                REQUIRE(rejected_expired.status == 403U);
                 REQUIRE(rejected_expired.reason == "request signing key has expired");
                 REQUIRE_FALSE(rejected_mismatch.accepted);
-                REQUIRE(rejected_mismatch.status == 502U);
+                REQUIRE(rejected_mismatch.status == 403U);
                 REQUIRE(rejected_mismatch.reason == "request signing key does not match origin");
                 REQUIRE_FALSE(rejected_bad_signature.accepted);
-                REQUIRE(rejected_bad_signature.status == 502U);
+                REQUIRE(rejected_bad_signature.status == 403U);
                 REQUIRE(rejected_bad_signature.reason == "request signature verification failed");
                 REQUIRE_FALSE(rejected_uncanonical.accepted);
                 REQUIRE(rejected_uncanonical.reason == "canonical JSON signature verification required");
@@ -282,7 +285,7 @@ SCENARIO("Inbound federation transaction accepts signed public trusted remotes",
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
         auto const json_pdu = signed_json_pdu(origin, key_id, token);
-        auto const request = signed_request(origin, key_id, token, json_pdu);
+        auto const request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
 
         WHEN("the signed transaction is handled twice")
         {
@@ -324,7 +327,7 @@ SCENARIO("Inbound federation seeds discovery state for remotes resolved on deman
             return remote_for(origin, key_id, token);
         };
         auto const json_pdu = signed_json_pdu(origin, key_id, token);
-        auto const request = signed_request(origin, key_id, token, json_pdu);
+        auto const request = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
 
         WHEN("the first signed request from that remote is handled")
         {
@@ -401,7 +404,8 @@ SCENARIO("Inbound federation rejects malformed send targets and unsigned PDUs", 
         extra_segment.signature = merovingian::federation::make_federation_signature(
             origin, extra_segment.destination, extra_segment.method, extra_segment.target, extra_segment.body,
             merovingian::federation::test::keypair_from_seed(token).secret_key);
-        auto missing_signature = signed_request(origin, key_id, token, R"({"type":"m.room.message"})");
+        auto missing_signature =
+            signed_request(origin, key_id, token, transaction_body(origin, R"({"type":"m.room.message"})"));
 
         WHEN("the requests are handled")
         {
@@ -501,9 +505,9 @@ SCENARIO("Inbound federation applies backoff and increments failure count", "[fe
 
             THEN("failures are counted and backoff returns 429")
             {
-                REQUIRE(first.status == 502U);
-                REQUIRE(second.status == 502U);
-                REQUIRE(third.status == 502U);
+                REQUIRE(first.status == 403U);
+                REQUIRE(second.status == 403U);
+                REQUIRE(third.status == 403U);
                 REQUIRE(runtime.remotes.front().trust.consecutive_failures == 3U);
                 REQUIRE(backoff.status == 429U);
                 REQUIRE(backoff.body == "remote backoff required");

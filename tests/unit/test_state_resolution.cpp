@@ -110,7 +110,7 @@ SCENARIO("State resolution merges non-conflicting state groups", "[events][state
     }
 }
 
-SCENARIO("State resolution reports conflicts for later full resolution", "[events][state][resolution]")
+SCENARIO("State resolution resolves simple conflicts deterministically", "[events][state][resolution]")
 {
     GIVEN("two state groups with conflicting power-level events")
     {
@@ -132,11 +132,13 @@ SCENARIO("State resolution reports conflicts for later full resolution", "[event
             auto const result = merovingian::events::resolve_state(request);
             auto const summary = merovingian::events::state_resolution_summary(result);
 
-            THEN("the scaffold fails closed with a conflict reason")
+            THEN("the higher-priority event wins and the state is resolved")
             {
-                REQUIRE_FALSE(result.resolved);
-                REQUIRE(result.reason == "conflicting state requires full resolution");
-                REQUIRE(summary.find("resolved=false") != std::string::npos);
+                REQUIRE(result.resolved);
+                REQUIRE(result.reason.empty());
+                REQUIRE(result.resolved_state.size() == 1U);
+                REQUIRE(result.resolved_state.front().event_id == "$power-a");
+                REQUIRE(summary.find("resolved=true") != std::string::npos);
             }
         }
     }

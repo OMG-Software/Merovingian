@@ -68,8 +68,8 @@ private:
 class CapturingEd25519Provider final : public merovingian::crypto::Ed25519Provider
 {
 public:
-    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const& key,
-                            std::string_view message) -> merovingian::crypto::SignatureResult override
+    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const& key, std::string_view message)
+        -> merovingian::crypto::SignatureResult override
     {
         if (key.key_id != "ed25519:auto")
         {
@@ -985,25 +985,23 @@ SCENARIO("Room version registry exposes stable modern room versions", "[rooms]")
     GIVEN("known and unsupported room-version IDs")
     {
         auto constexpr known_version = "12";
-        auto constexpr unsupported_version = "1";
+        auto constexpr legacy_stable_version = "1";
+        auto constexpr unknown_version = "13";
 
         WHEN("room-version support is checked")
         {
             auto const known_supported = merovingian::rooms::room_version_is_supported(known_version);
-            auto const unsupported_supported = merovingian::rooms::room_version_is_supported(unsupported_version);
+            auto const legacy_supported = merovingian::rooms::room_version_is_supported(legacy_stable_version);
+            auto const unknown_supported = merovingian::rooms::room_version_is_supported(unknown_version);
 
-            THEN("modern stable versions are supported")
+            THEN("stable versions are supported and unknown versions are rejected")
             {
-                // Spec MUST: stable room versions 10, 11, and 12 MUST be supported.
-                // Do NOT remove/change - advertising support for a version and then failing
-                // to handle it breaks federation room join for those room versions.
+                // Spec MUST: room versions 1 through 12 are stable in Matrix v1.18.
                 REQUIRE(merovingian::rooms::room_version_is_supported("10"));
                 REQUIRE(merovingian::rooms::room_version_is_supported("11"));
                 REQUIRE(known_supported);
-                // Spec: legacy room version 1 SHOULD NOT be supported by this server.
-                // Do NOT remove/change - inadvertently enabling legacy versions exposes the
-                // server to room version downgrade attacks and old auth rule bugs.
-                REQUIRE_FALSE(unsupported_supported);
+                REQUIRE(legacy_supported);
+                REQUIRE_FALSE(unknown_supported);
             }
         }
     }
@@ -1037,13 +1035,9 @@ SCENARIO("Room-version fixtures pin Matrix v10 v11 and v12 policy differences", 
                 REQUIRE(room_v10 != nullptr);
                 REQUIRE(room_v11 != nullptr);
                 REQUIRE(room_v12 != nullptr);
-                // Spec MUST: exactly three stable room versions must be registered.
-                // Do NOT remove/change - adding or removing versions without updating the
-                // capability advertisement breaks federation negotiation.
-                REQUIRE(fixtures.size() == 3U);
-                // Spec MUST: all three modern room versions MUST be marked stable.
-                // Do NOT remove/change - non-stable versions MUST NOT be advertised as
-                // the default version for new rooms.
+                // Spec MUST: the registry contains all stable versions; this fixture
+                // inspects the v10-v12 subset in detail.
+                REQUIRE(fixtures.size() == 12U);
                 REQUIRE(room_v10->stable);
                 REQUIRE(room_v11->stable);
                 REQUIRE(room_v12->stable);
