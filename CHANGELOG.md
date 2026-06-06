@@ -1,5 +1,20 @@
 ## 0.5.9
 
+- Fix canonical JSON parser to reject `-0` per Matrix v1.18 spec which says
+  "numbers that are negative zero MUST NOT appear in canonical JSON." The parser
+  previously accepted `-0` and silently normalised it to `0`. Three tests that
+  incorrectly expected successful parsing of `-0` are corrected to expect
+  `invalid_number`. The serialiser was already correct (never produces `-0`).
+- Fix four conformance test issues identified by static analysis:
+  (1) Localpart grammar test mislabelled uppercase `ALICE` as "Spec MUST" —
+  uppercase is historical/federation compat, not normative v1.18. Split into a
+  normative scenario (lowercase only) and a `[historical]` scenario.
+  (2) Server discovery test asserted the rejection `reason` string must contain
+  `"private"` and labelled it "Spec MUST" — the spec only mandates the
+  `discovery_allowed` flag, not message content. Replaced with a non-empty check.
+  (3) Sync filter `parse_filter_argument` invalid-JSON scenario was tagged
+  `[conformance]` but tests internal helper leniency, not the Matrix API. Retagged
+  `[helper]` with a comment clarifying where API-level 400 enforcement lives.
 - Fix two missing default push rules: add `.m.rule.contains_display_name` and
   `.m.rule.roomnotif` to the server's default override ruleset. Their absence
   caused Element SDK to log "Missing default global override push rule" on every

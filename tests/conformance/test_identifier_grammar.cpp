@@ -275,30 +275,57 @@ SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected",
     }
 }
 
-SCENARIO("User ID localpart: valid localpart characters are accepted",
+// Spec: Matrix CS API v1.18 Appendices § User Identifiers
+// URL: https://spec.matrix.org/v1.18/appendices/#user-identifiers
+//
+// New user ID localparts MUST only use: a-z, 0-9, ., _, =, -, /, +
+// Historical user IDs MAY contain additional characters (e.g. uppercase ASCII).
+// Servers SHOULD accept historical localparts from federation.
+// The localpart_is_valid() helper accepts the full historical set so that
+// incoming federation user IDs are not incorrectly rejected.
+SCENARIO("User ID localpart: normative new-ID characters are accepted",
          "[conformance][identifiers][user-id][localpart]")
 {
-    GIVEN("localparts using the full allowed character set")
+    GIVEN("localparts using the normative v1.18 character set (lowercase only)")
     {
-        auto const valid = std::vector<std::string_view>{
+        auto const normative_valid = std::vector<std::string_view>{
             "alice",
             "alice123",
             "alice.bob",
             "alice-bob",
             "alice_bob",
-            "ALICE",
             "alice=bob",
         };
 
         WHEN("each localpart is validated")
         {
-            THEN("all spec-permitted localpart characters are accepted")
+            THEN("all normative v1.18 localpart characters are accepted")
             {
-                for (auto const& lp : valid)
+                for (auto const& lp : normative_valid)
                 {
-                    // Spec MUST: localpart characters include a-z A-Z 0-9 . - _ = / +
+                    // Spec MUST: a-z, 0-9, ., _, =, -, /, + are all normatively valid.
                     REQUIRE(merovingian::auth::localpart_is_valid(lp));
                 }
+            }
+        }
+    }
+}
+
+// NOTE: This is a historical-compatibility test, not a normative conformance test.
+// The spec says new localparts MUST be lowercase; uppercase localparts exist in
+// older deployments and servers SHOULD accept them for federation.
+SCENARIO("User ID localpart: historical uppercase localparts are accepted for federation compatibility",
+         "[identifiers][user-id][localpart][historical]")
+{
+    GIVEN("an uppercase localpart from a historical deployment")
+    {
+        WHEN("the localpart is validated")
+        {
+            THEN("localpart_is_valid accepts it for historical/federation compatibility")
+            {
+                // Historical compatibility — NOT a new-user-ID conformance requirement.
+                // New registrations MUST NOT create uppercase localparts.
+                REQUIRE(merovingian::auth::localpart_is_valid("ALICE"));
             }
         }
     }

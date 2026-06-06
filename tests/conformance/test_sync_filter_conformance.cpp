@@ -294,7 +294,11 @@ SCENARIO("Filter combines type and sender restrictions with AND logic",
 // via GET /user/{userId}/filter/{filterId}. The parsed filter representation
 // must round-trip through parse_filter_argument so that inline JSON filters
 // (passed directly as the ?filter= query param) behave the same as stored ones.
-SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter][conformance]")
+// NOTE: This tests internal parse_filter_argument helper behavior, not Matrix API conformance.
+// The Matrix spec would require the /sync endpoint to return 400 M_BAD_JSON for an
+// invalid literal filter. The helper itself is intentionally lenient (pass-all on error)
+// so the runtime can log and continue. API-level 400 enforcement sits in the route handler.
+SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter][helper]")
 {
     GIVEN("syntactically invalid JSON as filter argument")
     {

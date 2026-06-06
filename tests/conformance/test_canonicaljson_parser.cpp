@@ -116,8 +116,8 @@ SCENARIO("Canonical JSON parser rejects non-integer and out-of-range numbers", "
     }
 }
 
-SCENARIO("Canonical JSON parser rejects leading zeros and explicit positive signs",
-         "[canonicaljson][parser]")
+SCENARIO("Canonical JSON parser rejects leading zeros, explicit positive signs, and negative zero",
+         "[canonicaljson][parser][conformance]")
 {
     GIVEN("non-canonical integer tokens")
     {
@@ -125,6 +125,8 @@ SCENARIO("Canonical JSON parser rejects leading zeros and explicit positive sign
         auto constexpr leading_zero_long = "007";
         auto constexpr explicit_positive = "+5";
         auto constexpr leading_positive_negative = "+-1";
+        // Spec: Matrix v1.18 Appendices § Canonical JSON:
+        // "Numbers that are negative zero MUST NOT appear in canonical JSON."
         auto constexpr signed_zero = "-0";
 
         WHEN("the tokens are parsed")
@@ -137,15 +139,14 @@ SCENARIO("Canonical JSON parser rejects leading zeros and explicit positive sign
 
             THEN("every non-canonical shape is rejected as invalid_number")
             {
+                // Spec MUST: leading zeros are not canonical.
                 REQUIRE(short_result.error == merovingian::canonicaljson::ParseError::invalid_number);
                 REQUIRE(long_result.error == merovingian::canonicaljson::ParseError::invalid_number);
                 REQUIRE(positive_result.error == merovingian::canonicaljson::ParseError::invalid_number);
                 REQUIRE(both_result.error == merovingian::canonicaljson::ParseError::invalid_number);
-                // "-0" is technically `^-?0$` so it matches the canonical shape;
-                // the from_chars round-trip will succeed with value 0. The
-                // canonical-JSON spec permits it; pin that here so a future
-                // tightening does not silently break it.
-                REQUIRE(signed_zero_result.error == merovingian::canonicaljson::ParseError::none);
+                // Spec MUST: "-0" is explicitly prohibited by the canonical JSON spec.
+                // (Previous comment claiming "the spec permits it" was incorrect.)
+                REQUIRE(signed_zero_result.error == merovingian::canonicaljson::ParseError::invalid_number);
             }
         }
     }
