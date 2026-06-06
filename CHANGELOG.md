@@ -1,3 +1,17 @@
+## 0.5.12
+
+- Fix canonical JSON key-sort conformance test: the scenario
+  "sorts object keys by Unicode code point" claimed to cover multi-byte UTF-8
+  keys (comment mentioned `é`) but the actual JSON was `{"z":3,"A":1,"a":2}` —
+  all ASCII. The expected output only checked ASCII ordering.
+  Replaced with a test that uses `é` (U+00E9, UTF-8: `0xC3 0xA9`) and `中`
+  (U+4E2D, UTF-8: `0xE4 0xB8 0xAD`) as real keys, verifying that the
+  serializer places them after all ASCII keys and in ascending byte order.
+- Fix misleading `[helper]` scenario comment in sync filter conformance test:
+  changed "Spec behaviour" to "Implementation helper behaviour, NOT Matrix API
+  behaviour" to clarify the distinction between the lenient internal helper and
+  the spec-mandated `400 M_BAD_JSON` route-level rejection.
+
 ## 0.5.11
 
 - Split `localpart_is_valid()` into two spec-faithful validators:
