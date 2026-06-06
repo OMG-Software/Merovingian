@@ -256,7 +256,7 @@ namespace
         auto const& server_name = runtime.config.server().server_name;
         // Build the transaction body through the shared federation helper so the EDU is
         // keyed by "edu_type" per spec; a bare "type" key makes Synapse 500 the transaction.
-        auto const tx_body_opt = federation::build_edu_transaction_body(edu_type, edu_content_json);
+        auto const tx_body_opt = federation::build_edu_transaction_body(server_name, edu_type, edu_content_json);
         if (!tx_body_opt.has_value())
         {
             return 0U;
@@ -3278,12 +3278,12 @@ namespace
             return false;
         }
         // Shared builder keys the EDU by "edu_type" per the federation spec.
-        auto const tx_body = federation::build_edu_transaction_body(edu_type, edu_content_json);
+        auto const& server_name = runtime.config.server().server_name;
+        auto const tx_body = federation::build_edu_transaction_body(server_name, edu_type, edu_content_json);
         if (!tx_body.has_value())
         {
             return false;
         }
-        auto const& server_name = runtime.config.server().server_name;
         auto const tx_id = federation::make_federation_transaction_id();
         auto target = "/_matrix/federation/v1/send/" + tx_id;
         auto transaction =

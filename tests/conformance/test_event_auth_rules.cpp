@@ -1022,3 +1022,137 @@ SCENARIO("Auth rules reject a user who is banned from joining", "[events][auth][
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Room version 1 auth rules differ from v6+
+// Spec: https://spec.matrix.org/v1.18/rooms/v1/#authorization-rules
+//
+// In room versions 1–5, there is NO sender-domain check (the v6 rule that
+// requires sender's domain to match the create event's creator domain does
+// not exist). A cross-domain sender is therefore allowed in v1 rooms, provided
+// all other rules are satisfied.
+// ---------------------------------------------------------------------------
+
+SCENARIO("Auth rules v1: cross-domain sender is NOT rejected (no domain check before v6)",
+         "[events][auth][room-version][v1]")
+{
+    GIVEN("a room version 1 room created by @alice:example.org with a sender from evil.org")
+    {
+        // @eve:evil.org sends a message in a v1 room created by @alice:example.org.
+        // In v6+ this would be rejected at rule step 3 (domain mismatch).
+        // In v1 there is no such rule, so the event MUST be allowed.
+        auto const msg_json = make_message_event("@eve:evil.org");
+        auto const parsed   = merovingian::canonicaljson::parse_lossless(msg_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("1");
+        REQUIRE(policy_v1 != nullptr);
+
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create =
+            merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
+                .value;
+        auth_events.sender_member =
+            merovingian::canonicaljson::parse_lossless(
+                make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
+                .value;
+
+        WHEN("the event is authorized under room version 1 rules")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy_v1, auth_events);
+
+            THEN("the event is allowed — v1 has no sender-domain check")
+            {
+                // Spec MUST: the v6 sender-domain rule does NOT apply in room versions 1–5.
+                // Cross-domain senders are valid in v1 rooms.
+                REQUIRE(decision.allowed);
+            }
+        }
+
+        WHEN("the same event is authorized under room version 6 rules for comparison")
+        {
+            auto const* policy_v6 = merovingian::rooms::find_room_version_policy("6");
+            REQUIRE(policy_v6 != nullptr);
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy_v6, auth_events);
+
+            THEN("the event is rejected at step 3 — v6+ enforces the domain check")
+            {
+                // Spec MUST: the sender-domain check is introduced in room version 6.
+                REQUIRE_FALSE(decision.allowed);
+                REQUIRE(decision.rule_step == "3");
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules v1: create event is allowed even when sender domain differs from room_id domain",
+         "[events][auth][room-version][v1]")
+{
+    GIVEN("a v1 create event (room versions 1-5 have no domain check)")
+    {
+        auto const create_json = make_create_event("@alice:example.org");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(create_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        auto const* policy_v1 = merovingian::rooms::find_room_version_policy("1");
+        REQUIRE(policy_v1 != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+
+        WHEN("the create event is authorized under v1")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy_v1, auth_events);
+
+            THEN("the first create event is allowed in v1 (rule 1)")
+            {
+                REQUIRE(decision.allowed);
+                REQUIRE(decision.rule_step == "1");
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules: room version policies exist for all stable versions",
+         "[events][auth][room-version]")
+{
+    GIVEN("a request for each stable Matrix room version")
+    {
+        auto constexpr stable_versions = std::array<char const*, 10>{
+            "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"
+        };
+
+        WHEN("each version policy is looked up")
+        {
+            THEN("all stable room versions have a registered policy")
+            {
+                for (auto const* ver : stable_versions)
+                {
+                    // Spec MUST: a compliant server MUST support all stable room versions.
+                    // A null policy means the server cannot participate in that room type.
+                    REQUIRE(merovingian::rooms::find_room_version_policy(ver) != nullptr);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Auth rules: room version 11 and 12 are supported",
+         "[events][auth][room-version]")
+{
+    GIVEN("a request for room versions 11 and 12")
+    {
+        WHEN("version 11 and 12 policies are looked up")
+        {
+            THEN("both are registered")
+            {
+                REQUIRE(merovingian::rooms::find_room_version_policy("11") != nullptr);
+                REQUIRE(merovingian::rooms::find_room_version_policy("12") != nullptr);
+            }
+        }
+    }
+}

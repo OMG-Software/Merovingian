@@ -154,8 +154,12 @@ namespace
 
     struct ParsedTransactionBody final
     {
+        bool valid{false};
+        std::string origin{};
+        bool has_origin_server_ts{false};
         std::vector<std::string> pdus{};
         std::vector<std::pair<std::string, std::string>> edus{}; // (edu_type, content_json)
+        std::string error{};
     };
 
     [[nodiscard]] auto serialize_canonical_value(canonicaljson::Value const& value) -> std::string
@@ -179,90 +183,103 @@ namespace
 
     [[nodiscard]] auto parse_transaction_body(std::string_view body) -> ParsedTransactionBody
     {
-        // JSON-shaped Matrix transaction body: { "pdus": [...], "edus": [...] }.
-        // A JSON object without a top-level "pdus" key is treated as a single
-        // PDU envelope so existing test fixtures that submit one PDU per
-        // request continue to work.
-        if (!body.empty() && body.front() == '{')
+        if (body.empty())
         {
-            auto const parsed = canonicaljson::parse_lossless(body);
-            if (parsed.error == canonicaljson::ParseError::none)
+            auto parsed_body = ParsedTransactionBody{};
+            parsed_body.error = "transaction body must be a JSON object";
+            return parsed_body;
+        }
+
+        auto const parsed = canonicaljson::parse_lossless(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            auto parsed_body = ParsedTransactionBody{};
+            parsed_body.error = "transaction body must be valid canonical JSON";
+            return parsed_body;
+        }
+
+        auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (root == nullptr)
+        {
+            auto parsed_body = ParsedTransactionBody{};
+            parsed_body.error = "transaction body must be a JSON object";
+            return parsed_body;
+        }
+
+        auto parsed_body = ParsedTransactionBody{};
+        auto const* origin_value = find_canonical_member(*root, "origin");
+        auto const* origin_text =
+            origin_value == nullptr ? nullptr : std::get_if<std::string>(&origin_value->storage());
+        if (origin_text == nullptr || origin_text->empty())
+        {
+            parsed_body.error = "transaction origin is required";
+            return parsed_body;
+        }
+        parsed_body.origin = *origin_text;
+
+        auto const* origin_server_ts_value = find_canonical_member(*root, "origin_server_ts");
+        if (origin_server_ts_value == nullptr ||
+            std::get_if<std::int64_t>(&origin_server_ts_value->storage()) == nullptr)
+        {
+            parsed_body.error = "transaction origin_server_ts is required";
+            return parsed_body;
+        }
+        parsed_body.has_origin_server_ts = true;
+
+        auto const* pdus_value = find_canonical_member(*root, "pdus");
+        auto const* pdus_array =
+            pdus_value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&pdus_value->storage());
+        if (pdus_array == nullptr)
+        {
+            parsed_body.error = "transaction pdus must be an array";
+            return parsed_body;
+        }
+        for (auto const& pdu_value : *pdus_array)
+        {
+            if (auto serialized = serialize_canonical_value(pdu_value); !serialized.empty())
             {
-                auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-                if (root != nullptr)
-                {
-                    auto const* pdus_value = find_canonical_member(*root, "pdus");
-                    auto const* edus_value = find_canonical_member(*root, "edus");
-                    if (pdus_value != nullptr || edus_value != nullptr)
-                    {
-                        auto parsed_body = ParsedTransactionBody{};
-                        if (auto const* pdus_array = pdus_value == nullptr
-                                                         ? nullptr
-                                                         : std::get_if<canonicaljson::Array>(&pdus_value->storage());
-                            pdus_array != nullptr)
-                        {
-                            for (auto const& pdu_value : *pdus_array)
-                            {
-                                if (auto serialized = serialize_canonical_value(pdu_value); !serialized.empty())
-                                {
-                                    parsed_body.pdus.push_back(std::move(serialized));
-                                }
-                            }
-                        }
-                        if (auto const* edus_array = edus_value == nullptr
-                                                         ? nullptr
-                                                         : std::get_if<canonicaljson::Array>(&edus_value->storage());
-                            edus_array != nullptr)
-                        {
-                            for (auto const& edu_value : *edus_array)
-                            {
-                                auto const* edu_object = std::get_if<canonicaljson::Object>(&edu_value.storage());
-                                if (edu_object == nullptr)
-                                {
-                                    continue;
-                                }
-                                auto const* type_value = find_canonical_member(*edu_object, "edu_type");
-                                auto const* content_value = find_canonical_member(*edu_object, "content");
-                                if (type_value == nullptr || content_value == nullptr)
-                                {
-                                    continue;
-                                }
-                                auto const* type_text = std::get_if<std::string>(&type_value->storage());
-                                if (type_text == nullptr)
-                                {
-                                    continue;
-                                }
-                                auto content_canonical = serialize_canonical_value(*content_value);
-                                if (content_canonical.empty())
-                                {
-                                    continue;
-                                }
-                                parsed_body.edus.emplace_back(*type_text, std::move(content_canonical));
-                            }
-                        }
-                        return parsed_body;
-                    }
-                    // JSON object without pdus/edus envelope keys: treat as a
-                    // single PDU body (one-event-per-request fixture).
-                    auto single_pdu = ParsedTransactionBody{};
-                    single_pdu.pdus.emplace_back(body);
-                    return single_pdu;
-                }
+                parsed_body.pdus.push_back(std::move(serialized));
             }
         }
 
-        // Legacy split: body is one or more semicolon-delimited PDUs with no
-        // EDUs. Kept for compatibility with internal test fixtures and
-        // existing inbound handler regression coverage.
-        auto legacy = ParsedTransactionBody{};
-        for (auto& field : split_fields(body, ';'))
+        auto const* edus_value = find_canonical_member(*root, "edus");
+        if (edus_value != nullptr)
         {
-            if (!field.empty())
+            auto const* edus_array = std::get_if<canonicaljson::Array>(&edus_value->storage());
+            if (edus_array == nullptr)
             {
-                legacy.pdus.push_back(std::move(field));
+                parsed_body.error = "transaction edus must be an array";
+                return parsed_body;
+            }
+            for (auto const& edu_value : *edus_array)
+            {
+                auto const* edu_object = std::get_if<canonicaljson::Object>(&edu_value.storage());
+                if (edu_object == nullptr)
+                {
+                    continue;
+                }
+                auto const* type_value = find_canonical_member(*edu_object, "edu_type");
+                auto const* content_value = find_canonical_member(*edu_object, "content");
+                if (type_value == nullptr || content_value == nullptr)
+                {
+                    continue;
+                }
+                auto const* type_text = std::get_if<std::string>(&type_value->storage());
+                if (type_text == nullptr)
+                {
+                    continue;
+                }
+                auto content_canonical = serialize_canonical_value(*content_value);
+                if (content_canonical.empty())
+                {
+                    continue;
+                }
+                parsed_body.edus.emplace_back(*type_text, std::move(content_canonical));
             }
         }
-        return legacy;
+
+        parsed_body.valid = true;
+        return parsed_body;
     }
 
     [[nodiscard]] auto pdu_is_authorized(FederationPdu const& pdu) -> bool
@@ -1008,16 +1025,11 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
 {
     if (request.origin != key.server_name || request.key_id != key.key_id)
     {
-        // 502 rather than 401: a key mismatch likely means our cache is stale,
-        // not that the remote is malicious. Synapse propagates 401 to clients
-        // as an auth error, triggering automatic logout.
-        return make_decision(false, 502U, "request signing key does not match origin");
+        return make_decision(false, 403U, "request signing key does not match origin");
     }
     if (key.valid_until_ts != 0U && request.now_ts > key.valid_until_ts)
     {
-        // 502 rather than 401: an expired key could be due to clock skew or a
-        // stale cache, not a genuinely unauthorized request.
-        return make_decision(false, 502U, "request signing key has expired");
+        return make_decision(false, 403U, "request signing key has expired");
     }
     auto const payload =
         federation_request_payload(request.origin, request.destination, request.method, request.target, request.body);
@@ -1028,18 +1040,13 @@ auto verify_signed_federation_request(SignedFederationRequest const& request, Fe
                                     reinterpret_cast<unsigned char const*>(payload->data()), payload->size(),
                                     reinterpret_cast<unsigned char const*>(key.public_key_bytes.data())) != 0)
     {
-        // 502 rather than 401: signature verification failure could be caused
-        // by a stale key cache or key rotation on the remote side. Synapse
-        // propagates 401 to clients, triggering automatic logout.
-        return make_decision(false, 502U, "request signature verification failed");
+        return make_decision(false, 403U, "request signature verification failed");
     }
     auto const boundary = verify_federation_request_signature(
         {request.origin, request.key_id, request.signature, request.canonical_json_verified});
     if (!boundary.accepted)
     {
-        // 502 rather than 401: boundary verification failure is a server-side
-        // issue, not a client auth failure.
-        return make_decision(false, 502U, boundary.reason);
+        return make_decision(false, 403U, boundary.reason);
     }
     return make_decision(true, 200U, {});
 }
@@ -1319,9 +1326,35 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     }
 
     auto const parsed_body = parse_transaction_body(request.body);
+    auto const transaction_id = transaction_id_from_send_target(request.target);
+    if (!parsed_body.valid)
+    {
+        ++remote->trust.consecutive_failures;
+        log_diagnostic("transaction.rejected", {
+                                                   {"origin",         request.origin,    false},
+                                                   {"transaction_id", transaction_id,    false},
+                                                   {"status",         "400",             false},
+                                                   {"reason",         parsed_body.error, false}
+        });
+        audit_federation(runtime, "federation.rejected", request.origin, request.target, parsed_body.error);
+        return {400U, homeserver::matrix_error("M_BAD_JSON", parsed_body.error)};
+    }
+    if (parsed_body.origin != request.origin)
+    {
+        auto constexpr reason = "transaction origin does not match request origin";
+        ++remote->trust.consecutive_failures;
+        log_diagnostic("transaction.rejected", {
+                                                   {"origin",         request.origin, false},
+                                                   {"transaction_id", transaction_id, false},
+                                                   {"status",         "403",          false},
+                                                   {"reason",         reason,         false}
+        });
+        audit_federation(runtime, "federation.rejected", request.origin, request.target, reason);
+        return {403U, reason};
+    }
     auto transaction = FederationTransaction{};
-    transaction.origin = request.origin;
-    transaction.transaction_id = transaction_id_from_send_target(request.target);
+    transaction.origin = parsed_body.origin;
+    transaction.transaction_id = transaction_id;
     transaction.byte_size = request.body.size();
     transaction.pdus = parsed_body.pdus;
     for (auto const& [edu_type, edu_content] : parsed_body.edus)

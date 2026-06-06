@@ -48,8 +48,8 @@ namespace
 
     [[nodiscard]] auto is_localpart_character(char value) noexcept -> bool
     {
-        return is_ascii_lower(value) || is_ascii_digit(value) || value == '.' || value == '_' || value == '-' ||
-               value == '=' || value == '/' || value == '+';
+        return is_ascii_lower(value) || is_ascii_upper(value) || is_ascii_digit(value) || value == '.' ||
+               value == '_' || value == '-' || value == '=' || value == '/' || value == '+';
     }
 
     [[nodiscard]] auto port_is_valid(std::string_view port) noexcept -> bool

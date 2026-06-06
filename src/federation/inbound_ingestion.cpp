@@ -78,26 +78,33 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
 {
     if (pdu_json.empty() || pdu_json.front() != '{')
     {
-        log_diagnostic("pdu.parse.rejected", {{"reason", "empty or non-object PDU", false}});
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", "empty or non-object PDU", false}
+        });
         return std::nullopt;
     }
     auto const parsed = canonicaljson::parse_lossless(pdu_json);
     if (parsed.error != canonicaljson::ParseError::none)
     {
-        log_diagnostic("pdu.parse.rejected", {{"reason", "PDU JSON parse failed", false}});
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", "PDU JSON parse failed", false}
+        });
         return std::nullopt;
     }
     auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
     if (root == nullptr)
     {
-        log_diagnostic("pdu.parse.rejected", {{"reason", "PDU root is not an object", false}});
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", "PDU root is not an object", false}
+        });
         return std::nullopt;
     }
     auto envelope = events::parse_event_envelope(parsed.value);
     if (!envelope.error.empty())
     {
-        log_diagnostic("pdu.parse.rejected",
-                       {{"reason", "event envelope parse failed: " + envelope.error, false}});
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", "event envelope parse failed: " + envelope.error, false}
+        });
         return std::nullopt;
     }
 
@@ -107,13 +114,17 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
     auto const* room_version_policy = rooms::find_room_version_policy("12");
     if (room_version_policy == nullptr)
     {
-        log_diagnostic("pdu.parse.rejected", {{"reason", "room version policy not found", false}});
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", "room version policy not found", false}
+        });
         return std::nullopt;
     }
     auto const event_id_result = events::make_reference_hash_event_id(parsed.value, *room_version_policy);
     if (event_id_result.event_id.empty())
     {
-        log_diagnostic("pdu.parse.rejected", {{"reason", "event ID computation failed", false}});
+        log_diagnostic("pdu.parse.rejected", {
+                                                 {"reason", "event ID computation failed", false}
+        });
         return std::nullopt;
     }
 
@@ -123,7 +134,7 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
     out.room_version = "12";
     out.sender = envelope.event.sender;
     out.event_type = envelope.event.event_type;
-    if (!envelope.event.state_key.empty())
+    if (find_member(*root, "state_key") != nullptr)
     {
         out.state_key = envelope.event.state_key;
     }
@@ -146,11 +157,12 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
             out.depth = static_cast<std::uint64_t>(*depth);
         }
     }
-    log_diagnostic("pdu.parse.accepted",
-                   {{"event_id",   out.event_id,                        false},
-                    {"room_id",    out.room_id,                         false},
-                    {"sender",     out.sender,                          false},
-                    {"event_type", out.event_type,                      false}});
+    log_diagnostic("pdu.parse.accepted", {
+                                             {"event_id",   out.event_id,   false},
+                                             {"room_id",    out.room_id,    false},
+                                             {"sender",     out.sender,     false},
+                                             {"event_type", out.event_type, false}
+    });
     return out;
 }
 
@@ -199,9 +211,8 @@ auto edu_content_is_valid(EduType type, std::string_view content_json) -> bool
     switch (type)
     {
     case EduType::typing:
-        // typing content: { room_id: string, user_id: string, typing: bool }.
-        return find_member(*root, "room_id") != nullptr && find_member(*root, "user_id") != nullptr &&
-               find_member(*root, "typing") != nullptr;
+        // typing content: { room_id: string, user_ids: [string, ...] }.
+        return find_member(*root, "room_id") != nullptr && find_member(*root, "user_ids") != nullptr;
     case EduType::receipt:
         // receipt content: { <room_id>: { "m.read": { <user_id>: { ts } } } }.
         return !root->empty();
@@ -266,15 +277,15 @@ auto apply_state_resolution_v2(PduStateConflictContext const& context, ResolvedS
     auto const resolution = events::resolve_state_v2(request, *policy);
     if (!resolution.resolved)
     {
-        return {PduIngestionStatus::rejected_state_conflict,
-                "state-res v2 failed: " + resolution.reason, {}};
+        return {PduIngestionStatus::rejected_state_conflict, "state-res v2 failed: " + resolution.reason, {}};
     }
     if (apply_resolved && !apply_resolved(resolution.resolved_state))
     {
         return {PduIngestionStatus::rejected_state_conflict, "state-res v2: applier rejected merged state", {}};
     }
     return {PduIngestionStatus::accepted,
-            "state-res v2: merged " + std::to_string(resolution.resolved_state.size()) + " state events", {}};
+            "state-res v2: merged " + std::to_string(resolution.resolved_state.size()) + " state events",
+            {}};
 }
 
 } // namespace merovingian::federation

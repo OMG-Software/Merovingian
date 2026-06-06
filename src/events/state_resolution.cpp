@@ -82,6 +82,27 @@ namespace
         return !std::holds_alternative<std::nullptr_t>(value.storage());
     }
 
+    [[nodiscard]] auto event_object(StateEventReference const& event) noexcept -> canonicaljson::Object const*
+    {
+        return value_is_object(event.event_json);
+    }
+
+    [[nodiscard]] auto event_has_member(StateEventReference const& event, std::string_view key) noexcept -> bool
+    {
+        auto const* obj = event_object(event);
+        return obj != nullptr && object_member(*obj, key) != nullptr;
+    }
+
+    [[nodiscard]] auto select_v1_winner(StateEventReference const& existing,
+                                        StateEventReference const& candidate) noexcept -> StateEventReference const&
+    {
+        if (candidate.depth != existing.depth)
+        {
+            return candidate.depth > existing.depth ? candidate : existing;
+        }
+        return candidate.event_id < existing.event_id ? candidate : existing;
+    }
+
     [[nodiscard]] auto extract_user_power(canonicaljson::Value const& power_levels_event,
                                           std::string_view user_id) noexcept -> std::int64_t
     {
@@ -248,7 +269,7 @@ auto resolve_state(StateResolutionRequest const& request) -> StateResolutionResu
             return {true, {}, {}};
         }
 
-        auto inner = StateResolutionResult{true, {}, {}};
+        auto resolved = StateMap{};
         for (auto const& group : request.state_groups)
         {
             for (auto const& event : group.state)
@@ -258,34 +279,35 @@ auto resolve_state(StateResolutionRequest const& request) -> StateResolutionResu
                     return {false, {}, "state event id is required"};
                 }
 
-                auto const* existing = [&]() -> StateEventReference const* {
-                    for (auto const& resolved : inner.resolved_state)
-                    {
-                        if (state_key_matches(resolved.key, event.key))
-                        {
-                            return &resolved;
-                        }
-                    }
-                    return nullptr;
-                }();
-
-                if (existing == nullptr)
+                auto const existing = resolved.find(event.key);
+                if (existing == resolved.end())
                 {
-                    inner.resolved_state.push_back(event);
+                    resolved.emplace(event.key, event);
                     continue;
                 }
-                if (existing->event_id != event.event_id)
+                if (existing->second.event_id == event.event_id)
                 {
-                    return {false, inner.resolved_state, "conflicting state requires full resolution"};
+                    continue;
                 }
+
+                existing->second = select_v1_winner(existing->second, event);
             }
         }
-        return inner;
+
+        auto resolved_state = std::vector<StateEventReference>{};
+        resolved_state.reserve(resolved.size());
+        for (auto const& [key, event] : resolved)
+        {
+            resolved_state.push_back(event);
+        }
+        return {true, std::move(resolved_state), {}};
     }();
     log_diagnostic(result.resolved ? "resolve_state.resolved" : "resolve_state.failed",
-                   {{"room_version", request.room_version,                              false},
-                    {"events",       std::to_string(result.resolved_state.size()),       false},
-                    {"reason",       result.reason,                                      false}});
+                   {
+                       {"room_version", request.room_version,                         false},
+                       {"events",       std::to_string(result.resolved_state.size()), false},
+                       {"reason",       result.reason,                                false}
+    });
     return result;
 }
 
@@ -438,7 +460,9 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
 {
     if (request.state_groups.empty())
     {
-        log_diagnostic("resolve_state_v2.empty", {{"room_version", request.room_version, false}});
+        log_diagnostic("resolve_state_v2.empty", {
+                                                     {"room_version", request.room_version, false}
+        });
         return {true, {}, {}};
     }
 
@@ -450,9 +474,23 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
 
     // Step 3: Collect all conflicted events and sort by reverse topological power ordering
     auto all_conflicted = std::vector<StateEventReference>{};
-    for (auto const& [key, event] : conflicted_events)
+    for (auto const& group : request.state_groups)
     {
-        all_conflicted.push_back(event);
+        for (auto const& event : group.state)
+        {
+            if (!conflicted_events.contains(event.key))
+            {
+                continue;
+            }
+
+            auto const duplicate = std::ranges::any_of(all_conflicted, [&event](StateEventReference const& existing) {
+                return state_key_matches(existing.key, event.key) && existing.event_id == event.event_id;
+            });
+            if (!duplicate)
+            {
+                all_conflicted.push_back(event);
+            }
+        }
     }
 
     auto sorted = reverse_topological_power_sort(all_conflicted, unconflicted);
@@ -463,13 +501,20 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
     // Step 5: Iterate through sorted conflicted events, auth-check each against current resolved state
     for (auto const& event : sorted)
     {
-        auto auth_map = build_auth_event_map_from_state(event.event_json, resolved);
-        if (!value_has_content(event.event_json))
+        if (resolved.contains(event.key))
         {
             continue;
         }
+
+        if (!value_has_content(event.event_json))
+        {
+            resolved[event.key] = event;
+            continue;
+        }
+
+        auto auth_map = build_auth_event_map_from_state(event.event_json, resolved);
         auto const decision = authorize_event_against_auth_events(event.event_json, policy, auth_map);
-        if (decision.allowed)
+        if (decision.allowed || !event_has_member(event, "content"))
         {
             resolved[event.key] = event;
         }
@@ -482,9 +527,10 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
         result_state.push_back(event);
     }
 
-    log_diagnostic("resolve_state_v2.resolved",
-                   {{"room_version", request.room_version,                false},
-                    {"events",       std::to_string(result_state.size()), false}});
+    log_diagnostic("resolve_state_v2.resolved", {
+                                                    {"room_version", request.room_version,                false},
+                                                    {"events",       std::to_string(result_state.size()), false}
+    });
     return {true, std::move(result_state), {}};
 }
 

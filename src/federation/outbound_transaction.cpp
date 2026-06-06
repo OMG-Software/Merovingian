@@ -10,6 +10,7 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <optional>
 #include <string>
@@ -99,7 +100,10 @@ auto make_outbound_transaction(std::string_view destination, std::string_view me
 
 auto make_federation_transaction_id() -> std::string
 {
-    if (sodium_init() < 0) { return {}; }
+    if (sodium_init() < 0)
+    {
+        return {};
+    }
     auto bytes = std::array<unsigned char, 16U>{};
     randombytes_buf(bytes.data(), bytes.size());
     auto output = std::string(bytes.size() * 2U + 1U, '\0');
@@ -108,9 +112,13 @@ auto make_federation_transaction_id() -> std::string
     return output;
 }
 
-auto build_edu_transaction_body(std::string_view edu_type, std::string_view edu_content_json)
+auto build_edu_transaction_body(std::string_view origin, std::string_view edu_type, std::string_view edu_content_json)
     -> std::optional<std::string>
 {
+    if (origin.empty())
+    {
+        return std::nullopt;
+    }
     auto edu_value = canonicaljson::parse_lossless(edu_content_json);
     if (edu_value.error != canonicaljson::ParseError::none)
     {
@@ -129,6 +137,11 @@ auto build_edu_transaction_body(std::string_view edu_type, std::string_view edu_
     edus_array.push_back(canonicaljson::Value{std::move(edu_obj)});
 
     auto tx_root = canonicaljson::Object{};
+    auto const now_ms = static_cast<std::int64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+    tx_root.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin}}));
+    tx_root.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms}));
     tx_root.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{canonicaljson::Array{}}));
     tx_root.push_back(canonicaljson::make_member("edus", canonicaljson::Value{std::move(edus_array)}));
 

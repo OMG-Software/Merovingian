@@ -51,11 +51,10 @@ namespace
         // make_* + backfill are GET endpoints that return event templates or
         // historical PDUs; the server never receives signed event bodies on
         // those paths. send_edu also carries no inbound event signatures.
-        auto const carries_event_bodies = endpoint == FederationEndpoint::transaction ||
-                                          endpoint == FederationEndpoint::send_join ||
-                                          endpoint == FederationEndpoint::send_leave ||
-                                          endpoint == FederationEndpoint::send_knock ||
-                                          endpoint == FederationEndpoint::invite;
+        auto const carries_event_bodies =
+            endpoint == FederationEndpoint::transaction || endpoint == FederationEndpoint::send_join ||
+            endpoint == FederationEndpoint::send_leave || endpoint == FederationEndpoint::send_knock ||
+            endpoint == FederationEndpoint::invite;
         return {std::move(method), std::move(path_template), endpoint, true, carries_event_bodies};
     }
 
@@ -265,18 +264,16 @@ auto validate_federation_transaction(FederationTransaction const& transaction, s
         {
             return {false, "transaction exceeds configured byte limit"};
         }
-        if (transaction.pdus.empty() && transaction.edus.empty())
-        {
-            return {false, "transaction must contain PDUs or EDUs"};
-        }
         return {true, {}};
     }();
     log_diagnostic(result.accepted ? "transaction.accepted" : "transaction.rejected",
-                   {{"origin",         transaction.origin,                          false},
-                    {"transaction_id", transaction.transaction_id,                  false},
-                    {"pdus",           std::to_string(transaction.pdus.size()),      false},
-                    {"edus",           std::to_string(transaction.edus.size()),      false},
-                    {"reason",         result.reason,                                false}});
+                   {
+                       {"origin",         transaction.origin,                      false},
+                       {"transaction_id", transaction.transaction_id,              false},
+                       {"pdus",           std::to_string(transaction.pdus.size()), false},
+                       {"edus",           std::to_string(transaction.edus.size()), false},
+                       {"reason",         result.reason,                           false}
+    });
     return result;
 }
 
@@ -297,10 +294,13 @@ auto edu_is_allowed(FederationEdu const& edu) -> FederationTransactionDecision
         }
         return {true, {}};
     }();
-    log_diagnostic(result.accepted ? "edu.allowed" : "edu.rejected",
-                   {{"origin",   edu.origin,   false},
-                    {"edu_type", edu.edu_type, false},
-                    {"reason",   result.reason, false}});
+    log_diagnostic(
+        result.accepted ? "edu.allowed" : "edu.rejected",
+        {
+            {"origin",   edu.origin,    false},
+            {"edu_type", edu.edu_type,  false},
+            {"reason",   result.reason, false}
+    });
     return result;
 }
 

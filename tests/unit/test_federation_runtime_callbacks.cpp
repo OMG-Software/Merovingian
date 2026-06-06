@@ -220,6 +220,16 @@ private:
     return request;
 }
 
+[[nodiscard]] auto transaction_body(std::string const& origin, std::string const& pdu_json) -> std::string
+{
+    return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + pdu_json + "]}";
+}
+
+[[nodiscard]] auto empty_transaction_body(std::string const& origin) -> std::string
+{
+    return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[]})";
+}
+
 } // namespace
 
 SCENARIO("PDU sink is invoked when a valid inbound federation transaction is accepted",
@@ -251,7 +261,7 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         request.destination = "local.example.org";
         request.now_ts = 1000U;
         request.canonical_json_verified = true;
-        request.body = json_pdu;
+        request.body = transaction_body(origin, json_pdu);
         request.signature = merovingian::federation::make_federation_signature(
             origin, request.destination, request.method, request.target, request.body,
             merovingian::federation::test::keypair_from_seed(token).secret_key);
@@ -294,7 +304,7 @@ SCENARIO("PDU sink is invoked when a valid inbound federation transaction is acc
         request.destination = "local.example.org";
         request.now_ts = 1000U;
         request.canonical_json_verified = true;
-        request.body = json_pdu;
+        request.body = transaction_body(origin, json_pdu);
         request.signature = merovingian::federation::make_federation_signature(
             origin, request.destination, request.method, request.target, request.body,
             merovingian::federation::test::keypair_from_seed(token).secret_key);
@@ -856,7 +866,7 @@ SCENARIO("Remote key rotation triggers resolver when cached key is stale", "[fed
         request.destination = "local.example.org";
         request.now_ts = 1000U;
         request.canonical_json_verified = true;
-        request.body = "{}";
+        request.body = empty_transaction_body(origin);
         request.signature = merovingian::federation::make_federation_signature(
             origin, request.destination, request.method, request.target, request.body,
             merovingian::federation::test::keypair_from_seed(new_token).secret_key);
@@ -907,7 +917,7 @@ SCENARIO("Remote key rotation triggers resolver when cached key is stale", "[fed
         request.destination = "local.example.org";
         request.now_ts = 1000U;
         request.canonical_json_verified = true;
-        request.body = "{}";
+        request.body = empty_transaction_body(origin);
         request.signature = merovingian::federation::make_federation_signature(
             origin, request.destination, request.method, request.target, request.body,
             merovingian::federation::test::keypair_from_seed(new_token).secret_key);
@@ -947,8 +957,8 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
 
         // PDU whose signature won't verify against the registered key
         auto const bad_pdu = signed_json_pdu(origin, key_id, bad_seed);
-        auto const request =
-            signed_put_request(origin, key_id, reg_seed, "/_matrix/federation/v1/send/txn-bad-sig-001", bad_pdu);
+        auto const request = signed_put_request(origin, key_id, reg_seed, "/_matrix/federation/v1/send/txn-bad-sig-001",
+                                                transaction_body(origin, bad_pdu));
 
         WHEN("the transaction containing the bad PDU is handled")
         {
@@ -992,7 +1002,8 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
         auto const good_pdu = signed_json_pdu(origin, key_id, good_seed);
         auto const bad_pdu = signed_json_pdu(origin, key_id, bad_seed);
         // Wrap both PDUs in a proper transaction body
-        auto const body = std::string{"{\"pdus\":["} + good_pdu + "," + bad_pdu + "]}";
+        auto const body = std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + good_pdu +
+                          "," + bad_pdu + "]}";
         auto const request =
             signed_put_request(origin, key_id, good_seed, "/_matrix/federation/v1/send/txn-mixed-001", body);
 

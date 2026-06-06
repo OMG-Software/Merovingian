@@ -216,7 +216,7 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
 {
     merovingian::federation::upsert_remote(runtime.homeserver.federation, remote_for_conformance());
     auto const transaction_body =
-        merovingian::federation::build_edu_transaction_body("m.direct_to_device", edu_content_json);
+        merovingian::federation::build_edu_transaction_body(remote_origin, "m.direct_to_device", edu_content_json);
     REQUIRE(transaction_body.has_value());
     auto const target = "/_matrix/federation/v1/send/" + std::move(txn_id);
     auto const response = merovingian::homeserver::handle_federation_http_request(

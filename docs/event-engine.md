@@ -18,7 +18,8 @@ Implemented now:
   checking, and provider-backed verification against the signed payload
 - runtime-created room events now receive Matrix content hashes,
   reference-hash event IDs, and Ed25519 signatures before persistence
-- room-version policy registry for modern stable room versions
+- room-version policy registry for all stable room versions (v1-v12) used by
+  version-aware auth, redaction, and state-resolution lookups
 - room-version policy shape for event format, redaction rules, auth rules, state resolution, and event ID format
 - redaction with room-version-dependent top-level and event-content key retention
 - `origin_server_ts` uses wall-clock Unix-epoch milliseconds per Matrix spec

@@ -1,5 +1,43 @@
 ## 0.5.9
 
+- Establish `tests/conformance/` as the canonical home for Matrix v1.18 spec
+  conformance tests; move 10 files from `tests/unit/`, add dedicated meson
+  build target, update the registration validation script.
+- Add `test_identifier_grammar.cpp` covering user IDs, localparts, event IDs,
+  and server names per Appendices § Identifier Grammar.
+- Add `test_signing_json_conformance.cpp` covering signing-payload field
+  exclusion, canonical JSON serialisation, round-trip sign/verify, and
+  signature-presence checks.
+- Strengthen canonical JSON tests: add spec Example test vectors, integer-range
+  boundary checks (surfaces 2^53 range spec violation), NUL-byte escape
+  round-trip, control character escaping, and key Unicode code-point ordering.
+- Three new conformance tests intentionally fail against the current
+  implementation, identifying real spec violations to fix next.
+- Restore the stable room-version policy registry for Matrix room versions
+  `1` through `9`, with the spec-correct event-format, auth-rule,
+  redaction-rule, and state-resolution selections used by version-aware event
+  logic.
+- Tighten inbound federation `PUT /_matrix/federation/v1/send/{txnId}` to the
+  Matrix v1.18 transaction envelope: the body must now be a canonical-JSON
+  object with `origin`, `origin_server_ts`, and a `pdus` array, while `edus`
+  remains optional but must be an array when present.
+- Accept empty federation transactions with `pdus: []` per the spec, while
+  still routing each supplied PDU or EDU to the configured sink and returning
+  per-PDU failures inside the response body.
+- Return `403` rather than `502` for inbound federation request-signature
+  mismatches and bad remote signatures so auth failures are surfaced as auth
+  failures.
+- Fix stale local conformance/unit coverage around Matrix v1.18 localpart and
+  state-resolution behavior, and correct malformed `m.replace` / `m.thread`
+  relationship test bodies so they exercise valid JSON requests.
+- Second conformance pass: fix test accuracy bugs (255-byte boundary, 86-char
+  signature, valid_until_ts range), add spec cryptographic test vectors
+  (all pass — signing and base64 encoding confirmed correct), add redaction
+  field-level conformance tests for v10 vs v11 rule differences, add room
+  version auth-rule comparison tests. Six total conformance failures now
+  pinpointing: canonical JSON integer range, NUL-byte parser bug, uppercase
+  localpart rejection, and room versions 1–9 not implemented.
+
 - Fix authenticated device binding for `GET /_matrix/client/v3/account/whoami`
   and all client key API routes. The server now resolves `device_id` from the
   bearer-token session instead of guessing from the account's first known

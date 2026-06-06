@@ -64,13 +64,15 @@ struct OutboundCall final
     -> OutboundTransaction;
 
 // Builds the canonical-JSON body of a federation /send transaction carrying a
-// single EDU and no PDUs. Pure function; performs no network I/O. The EDU is
-// keyed by "edu_type" (per the Matrix federation spec, NOT "type") so receivers
-// such as Synapse do not reject the entire transaction with a missing-field
-// error. `edu_content_json` is parsed and re-serialized canonically; invalid
-// content or a serialization failure yields std::nullopt.
-[[nodiscard]] auto build_edu_transaction_body(std::string_view edu_type, std::string_view edu_content_json)
-    -> std::optional<std::string>;
+// single EDU and no PDUs. Pure function; performs no network I/O. The body
+// includes the Matrix-required top-level `origin`, `origin_server_ts`, empty
+// `pdus`, and one-entry `edus` array. The EDU is keyed by "edu_type" (per the
+// Matrix federation spec, NOT "type") so receivers such as Synapse do not
+// reject the entire transaction with a missing-field error. `edu_content_json`
+// is parsed and re-serialized canonically; invalid content or a serialization
+// failure yields std::nullopt.
+[[nodiscard]] auto build_edu_transaction_body(std::string_view origin, std::string_view edu_type,
+                                              std::string_view edu_content_json) -> std::optional<std::string>;
 
 // Builds the canonical-JSON *content* of an m.receipt EDU per Matrix spec
 // §receipts. Shape: { roomId: { receiptType: { userId: { event_ids: [eventId],

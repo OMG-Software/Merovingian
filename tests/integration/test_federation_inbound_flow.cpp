@@ -56,13 +56,10 @@ namespace
     security.federation.max_transaction_size = "1MiB";
     security.federation.remote_timeout = "30s";
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
-};
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
 }
 
 [[nodiscard]] auto remote_for(std::string const& origin, std::string const& key_id, std::string const& key_seed)
@@ -206,6 +203,11 @@ private:
     auto signed_event = merovingian::events::sign_event_for_server(parsed.value, *policy, store, provider, origin);
     REQUIRE(signed_event.error.empty());
     return signed_event.event_json;
+}
+
+[[nodiscard]] auto transaction_body(std::string const& origin, std::string const& pdu_json) -> std::string
+{
+    return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + pdu_json + "]}";
 }
 
 [[nodiscard]] auto object_member(merovingian::canonicaljson::Object const& object, std::string_view key) noexcept
@@ -454,7 +456,7 @@ SCENARIO("Homeserver routes signed inbound federation transactions through runti
         auto const token = std::string{"verify-token"};
         merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, token));
         auto const target = std::string{"/_matrix/federation/v1/send/txn123"};
-        auto const body = signed_json_pdu(origin, key_id, token);
+        auto const body = transaction_body(origin, signed_json_pdu(origin, key_id, token));
         auto const authorization = federation_authorization(origin, key_id, token, "PUT", target, body);
 
         WHEN("a signed federation request reaches the local router")
@@ -508,7 +510,7 @@ SCENARIO("Homeserver rejects malformed overflow and private-address federation r
         remote.discovery.resolved_addresses = {"127.0.0.1"};
         merovingian::federation::upsert_remote(runtime.federation, remote);
         auto const target = std::string{"/_matrix/federation/v1/send/txn123"};
-        auto const body = signed_json_pdu(origin, key_id, token);
+        auto const body = transaction_body(origin, signed_json_pdu(origin, key_id, token));
         auto const authorization = federation_authorization(origin, key_id, token, "PUT", target, body);
         auto const overflow_authorization =
             origin + "|" + key_id + "|sig:v1:ignored|example.org|184467440737095516160|canonical";
