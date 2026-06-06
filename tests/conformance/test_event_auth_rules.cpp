@@ -16,9 +16,23 @@ namespace
     // Spec: Matrix Server-Server API v1.18 — Room Version 12 (MSC4291)
     // v12 m.room.create MUST NOT include a room_id field. The room ID is
     // derived from the create event's reference hash after the fact.
+    // m.federate is absent here — the room is federated (the default).
     return "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
            "\",\"content\":{\"creator\":\"" + std::string{creator} +
            "\",\"room_version\":\"12\"},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_"
+           "events\":[],\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+[[nodiscard]] auto make_non_federated_create_event(std::string_view creator) -> std::string
+{
+    // Same as make_create_event() but with content.m.federate set to false.
+    // This activates the sender-domain restriction in auth rule step 3:
+    // cross-domain senders MUST be rejected when m.federate is false.
+    // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
+    // URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+    return "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
+           "\",\"content\":{\"creator\":\"" + std::string{creator} +
+           "\",\"m.federate\":false,\"room_version\":\"12\"},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_"
            "events\":[],\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
@@ -156,10 +170,18 @@ SCENARIO("Auth rules reject events when room has no create event", "[events][aut
     }
 }
 
-SCENARIO("Auth rules reject events from senders whose domain does not match the creator domain (v6+)",
-         "[events][auth][sender-domain]")
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
+// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+//
+// "If content.m.federate is false, and the domain of the sender does not match
+//  the domain of the creator of the room, reject."
+//
+// The domain check is CONDITIONAL on m.federate:false. When absent or true,
+// cross-domain senders are permitted.
+SCENARIO("Auth rules reject cross-domain senders when m.federate is false (v6+)",
+         "[events][auth][sender-domain][conformance]")
 {
-    GIVEN("a room created by @alice:example.org and a sender from a different domain")
+    GIVEN("a non-federated room (m.federate:false) created by @alice:example.org")
     {
         auto const msg_json = make_message_event("@eve:evil.org");
         auto const parsed = merovingian::canonicaljson::parse_lossless(msg_json);
@@ -167,24 +189,69 @@ SCENARIO("Auth rules reject events from senders whose domain does not match the 
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
-        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
-        auto power = merovingian::canonicaljson::parse_lossless(
-                         make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
-                         .value;
-        auth_events.power_levels = power;
+        // Use the non-federated create event so that the domain check fires.
+        auth_events.create =
+            merovingian::canonicaljson::parse_lossless(make_non_federated_create_event("@alice:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
+                .value;
         auth_events.sender_member =
             merovingian::canonicaljson::parse_lossless(make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
                 .value;
 
-        WHEN("the event is authorized under v6+ rules")
+        WHEN("the event from @eve:evil.org is authorized")
         {
             auto const decision =
                 merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
 
-            THEN("the event is rejected because the sender domain does not match the creator domain")
+            THEN("the event is rejected — sender domain does not match creator domain and federation is disabled")
             {
+                // Spec MUST: cross-domain sender rejected when m.federate is false.
                 REQUIRE_FALSE(decision.allowed);
                 REQUIRE(decision.rule_step == "3");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
+// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+//
+// The domain check at step 3 is ONLY triggered when content.m.federate is false.
+// When m.federate is absent the room is federated and cross-domain senders are allowed.
+SCENARIO("Auth rules allow cross-domain senders when m.federate is absent (v6+)",
+         "[events][auth][sender-domain][conformance]")
+{
+    GIVEN("a federated room (m.federate absent) created by @alice:example.org")
+    {
+        auto const msg_json = make_message_event("@eve:evil.org");
+        auto const parsed = merovingian::canonicaljson::parse_lossless(msg_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        // Standard create event — no m.federate key — room is federated by default.
+        auth_events.create =
+            merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
+                .value;
+        auth_events.sender_member =
+            merovingian::canonicaljson::parse_lossless(make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
+                .value;
+
+        WHEN("the event from @eve:evil.org is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed — step 3 domain check does not apply when m.federate is absent")
+            {
+                // Spec MUST: absent m.federate means the room is federated; cross-domain
+                // senders pass step 3 unconditionally.
+                REQUIRE(decision.allowed);
             }
         }
     }
@@ -1077,16 +1144,31 @@ SCENARIO("Auth rules v1: cross-domain sender is NOT rejected (no domain check be
             }
         }
 
-        WHEN("the same event is authorized under room version 6 rules for comparison")
+        WHEN("the same event is authorized under room version 6 rules with m.federate:false")
         {
+            // v6+ introduces a sender-domain check, but it is CONDITIONAL on
+            // content.m.federate being false. Use a non-federated create event to
+            // show that v6+ does enforce the check in that configuration.
             auto const* policy_v6 = merovingian::rooms::find_room_version_policy("6");
             REQUIRE(policy_v6 != nullptr);
+            auto auth_events_nonfed = merovingian::events::AuthEventMap{};
+            auth_events_nonfed.create =
+                merovingian::canonicaljson::parse_lossless(make_non_federated_create_event("@alice:example.org")).value;
+            auth_events_nonfed.power_levels =
+                merovingian::canonicaljson::parse_lossless(
+                    make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
+                    .value;
+            auth_events_nonfed.sender_member =
+                merovingian::canonicaljson::parse_lossless(
+                    make_member_event("@eve:evil.org", "@eve:evil.org", "join"))
+                    .value;
             auto const decision =
-                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy_v6, auth_events);
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy_v6, auth_events_nonfed);
 
-            THEN("the event is rejected at step 3 — v6+ enforces the domain check")
+            THEN("the event is rejected at step 3 — v6+ enforces the domain check when m.federate is false")
             {
-                // Spec MUST: the sender-domain check is introduced in room version 6.
+                // Spec MUST: the sender-domain check is introduced in room version 6,
+                // conditional on content.m.federate being false in the create event.
                 REQUIRE_FALSE(decision.allowed);
                 REQUIRE(decision.rule_step == "3");
             }
