@@ -1,3 +1,19 @@
+## 0.5.14
+
+- Add client-server conformance test coverage for 12 previously untested endpoints:
+  - GET /devices — devices array contains device_id for every login device
+  - GET /devices/{deviceId} — 200 for known, 404 M_NOT_FOUND for unknown
+  - GET /capabilities — m.room_versions default and available fields
+  - GET /joined_rooms — returns created room in joined_rooms array
+  - GET /publicRooms — chunk array and total_room_count_estimate
+  - GET /directory/room/{alias} — resolves alias to room_id+servers, 404 for unknown
+  - GET /register/available — available:true free, 400 M_USER_IN_USE taken, 400 M_INVALID_USERNAME invalid
+  - PUT/GET /user/{userId}/account_data/{type} — round-trip stores and retrieves; 404 for unset
+  - PUT/GET /profile/{userId}/displayname — updates and reflects new displayname
+  - GET /profile/{userId} — unauthenticated; returns displayname+avatar_url; 404 for unknown user
+  - GET /pushrules/ — global ruleset with all five categories (override, content, room, sender, underride)
+  - Standard error responses — errcode+error on 401 invalid token; 403 M_FORBIDDEN for cross-user write
+
 ## 0.5.13
 
 - Add conformance test coverage gaps across sync filter, redaction, event auth

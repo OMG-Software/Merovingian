@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.13
+Version:        0.5.14
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.14-1
+- Add 12 client-server conformance scenarios: devices, capabilities, joined_rooms,
+  publicRooms, directory, register/available, account_data, profile, pushrules, errors
+
 * Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.13-1
 - Fix m.room.join_rules redaction: allow key now only preserved in v11+
 - Fix m.room.aliases redaction: aliases key preserved v1-v10, stripped v11+
