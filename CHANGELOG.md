@@ -1,3 +1,26 @@
+## 0.5.13
+
+- Add conformance test coverage gaps across sync filter, redaction, event auth
+  rules, and state resolution:
+  - Sync filter: rooms/not_rooms, state/ephemeral/account_data subfilters,
+    presence filter, global account_data filter, limit parsing, include_leave.
+  - Redaction: join_rules v10 vs v11+ (allow key), history_visibility preserved,
+    aliases preserved v10 / stripped v11+, third_party_invite signed preserved,
+    state_key preserved top-level, v12 inherits v11 rules.
+  - Event auth rules: non-create event rejected without create, knock allowed
+    when join_rule=knock, knock rejected when join_rule=public, kick rejected at
+    equal power level, ban rejected at equal power level.
+  - State resolution: v2 conflicting membership resolved to single winner,
+    v2 unconflicted + conflicted partition, partition_conflicted_state splits
+    shared from conflicting events.
+- Fix `m.room.join_rules` redaction: `allow` key now only preserved in v11+;
+  v1-v10 redaction strips it (was incorrectly preserved in all versions).
+- Fix `m.room.aliases` redaction: `aliases` key now preserved in v1-v10 and
+  stripped in v11+ (was stripped in all versions — no case existed).
+- Fix knock event authorization: add `MembershipState::knock` enum value, wire
+  `parse_membership_state("knock")` (was falling back to `leave`), add step-5
+  knock block enforcing sender==state_key and join_rule is knock/knock_restricted.
+
 ## 0.5.12
 
 - Fix canonical JSON key-sort conformance test: the scenario

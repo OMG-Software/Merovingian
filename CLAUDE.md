@@ -70,6 +70,7 @@ Source headers (`include/merovingian/`) and implementations (`src/`) mirror each
 │   └── trust_safety/      #   Policy engine, encryption policy
 ├── src/                   # Implementations (same module dirs as include/)
 ├── tests/
+│   ├── conformance/       #   Catch2 BDD Matrix spec conformance tests
 │   ├── unit/              #   Catch2 BDD unit tests (test_*.cpp)
 │   ├── integration/       #   Flow/integration tests (test_*_flow.cpp)
 │   ├── fuzz/              #   Fuzz targets

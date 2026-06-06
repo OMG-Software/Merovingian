@@ -234,6 +234,8 @@ auto membership_name(MembershipState membership) noexcept -> char const*
         return "join";
     case MembershipState::ban:
         return "ban";
+    case MembershipState::knock:
+        return "knock";
     case MembershipState::restricted:
         return "restricted";
     }
@@ -305,6 +307,10 @@ auto parse_membership_state(std::string_view membership) noexcept -> MembershipS
     if (membership == "ban")
     {
         return MembershipState::ban;
+    }
+    if (membership == "knock")
+    {
+        return MembershipState::knock;
     }
     return MembershipState::leave;
 }
@@ -627,6 +633,45 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
             }
 
             return make_denied("5", "unknown join rule");
+        }
+
+        // Step 5: knock membership — Spec § Authorization Rules, rule 5.
+        // https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+        // A knock event is only valid when:
+        //   • sender == state_key (cannot knock for someone else)
+        //   • sender is not banned
+        //   • sender is not already joined or invited
+        //   • the room join_rule is "knock" or "knock_restricted"
+        if (requested == MembershipState::knock)
+        {
+            if (!target_is_sender)
+            {
+                return make_denied("5", "cannot knock on behalf of another user");
+            }
+            if (target_current_membership == MembershipState::ban)
+            {
+                return make_denied("5", "banned user cannot knock");
+            }
+            if (membership_at_least_one_of(target_current_membership,
+                                           {MembershipState::join, MembershipState::invite}))
+            {
+                return make_denied("5", "already joined or invited user cannot knock");
+            }
+
+            auto knock_join_rule = std::string{"invite"};
+            if (value_has_content(auth_events.join_rules))
+            {
+                auto const* rule = event_content_string(auth_events.join_rules, "join_rule");
+                if (rule != nullptr)
+                {
+                    knock_join_rule = *rule;
+                }
+            }
+            if (knock_join_rule == "knock" || knock_join_rule == "knock_restricted")
+            {
+                return make_allowed("5");
+            }
+            return make_denied("5", "join_rule does not permit knocking");
         }
 
         // Step 6: invites

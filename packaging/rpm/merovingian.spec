@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.12
+Version:        0.5.13
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,9 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.12-1
-- Fix canonical JSON multi-byte UTF-8 key sort test: add actual e-acute and CJK keys
-- Fix misleading helper comment in sync filter conformance test
+* Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.13-1
+- Fix m.room.join_rules redaction: allow key now only preserved in v11+
+- Fix m.room.aliases redaction: aliases key preserved v1-v10, stripped v11+
+- Fix knock authorization: add MembershipState::knock, enforce join_rule check
+- Add 21 new conformance scenarios across sync filter, redaction, auth rules, state resolution
 
 * Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.11-1
 - Split localpart_is_valid into localpart_is_valid_new and localpart_is_valid_federated per spec

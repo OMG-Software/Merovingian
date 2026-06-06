@@ -374,3 +374,267 @@ SCENARIO("Sync API route: invalid inline JSON filter is identified as a parse er
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// rooms / not_rooms — room-level allowlist and denylist
+// Spec: Matrix Client-Server API v1.18 — Filtering
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#filtering
+// ---------------------------------------------------------------------------
+
+// Spec: "rooms": A list of room IDs to include. If absent all rooms are included.
+SCENARIO("Filter with 'rooms' list includes only events from specified rooms",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter that specifies a rooms include-list")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"rooms":["!alpha:example.org"]}})");
+
+        THEN("events from the listed room pass the room filter")
+        {
+            // Spec MUST: room in the rooms list passes the filter.
+            REQUIRE(merovingian::sync::room_passes_filter(filter.room, "!alpha:example.org"));
+        }
+
+        THEN("events from an unlisted room are excluded")
+        {
+            // Spec MUST: room NOT in the rooms list is excluded.
+            REQUIRE_FALSE(merovingian::sync::room_passes_filter(filter.room, "!beta:example.org"));
+        }
+    }
+}
+
+// Spec: "not_rooms": A list of room IDs to exclude. Takes precedence over rooms.
+SCENARIO("Filter with 'not_rooms' excludes events from specified rooms",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter that excludes !spam:example.org")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"not_rooms":["!spam:example.org"]}})");
+
+        THEN("events from an unlisted room pass")
+        {
+            REQUIRE(merovingian::sync::room_passes_filter(filter.room, "!good:example.org"));
+        }
+
+        THEN("events from the excluded room are filtered")
+        {
+            // Spec MUST: room in not_rooms is excluded.
+            REQUIRE_FALSE(merovingian::sync::room_passes_filter(filter.room, "!spam:example.org"));
+        }
+    }
+}
+
+// Spec: not_rooms takes precedence over rooms.
+SCENARIO("Filter not_rooms takes precedence over rooms",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter with the same room in both rooms and not_rooms")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"rooms":["!room:example.org"],"not_rooms":["!room:example.org"]}})");
+
+        THEN("the room is excluded because not_rooms wins")
+        {
+            // Spec MUST: not_rooms > rooms (deny-list trumps allow-list).
+            REQUIRE_FALSE(merovingian::sync::room_passes_filter(filter.room, "!room:example.org"));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Subfilters: state, ephemeral, account_data (room-level)
+// Spec: Matrix Client-Server API v1.18 — Filtering
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#filtering
+// ---------------------------------------------------------------------------
+
+// Spec: room.state — filter applied to the state events included in the /sync response.
+SCENARIO("Filter room.state subfilter restricts state event types",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter with state restricted to m.room.member")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"state":{"types":["m.room.member"]}}})");
+
+        THEN("m.room.member state events pass")
+        {
+            // Spec MUST: state event type in the types list passes the state filter.
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.state, "m.room.member", "@alice:example.org"));
+        }
+
+        THEN("m.room.power_levels state events are excluded")
+        {
+            // Spec MUST: state event type not in the types list is excluded.
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.room.state, "m.room.power_levels", "@alice:example.org"));
+        }
+    }
+}
+
+// Spec: room.ephemeral — filter applied to ephemeral events (typing, read receipts).
+SCENARIO("Filter room.ephemeral subfilter restricts ephemeral event types",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter that excludes m.typing from ephemeral events")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"ephemeral":{"not_types":["m.typing"]}}})");
+
+        THEN("m.receipt events pass the ephemeral filter")
+        {
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.ephemeral, "m.receipt", "@alice:example.org"));
+        }
+
+        THEN("m.typing events are excluded from the ephemeral stream")
+        {
+            // Spec MUST: event type in not_types is excluded from the ephemeral stream.
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.room.ephemeral, "m.typing", "@alice:example.org"));
+        }
+    }
+}
+
+// Spec: room.account_data — filter for per-room account data events.
+SCENARIO("Filter room.account_data subfilter restricts room-level account data events",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter with room account_data restricted to m.fully_read")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"account_data":{"types":["m.fully_read"]}}})");
+
+        THEN("m.fully_read room account_data events pass")
+        {
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.account_data, "m.fully_read", "@alice:example.org"));
+        }
+
+        THEN("m.tag room account_data events are excluded")
+        {
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.room.account_data, "m.tag", "@alice:example.org"));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Top-level presence and account_data filters
+// Spec: Matrix Client-Server API v1.18 — Filtering
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#filtering
+// ---------------------------------------------------------------------------
+
+// Spec: presence — filter applied to presence events in the /sync response.
+SCENARIO("Top-level presence filter restricts presence events by sender",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter that excludes presence from @bot:example.org")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"presence":{"not_senders":["@bot:example.org"]}})");
+
+        THEN("presence from a regular user passes")
+        {
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.presence, "m.presence", "@alice:example.org"));
+        }
+
+        THEN("presence from the excluded bot is filtered")
+        {
+            // Spec MUST: sender in not_senders is excluded from the presence stream.
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.presence, "m.presence", "@bot:example.org"));
+        }
+    }
+}
+
+// Spec: account_data (top-level) — filter for global (non-room) account data events.
+SCENARIO("Top-level account_data filter restricts global account data events",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a top-level account_data filter restricted to m.push_rules")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"account_data":{"types":["m.push_rules"]}})");
+
+        THEN("m.push_rules account_data events pass")
+        {
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.account_data, "m.push_rules", "@alice:example.org"));
+        }
+
+        THEN("m.identity_server account_data events are excluded")
+        {
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.account_data, "m.identity_server", "@alice:example.org"));
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// limit and include_leave
+// Spec: Matrix Client-Server API v1.18 — Filtering
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#filtering
+// ---------------------------------------------------------------------------
+
+// Spec: "limit" caps the number of timeline events returned per room in /sync.
+SCENARIO("Filter timeline limit field is parsed from the JSON filter",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter with timeline limit set to 50")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"timeline":{"limit":50}}})");
+
+        THEN("the parsed limit value is 50")
+        {
+            // Spec: limit controls how many timeline events are returned per room.
+            REQUIRE(filter.room.timeline.limit == 50U);
+        }
+    }
+
+    GIVEN("a filter with no limit field")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"timeline":{"types":["m.room.message"]}}})");
+
+        THEN("the limit defaults to 0 (meaning no cap)")
+        {
+            // Implementation: limit == 0 means no client-imposed cap.
+            REQUIRE(filter.room.timeline.limit == 0U);
+        }
+    }
+}
+
+// Spec: "include_leave": Whether to include rooms the user has left in the sync response.
+// Default is false per the spec.
+SCENARIO("Filter include_leave defaults to false and is set correctly when present",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter with include_leave set to true")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"include_leave":true}})");
+
+        THEN("include_leave is true")
+        {
+            // Spec: include_leave=true causes left rooms to appear in the sync response.
+            REQUIRE(filter.room.include_leave);
+        }
+    }
+
+    GIVEN("a filter without include_leave specified")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"timeline":{"limit":10}}})");
+
+        THEN("include_leave defaults to false")
+        {
+            // Spec: absent include_leave means left rooms are omitted (default: false).
+            REQUIRE_FALSE(filter.room.include_leave);
+        }
+    }
+}
