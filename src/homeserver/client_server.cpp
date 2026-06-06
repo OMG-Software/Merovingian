@@ -450,6 +450,16 @@ namespace
         });
     }
 
+    // Spec: CS API v1.18 §m.rule.contains_display_name — condition kind that matches when
+    // the event body contains the receiving user's current display name (case-insensitive).
+    // No additional fields required beyond "kind".
+    [[nodiscard]] auto push_condition_contains_display_name() -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("kind", json_str("contains_display_name")),
+        });
+    }
+
     [[nodiscard]] auto push_rule(std::string_view rule_id, bool enabled, canonicaljson::Array conditions,
                                  canonicaljson::Array actions) -> canonicaljson::Value
     {
@@ -521,6 +531,28 @@ namespace
                                            canonicaljson::Array{push_condition_event_property_is(
                                                "content.m\\.relates_to.rel_type", std::string_view{"m.replace"})},
                                            {}));
+        // Spec: CS API v1.18 §.m.rule.contains_display_name — legacy rule for clients that do
+        // not use m.mentions; matches messages whose body contains the user's display name.
+        override_rules.push_back(push_rule(
+            ".m.rule.contains_display_name", true,
+            canonicaljson::Array{push_condition_contains_display_name()},
+            canonicaljson::Array{
+                json_str("notify"),
+                push_action_set_tweak("sound", std::string_view{"default"}),
+                push_action_set_tweak("highlight"),
+            }));
+        // Spec: CS API v1.18 §.m.rule.roomnotif — matches messages containing "@room" when
+        // the sender has permission to notify the whole room.
+        override_rules.push_back(push_rule(
+            ".m.rule.roomnotif", true,
+            canonicaljson::Array{
+                push_condition_event_match("content.body", "@room"),
+                push_condition_sender_notification_permission("room"),
+            },
+            canonicaljson::Array{
+                json_str("notify"),
+                push_action_set_tweak("highlight"),
+            }));
 
         auto underride_rules = canonicaljson::Array{};
         underride_rules.push_back(push_rule(".m.rule.call", true,

@@ -1,5 +1,12 @@
 ## 0.5.9
 
+- Fix two missing default push rules: add `.m.rule.contains_display_name` and
+  `.m.rule.roomnotif` to the server's default override ruleset. Their absence
+  caused Element SDK to log "Missing default global override push rule" on every
+  login and patch the rules in client-side. Both rules are MUST per the Matrix
+  v1.18 CS API § Default Override Rules. Expand the `/pushrules/` conformance
+  test to assert all twelve default override rules and all five underride rules
+  are present.
 - Establish `tests/conformance/` as the canonical home for Matrix v1.18 spec
   conformance tests; move 10 files from `tests/unit/`, add dedicated meson
   build target, update the registration validation script.

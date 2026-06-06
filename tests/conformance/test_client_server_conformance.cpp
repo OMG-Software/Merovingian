@@ -7479,10 +7479,26 @@ SCENARIO("GET /pushrules/ returns a global push rules object", "[conformance][cl
                 REQUIRE(room_rules != nullptr);
                 REQUIRE(sender_rules != nullptr);
                 REQUIRE(content_rules != nullptr);
+                // Spec MUST: all predefined default override rules are present
                 REQUIRE(push_rule_by_id(*override_rules, ".m.rule.master") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.suppress_notices") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.invite_for_me") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.member_event") != nullptr);
                 REQUIRE(push_rule_by_id(*override_rules, ".m.rule.is_user_mention") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.is_room_mention") != nullptr);
                 REQUIRE(push_rule_by_id(*override_rules, ".m.rule.tombstone") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.reaction") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.room.server_acl") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.suppress_edits") != nullptr);
+                // Spec MUST: legacy mention/notify rules — absent from this server caused
+                // Element SDK to log "Missing default global override push rule" on login.
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.contains_display_name") != nullptr);
+                REQUIRE(push_rule_by_id(*override_rules, ".m.rule.roomnotif") != nullptr);
+                // Spec MUST: underride rules
                 REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.call") != nullptr);
+                REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.encrypted_room_one_to_one") != nullptr);
+                REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.room_one_to_one") != nullptr);
+                REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.message") != nullptr);
                 REQUIRE(push_rule_by_id(*underride_rules, ".m.rule.encrypted") != nullptr);
             }
         }
