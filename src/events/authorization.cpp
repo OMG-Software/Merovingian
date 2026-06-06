@@ -756,16 +756,33 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         auto const pl_sender_power =
             effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
 
-        // For m.room.power_levels, the sender must have the level to change each key
-        // Check that the sender can set the new event's content power levels
+        auto const* content_obj = object_member_as_object(*obj, "content");
+        auto const* new_users = content_obj == nullptr ? nullptr : object_member_as_object(*content_obj, "users");
+
+        // v12/MSC4289: a room creator's power is effectively infinite and cannot be
+        // expressed as an integer in content.users. Any m.room.power_levels event that
+        // lists a creator (the create-event sender or any additional_creators member)
+        // in content.users MUST be rejected.
+        // Spec: https://spec.matrix.org/v1.18/rooms/v12/
+        if (policy.privilege_room_creators && new_users != nullptr)
+        {
+            for (auto const& user_entry : *new_users)
+            {
+                if (user_is_room_creator(auth_events.create, user_entry.key, policy))
+                {
+                    return make_denied("11", "creator cannot be specified in m.room.power_levels content.users");
+                }
+            }
+        }
+
+        // For m.room.power_levels, the sender must have the level to change each key.
+        // Check that the sender can set the new event's content power levels.
         if (value_has_content(auth_events.power_levels))
         {
             auto const old_users = object_member_as_object(*value_is_object(auth_events.power_levels), "users");
-            auto const* content_obj = object_member_as_object(*obj, "content");
-            auto const* new_users = content_obj == nullptr ? nullptr : object_member_as_object(*content_obj, "users");
 
             // Check users map: cannot elevate anyone above own level, cannot demote
-            // anyone above own level unless they are the target
+            // anyone above own level.
             if (new_users != nullptr)
             {
                 for (auto const& user_entry : *new_users)
@@ -777,13 +794,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     }
                     auto const old_level =
                         old_users == nullptr ? 0 : extract_user_level_from_users(*old_users, user_entry.key);
-                    auto user_old = old_level >= 0 ? old_level : 0;
-                    if (user_is_room_creator(auth_events.create, user_entry.key, policy))
-                    {
-                        // MSC4289: a room creator's power level is fixed at infinity and
-                        // cannot be reassigned through m.room.power_levels by a non-creator.
-                        user_old = creator_power;
-                    }
+                    auto const user_old = old_level >= 0 ? old_level : 0;
                     if (*new_level > pl_sender_power && user_old <= pl_sender_power)
                     {
                         if (user_entry.key != *sender)

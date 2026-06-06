@@ -621,12 +621,23 @@ SCENARIO("Auth rules reject state events when sender lacks state_default power",
     }
 }
 
-SCENARIO("Auth rules allow m.room.power_levels events from users with sufficient power", "[events][auth][power-levels]")
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 11.
+// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// Spec: Matrix Room Version 12 (MSC4289)
+// URL: https://spec.matrix.org/v1.18/rooms/v12/
+//
+// A room creator (with effectively infinite power) is permitted to send a
+// m.room.power_levels event, provided the new event does NOT list any creator
+// in content.users (creators cannot be represented as an integer power level).
+SCENARIO("Auth rules allow m.room.power_levels events from users with sufficient power", "[events][auth][power-levels][conformance]")
 {
-    GIVEN("a room where @alice has power=100 and sends a new power_levels event")
+    GIVEN("a v12 room where @alice is the creator and she sets @bob's power to 50")
     {
+        // The NEW power_levels event sets @bob's level only — NOT @alice's.
+        // In v12, the creator (@alice) cannot appear in content.users of the new event;
+        // only non-creator users may be listed there.
         auto const pl_json =
-            make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 100);
+            make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@bob:example.org", 50);
         auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
         auto const* policy = merovingian::rooms::find_room_version_policy("12");
@@ -646,9 +657,56 @@ SCENARIO("Auth rules allow m.room.power_levels events from users with sufficient
             auto const decision =
                 merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
 
-            THEN("the power_levels event is allowed")
+            THEN("the power_levels event is allowed — creator grants a non-creator a finite power level")
             {
+                // Spec MUST: a creator with infinite power can set non-creator power levels.
                 REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Room Version 12 (MSC4289)
+// URL: https://spec.matrix.org/v1.18/rooms/v12/
+//
+// Room creators hold effectively infinite power that cannot be expressed as an
+// integer. A m.room.power_levels event whose content.users lists the create-event
+// sender or any additional_creators member MUST be rejected.
+SCENARIO("Auth rules reject a power_levels event that lists the room creator in content.users (v12)",
+         "[events][auth][power-levels][room-version][msc4289][conformance]")
+{
+    GIVEN("a v12 room where @alice is the creator and the new power_levels event has @alice in content.users")
+    {
+        // @alice is the create-event sender. Putting @alice in content.users of the
+        // new power_levels event MUST cause rejection — her power is infinite and
+        // cannot be expressed as an integer entry.
+        auto const pl_json =
+            make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 100);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@bob:example.org", 50))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — a creator MUST NOT appear in content.users")
+            {
+                // Spec MUST: m.room.power_levels events that list a creator in content.users
+                // MUST be rejected in room version 12.
+                REQUIRE_FALSE(decision.allowed);
+                REQUIRE(decision.rule_step == "11");
             }
         }
     }
