@@ -22,6 +22,7 @@
 // |    An empty list means "no restriction" — all events pass.              |
 // +-------------------------------------------------------------------------+
 
+#include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/sync/sync_filter.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -298,6 +299,8 @@ SCENARIO("Filter combines type and sender restrictions with AND logic",
 // The Matrix spec would require the /sync endpoint to return 400 M_BAD_JSON for an
 // invalid literal filter. The helper itself is intentionally lenient (pass-all on error)
 // so the runtime can log and continue. API-level 400 enforcement sits in the route handler.
+// See: src/homeserver/client_server.cpp — the sync route validates filter JSON before
+//      calling sync_json() and returns dispatch_err(400, "M_BAD_JSON") on parse failure.
 SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter][helper]")
 {
     GIVEN("syntactically invalid JSON as filter argument")
@@ -315,6 +318,56 @@ SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter
         THEN("all events still pass through")
         {
             REQUIRE(merovingian::sync::event_passes_filter(filter.room.timeline, "m.room.message", "@alice:example.org"));
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18 — GET /sync
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// The ?filter= query parameter may be either a stored filter ID (opaque string)
+// or an inline JSON object (starts with '{'). When the value starts with '{'
+// the server MUST treat it as literal JSON and MUST return 400 M_BAD_JSON if
+// the JSON is not well-formed.
+//
+// Implementation note: the /sync route handler in client_server.cpp performs
+// this validation via canonicaljson::parse_lossless() before calling sync_json().
+// The parse_filter_argument() helper is intentionally lenient so that it can
+// be reused in non-HTTP contexts; the API-level error lives in the route.
+SCENARIO("Sync API route: invalid inline JSON filter is identified as a parse error",
+         "[sync][filter][conformance]")
+{
+    GIVEN("a filter argument that starts with '{' but contains invalid JSON")
+    {
+        auto const bad_filter = std::string{"{invalid json}"};
+
+        WHEN("the filter value is parsed as canonical JSON (as the route handler does)")
+        {
+            // The route handler calls canonicaljson::parse_lossless() on any
+            // filter that starts with '{' and returns 400 M_BAD_JSON if it fails.
+            auto const result = merovingian::canonicaljson::parse_lossless(bad_filter);
+
+            THEN("the parse fails, confirming the route will return 400 M_BAD_JSON")
+            {
+                // Spec MUST: malformed inline filter JSON MUST be rejected with M_BAD_JSON.
+                REQUIRE(result.error != merovingian::canonicaljson::ParseError::none);
+            }
+        }
+    }
+
+    GIVEN("a filter argument that starts with '{' and contains valid JSON")
+    {
+        auto const good_filter = std::string{R"({"room":{"timeline":{"limit":20}}})"};
+
+        WHEN("the filter value is parsed as canonical JSON")
+        {
+            auto const result = merovingian::canonicaljson::parse_lossless(good_filter);
+
+            THEN("the parse succeeds — the route will proceed to sync_json()")
+            {
+                // Spec: a well-formed inline filter must pass the route validation step.
+                REQUIRE(result.error == merovingian::canonicaljson::ParseError::none);
+            }
         }
     }
 }

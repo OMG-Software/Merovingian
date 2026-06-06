@@ -5444,6 +5444,25 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const session = authenticated_session(rt.homeserver, req.access_token);
         auto const device_id = session.has_value() ? session->device_id : std::string{};
         auto const sync_request = merovingian::core::parse_query_params(req.target);
+
+        // Spec: Matrix Client-Server API v1.18 — GET /sync
+        // URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+        //
+        // The ?filter= parameter may be either a stored filter ID or an inline
+        // JSON object. If the value starts with '{' it is treated as inline JSON.
+        // Invalid JSON MUST be rejected with 400 M_BAD_JSON rather than silently
+        // degraded to an unrestricted filter, which would be a correctness hazard.
+        if (sync_request.filter.has_value() && !sync_request.filter->empty() &&
+            sync_request.filter->front() == '{')
+        {
+            auto const filter_parse = canonicaljson::parse_lossless(*sync_request.filter);
+            if (filter_parse.error != canonicaljson::ParseError::none)
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                    "filter parameter is not valid JSON");
+            }
+        }
+
         log_diagnostic("sync.dispatch", {
                                             {"actor",     *user,     false},
                                             {"device_id", device_id, false}

@@ -136,15 +136,24 @@ auto parse_event_envelope(canonicaljson::Value const& json) -> EventParseResult
             return {{}, "event must be an object"};
         }
 
-        auto const* room_id = string_member(*object, "room_id");
         auto const* type = string_member(*object, "type");
         auto const* sender = string_member(*object, "sender");
         auto const* origin_server_ts = integer_member(*object, "origin_server_ts");
-        if (room_id == nullptr || type == nullptr || sender == nullptr || origin_server_ts == nullptr)
+        auto const* room_id = string_member(*object, "room_id");
+
+        // Spec: Room Version 12 (MSC4291) — m.room.create MUST NOT have a room_id
+        // field; the room ID is derived from the create event's reference hash.
+        // All other event types MUST have a room_id.
+        auto const is_create_event = (type != nullptr && *type == "m.room.create");
+        if (type == nullptr || sender == nullptr || origin_server_ts == nullptr)
         {
             return {{}, "event missing required fields"};
         }
-        if (!matrix_id_is_valid(*room_id, '!'))
+        if (!is_create_event && room_id == nullptr)
+        {
+            return {{}, "event missing required fields"};
+        }
+        if (room_id != nullptr && !matrix_id_is_valid(*room_id, '!'))
         {
             return {{}, "invalid room_id"};
         }
@@ -163,7 +172,12 @@ auto parse_event_envelope(canonicaljson::Value const& json) -> EventParseResult
 
         auto event = EventEnvelope{};
         event.json = json;
-        event.room_id = *room_id;
+        // room_id is absent for v12 create events; the caller derives it from
+        // the reference hash and populates event.room_id after this call.
+        if (room_id != nullptr)
+        {
+            event.room_id = *room_id;
+        }
         event.event_type = *type;
         event.sender = *sender;
         event.origin_server_ts = *origin_server_ts;

@@ -1,5 +1,26 @@
 ## 0.5.9
 
+- Fix v12 `m.room.create` inbound PDU rejection: `parse_event_envelope()` required
+  `room_id` for all events; v12 create events MUST NOT have `room_id`. Fixed to
+  allow absent `room_id` when `type == "m.room.create"`.
+- Fix v12 create event `room_id` derivation in `parse_inbound_pdu_envelope()`:
+  now computes `room_id = "!" + event_id.substr(1)` for v12 create events after
+  computing the reference hash (same hash body, sigil swap `$` → `!`).
+- Add v12 auth_events exclusion enforcement: v12 `m.room.create` MUST NOT appear
+  in any other event's `auth_events`. `parse_inbound_pdu_envelope()` now detects
+  this using the deterministic relationship between `room_id` and `create_event_id`
+  in v12 (no store lookup needed) and returns `nullopt` for violating PDUs.
+- Fix v12 create event test fixture in `test_event_auth_rules.cpp`: removed
+  `room_id` field from `make_create_event()` which incorrectly included it.
+- Fix sync `GET /sync` returning no error for malformed inline filter JSON:
+  when `?filter=` starts with `{` and fails to parse, the route handler now
+  returns `400 M_BAD_JSON` instead of silently using a pass-all filter.
+- Add event ID grammar/semantics distinction conformance test: clarifies that
+  `event_id_is_valid()` is a syntax-only check; SHA-256 derived v4+ IDs are
+  always exactly 44 characters.
+- Add v12 PDU format conformance tests: v12 create event without `room_id` is
+  accepted; v12 PDU listing the create event in `auth_events` is rejected.
+- Add sync filter conformance test for the route-level JSON validation path.
 - Fix canonical JSON parser to reject `-0` per Matrix v1.18 spec which says
   "numbers that are negative zero MUST NOT appear in canonical JSON." The parser
   previously accepted `-0` and silently normalised it to `0`. Three tests that

@@ -13,8 +13,11 @@ namespace
 
 [[nodiscard]] auto make_create_event(std::string_view creator) -> std::string
 {
+    // Spec: Matrix Server-Server API v1.18 — Room Version 12 (MSC4291)
+    // v12 m.room.create MUST NOT include a room_id field. The room ID is
+    // derived from the create event's reference hash after the fact.
     return "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
-           "\",\"room_id\":\"!room:example.org\",\"content\":{\"creator\":\"" + std::string{creator} +
+           "\",\"content\":{\"creator\":\"" + std::string{creator} +
            "\",\"room_version\":\"12\"},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_"
            "events\":[],\"hashes\":{\"sha256\":\"hash\"}}";
 }
