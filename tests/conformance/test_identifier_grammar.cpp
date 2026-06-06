@@ -345,9 +345,10 @@ SCENARIO("New user ID localpart: uppercase letters are rejected",
             {
                 for (auto const& lp : uppercase_cases)
                 {
-                    // Spec MUST: new localparts MUST be lowercase. Uppercase is forbidden
-                    // for new user IDs. Do NOT relax — allowing uppercase at registration
-                    // breaks case-folding guarantees and creates ambiguous identifiers.
+                    // Spec MUST: localparts MUST be lowercase-only. Uppercase is forbidden
+                    // for registered user IDs. Do NOT relax — allowing uppercase at
+                    // registration breaks case-folding guarantees and creates ambiguous
+                    // identifiers.
                     REQUIRE_FALSE(merovingian::auth::localpart_is_valid_new(lp));
                 }
             }
