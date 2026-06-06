@@ -1,4 +1,4 @@
-## 0.5.9
+## 0.5.10
 
 - Fix v12 `m.room.create` inbound PDU rejection: `parse_event_envelope()` required
   `room_id` for all events; v12 create events MUST NOT have `room_id`. Fixed to
@@ -43,6 +43,11 @@
   v1.18 CS API § Default Override Rules. Expand the `/pushrules/` conformance
   test to assert all twelve default override rules and all five underride rules
   are present.
+- Fix state resolution `m.room.member` type fallback causing incorrect state
+  after Codex-introduced regression; restore correct EDU typing format.
+
+## 0.5.9
+
 - Establish `tests/conformance/` as the canonical home for Matrix v1.18 spec
   conformance tests; move 10 files from `tests/unit/`, add dedicated meson
   build target, update the registration validation script.

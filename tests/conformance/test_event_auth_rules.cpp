@@ -640,9 +640,10 @@ SCENARIO("Room creators hold privileged power only in room version 12 (MSC4289)"
         // @alice is the create sender (a creator); @bob is an additional creator.
         // Neither @bob nor a high state_default entry appears in power_levels: @bob
         // has only users_default (0) power under the ordinary rules.
+        // Spec: v12 m.room.create MUST NOT include room_id — omitted here.
         auto const create_json =
             std::string{R"({"type":"m.room.create","state_key":"","sender":"@alice:example.org",)"
-                        R"("room_id":"!room:example.org","content":{"creator":"@alice:example.org",)"
+                        R"("content":{"creator":"@alice:example.org",)"
                         R"("room_version":"12","additional_creators":["@bob:example.org"]},)"
                         R"("origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
                         R"("hashes":{"sha256":"hash"}})"};
