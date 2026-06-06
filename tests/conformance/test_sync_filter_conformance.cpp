@@ -309,9 +309,12 @@ SCENARIO("parse_filter_argument handles invalid JSON gracefully", "[sync][filter
 
         THEN("the filter is not marked as present")
         {
-            // Spec behaviour: unrecognised or invalid filter input must not crash
-            // the server, and must result in an unrestricted (pass-all) filter.
-            // The server SHOULD log the error but continue.
+            // Implementation helper behaviour, NOT Matrix API behaviour.
+            // The spec requires the /sync route to return 400 M_BAD_JSON for an
+            // invalid inline filter; that check sits in the route handler BEFORE
+            // this helper is called. The helper itself is intentionally lenient:
+            // it returns a pass-all filter so callers that don't gate on the
+            // route can log and continue without crashing.
             REQUIRE(!filter.present);
         }
 
