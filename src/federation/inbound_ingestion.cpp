@@ -130,7 +130,17 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
 
     auto out = InboundPduEnvelope{};
     out.event_id = event_id_result.event_id;
-    out.room_id = envelope.event.room_id;
+    // Spec: Room Version 12 (MSC4291) — the m.room.create event has no room_id
+    // field. The room ID equals the create event's reference hash with '!' sigil:
+    //   room_id = "!" + event_id.substr(1)   (swap '$' → '!')
+    if (envelope.event.room_id.empty() && envelope.event.event_type == "m.room.create")
+    {
+        out.room_id = "!" + event_id_result.event_id.substr(1);
+    }
+    else
+    {
+        out.room_id = envelope.event.room_id;
+    }
     out.room_version = "12";
     out.sender = envelope.event.sender;
     out.event_type = envelope.event.event_type;
@@ -149,6 +159,24 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
     if (auto const* auth_value = find_member(*root, "auth_events"); auth_value != nullptr)
     {
         out.auth_event_ids = extract_string_array(*auth_value);
+    }
+    // Spec: Room Version 12 (MSC4291) — the m.room.create event MUST NOT appear
+    // in the auth_events of any other event. In v12, the create event ID equals
+    // the room_id with sigil swapped ('!' → '$'), so we can detect violations
+    // without a store lookup. Only applies to v12 rooms (no ':' in room_id).
+    if (out.event_type != "m.room.create" && !out.room_id.empty() &&
+        out.room_id.find(':') == std::string::npos)
+    {
+        auto const create_event_id = "$" + out.room_id.substr(1U);
+        for (auto const& auth_id : out.auth_event_ids)
+        {
+            if (auth_id == create_event_id)
+            {
+                log_diagnostic("pdu.parse.rejected",
+                               {{"reason", "v12: m.room.create must not appear in auth_events", false}});
+                return std::nullopt;
+            }
+        }
     }
     if (auto const* depth_value = find_member(*root, "depth"); depth_value != nullptr)
     {
@@ -211,8 +239,10 @@ auto edu_content_is_valid(EduType type, std::string_view content_json) -> bool
     switch (type)
     {
     case EduType::typing:
-        // typing content: { room_id: string, user_ids: [string, ...] }.
-        return find_member(*root, "room_id") != nullptr && find_member(*root, "user_ids") != nullptr;
+        // Spec: SS API v1.18 §m.typing — content: { room_id: string, user_id: string, typing: bool }.
+        // Note: the CS API uses user_ids (array); the SS API uses user_id (singular) per-user.
+        return find_member(*root, "room_id") != nullptr && find_member(*root, "user_id") != nullptr &&
+               find_member(*root, "typing") != nullptr;
     case EduType::receipt:
         // receipt content: { <room_id>: { "m.read": { <user_id>: { ts } } } }.
         return !root->empty();

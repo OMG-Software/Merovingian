@@ -1,3 +1,51 @@
+## 0.5.10
+
+- Fix v12 `m.room.create` inbound PDU rejection: `parse_event_envelope()` required
+  `room_id` for all events; v12 create events MUST NOT have `room_id`. Fixed to
+  allow absent `room_id` when `type == "m.room.create"`.
+- Fix v12 create event `room_id` derivation in `parse_inbound_pdu_envelope()`:
+  now computes `room_id = "!" + event_id.substr(1)` for v12 create events after
+  computing the reference hash (same hash body, sigil swap `$` → `!`).
+- Add v12 auth_events exclusion enforcement: v12 `m.room.create` MUST NOT appear
+  in any other event's `auth_events`. `parse_inbound_pdu_envelope()` now detects
+  this using the deterministic relationship between `room_id` and `create_event_id`
+  in v12 (no store lookup needed) and returns `nullopt` for violating PDUs.
+- Fix v12 create event test fixture in `test_event_auth_rules.cpp`: removed
+  `room_id` field from `make_create_event()` which incorrectly included it.
+- Fix sync `GET /sync` returning no error for malformed inline filter JSON:
+  when `?filter=` starts with `{` and fails to parse, the route handler now
+  returns `400 M_BAD_JSON` instead of silently using a pass-all filter.
+- Add event ID grammar/semantics distinction conformance test: clarifies that
+  `event_id_is_valid()` is a syntax-only check; SHA-256 derived v4+ IDs are
+  always exactly 44 characters.
+- Add v12 PDU format conformance tests: v12 create event without `room_id` is
+  accepted; v12 PDU listing the create event in `auth_events` is rejected.
+- Add sync filter conformance test for the route-level JSON validation path.
+- Fix canonical JSON parser to reject `-0` per Matrix v1.18 spec which says
+  "numbers that are negative zero MUST NOT appear in canonical JSON." The parser
+  previously accepted `-0` and silently normalised it to `0`. Three tests that
+  incorrectly expected successful parsing of `-0` are corrected to expect
+  `invalid_number`. The serialiser was already correct (never produces `-0`).
+- Fix four conformance test issues identified by static analysis:
+  (1) Localpart grammar test mislabelled uppercase `ALICE` as "Spec MUST" —
+  uppercase is historical/federation compat, not normative v1.18. Split into a
+  normative scenario (lowercase only) and a `[historical]` scenario.
+  (2) Server discovery test asserted the rejection `reason` string must contain
+  `"private"` and labelled it "Spec MUST" — the spec only mandates the
+  `discovery_allowed` flag, not message content. Replaced with a non-empty check.
+  (3) Sync filter `parse_filter_argument` invalid-JSON scenario was tagged
+  `[conformance]` but tests internal helper leniency, not the Matrix API. Retagged
+  `[helper]` with a comment clarifying where API-level 400 enforcement lives.
+- Fix two missing default push rules: add `.m.rule.contains_display_name` and
+  `.m.rule.roomnotif` to the server's default override ruleset. Their absence
+  caused Element SDK to log "Missing default global override push rule" on every
+  login and patch the rules in client-side. Both rules are MUST per the Matrix
+  v1.18 CS API § Default Override Rules. Expand the `/pushrules/` conformance
+  test to assert all twelve default override rules and all five underride rules
+  are present.
+- Fix state resolution `m.room.member` type fallback causing incorrect state
+  after Codex-introduced regression; restore correct EDU typing format.
+
 ## 0.5.9
 
 - Establish `tests/conformance/` as the canonical home for Matrix v1.18 spec

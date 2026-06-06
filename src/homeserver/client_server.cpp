@@ -450,6 +450,16 @@ namespace
         });
     }
 
+    // Spec: CS API v1.18 §m.rule.contains_display_name — condition kind that matches when
+    // the event body contains the receiving user's current display name (case-insensitive).
+    // No additional fields required beyond "kind".
+    [[nodiscard]] auto push_condition_contains_display_name() -> canonicaljson::Value
+    {
+        return json_obj({
+            json_member("kind", json_str("contains_display_name")),
+        });
+    }
+
     [[nodiscard]] auto push_rule(std::string_view rule_id, bool enabled, canonicaljson::Array conditions,
                                  canonicaljson::Array actions) -> canonicaljson::Value
     {
@@ -521,6 +531,28 @@ namespace
                                            canonicaljson::Array{push_condition_event_property_is(
                                                "content.m\\.relates_to.rel_type", std::string_view{"m.replace"})},
                                            {}));
+        // Spec: CS API v1.18 §.m.rule.contains_display_name — legacy rule for clients that do
+        // not use m.mentions; matches messages whose body contains the user's display name.
+        override_rules.push_back(push_rule(
+            ".m.rule.contains_display_name", true,
+            canonicaljson::Array{push_condition_contains_display_name()},
+            canonicaljson::Array{
+                json_str("notify"),
+                push_action_set_tweak("sound", std::string_view{"default"}),
+                push_action_set_tweak("highlight"),
+            }));
+        // Spec: CS API v1.18 §.m.rule.roomnotif — matches messages containing "@room" when
+        // the sender has permission to notify the whole room.
+        override_rules.push_back(push_rule(
+            ".m.rule.roomnotif", true,
+            canonicaljson::Array{
+                push_condition_event_match("content.body", "@room"),
+                push_condition_sender_notification_permission("room"),
+            },
+            canonicaljson::Array{
+                json_str("notify"),
+                push_action_set_tweak("highlight"),
+            }));
 
         auto underride_rules = canonicaljson::Array{};
         underride_rules.push_back(push_rule(".m.rule.call", true,
@@ -5412,6 +5444,25 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
         auto const session = authenticated_session(rt.homeserver, req.access_token);
         auto const device_id = session.has_value() ? session->device_id : std::string{};
         auto const sync_request = merovingian::core::parse_query_params(req.target);
+
+        // Spec: Matrix Client-Server API v1.18 — GET /sync
+        // URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+        //
+        // The ?filter= parameter may be either a stored filter ID or an inline
+        // JSON object. If the value starts with '{' it is treated as inline JSON.
+        // Invalid JSON MUST be rejected with 400 M_BAD_JSON rather than silently
+        // degraded to an unrestricted filter, which would be a correctness hazard.
+        if (sync_request.filter.has_value() && !sync_request.filter->empty() &&
+            sync_request.filter->front() == '{')
+        {
+            auto const filter_parse = canonicaljson::parse_lossless(*sync_request.filter);
+            if (filter_parse.error != canonicaljson::ParseError::none)
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                    "filter parameter is not valid JSON");
+            }
+        }
+
         log_diagnostic("sync.dispatch", {
                                             {"actor",     *user,     false},
                                             {"device_id", device_id, false}

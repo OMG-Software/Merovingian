@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.9
+Version:        0.5.10
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,14 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.10-1
+- Fix v12 m.room.create PDU: allow absent room_id, derive it from reference hash
+- Enforce v12 auth_events exclusion of create event at inbound parse time
+- Fix GET /sync returning no 400 for malformed inline filter JSON (M_BAD_JSON)
+- Fix canonical JSON parser rejecting -0 per spec
+- Fix missing default push rules: .m.rule.contains_display_name and .m.rule.roomnotif
+- Fix state resolution regression from Codex changes
+
 * Fri Jun 05 2026 James Chapman <claude@ping.me.uk> - 0.5.9-1
 - Bind client key APIs and /account/whoami to the authenticated session device
   instead of a guessed first device, fixing registration-issued tokens and

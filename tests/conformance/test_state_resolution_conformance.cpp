@@ -41,10 +41,11 @@ using merovingian::events::StateGroup;
 using merovingian::events::StateKey;
 using merovingian::events::StateResolutionRequest;
 
-// Build a minimal state event for test purposes.
-[[nodiscard]] auto make_state_event(std::string event_type, std::string state_key, std::string event_id,
-                                    std::string sender, std::int64_t ts, std::uint64_t depth)
-    -> StateEventReference
+// Helper: build a StateEventReference from raw JSON.
+[[nodiscard]] auto make_event_ref(std::string const& event_type, std::string const& state_key,
+                                   std::string const& event_id, std::string const& sender,
+                                   std::int64_t ts, std::uint64_t depth,
+                                   std::string const& json) -> StateEventReference
 {
     auto ref = StateEventReference{};
     ref.key = {event_type, state_key};
@@ -52,16 +53,60 @@ using merovingian::events::StateResolutionRequest;
     ref.sender = sender;
     ref.origin_server_ts = ts;
     ref.depth = depth;
-    // Minimal event JSON so the resolution algorithm can read it if needed.
-    auto const json =
-        std::string{"{\"type\":\""} + event_type + "\",\"state_key\":\"" + state_key + "\",\"sender\":\"" + sender +
-        "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) + "}";
     auto parsed = merovingian::canonicaljson::parse_lossless(json);
     if (parsed.error == merovingian::canonicaljson::ParseError::none)
     {
         ref.event_json = std::move(parsed.value);
     }
     return ref;
+}
+
+// Build a minimal state event for test purposes (no content — suitable for v1 tests
+// and any scenario that does NOT need SDSS auth checking).
+[[nodiscard]] auto make_state_event(std::string event_type, std::string state_key, std::string event_id,
+                                    std::string sender, std::int64_t ts, std::uint64_t depth)
+    -> StateEventReference
+{
+    auto const json =
+        std::string{"{\"type\":\""} + event_type + "\",\"state_key\":\"" + state_key + "\",\"sender\":\"" + sender +
+        "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) + ",\"content\":{}}";
+    return make_event_ref(event_type, state_key, event_id, sender, ts, depth, json);
+}
+
+// Build an m.room.create event with creator in content.
+// Auth checks (v6+) require content.creator to exist (auth rule Step 3).
+[[nodiscard]] auto make_create_event(std::string const& creator, std::string const& event_id,
+                                      std::int64_t ts) -> StateEventReference
+{
+    auto const json =
+        std::string{"{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\""} + creator +
+        "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
+        ",\"content\":{\"creator\":\"" + creator + "\",\"room_version\":\"10\"}}";
+    return make_event_ref("m.room.create", "", event_id, creator, ts, 0, json);
+}
+
+// Build an m.room.member join event for a user.
+[[nodiscard]] auto make_member_event(std::string user_id, std::string event_id, std::int64_t ts,
+                                     std::uint64_t depth) -> StateEventReference
+{
+    auto const json = std::string{"{\"type\":\"m.room.member\",\"state_key\":\""} + user_id +
+                      "\",\"sender\":\"" + user_id +
+                      "\",\"event_id\":\"" + event_id +
+                      "\",\"origin_server_ts\":" + std::to_string(ts) +
+                      ",\"content\":{\"membership\":\"join\"}}";
+    return make_event_ref("m.room.member", user_id, event_id, user_id, ts, depth, json);
+}
+
+// Build an m.room.power_levels event granting a specific user level 100.
+[[nodiscard]] auto make_power_levels_event(std::string const& sender, std::string const& event_id,
+                                            std::int64_t ts, std::uint64_t depth) -> StateEventReference
+{
+    auto const json =
+        std::string{"{\"type\":\"m.room.power_levels\",\"state_key\":\"\",\"sender\":\""} + sender +
+        "\",\"event_id\":\"" + event_id + "\",\"origin_server_ts\":" + std::to_string(ts) +
+        ",\"content\":{\"ban\":50,\"events_default\":0,\"invite\":0,\"kick\":50,\"redact\":50,"
+        "\"state_default\":50,\"users\":{\"" + sender + "\":100},\"users_default\":0}}";
+    return make_event_ref("m.room.power_levels", "", event_id, sender, ts, depth, json);
 }
 
 // Returns true if `event_id` appears in `result.resolved_state`.
@@ -351,22 +396,25 @@ SCENARIO("State resolution v2 (SDSS): non-conflicted state passes through unchan
         auto const* policy = merovingian::rooms::find_room_version_policy("10");
         REQUIRE(policy != nullptr);
 
-        // Both groups agree on the create event.
-        auto const create_ev =
-            make_state_event("m.room.create", "", "$create:example.org", "@alice:example.org", 1000, 0);
+        // Both groups agree on create, power_levels, and alice's membership.
+        // Auth check (v6+ Step 3) requires content.creator in the create event.
+        // Auth check for join_rules requires alice to be joined with power >= 50.
+        auto const create_ev  = make_create_event("@alice:example.org", "$create:example.org", 1000);
+        auto const power_ev   = make_power_levels_event("@alice:example.org", "$power:example.org", 1001, 1);
+        auto const alice_mbr  = make_member_event("@alice:example.org", "$alice_member:example.org", 1002, 2);
         // The groups disagree on join_rules.
         auto const join_a =
-            make_state_event("m.room.join_rules", "", "$join_rules_a:example.org", "@alice:example.org", 1001, 1);
+            make_state_event("m.room.join_rules", "", "$join_rules_a:example.org", "@alice:example.org", 1003, 3);
         auto const join_b =
-            make_state_event("m.room.join_rules", "", "$join_rules_b:example.org", "@alice:example.org", 1002, 1);
+            make_state_event("m.room.join_rules", "", "$join_rules_b:example.org", "@alice:example.org", 1004, 3);
 
         auto group_a = StateGroup{};
         group_a.group_id = "group_a";
-        group_a.state = {create_ev, join_a};
+        group_a.state = {create_ev, power_ev, alice_mbr, join_a};
 
         auto group_b = StateGroup{};
         group_b.group_id = "group_b";
-        group_b.state = {create_ev, join_b};
+        group_b.state = {create_ev, power_ev, alice_mbr, join_b};
 
         auto request = StateResolutionRequest{};
         request.room_version = "10";

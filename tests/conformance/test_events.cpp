@@ -1409,15 +1409,13 @@ SCENARIO("Canonical JSON matches spec test vectors", "[events][signing][spec]")
                 auto const null_out = merovingian::canonicaljson::serialize_canonical(null_val.value);
                 REQUIRE(null_out.output == "{\"a\":null}");
 
-                // Spec test vector: -0 is normalised to 0. The spec says integers
-                // must not use exponents or decimal places, and -0 MUST NOT appear.
-                // Our parser accepts -0 (which becomes integer 0) but rejects
-                // scientific notation like 1e10 because canonical JSON only allows
-                // integer literals.
+                // Spec: Matrix v1.18 Appendices § Canonical JSON:
+                // "Numbers that are negative zero MUST NOT appear in canonical JSON."
+                // -0 is therefore not valid canonical JSON and the parser MUST reject it.
+                // (A previous version of this test incorrectly accepted -0 and normalised
+                // it to 0. The spec is unambiguous: -0 must not appear, so parsing fails.)
                 auto const neg_zero = merovingian::canonicaljson::parse_lossless("{\"a\":-0}");
-                REQUIRE(neg_zero.error == merovingian::canonicaljson::ParseError::none);
-                auto const neg_zero_out = merovingian::canonicaljson::serialize_canonical(neg_zero.value);
-                REQUIRE(neg_zero_out.output == "{\"a\":0}");
+                REQUIRE(neg_zero.error == merovingian::canonicaljson::ParseError::invalid_number);
 
                 // Spec test vector: 1e10 must normalise to 10000000000.
                 // Our parser rejects scientific notation as non-integer, which is

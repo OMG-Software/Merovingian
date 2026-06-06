@@ -275,30 +275,57 @@ SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected",
     }
 }
 
-SCENARIO("User ID localpart: valid localpart characters are accepted",
+// Spec: Matrix CS API v1.18 Appendices § User Identifiers
+// URL: https://spec.matrix.org/v1.18/appendices/#user-identifiers
+//
+// New user ID localparts MUST only use: a-z, 0-9, ., _, =, -, /, +
+// Historical user IDs MAY contain additional characters (e.g. uppercase ASCII).
+// Servers SHOULD accept historical localparts from federation.
+// The localpart_is_valid() helper accepts the full historical set so that
+// incoming federation user IDs are not incorrectly rejected.
+SCENARIO("User ID localpart: normative new-ID characters are accepted",
          "[conformance][identifiers][user-id][localpart]")
 {
-    GIVEN("localparts using the full allowed character set")
+    GIVEN("localparts using the normative v1.18 character set (lowercase only)")
     {
-        auto const valid = std::vector<std::string_view>{
+        auto const normative_valid = std::vector<std::string_view>{
             "alice",
             "alice123",
             "alice.bob",
             "alice-bob",
             "alice_bob",
-            "ALICE",
             "alice=bob",
         };
 
         WHEN("each localpart is validated")
         {
-            THEN("all spec-permitted localpart characters are accepted")
+            THEN("all normative v1.18 localpart characters are accepted")
             {
-                for (auto const& lp : valid)
+                for (auto const& lp : normative_valid)
                 {
-                    // Spec MUST: localpart characters include a-z A-Z 0-9 . - _ = / +
+                    // Spec MUST: a-z, 0-9, ., _, =, -, /, + are all normatively valid.
                     REQUIRE(merovingian::auth::localpart_is_valid(lp));
                 }
+            }
+        }
+    }
+}
+
+// NOTE: This is a historical-compatibility test, not a normative conformance test.
+// The spec says new localparts MUST be lowercase; uppercase localparts exist in
+// older deployments and servers SHOULD accept them for federation.
+SCENARIO("User ID localpart: historical uppercase localparts are accepted for federation compatibility",
+         "[identifiers][user-id][localpart][historical]")
+{
+    GIVEN("an uppercase localpart from a historical deployment")
+    {
+        WHEN("the localpart is validated")
+        {
+            THEN("localpart_is_valid accepts it for historical/federation compatibility")
+            {
+                // Historical compatibility — NOT a new-user-ID conformance requirement.
+                // New registrations MUST NOT create uppercase localparts.
+                REQUIRE(merovingian::auth::localpart_is_valid("ALICE"));
             }
         }
     }
@@ -414,6 +441,55 @@ SCENARIO("Event ID grammar: SHA-256 length event ID matches spec dimensions",
                 // '$' + 43 base64url characters long.
                 REQUIRE(merovingian::events::event_id_is_valid(id));
                 REQUIRE(id.size() == 44U); // 1 '$' + 43 base64url chars
+            }
+        }
+    }
+}
+
+// Spec: Matrix Appendices v1.18 — Event IDs (room version 4+)
+// URL:  https://spec.matrix.org/v1.18/rooms/v4/
+//       https://spec.matrix.org/v1.18/appendices/#event-ids
+//
+// The grammar for event IDs is: '$' followed by one or more URL-safe base64
+// characters. This is a SYNTACTIC rule only.
+//
+// SEMANTIC constraint (room v4+): event IDs are the URL-safe unpadded base64
+// encoding of the SHA-256 reference hash of the event. SHA-256 outputs 32
+// bytes, which encode to exactly 43 unpadded base64url characters. Therefore
+// a real v4+ event ID is ALWAYS 44 characters total ('$' + 43 base64url).
+//
+// Short IDs such as "$abc123" are grammar-valid but cannot be genuine SHA-256
+// derived identifiers. The grammar function event_id_is_valid() is a SYNTAX
+// check; it does not enforce the 43-char semantic requirement.
+SCENARIO("Event ID grammar vs semantics: short IDs are syntactically valid but not SHA-256 derived",
+         "[conformance][identifiers][event-id]")
+{
+    GIVEN("an event ID shorter than the SHA-256 derived length")
+    {
+        // Syntactically valid per the grammar ('$' + base64url+)
+        // but cannot be a real room-v4+ SHA-256 derived event ID.
+        auto const short_id = std::string{"$abc123"};
+        auto const real_id = std::string{"$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"};
+
+        WHEN("both IDs are checked against the grammar")
+        {
+            THEN("both pass the grammar check (syntax only)")
+            {
+                // Spec grammar: event_id_is_valid() accepts any '$' + base64url+.
+                // It is NOT a semantic validator for SHA-256 lengths.
+                REQUIRE(merovingian::events::event_id_is_valid(short_id));
+                REQUIRE(merovingian::events::event_id_is_valid(real_id));
+            }
+        }
+
+        WHEN("lengths are compared against the SHA-256 semantic requirement")
+        {
+            THEN("only the 44-char ID satisfies the v4+ SHA-256 derivation requirement")
+            {
+                // Spec MUST (semantic): SHA-256 → 32 bytes → 43 base64url chars → 44 total.
+                // A short ID cannot represent a real room-v4+ reference hash.
+                REQUIRE(short_id.size() < 44U);  // fails semantic check
+                REQUIRE(real_id.size() == 44U);  // satisfies semantic check
             }
         }
     }

@@ -88,7 +88,8 @@ namespace
             return false;
         }
         auto index = std::size_t{0U};
-        if (token[index] == '-')
+        auto const has_minus = token[index] == '-';
+        if (has_minus)
         {
             if (token.size() == 1U)
             {
@@ -98,6 +99,13 @@ namespace
         }
         if (token[index] == '0')
         {
+            // Spec: Matrix v1.18 Appendices § Canonical JSON —
+            // "Numbers that are negative zero MUST NOT appear in canonical JSON."
+            // "-0" would reach here with has_minus == true; reject it.
+            if (has_minus)
+            {
+                return false;
+            }
             return index + 1U == token.size();
         }
         if (token[index] < '1' || token[index] > '9')

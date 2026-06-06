@@ -348,8 +348,9 @@ SCENARIO("PDU envelope extracts depth correctly from the JSON",
         }
     }
 
-    GIVEN("a valid m.room.create PDU with depth 0")
+    GIVEN("a valid v10 m.room.create PDU with room_id and depth 0")
     {
+        // v10 and earlier create events DO include room_id.
         auto const create_pdu = std::string{
             "{\"type\":\"m.room.create\","
             "\"state_key\":\"\","
@@ -379,6 +380,135 @@ SCENARIO("PDU envelope extracts depth correctly from the JSON",
                 // Spec MUST: state events carry a state_key field.
                 REQUIRE(envelope->state_key.has_value());
                 REQUIRE(envelope->state_key.value().empty()); // state_key is "" for create
+            }
+        }
+    }
+}
+
+// Spec: Matrix Room Version 12 (MSC4291)
+// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+//
+// "The m.room.create event MUST NOT include a room_id field. The room ID is
+// derived from the create event's reference hash: the unpadded base64url of
+// the SHA-256 reference hash, prefixed with '!'."
+SCENARIO("Room v12: m.room.create PDU without room_id is accepted and room_id is derived",
+         "[pdu][format][conformance][room-v12]")
+{
+    GIVEN("a v12 m.room.create PDU with no room_id field")
+    {
+        // Spec MUST: v12 create events MUST NOT have a room_id field.
+        auto const v12_create = std::string{
+            "{\"auth_events\":[],"
+            "\"content\":{\"creator\":\"@alice:example.org\",\"room_version\":\"12\"},"
+            "\"depth\":0,"
+            "\"hashes\":{\"sha256\":\"x\"},"
+            "\"origin_server_ts\":1000,"
+            "\"prev_events\":[],"
+            "\"sender\":\"@alice:example.org\","
+            "\"signatures\":{},"
+            "\"state_key\":\"\","
+            "\"type\":\"m.room.create\"}"};
+
+        WHEN("parse_inbound_pdu_envelope is called")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(v12_create);
+
+            THEN("the envelope is successfully parsed")
+            {
+                // Spec MUST: a valid v12 create event without room_id MUST be accepted.
+                REQUIRE(envelope.has_value());
+            }
+
+            THEN("the room_id is derived from the event's reference hash")
+            {
+                // Spec MUST: room_id = '!' + same base64url hash as the event_id.
+                // The room_id starts with '!' and has no ':' domain separator.
+                REQUIRE(envelope.has_value());
+                REQUIRE_FALSE(envelope->room_id.empty());
+                REQUIRE(envelope->room_id.front() == '!');
+                REQUIRE(envelope->room_id.find(':') == std::string::npos);
+                // room_id and event_id share the same base64url body, different sigil.
+                REQUIRE(envelope->room_id.substr(1U) == envelope->event_id.substr(1U));
+            }
+
+            THEN("event_type is m.room.create")
+            {
+                REQUIRE(envelope.has_value());
+                // Spec MUST: event type is preserved exactly.
+                REQUIRE(envelope->event_type == "m.room.create");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Room Version 12 (MSC4291)
+// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+//
+// "The m.room.create event MUST NOT appear in the auth_events of any other
+// event. In room version 12, the create event ID is derived deterministically
+// from the room ID (same hash, '!' → '$'), making violations detectable at
+// parse time without a store lookup."
+SCENARIO("Room v12: PDU with m.room.create in auth_events is rejected",
+         "[pdu][format][conformance][room-v12]")
+{
+    // A 43-char base64url hash, matching what a real v12 room looks like.
+    // room_id = "!AAAA..." means create_event_id = "$AAAA...".
+    static constexpr auto k_v12_hash = std::string_view{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"};
+
+    GIVEN("a v12 non-create event that lists the create event in auth_events")
+    {
+        auto const v12_room_id = "!" + std::string{k_v12_hash};
+        auto const v12_create_id = "$" + std::string{k_v12_hash};
+        auto const bad_pdu = std::string{
+            "{\"auth_events\":[\"" + v12_create_id + "\"],"
+            "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+            "\"depth\":5,"
+            "\"hashes\":{\"sha256\":\"x\"},"
+            "\"origin_server_ts\":2000,"
+            "\"prev_events\":[],"
+            "\"room_id\":\"" + v12_room_id + "\","
+            "\"sender\":\"@alice:example.org\","
+            "\"signatures\":{},"
+            "\"type\":\"m.room.message\"}"};
+
+        WHEN("parse_inbound_pdu_envelope is called")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(bad_pdu);
+
+            THEN("nullopt is returned")
+            {
+                // Spec MUST: v12 create event MUST NOT appear in any other event's
+                // auth_events. Such a PDU is malformed and must be rejected.
+                REQUIRE_FALSE(envelope.has_value());
+            }
+        }
+    }
+
+    GIVEN("a v12 non-create event whose auth_events does NOT contain the create event")
+    {
+        auto const v12_room_id = "!" + std::string{k_v12_hash};
+        auto const other_event_id = "$BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBbb";
+        auto const good_pdu = std::string{
+            "{\"auth_events\":[\"" + std::string{other_event_id} + "\"],"
+            "\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+            "\"depth\":5,"
+            "\"hashes\":{\"sha256\":\"x\"},"
+            "\"origin_server_ts\":2000,"
+            "\"prev_events\":[],"
+            "\"room_id\":\"" + v12_room_id + "\","
+            "\"sender\":\"@alice:example.org\","
+            "\"signatures\":{},"
+            "\"type\":\"m.room.message\"}"};
+
+        WHEN("parse_inbound_pdu_envelope is called")
+        {
+            auto const envelope = merovingian::federation::parse_inbound_pdu_envelope(good_pdu);
+
+            THEN("the envelope is successfully parsed")
+            {
+                // Spec: a well-formed v12 non-create event without create event in
+                // auth_events MUST be accepted.
+                REQUIRE(envelope.has_value());
             }
         }
     }
