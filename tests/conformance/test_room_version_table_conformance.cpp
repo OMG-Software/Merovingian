@@ -163,26 +163,51 @@ SCENARIO("Room versions v1–v5 use the original auth rules (no domain check)",
 // Spec: Matrix v1.18 — Room Versions
 // URL: https://spec.matrix.org/v1.18/rooms/
 //
-// v6 introduced the requirement that the sender's domain must match the
-// room creator's domain (the domain-check rule). v6–v12 all enforce this.
-SCENARIO("Room versions v6–v12 use the v6+ auth rules (sender domain check)",
+// v6 introduced the conditional sender-domain check (active only when
+// content.m.federate is false). v6–v11 all share the room_v6_plus auth rule set.
+SCENARIO("Room versions v6–v11 use the room_v6_plus auth rules",
          "[rooms][versions][conformance][auth-rules]")
 {
     GIVEN("the room version registry")
     {
-        for (auto const* v : {"6", "7", "8", "9", "10", "11", "12"})
+        for (auto const* v : {"6", "7", "8", "9", "10", "11"})
         {
             WHEN(std::string{"version "} + v + " policy is retrieved")
             {
                 auto const* policy = merovingian::rooms::find_room_version_policy(v);
                 REQUIRE(policy != nullptr);
 
-                THEN("auth rules are room_v6_plus (sender-domain == creator-domain enforced)")
+                THEN("auth rules are room_v6_plus")
                 {
-                    // Spec MUST: v6+ enforce that the event sender's domain
-                    // matches the m.room.create creator's domain.
+                    // Spec MUST: v6–v11 use the room_v6_plus rule set.
                     REQUIRE(policy->auth_rules == AuthRules::room_v6_plus);
                 }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Room Version 12 (MSC4289/MSC4291)
+// URL: https://spec.matrix.org/v1.18/rooms/v12/
+//
+// v12 extends v6+ auth rules with creator privilege and implicit create;
+// it uses a distinct auth rule tag for auditability.
+SCENARIO("Room version 12 uses the room_v12 auth rules (distinct from v6+)",
+         "[rooms][versions][conformance][auth-rules][room-version]")
+{
+    GIVEN("the room version registry")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        WHEN("the v12 auth_rules field is inspected")
+        {
+            THEN("auth rules are room_v12 — not room_v6_plus")
+            {
+                // Spec MUST: v12 uses room_v12 to distinguish creator-privilege
+                // and implicit-create semantics from the base v6+ rule set.
+                REQUIRE(policy->auth_rules == AuthRules::room_v12);
+                REQUIRE(policy->auth_rules != AuthRules::room_v6_plus);
             }
         }
     }

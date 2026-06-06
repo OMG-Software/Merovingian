@@ -516,10 +516,19 @@ SCENARIO("Inbound federation applies backoff and increments failure count", "[fe
     }
 }
 
-SCENARIO("Federation PDU authorization rejects sender origin and event signature mismatches",
-         "[federation][inbound][pdu]")
+// Implementation hardening policy (not a Matrix spec MUST):
+// The Matrix spec permits any server to deliver a PDU in a federation transaction;
+// the transport origin need not equal the event sender's domain. Merovingian
+// additionally requires origin == sender_domain as a hardening measure — this
+// eliminates a class of origin-spoofing attacks at the cost of disallowing transit
+// delivery. The policy also validates that the sender-server signature is present.
+//
+// See: tests/conformance/test_pdu_format_conformance.cpp for the spec-required
+// sender-server signature validation test.
+SCENARIO("Federation PDU authorization: hardening policy rejects origin-sender mismatch",
+         "[federation][inbound][pdu][hardening]")
 {
-    GIVEN("PDUs with mismatched origin and signatures")
+    GIVEN("PDUs where origin does not match sender domain, and a PDU with a missing sender signature")
     {
         auto valid = merovingian::federation::parse_federation_pdu(comma_delimited_pdu("matrix.example.org"));
         auto bad_sender = valid;
@@ -529,7 +538,7 @@ SCENARIO("Federation PDU authorization rejects sender origin and event signature
         auto bad_signature = valid;
         bad_signature.signatures.front().server_name = "elsewhere.example.org";
 
-        WHEN("PDUs are authorized")
+        WHEN("PDUs are authorized against origin 'matrix.example.org'")
         {
             auto const accepted = merovingian::federation::authorize_federation_pdu(valid, "matrix.example.org");
             auto const rejected_sender =
@@ -539,13 +548,17 @@ SCENARIO("Federation PDU authorization rejects sender origin and event signature
             auto const rejected_signature =
                 merovingian::federation::authorize_federation_pdu(bad_signature, "matrix.example.org");
 
-            THEN("origin and signature mismatches fail closed")
+            THEN("origin-sender mismatches and missing sender signatures are rejected")
             {
+                // Hardening policy: sender domain != expected origin → reject.
+                // This is stricter than the spec (which allows transit delivery) but
+                // eliminates origin-spoofing attacks. Do NOT relabel as [conformance].
                 REQUIRE(accepted.accepted);
                 REQUIRE_FALSE(rejected_sender.accepted);
                 REQUIRE(rejected_sender.reason == "PDU sender does not match origin");
                 REQUIRE_FALSE(rejected_spoofed_sender.accepted);
                 REQUIRE(rejected_spoofed_sender.reason == "PDU sender does not match origin");
+                // Spec-required: missing sender-server signature MUST be rejected.
                 REQUIRE_FALSE(rejected_signature.accepted);
                 REQUIRE(rejected_signature.reason == "missing event signature for expected server");
             }

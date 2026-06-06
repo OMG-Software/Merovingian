@@ -26,6 +26,10 @@ namespace
             return "room_v1";
         case rooms::AuthRules::room_v6_plus:
             return "room_v6_plus";
+        case rooms::AuthRules::room_v12:
+            // Distinct hook for auditability: v12 adds creator privilege (MSC4289)
+            // and implicit create (MSC4291) on top of the v6+ rule base.
+            return "room_v12";
         }
 
         return "unknown";
@@ -433,19 +437,57 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         return make_denied("2", "room has no create event");
     }
 
-    // Step 3: For v6+, sender domain must match creator's domain
-    if (policy.auth_rules == rooms::AuthRules::room_v6_plus)
+    // Step 3: For v6+ and v12, only reject cross-domain senders when the room
+    // explicitly disables federation via content.m.federate = false. When m.federate
+    // is absent or true the check does not apply and cross-domain senders are permitted.
+    // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
+    // URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+    if (policy.auth_rules == rooms::AuthRules::room_v6_plus ||
+        policy.auth_rules == rooms::AuthRules::room_v12)
     {
-        auto const sender_domain = domain_of(*sender);
-        auto const* creator = event_content_string(auth_events.create, "creator");
-        if (creator == nullptr)
+        auto const* create_obj = value_is_object(auth_events.create);
+        auto is_non_federated = false;
+        if (create_obj != nullptr)
         {
-            return make_denied("3", "create event missing creator");
+            auto const* content = object_member_as_object(*create_obj, "content");
+            if (content != nullptr)
+            {
+                auto const* federate_val = object_member(*content, "m.federate");
+                if (federate_val != nullptr)
+                {
+                    auto const* federate_bool = std::get_if<bool>(&federate_val->storage());
+                    is_non_federated = (federate_bool != nullptr && !*federate_bool);
+                }
+            }
         }
-        auto const creator_domain = domain_of(*creator);
-        if (sender_domain != creator_domain)
+
+        if (is_non_federated)
         {
-            return make_denied("3", "sender domain does not match creator domain");
+            auto const sender_domain = domain_of(*sender);
+            // v6–v10 rooms store the creator in content.creator; v11+ rooms (including v12)
+            // removed content.creator — use the create event's sender field as the fallback.
+            auto const* content_creator = event_content_string(auth_events.create, "creator");
+            std::string_view creator_domain_src;
+            if (content_creator != nullptr)
+            {
+                creator_domain_src = *content_creator;
+            }
+            else if (create_obj != nullptr)
+            {
+                auto const* create_sender = string_member(*create_obj, "sender");
+                if (create_sender != nullptr)
+                {
+                    creator_domain_src = *create_sender;
+                }
+            }
+            if (creator_domain_src.empty())
+            {
+                return make_denied("3", "create event has no identifiable creator");
+            }
+            if (sender_domain != domain_of(creator_domain_src))
+            {
+                return make_denied("3", "sender domain does not match creator domain");
+            }
         }
     }
 
@@ -719,16 +761,33 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         auto const pl_sender_power =
             effective_sender_power(auth_events.power_levels, *sender, auth_events.create, policy);
 
-        // For m.room.power_levels, the sender must have the level to change each key
-        // Check that the sender can set the new event's content power levels
+        auto const* content_obj = object_member_as_object(*obj, "content");
+        auto const* new_users = content_obj == nullptr ? nullptr : object_member_as_object(*content_obj, "users");
+
+        // v12/MSC4289: a room creator's power is effectively infinite and cannot be
+        // expressed as an integer in content.users. Any m.room.power_levels event that
+        // lists a creator (the create-event sender or any additional_creators member)
+        // in content.users MUST be rejected.
+        // Spec: https://spec.matrix.org/v1.18/rooms/v12/
+        if (policy.privilege_room_creators && new_users != nullptr)
+        {
+            for (auto const& user_entry : *new_users)
+            {
+                if (user_is_room_creator(auth_events.create, user_entry.key, policy))
+                {
+                    return make_denied("11", "creator cannot be specified in m.room.power_levels content.users");
+                }
+            }
+        }
+
+        // For m.room.power_levels, the sender must have the level to change each key.
+        // Check that the sender can set the new event's content power levels.
         if (value_has_content(auth_events.power_levels))
         {
             auto const old_users = object_member_as_object(*value_is_object(auth_events.power_levels), "users");
-            auto const* content_obj = object_member_as_object(*obj, "content");
-            auto const* new_users = content_obj == nullptr ? nullptr : object_member_as_object(*content_obj, "users");
 
             // Check users map: cannot elevate anyone above own level, cannot demote
-            // anyone above own level unless they are the target
+            // anyone above own level.
             if (new_users != nullptr)
             {
                 for (auto const& user_entry : *new_users)
@@ -740,13 +799,7 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                     }
                     auto const old_level =
                         old_users == nullptr ? 0 : extract_user_level_from_users(*old_users, user_entry.key);
-                    auto user_old = old_level >= 0 ? old_level : 0;
-                    if (user_is_room_creator(auth_events.create, user_entry.key, policy))
-                    {
-                        // MSC4289: a room creator's power level is fixed at infinity and
-                        // cannot be reassigned through m.room.power_levels by a non-creator.
-                        user_old = creator_power;
-                    }
+                    auto const user_old = old_level >= 0 ? old_level : 0;
                     if (*new_level > pl_sender_power && user_old <= pl_sender_power)
                     {
                         if (user_entry.key != *sender)
@@ -862,7 +915,17 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
 auto select_auth_events(EventAuthorizationRequest const& request) -> AuthEventSelection
 {
     auto selection = AuthEventSelection{};
-    selection.required.push_back({AuthEventKind::create, "m.room.create", ""});
+
+    // v12 (MSC4291): the create event is implicit in the room ID and MUST NOT be
+    // listed in auth_events. For all earlier room versions create is always required.
+    // Spec: https://spec.matrix.org/v1.18/rooms/v12/
+    auto const* policy = rooms::find_room_version_policy(request.room_version);
+    auto const create_is_implicit = (policy != nullptr && policy->create_event_is_room_id);
+
+    if (!create_is_implicit)
+    {
+        selection.required.push_back({AuthEventKind::create, "m.room.create", ""});
+    }
 
     if (requires_power_levels(request.event_type))
     {

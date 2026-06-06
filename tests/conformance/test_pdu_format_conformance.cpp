@@ -95,43 +95,53 @@ SCENARIO("parse_federation_pdu extracts required fields from a valid room v3+ PD
     }
 }
 
-// Spec: Matrix Server-Server API v1.18 — PDUs
-// URL: https://spec.matrix.org/v1.18/server-server-api/#pdus
+// Spec: Matrix Server-Server API v1.18 — Signing Events
+// URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
 //
-// authorize_federation_pdu verifies that the PDU was sent by a server whose
-// origin matches the claimed sender domain. A PDU whose sender domain does
-// not match the expected origin MUST be rejected.
-SCENARIO("authorize_federation_pdu rejects PDU with mismatched origin",
+// The spec requires that a PDU carries a valid signature from the sender's server
+// (domain_of(sender)). For room v1/v2 rooms, the event-ID server must also have
+// signed. The transaction origin (the server that delivered the PDU) need not be
+// the sender's server — the spec explicitly permits transit-server delivery.
+//
+// The spec-required validation is therefore: "does the PDU have a valid signature
+// from domain_of(sender)?" — NOT "does the transport origin equal domain_of(sender)?".
+//
+// Merovingian additionally enforces that the transport origin matches domain_of(sender)
+// as a hardening policy; that behaviour is NOT a spec MUST and is tested in the
+// unit tests (test_federation_inbound_request.cpp: "Federation PDU authorization
+// rejects sender origin and event signature mismatches").
+SCENARIO("authorize_federation_pdu validates sender-server signatures (spec requirement)",
          "[pdu][format][conformance]")
 {
-    GIVEN("a valid PDU from @alice:example.org")
+    GIVEN("a PDU from @alice:example.org signed by example.org")
     {
         auto const pdu = merovingian::federation::parse_federation_pdu(valid_pdu);
 
-        WHEN("the expected origin is 'example.org' (matches sender domain)")
+        WHEN("the expected origin is 'example.org' — the sender's server domain")
         {
             auto const decision =
                 merovingian::federation::authorize_federation_pdu(pdu, "example.org");
 
-            THEN("the PDU is accepted")
+            THEN("the PDU is accepted — sender-server signature is present and valid")
             {
-                // Spec MUST: sender domain must match origin. '@alice:example.org'
-                // sends from 'example.org' — this is a valid match.
+                // Spec MUST: a PDU that carries a valid signature from domain_of(sender)
+                // MUST be accepted. '@alice:example.org' → sender server is 'example.org'.
                 REQUIRE(decision.accepted);
             }
         }
 
-        WHEN("the expected origin is 'other.example.org' (does not match sender domain)")
+        WHEN("the PDU carries no signature at all (signatures list cleared)")
         {
+            auto unsigned_pdu = pdu;
+            unsigned_pdu.signatures.clear();
             auto const decision =
-                merovingian::federation::authorize_federation_pdu(pdu, "other.example.org");
+                merovingian::federation::authorize_federation_pdu(unsigned_pdu, "example.org");
 
-            THEN("the PDU is rejected")
+            THEN("the PDU is rejected — missing sender-server signature")
             {
-                // Spec MUST: sender's domain MUST match the origin server.
-                // A PDU claiming to be from '@alice:example.org' cannot arrive
-                // from 'other.example.org' — it must be rejected.
-                REQUIRE(!decision.accepted);
+                // Spec MUST: a PDU without a valid signature from domain_of(sender)
+                // MUST be rejected. Unsigned events cannot be attributed to any server.
+                REQUIRE_FALSE(decision.accepted);
             }
         }
     }

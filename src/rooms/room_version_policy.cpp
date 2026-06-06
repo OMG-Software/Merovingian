@@ -35,7 +35,7 @@ namespace
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
         RoomVersionPolicy{"11", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v6_plus,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, false, false},
-        RoomVersionPolicy{"12", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v6_plus,
+        RoomVersionPolicy{"12", EventFormat::room_v3_plus, RedactionRules::room_v11_plus, AuthRules::room_v12,
                           StateResolutionAlgorithm::v2, EventIdFormat::reference_hash, true, true,  true },
     };
 
