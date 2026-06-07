@@ -2346,6 +2346,10 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         // joined_membership_changed_since reads current_state, not the membership
         // table, so it returns false and the room is silently suppressed from
         // rooms.join in every incremental sync until the client does a full re-sync.
+        //
+        // GCOVR_EXCL_START — reachable only after a live make_join/send_join exchange
+        // with a remote federation server; covered by the sync regression test that
+        // directly exercises the underlying store functions.
         {
             auto join_depth    = std::uint64_t{0U};
             auto join_prev_ids = std::vector<std::string>{};
@@ -2385,6 +2389,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             std::ignore = database::store_event_with_state(
                 runtime.database.persistent_store, std::move(join_pe), join_state);
         }
+        // GCOVR_EXCL_STOP
 
         auto const membership_result = database::store_membership(
             runtime.database.persistent_store, {std::string{room_id}, *user_id, "join", membership_stream});
