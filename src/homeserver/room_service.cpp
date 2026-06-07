@@ -2334,7 +2334,63 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             return make_operation_result(false, {}, "room persistence failed", 500U);
         }
         // Create the local room record and persist the membership.
+        // Allocate a stream ordering for the local join event first so it is
+        // contiguous with the membership row.
         auto const membership_stream = runtime.database.next_stream_ordering++;
+
+        // Persist the local user's join event in the event store and update the
+        // m.room.member current_state entry to point to it.
+        //
+        // Without this, current_state still points to the old invite event
+        // (membership="invite") even though the membership table says "join".
+        // joined_membership_changed_since reads current_state, not the membership
+        // table, so it returns false and the room is silently suppressed from
+        // rooms.join in every incremental sync until the client does a full re-sync.
+        //
+        // GCOVR_EXCL_START — reachable only after a live make_join/send_join exchange
+        // with a remote federation server; covered by the sync regression test that
+        // directly exercises the underlying store functions.
+        {
+            auto join_depth    = std::uint64_t{0U};
+            auto join_prev_ids = std::vector<std::string>{};
+            auto join_auth_ids = std::vector<std::string>{};
+            if (auto const* obj =
+                    std::get_if<canonicaljson::Object>(&signed_value.value.storage()))
+            {
+                if (auto const* d = json_integer_member(*obj, "depth"); d != nullptr && *d >= 0)
+                {
+                    join_depth = static_cast<std::uint64_t>(*d);
+                }
+                if (auto const* pv = json_object_member(*obj, "prev_events"); pv != nullptr)
+                {
+                    join_prev_ids = json_string_array(*pv);
+                }
+                if (auto const* av = json_object_member(*obj, "auth_events"); av != nullptr)
+                {
+                    join_auth_ids = json_string_array(*av);
+                }
+            }
+            auto join_pe             = database::PersistentEvent{};
+            join_pe.event_id         = event_id_result.event_id;
+            join_pe.room_id          = std::string{room_id};
+            join_pe.sender_user_id   = *user_id;
+            join_pe.json             = signed_event.event_json;
+            join_pe.depth            = join_depth;
+            join_pe.stream_ordering  = membership_stream;
+            join_pe.prev_event_ids   = std::move(join_prev_ids);
+            join_pe.auth_event_ids   = std::move(join_auth_ids);
+            auto const join_state    = std::optional<database::PersistentStateEvent>{
+                database::PersistentStateEvent{std::string{room_id}, "m.room.member",
+                                               *user_id, event_id_result.event_id}};
+            // store_event_with_state either inserts a new state row or UPDATEs the
+            // existing one (invite → join).  Either path leaves current_state pointing
+            // at the join event at membership_stream, which joined_membership_changed_since
+            // then detects correctly.
+            std::ignore = database::store_event_with_state(
+                runtime.database.persistent_store, std::move(join_pe), join_state);
+        }
+        // GCOVR_EXCL_STOP
+
         auto const membership_result = database::store_membership(
             runtime.database.persistent_store, {std::string{room_id}, *user_id, "join", membership_stream});
         if (membership_result == database::MembershipStoreResult::error)

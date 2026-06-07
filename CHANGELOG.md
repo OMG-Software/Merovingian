@@ -1,3 +1,18 @@
+## 0.5.22
+
+- Fix federated join from invite leaving room invisible to incremental sync.
+  After a successful make_join/send_join the local join event was never stored
+  in `store.events` or `current_state`. `joined_membership_changed_since` reads
+  `current_state` to find the user's m.room.member entry; without the fix it
+  still pointed at the old invite event (membership="invite"), so the function
+  returned false and the room was silently suppressed from `rooms.join` in every
+  incremental sync once the client's `since` token caught up to the event
+  stream position. Fix: `room_service.cpp::join_room` now calls
+  `store_event_with_state` for the signed join event before `store_membership`,
+  which atomically inserts the event and updates `current_state` to point at
+  the join event_id. `joined_membership_changed_since` then correctly finds
+  membership="join" at `membership_stream > since_ordering`.
+
 ## 0.5.21
 
 - Fix Codecov upload silently failing on every push to `main`: coverage

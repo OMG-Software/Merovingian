@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.21
+Version:        0.5.22
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,13 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.22-1
+- Fix federated join leaving room invisible to incremental sync: store the
+  local join event in store.events with has_state=true so that
+  joined_membership_changed_since detects the invite-to-join transition.
+  Without this, current_state still pointed at the old invite event and the
+  room never surfaced in rooms.join after the client's since-token caught up.
+
 * Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.21-1
 - Fix Codecov upload for protected branches: add CODECOV_TOKEN support,
   disable redundant gcov search pass, add .codecov.yml project config.

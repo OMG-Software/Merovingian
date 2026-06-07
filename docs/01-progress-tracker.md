@@ -1,4 +1,39 @@
-## v0.5.21 (in progress — fix/coverage-and-redaction-header)
+## v0.5.22 (in progress — fix/federated-join-sync-visibility)
+
+### Fix: federated join from invite leaves room invisible to incremental sync
+
+**Symptoms**: After a Merovingian user successfully completed a federated join
+(make_join + send_join both returned 200), the joined room appeared in one
+incremental sync (via leftover timeline events from the send_join state batch)
+but then vanished. Subsequent syncs returned ~310 bytes forever. The client
+(Cinny) retried the join, received `already_member`, and the room disappeared
+entirely once the client's `since` token caught up to the current stream position.
+
+**Root cause**: `room_service.cpp::join_room` (remote join path) allocated a
+`membership_stream` ordering and called `store_membership` but never stored the
+actual signed join event in `store.events` or updated `current_state`. So
+`current_state` still pointed at the old invite event (membership="invite").
+`joined_membership_changed_since` reads `current_state` → finds invite event →
+returns false → `newly_joined = false` → no full state snapshot, no join event
+in timeline. After `since_ordering` caught up to the last event's
+`stream_ordering`, all room content became ≤ since and the room was suppressed.
+
+**Fix**: Before `store_membership`, call `store_event_with_state` for the
+signed join event at `membership_stream`. `store_event_with_state` atomically
+inserts the event into `store.events` and UPDATEs `current_state` to point at
+the join `event_id`. `joined_membership_changed_since` then finds
+membership="join" at `membership_stream > since_ordering` → `newly_joined=true`
+→ full state snapshot + join event in timeline → client stops retrying.
+
+| File | Change |
+|------|--------|
+| `src/homeserver/room_service.cpp` | Store local join event + update state before `store_membership` |
+| `tests/unit/test_sync_handler.cpp` | Regression test: invite→join transition visible in incremental sync |
+| `packaging/*`, `scripts/*`, `meson.build`, `src/*.cpp` | v0.5.22 version bump |
+
+---
+
+## v0.5.21 (merged)
 
 ### Fix: Codecov upload broken for protected branches; fix redaction conformance header
 
