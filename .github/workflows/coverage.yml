@@ -53,8 +53,20 @@ jobs:
           # gcovr translates clang's gcov-compatible .gcno/.gcda files into
           # Cobertura XML for Codecov.  llvm-cov gcov is required instead of
           # plain gcov because the binaries were compiled with clang.
+          #
+          # Coverage is accumulated from ALL four C++ test types that run
+          # under "meson test":
+          #   - unit tests      (merovingian-unit-tests binary)
+          #   - conformance tests (merovingian-conformance-tests binary)
+          #   - integration tests (merovingian-integration-tests binary)
+          #   - smoke tests     (run the instrumented server binary directly,
+          #                      exercising startup, config, --dry-run paths)
+          #
+          # --search-paths pins the .gcda search to the build directory so
+          # gcovr does not traverse the whole repo tree unnecessarily.
           gcovr \
             --root . \
+            --search-paths build-coverage \
             --gcov-executable "llvm-cov gcov" \
             --filter 'src/' \
             --filter 'include/' \
@@ -82,7 +94,9 @@ jobs:
           # then add it under Settings → Secrets → Actions → New repository secret.
           token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage/coverage.xml
-          flags: unit
+          # "full-test-suite" reflects that the report covers unit,
+          # conformance, integration, and smoke tests — not just unit tests.
+          flags: full-test-suite
           # Prevent the action running its own gcov pass — we already produced
           # the Cobertura XML above with the correct llvm-cov gcov executable.
           disable_search: true
