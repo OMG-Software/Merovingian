@@ -1,3 +1,61 @@
+## v0.5.23 (in progress — fix/security-audit-token-pdu-auth)
+
+### Fix: Raw access token leaked to audit log on auth rejection
+
+**Symptoms**: Any token-bearing request that hits `authenticated_user()` with an
+unrecognised or unhashable token emits an audit log row where both the `actor`
+and `target` fields equal the raw bearer string (e.g., `mvs_abc123…`). The raw
+token then persists in `audit_log` indefinitely and is visible via the admin
+audit endpoint. In a rate-limit scenario the attacker can trigger many such
+rejections, populating the audit log with leaked token material.
+
+**Root cause**: `auth_service.cpp::authenticated_user` forwarded `access_token`
+(the raw bearer string) directly as both `actor` and `target` to
+`log_diagnostic_audit` in both failure branches. The function accepts an
+`std::string_view`, so the token bytes were written verbatim into
+`AuditLogEvent::actor` and `AuditLogEvent::target`.
+
+**Fix**: Split the combined `session == nullptr || user not found` condition into
+two guards. When hashing fails or the session is absent use `"<unknown>"` as
+actor and target. When the session exists but the user row is gone, use
+`session->user_id` — that's already persisted data, not the bearer secret.
+The raw bearer token never reaches any audit field.
+
+| File | Change |
+|------|--------|
+| `src/homeserver/auth_service.cpp` | Split rejection path; use `"<unknown>"` / `session->user_id` instead of raw token |
+| `tests/unit/test_homeserver_vertical_slice.cpp` | Regression: audit rows must not contain raw `mvs_` token or the literal string `"access_token"` |
+
+---
+
+### Fix: Shallow federation PDU authorization masked by misleading name
+
+**Symptoms**: `pdu_is_authorized()` in `inbound_request.cpp` used a hardcoded
+room version "12" and a synthetic `PowerLevelPolicy{50, 0}` (sender=50,
+required=0). Because 50 ≥ 0, every PDU with a non-empty event type passed the
+check. This means banned senders, under-powered senders, and PDUs with missing
+auth events all received a 200 from `authorize_federation_pdu()`. The function
+name implied real Matrix event authorization but it performed none.
+
+**Root cause**: `pdu_is_authorized()` called `authorize_event()` without the
+actual room state — no create event, no real power levels, no sender membership.
+With `{50, 0}` the power check always passes; with default `MembershipPolicy`
+the membership check allows a leave→join self-join for every type.
+
+**Fix**: Remove `pdu_is_authorized()` entirely. Replace the call site in
+`authorize_federation_pdu()` with a `// TODO` comment that explicitly calls for
+full Matrix event auth (`authorize_event_against_auth_events()`) against actual
+room state at the persistence sink. Add conformance-style tests exercising the
+four cases the old check missed: banned sender, missing create event, non-member
+invite, and under-powered state event.
+
+| File | Change |
+|------|--------|
+| `src/federation/inbound_request.cpp` | Remove `pdu_is_authorized()`; replace call site with TODO comment |
+| `tests/unit/test_federation_inbound_request.cpp` | Four new scenarios: banned sender, no create event, non-member invite, insufficient power |
+
+---
+
 ## v0.5.22 (in progress — fix/federated-join-sync-visibility)
 
 ### Fix: federated join from invite leaves room invisible to incremental sync

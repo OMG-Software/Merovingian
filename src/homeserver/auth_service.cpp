@@ -488,18 +488,32 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
     auto const token_hash = hash_token(access_token);
     if (!token_hash.has_value())
     {
-        log_diagnostic_audit(runtime.database, "auth", "access_token.rejected", {{"reason", "token hashing failed", false}},
+        // Security: never pass the raw bearer token to the audit log.
+        // When hashing itself fails we have no identity to report — use "<unknown>".
+        log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
+                             {{"reason", "token hashing failed", false}},
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "access_token.rejected", access_token, access_token, "token hashing failed");
+                             "access_token.rejected", "<unknown>", "<unknown>", "token hashing failed");
         return std::nullopt;
     }
     auto const* session = find_session(runtime.database, *token_hash);
-    if (session == nullptr || find_user(runtime.database, session->user_id) == nullptr)
+    if (session == nullptr)
     {
+        // Security: no session for this token hash — report without leaking the raw token.
         log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
-                             {{"reason", "session or user not found", false}}, observability::LogEventSeverity::warning,
-                             observability::AuditCategory::auth, "access_token.rejected", access_token, access_token,
-                             "session or user not found");
+                             {{"reason", "session not found", false}},
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "access_token.rejected", "<unknown>", "<unknown>", "session not found");
+        return std::nullopt;
+    }
+    if (find_user(runtime.database, session->user_id) == nullptr)
+    {
+        // Security: session exists but the owning user record is gone — use the
+        // user_id from the session record, not the raw bearer token.
+        log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
+                             {{"reason", "user not found", false}},
+                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                             "access_token.rejected", session->user_id, session->user_id, "user not found");
         return std::nullopt;
     }
     log_diagnostic("access_token.accepted",

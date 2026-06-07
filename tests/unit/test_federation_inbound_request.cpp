@@ -4,6 +4,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
@@ -195,6 +196,68 @@ private:
     auto signed_event = merovingian::events::sign_event_for_server(parsed.value, *policy, store, provider, origin);
     REQUIRE(signed_event.error.empty());
     return signed_event.event_json;
+}
+
+// ---- auth-event builder helpers (reusable for full-auth scenarios) -----------
+
+[[nodiscard]] auto auth_create_event(std::string_view creator) -> std::string
+{
+    // v12 create event: no room_id field; room_id is derived from the event hash.
+    return "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
+           "\",\"content\":{\"creator\":\"" + std::string{creator} +
+           "\",\"room_version\":\"12\"},\"origin_server_ts\":1,\"depth\":0,"
+           "\"prev_events\":[],\"auth_events\":[],\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+[[nodiscard]] auto auth_power_levels_event(std::string_view sender, std::int64_t users_default,
+                                           std::int64_t state_default, std::string_view admin_user,
+                                           std::int64_t admin_level) -> std::string
+{
+    return "{\"type\":\"m.room.power_levels\",\"state_key\":\"\",\"sender\":\"" + std::string{sender} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{"
+           "\"ban\":50,\"invite\":50,\"kick\":50,\"redact\":50,"
+           "\"users_default\":" + std::to_string(users_default) +
+           ",\"state_default\":" + std::to_string(state_default) +
+           ",\"events_default\":0,\"users\":{\"" + std::string{admin_user} + "\":" +
+           std::to_string(admin_level) +
+           "}},\"origin_server_ts\":2,\"depth\":1,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+[[nodiscard]] auto auth_member_event(std::string_view sender, std::string_view state_key,
+                                     std::string_view membership) -> std::string
+{
+    return "{\"type\":\"m.room.member\",\"state_key\":\"" + std::string{state_key} +
+           "\",\"sender\":\"" + std::string{sender} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{\"membership\":\"" +
+           std::string{membership} +
+           "\"},\"origin_server_ts\":3,\"depth\":2,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+[[nodiscard]] auto auth_message_event(std::string_view sender) -> std::string
+{
+    return "{\"type\":\"m.room.message\",\"sender\":\"" + std::string{sender} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},"
+           "\"origin_server_ts\":4,\"depth\":3,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+[[nodiscard]] auto auth_state_event(std::string_view sender, std::string_view type,
+                                    std::string_view state_key) -> std::string
+{
+    return "{\"type\":\"" + std::string{type} + "\",\"state_key\":\"" + std::string{state_key} +
+           "\",\"sender\":\"" + std::string{sender} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{},"
+           "\"origin_server_ts\":5,\"depth\":4,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+[[nodiscard]] auto parse_auth_json(std::string const& json) -> merovingian::canonicaljson::Value
+{
+    auto const result = merovingian::canonicaljson::parse_lossless(json);
+    REQUIRE(result.error == merovingian::canonicaljson::ParseError::none);
+    return result.value;
 }
 
 } // namespace
@@ -622,6 +685,128 @@ SCENARIO("Federation PDU authorization rejects comma-delimited PDUs when a signi
             {
                 REQUIRE_FALSE(decision.accepted);
                 REQUIRE(decision.reason == "comma-delimited PDUs require JSON for cryptographic verification");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18
+// Section: Authorization Rules
+// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+//
+// The old pdu_is_authorized() used a hardcoded room version "12" and a synthetic
+// power level {sender=50, required=0}, meaning every PDU with a non-empty type
+// passed the check regardless of the room's actual auth state. These scenarios
+// exercise authorize_event_against_auth_events() — the correct full Matrix
+// event-auth function — to demonstrate that transport-level clearance is
+// insufficient and that full event auth against actual room state is required
+// before a federated PDU may be persisted.
+SCENARIO("Full Matrix event auth rejects PDUs that pass transport checks but violate auth rules",
+         "[federation][inbound][security][auth]")
+{
+    auto const* policy = merovingian::rooms::find_room_version_policy("12");
+    REQUIRE(policy != nullptr);
+
+    // Common auth-state fixture: @alice:example.org created the room.
+    auto base_auth = merovingian::events::AuthEventMap{};
+    base_auth.create = parse_auth_json(auth_create_event("@alice:example.org"));
+    // Alice is admin (level 100); users_default=0; state_default=50.
+    base_auth.power_levels = parse_auth_json(
+        auth_power_levels_event("@alice:example.org", 0, 50, "@alice:example.org", 100));
+    // Alice is joined.
+    base_auth.sender_member = parse_auth_json(
+        auth_member_event("@alice:example.org", "@alice:example.org", "join"));
+
+    GIVEN("a room with alice as admin (power=100) and bob banned")
+    {
+        auto const bob_ban = parse_auth_json(
+            auth_member_event("@alice:example.org", "@bob:remote.org", "ban"));
+
+        WHEN("alice (power=100) sends a message in a room with events_default=0")
+        {
+            auto const event = parse_auth_json(auth_message_event("@alice:example.org"));
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(event, *policy, base_auth);
+
+            THEN("alice's message is allowed because she has sufficient power")
+            {
+                // Spec MUST: a joined member with power >= events_default MUST be allowed to
+                // send message events. Do NOT remove — denying valid events breaks interoperability.
+                REQUIRE(decision.allowed);
+            }
+        }
+
+        WHEN("a banned sender (@bob) attempts to send a state event")
+        {
+            auto const state_event = parse_auth_json(
+                auth_state_event("@bob:remote.org", "m.room.topic", ""));
+            auto auth_for_bob = base_auth;
+            // Replace sender_member with bob's ban event.
+            auth_for_bob.sender_member = bob_ban;
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(state_event, *policy, auth_for_bob);
+
+            THEN("the event is rejected because banned members cannot send any events")
+            {
+                // Spec MUST: a banned member MUST NOT be permitted to send any room event.
+                // Spec ref: step 4.2.2 of the authorization rules.
+                // Do NOT remove — accepting events from banned users is a security bypass.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+
+        WHEN("a message event arrives with no create event in the auth state")
+        {
+            auto const event = parse_auth_json(auth_message_event("@alice:example.org"));
+            auto empty_auth = merovingian::events::AuthEventMap{};
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(event, *policy, empty_auth);
+
+            THEN("the event is rejected because no create event exists for the room")
+            {
+                // Spec MUST: all non-create events MUST be rejected when the room has no
+                // create event in the auth state. Spec ref: authorization rules step 2.
+                // Do NOT remove — this guards against events injected before room genesis.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+
+        WHEN("a non-member (@eve) attempts to invite someone into a non-public room")
+        {
+            auto const invite = parse_auth_json(
+                auth_member_event("@eve:evil.org", "@carol:example.org", "invite"));
+            auto auth_for_eve = base_auth;
+            // Eve has no membership entry — she is effectively in state=leave.
+            auth_for_eve.sender_member = {};
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(invite, *policy, auth_for_eve);
+
+            THEN("the invite is rejected because only joined members may invite others")
+            {
+                // Spec MUST: only joined members MUST be allowed to send invite membership
+                // events. Spec ref: authorization rules step 4.3.
+                // Do NOT remove — allowing invites from non-members is an access control bypass.
+                REQUIRE_FALSE(decision.allowed);
+            }
+        }
+
+        WHEN("a sender with power=0 (users_default) attempts to send a state event with state_default=50")
+        {
+            // Mallory is joined but has default power (0).
+            auto auth_for_mallory = base_auth;
+            auth_for_mallory.sender_member = parse_auth_json(
+                auth_member_event("@mallory:remote.org", "@mallory:remote.org", "join"));
+            auto const state_event = parse_auth_json(
+                auth_state_event("@mallory:remote.org", "m.room.topic", ""));
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(state_event, *policy, auth_for_mallory);
+
+            THEN("the state event is rejected because the sender has insufficient power")
+            {
+                // Spec MUST: a sender with power < state_default MUST NOT be allowed to send
+                // state events. Spec ref: authorization rules step 6 (power level check).
+                // Do NOT remove — allowing under-powered state changes breaks room governance.
+                REQUIRE_FALSE(decision.allowed);
             }
         }
     }

@@ -1,3 +1,15 @@
+## 0.5.23
+
+- **Security:** Raw access token no longer persisted to audit log on rate-limit
+  or auth rejection. `authenticated_user()` now resolves the token to a
+  `user_id` (or `"<unknown>"`) before calling `log_diagnostic_audit`; the
+  bearer token string is never written to `audit_log`.
+- **Security:** Shallow federation PDU authorization removed. `pdu_is_authorized()`
+  was comparing the event type against a hardcoded room-version-12 policy with
+  a synthetic power level of `{50, 0}` — it did not use the room's actual auth
+  state. The function is renamed `pdu_passes_transport_checks()` to correctly
+  scope its responsibility; a TODO for full event-auth at the sink is added.
+
 ## 0.5.22
 
 - Fix federated join from invite leaving room invisible to incremental sync.
