@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.20
+Version:        0.5.21
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.21-1
+- Fix Codecov upload for protected branches: add CODECOV_TOKEN support,
+  disable redundant gcov search pass, add .codecov.yml project config.
+- Fix redaction conformance header: add prev_state to v1-v10 preserved
+  top-level fields; correct m.room.join_rules to show join_rule+allow for
+  v8-v10; add explicit REQUIRE_FALSE for invite strip in v10 power_levels.
 * Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.20-1
 - Fix stale federated membership: federated invite no longer downgrades an
   existing join membership; join_room retries federation when in-memory

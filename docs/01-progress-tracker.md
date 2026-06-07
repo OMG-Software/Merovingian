@@ -1,4 +1,36 @@
-## v0.5.20 (in progress — fix/stale-federated-membership)
+## v0.5.21 (in progress — fix/coverage-and-redaction-header)
+
+### Fix: Codecov upload broken for protected branches; fix redaction conformance header
+
+**Codecov root cause**: `{"message":"Token required because branch is protected"}`. The
+coverage workflow used `fail_ci_if_error: false`, which silently swallowed the error on every
+run. Three problems combined:
+1. No `CODECOV_TOKEN` secret — tokenless OIDC upload only works for unprotected branches.
+2. `disable_search: false` (default) — the action ran its own redundant gcov pass over
+   `.gcno` files even though a Cobertura XML was already provided.
+3. No `.codecov.yml` — no project-level targets, thresholds, or ignore rules.
+
+**Codecov fix**: add `token: ${{ secrets.CODECOV_TOKEN }}`, set `disable_search: true`,
+flip `fail_ci_if_error: true` so future failures surface, and create `.codecov.yml` with
+60% line-coverage floor, 50% patch target, and ignore rules for tests/packaging/scripts.
+`CODECOV_TOKEN` must be added as a repository secret (obtain from
+`https://app.codecov.io/gh/OMG-Software/Merovingian`).
+
+**Redaction header fix**: the comment block at the top of `test_redaction_conformance.cpp`
+was wrong in two places — `prev_state` was missing from the top-level preserved-field list,
+and `m.room.join_rules` listed only `join_rule` (the v1–v7 rule) instead of `join_rule,
+allow` (the v8–v10 rule). Also added an explicit `REQUIRE_FALSE(invite)` assertion to the
+v10 `m.room.power_levels` scenario (the field was present in the fixture but untested).
+
+| File | Change |
+|------|--------|
+| `.github/workflows/coverage.yml` | Token, `disable_search`, `fail_ci_if_error`, remove unused `id-token: write` |
+| `.codecov.yml` | New file: 60% floor, 50% patch target, ignore rules |
+| `tests/conformance/test_redaction_conformance.cpp` | Header comment: add `prev_state`, fix join_rules, add invite strip assertion |
+
+---
+
+## v0.5.20 (merged — fix/stale-federated-membership)
 
 ### Fix: stale federated membership causes infinite invite loop
 
