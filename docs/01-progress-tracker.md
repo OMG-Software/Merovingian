@@ -1,3 +1,64 @@
+## v0.5.16 (in progress — fix/sync-timeline-limited-prev-batch)
+
+### Fix: `/sync` timeline `limited`/`prev_batch` (clients could not see messages)
+
+Real Element + Cinny clients against a live server could not render room
+messages; Cinny froze with `RangeError: Maximum call stack size exceeded`.
+Root cause traced from the client logs, not assumed:
+
+- Element logged a continuous storm of `limited timeline` → `Live timeline was
+  reset` on essentially every sync.
+- Cinny logged two timeline fragments joined in opposite directions
+  (`joining timeline A to B` then `B to A`) → cyclic timeline → infinite
+  recursion in its timeline walker.
+
+The server bug: in `src/homeserver/client_server.cpp` the sync timeline set
+`limited = store.events.size() > timeline_cap`, i.e. it compared the persistent
+store's **total** event count (across all rooms) to the page size. Any room with
+more total events than the page size therefore reported `limited: true` on every
+sync, and no `prev_batch` token was emitted at all.
+
+| Aspect | Before | After |
+|--------|--------|-------|
+| `timeline.limited` | total store events > page size (always true) | this window dropped older events beyond the filter limit |
+| `timeline.prev_batch` | absent | stream-ordering token consumable by `/messages?dir=b&from=` |
+| Truncated window contents | oldest events first | most recent events |
+
+### Conformance gap closed
+
+The existing sync conformance tests only checked field presence/shape, never the
+`limited`/`prev_batch` *semantics*, so the bug shipped. Added `[sync][timeline]`
+scenarios to `tests/conformance/test_client_server_conformance.cpp`:
+
+| Scenario | Asserts |
+|----------|---------|
+| incremental sync, 1 new event, page size 2 | `limited == false`, `prev_batch` non-empty |
+| incremental sync, 3 new events, page size 2 | `limited == true`, window holds the 2 newest (not the oldest) |
+| backfill from `prev_batch` | `/messages?dir=b` returns the dropped older event, no overlap |
+
+### Additional client-interop fixes from the same logs
+
+The same two client logs surfaced more issues; each was triaged against the spec
+rather than blanket-"fixed":
+
+| Client log line | Verdict | Action |
+|-----------------|---------|--------|
+| `GET /thirdparty/protocols 404` → "Failed to check for protocol support" | Real gap — spec endpoint not implemented | Implemented; returns `200 {}` |
+| `Missing default global override push rule .m.rule.contains_display_name` / `.roomnotif` | **Not a bug** — `default_push_ruleset` already emits both, spec-shaped, inside `global.override`; the message is matrix-js-sdk's own `rewriteDefaultRules` re-injecting its built-ins | None (re-adding would duplicate) |
+| `GET /_matrix/media/v3/config net::ERR_FAILED` + "preflight … does not have HTTP ok status" | **Not a server bug** — `handle_client_server_request` returns 200 + `Access-Control-Allow-Origin` for OPTIONS on every `/_matrix/` path before any gate; client-API preflights from the same origin work | Added a regression test pinning server-side CORS; the live failure is the reverse proxy not answering OPTIONS for `/_matrix/media/*` |
+| `room_keys/version 404` | Correct per spec (no key backup yet) | None |
+| `auth_metadata` / `auth_issuer` (MSC2965/OIDC), `dehydrated_device` (MSC3814), `rtc/transports` (MSC4143), `msc4175.tz` DELETE | Optional MSC/OIDC features; 404 is an acceptable "unsupported" signal clients fall back from | None |
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `src/homeserver/client_server.cpp` | sync: correct `limited`, emit `prev_batch`, return newest events when truncating; add `GET /thirdparty/protocols` → `200 {}` |
+| `tests/conformance/test_client_server_conformance.cpp` | `[sync][timeline]` scenarios (×2), `[thirdparty]` scenario, `[cors]` preflight scenario; `send_text`/`event_ids_in`/`contains_id`/`response_header` helpers |
+| `CHANGELOG.md` | v0.5.16 entry |
+| `packaging/rpm/merovingian.spec` | v0.5.16 changelog entry |
+| Version files (9) | bumped to 0.5.16 |
+
 ## v0.5.15 (in progress — feat/conformance-coverage-gaps)
 
 ### Federation conformance coverage gaps
