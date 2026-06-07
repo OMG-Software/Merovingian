@@ -699,3 +699,158 @@ SCENARIO("Federation-joined room state events are visible to incremental sync",
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync — rooms.join
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// After a local user completes a federated join from a pending invite, the newly-
+// joined room MUST appear in rooms.join in the next incremental sync.  The server
+// achieves this by storing the local join event in store.events with has_state=true
+// so that joined_membership_changed_since detects the invite→join transition.
+// Without the fix: current_state still points to the invite event
+// (membership="invite"), joined_membership_changed_since returns false, and the
+// room is silently suppressed from rooms.join until a full re-sync.
+// Regression guard for: federated join from invite leaves room invisible to sync.
+SCENARIO("Incremental sync surfaces newly-joined federated room when user had a pending invite",
+         "[sync][handler][federation][membership][regression]")
+{
+    GIVEN("Alice has been invited to a remote room and the invite appears in an initial sync")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+        auto& store = rt.homeserver.database.persistent_store;
+
+        auto const room_id        = std::string{"!remote:synapse.example.org"};
+        auto const invite_event_id = std::string{"$invite_event_id"};
+        auto const join_event_id   = std::string{"$join_event_id"};
+
+        // Persist the remote room shell and the invite event with has_state=true,
+        // mirroring what the inbound federation invite handler does.
+        REQUIRE(merovingian::database::store_room(store, {room_id, ""}));
+        auto const invite_stream = rt.homeserver.database.next_stream_ordering++;
+        auto const invite_pe = merovingian::database::PersistentEvent{
+            invite_event_id,
+            room_id,
+            "@remote:synapse.example.org",
+            R"({"type":"m.room.member","room_id":")" + room_id +
+                R"(","sender":"@remote:synapse.example.org","state_key":")" + alice_id +
+                R"(","content":{"membership":"invite"},"origin_server_ts":1000})",
+            0U, invite_stream, {}, {}, {}};
+        auto const invite_state = merovingian::database::PersistentStateEvent{
+            room_id, "m.room.member", alice_id, invite_event_id};
+        REQUIRE(merovingian::database::store_event_with_state(
+            store, invite_pe,
+            std::optional<merovingian::database::PersistentStateEvent>{invite_state}));
+        REQUIRE(merovingian::database::store_membership(
+                    store, {room_id, alice_id, "invite", invite_stream}) !=
+                merovingian::database::MembershipStoreResult::error);
+        store.next_sync_stream_id += 1U;
+
+        // Initial sync — establishes the since-token baseline showing the invite.
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const init_body  = parse_body(initial.response.body);
+        auto const* init_root = as_object(init_body);
+        REQUIRE(init_root != nullptr);
+        auto const next_batch =
+            std::get<std::string>(json_member(*init_root, "next_batch")->storage());
+
+        // Simulate the local join event being stored by the fixed remote join path.
+        // store_event_with_state stores the event AND updates current_state to point
+        // to the join event, so joined_membership_changed_since detects the transition.
+        // This is the critical step the fix adds to room_service.cpp::join_room.
+        auto const join_stream = rt.homeserver.database.next_stream_ordering++;
+        auto const join_pe = merovingian::database::PersistentEvent{
+            join_event_id,
+            room_id,
+            alice_id,
+            R"({"type":"m.room.member","room_id":")" + room_id + R"(","sender":")" + alice_id +
+                R"(","state_key":")" + alice_id +
+                R"(","content":{"membership":"join"},"origin_server_ts":2000})",
+            0U, join_stream, {}, {}, {}};
+        auto const join_state = merovingian::database::PersistentStateEvent{
+            room_id, "m.room.member", alice_id, join_event_id};
+        REQUIRE(merovingian::database::store_event_with_state(
+            store, join_pe,
+            std::optional<merovingian::database::PersistentStateEvent>{join_state}));
+        REQUIRE(merovingian::database::update_membership(store, room_id, alice_id, "join"));
+        std::ignore = merovingian::database::delete_invite(store, room_id, alice_id);
+        rt.homeserver.database.rooms.push_back(
+            {room_id, alice_id, std::vector<std::string>{alice_id}, {}});
+        store.next_sync_stream_id += 1U;
+        if (rt.homeserver.sync_notifier != nullptr)
+        {
+            rt.homeserver.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                                 store.next_sync_stream_id);
+        }
+
+        WHEN("Alice issues an incremental sync with the since-token captured before the join")
+        {
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", std::string{"/_matrix/client/v3/sync?since="} + next_batch, token, {}});
+
+            THEN("the joined room appears in rooms.join")
+            {
+                // Spec MUST: a room where the user's membership changed to 'join'
+                // since the since-token MUST appear in rooms.join.  Without storing
+                // the join event (the pre-fix bug), joined_membership_changed_since
+                // reads the stale invite state entry and returns false, suppressing
+                // the room entirely.
+                REQUIRE(sync.response.status == 200U);
+                auto const body = parse_body(sync.response.body);
+                auto const* root = as_object(body);
+                REQUIRE(root != nullptr);
+                auto const* rooms = as_object(*json_member(*root, "rooms"));
+                REQUIRE(rooms != nullptr);
+                auto const* join_map = as_object(*json_member(*rooms, "join"));
+                REQUIRE(join_map != nullptr);
+                // Spec MUST: room MUST appear in rooms.join.
+                auto const* room_obj = as_object(*json_member(*join_map, room_id));
+                REQUIRE(room_obj != nullptr);
+            }
+
+            AND_THEN("the join event appears in the room timeline")
+            {
+                REQUIRE(sync.response.status == 200U);
+                auto const body = parse_body(sync.response.body);
+                auto const* root = as_object(body);
+                REQUIRE(root != nullptr);
+                auto const* rooms = as_object(*json_member(*root, "rooms"));
+                REQUIRE(rooms != nullptr);
+                auto const* join_map = as_object(*json_member(*rooms, "join"));
+                REQUIRE(join_map != nullptr);
+                auto const* room_obj = as_object(*json_member(*join_map, room_id));
+                REQUIRE(room_obj != nullptr);
+                auto const* timeline = as_object(*json_member(*room_obj, "timeline"));
+                REQUIRE(timeline != nullptr);
+                auto const* events = as_array(*json_member(*timeline, "events"));
+                REQUIRE(events != nullptr);
+                // Spec MUST: the join m.room.member event MUST appear in the
+                // timeline so clients can observe the membership transition.
+                REQUIRE(events->size() >= 1U);
+            }
+
+            AND_THEN("the room does NOT appear in rooms.invite after the join")
+            {
+                REQUIRE(sync.response.status == 200U);
+                auto const body = parse_body(sync.response.body);
+                auto const* root = as_object(body);
+                REQUIRE(root != nullptr);
+                auto const* rooms = as_object(*json_member(*root, "rooms"));
+                REQUIRE(rooms != nullptr);
+                auto const* invite_map = as_object(*json_member(*rooms, "invite"));
+                REQUIRE(invite_map != nullptr);
+                // Must NOT be in rooms.invite — membership is now 'join'.
+                auto const in_invite = std::ranges::any_of(
+                    *invite_map,
+                    [&room_id](merovingian::canonicaljson::ObjectMember const& m) {
+                        return m.key == room_id;
+                    });
+                REQUIRE_FALSE(in_invite);
+            }
+        }
+    }
+}
