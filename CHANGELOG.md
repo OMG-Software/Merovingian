@@ -1,3 +1,11 @@
+## 0.5.18
+
+- Fix `scripts/reject-unsafe.sh` CI gate scanning non-C++ files: `grep -R`
+  over `include/ src/ tests/` now includes `--include='*.cpp'` / `*.hpp` /
+  `*.h` / `*.cc` / `*.c` flags so Python test scripts and other non-C++ files
+  containing JavaScript/shell `new`, `delete`, `free`, `malloc` keywords do not
+  trigger false positives.
+
 ## 0.5.17
 
 - Fix four conformance-test accuracy issues identified by code review:

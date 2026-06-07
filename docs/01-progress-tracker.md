@@ -1,3 +1,20 @@
+## v0.5.18 (in progress — fix/reject-unsafe-cpp-only)
+
+### Fix: `scripts/reject-unsafe.sh` false positives on non-C++ files
+
+**Root cause**: `grep -R` over `include/ src/ tests/` scanned every file with no extension filter. PR #208 ("Add python test clients") landed a `.py` file containing embedded JavaScript that uses `new Date()`, `new Promise()`, `new Set()`, `new Error()`. The `naked new` pattern matched all of these, failing CI on `static-analysis` and the main build matrix.
+
+**Fix**: added `--include='*.cpp' --include='*.hpp' --include='*.h' --include='*.cc' --include='*.c'` to the internal `grep` call. Non-C++ files (Python scripts, SQL migrations, shell scripts) are now excluded from all pattern checks. The gate still correctly catches real C++ violations.
+
+| File | Change |
+|------|--------|
+| `scripts/reject-unsafe.sh` | Restrict grep to C/C++ source extensions |
+| `CHANGELOG.md` | v0.5.18 entry |
+| `packaging/rpm/merovingian.spec` | v0.5.18 changelog entry |
+| Version files (9) | bumped to 0.5.18 |
+
+---
+
 ## v0.5.17 (in progress — fix/conformance-test-accuracy)
 
 ### Fix: conformance-test accuracy (four issues identified in code review)

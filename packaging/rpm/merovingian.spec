@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.17
+Version:        0.5.18
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.18-1
+- Fix reject-unsafe.sh scanning non-C++ files: restrict grep to C/C++ source
+  extensions so Python/JavaScript test files do not trigger false positives.
 * Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.17-1
 - Fix four conformance-test accuracy issues: v1 auth scenarios now use
   v1-valid create fixtures (with room_id); PDU format header documents the
