@@ -36,6 +36,32 @@ namespace
            "events\":[],\"hashes\":{\"sha256\":\"hash\"}}";
 }
 
+[[nodiscard]] auto make_v1_create_event(std::string_view creator) -> std::string
+{
+    // Spec: Matrix Room Version 1 — https://spec.matrix.org/v1.18/rooms/v1/
+    // Room versions 1–10 MUST include room_id in every PDU, including the
+    // create event. The room_id is assigned by the creating server (not derived
+    // from a hash as in v12/MSC4291). content.creator is required in v1–v10;
+    // content.room_version was introduced in v7/MSC1773 and is absent here.
+    return "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{\"creator\":\"" + std::string{creator} +
+           "\"},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
+[[nodiscard]] auto make_v1_non_federated_create_event(std::string_view creator) -> std::string
+{
+    // Same as make_v1_create_event() but with content.m.federate set to false.
+    // Used in pre-v6 room contexts to test the absence of the domain check in v1,
+    // and in v6 contexts to verify that the domain check fires when federation is
+    // explicitly disabled. v1–v10 create events carry room_id; content.room_version
+    // is absent (introduced in v7).
+    return "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{\"creator\":\"" + std::string{creator} +
+           "\",\"m.federate\":false},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_events\":[],"
+           "\"hashes\":{\"sha256\":\"hash\"}}";
+}
+
 [[nodiscard]] auto make_power_levels_event(std::string_view sender, std::int64_t ban_level, std::int64_t invite_level,
                                            std::int64_t kick_level, std::int64_t redact_level,
                                            std::int64_t users_default, std::int64_t state_default,
@@ -1178,8 +1204,9 @@ SCENARIO("Auth rules v1: cross-domain sender is NOT rejected (no domain check be
         REQUIRE(policy_v1 != nullptr);
 
         auto auth_events = merovingian::events::AuthEventMap{};
+        // v1 room: use the v1-valid create fixture (carries room_id; no room_version in content).
         auth_events.create =
-            merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+            merovingian::canonicaljson::parse_lossless(make_v1_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
                 make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
@@ -1207,11 +1234,12 @@ SCENARIO("Auth rules v1: cross-domain sender is NOT rejected (no domain check be
             // v6+ introduces a sender-domain check, but it is CONDITIONAL on
             // content.m.federate being false. Use a non-federated create event to
             // show that v6+ does enforce the check in that configuration.
+            // v6 create events carry room_id (like all pre-v12 PDUs).
             auto const* policy_v6 = merovingian::rooms::find_room_version_policy("6");
             REQUIRE(policy_v6 != nullptr);
             auto auth_events_nonfed = merovingian::events::AuthEventMap{};
             auth_events_nonfed.create =
-                merovingian::canonicaljson::parse_lossless(make_non_federated_create_event("@alice:example.org")).value;
+                merovingian::canonicaljson::parse_lossless(make_v1_non_federated_create_event("@alice:example.org")).value;
             auth_events_nonfed.power_levels =
                 merovingian::canonicaljson::parse_lossless(
                     make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@eve:evil.org", 0))
@@ -1239,7 +1267,8 @@ SCENARIO("Auth rules v1: create event is allowed even when sender domain differs
 {
     GIVEN("a v1 create event (room versions 1-5 have no domain check)")
     {
-        auto const create_json = make_create_event("@alice:example.org");
+        // Use the v1-valid fixture: includes room_id, no room_version in content.
+        auto const create_json = make_v1_create_event("@alice:example.org");
         auto const parsed = merovingian::canonicaljson::parse_lossless(create_json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 

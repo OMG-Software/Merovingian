@@ -581,6 +581,10 @@ SCENARIO("Top-level account_data filter restricts global account data events",
 // ---------------------------------------------------------------------------
 
 // Spec: "limit" caps the number of timeline events returned per room in /sync.
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#filtering
+//
+// When a filter supplies a "limit" field, parse_filter_argument must carry the
+// value through so the sync route can honour it.
 SCENARIO("Filter timeline limit field is parsed from the JSON filter",
          "[sync][filter][conformance]")
 {
@@ -591,19 +595,37 @@ SCENARIO("Filter timeline limit field is parsed from the JSON filter",
 
         THEN("the parsed limit value is 50")
         {
-            // Spec: limit controls how many timeline events are returned per room.
+            // Spec MUST: limit controls how many timeline events are returned per room.
+            // The parsed value must equal the value supplied by the client.
             REQUIRE(filter.room.timeline.limit == 50U);
         }
     }
+}
 
+// NOTE — internal helper convention, NOT a Matrix spec requirement.
+//
+// parse_filter_argument uses limit == 0 as a sentinel meaning "no client-imposed
+// cap". This is an implementation detail of the SyncFilter struct. The Matrix spec
+// only defines the meaning of a supplied positive limit; it says nothing about how
+// the server represents the absent-limit state internally.
+//
+// The /sync route enforces the server-side default/maximum independently:
+//   src/homeserver/client_server.cpp — sync_json() applies k_default_timeline_cap
+//   whenever filter.room.timeline.limit == 0.
+// That route-level behaviour is tested via the conformance scenarios in
+//   test_client_server_conformance.cpp — "GET /sync incremental timeline …".
+SCENARIO("Absent filter limit is represented internally as 0 (implementation sentinel)",
+         "[sync][filter][helper]")
+{
     GIVEN("a filter with no limit field")
     {
         auto const filter = merovingian::sync::parse_filter_argument(
             R"({"room":{"timeline":{"types":["m.room.message"]}}})");
 
-        THEN("the limit defaults to 0 (meaning no cap)")
+        THEN("the limit field is 0, signalling no client-imposed cap to the route handler")
         {
-            // Implementation: limit == 0 means no client-imposed cap.
+            // Implementation sentinel only — 0 is never returned to the client.
+            // The sync route substitutes the server default when this value is 0.
             REQUIRE(filter.room.timeline.limit == 0U);
         }
     }

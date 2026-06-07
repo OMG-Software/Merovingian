@@ -19,6 +19,12 @@
 // |  Required top-level PDU fields (room v3+):                              |
 // |    type, room_id, sender, origin_server_ts, content,                    |
 // |    hashes (with sha256), prev_events, auth_events, depth, signatures    |
+// |                                                                         |
+// |  Exception — room v12 m.room.create MUST NOT include room_id. The room  |
+// |  ID is derived from the create event's reference hash (same base64url   |
+// |  body as the event_id, with '!' sigil instead of '$'). All other events  |
+// |  in v12 rooms, and ALL events in v3–v11 rooms, carry room_id.           |
+// |  See: SCENARIO "Room v12: m.room.create PDU without room_id is accepted"|
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/federation/inbound_ingestion.hpp"
