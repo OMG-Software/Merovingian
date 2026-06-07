@@ -1,3 +1,35 @@
+## 0.5.16
+
+- Fix `GET /sync` timeline pagination, which made Element unable to render
+  messages and froze Cinny (stack overflow) in rooms with history:
+  - `timeline.limited` was derived from the persistent store's **total** event
+    count (across all rooms) versus the page size, so any non-trivial room
+    reported `limited: true` on **every** sync. matrix-js-sdk treats that as a
+    gap and discards + re-fetches the live timeline each cycle ("Live timeline
+    was reset"), so messages never stabilise and backfill loops can build a
+    cyclic timeline that overflows the stack. `limited` is now true only when
+    this sync window actually dropped older events beyond the filter limit.
+  - The timeline now includes a `prev_batch` token (a stream-ordering position
+    consumable by `GET /rooms/{roomId}/messages?dir=b&from=…`) so clients can
+    backfill the dropped events with neither a gap nor an overlap.
+  - A truncated window now returns the **most recent** events (newest history),
+    not the oldest, matching client rendering expectations.
+- Add `[sync][timeline]` conformance scenarios covering `limited`/`prev_batch`
+  semantics and most-recent-event selection (the gap that let this ship).
+- Implement `GET /_matrix/client/v3/thirdparty/protocols`. It previously 404'd,
+  making clients (Element) log repeated "Failed to check for protocol support"
+  errors and retry; it now returns `200 {}` (the server runs no application
+  services), per the CS API spec.
+- Add conformance coverage that `thirdparty/protocols` returns a 200 object, and
+  that an `OPTIONS` CORS preflight on a media endpoint (`/_matrix/media/v3/config`)
+  returns 200 with `Access-Control-Allow-Origin`. This pins server-side CORS as
+  correct for all `/_matrix/` resources, so browser media-preflight failures
+  behind a reverse proxy are a deployment/proxy concern, not a server gap.
+- Document the `/_matrix/media/` reverse-proxy route in `configuration.md` for
+  every example (nginx, Caddy, Traefik, HAProxy) plus a media CORS smoke test.
+  The omitted media location — falling through to a catch-all `403` — was the
+  real cause of browser media failures (`net::ERR_FAILED` on preflight).
+
 ## 0.5.15
 
 - Add federation conformance test coverage for 7 previously untested endpoints:

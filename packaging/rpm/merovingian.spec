@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.15
+Version:        0.5.16
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.16-1
+- Fix /sync timeline.limited (was derived from the store's total event count, so
+  it was true on every sync and made clients endlessly reset the timeline) and
+  emit a backfillable timeline.prev_batch; truncated windows now return the most
+  recent events
+
 * Fri Jun 06 2026 James Chapman <claude@ping.me.uk> - 0.5.15-1
 - Add 7 federation conformance scenarios: query_event, query_state, state_ids,
   get_missing_events, query/profile (with field-filter and 404), make_knock, send_knock

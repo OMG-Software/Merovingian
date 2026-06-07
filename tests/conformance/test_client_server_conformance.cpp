@@ -40,6 +40,7 @@
 #include <algorithm>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace
 {
@@ -300,6 +301,60 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
     auto const* eid = string_member(body, "event_id");
     REQUIRE(eid != nullptr);
     return *eid;
+}
+
+// Sends a text message with a caller-supplied transaction id, so repeated calls
+// create distinct timeline events (send_message reuses one txn id and dedupes).
+[[nodiscard]] auto send_text(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
+                             std::string const& room_id, std::string const& txn, std::string const& text)
+    -> std::string
+{
+    auto const r = merovingian::homeserver::handle_client_server_request(
+        runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn, token,
+                  std::string{R"({"msgtype":"m.text","body":")"} + text + R"("})"});
+    REQUIRE(r.response.status == 200U);
+    auto const body = parse_object(r.response.body);
+    auto const* eid = string_member(body, "event_id");
+    REQUIRE(eid != nullptr);
+    return *eid;
+}
+
+// Collects the event_id of every event object in a timeline/chunk "events" array.
+[[nodiscard]] auto event_ids_in(merovingian::canonicaljson::Array const& events) -> std::vector<std::string>
+{
+    auto ids = std::vector<std::string>{};
+    for (auto const& entry : events)
+    {
+        auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+        if (obj == nullptr)
+        {
+            continue;
+        }
+        if (auto const* eid = string_member(*obj, "event_id"); eid != nullptr)
+        {
+            ids.push_back(*eid);
+        }
+    }
+    return ids;
+}
+
+[[nodiscard]] auto contains_id(std::vector<std::string> const& ids, std::string const& wanted) -> bool
+{
+    return std::ranges::find(ids, wanted) != ids.end();
+}
+
+// Looks up a response header value by exact name (returns nullopt if absent).
+[[nodiscard]] auto response_header(std::vector<std::pair<std::string, std::string>> const& headers,
+                                   std::string_view name) -> std::optional<std::string>
+{
+    for (auto const& header : headers)
+    {
+        if (header.first == name)
+        {
+            return header.second;
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace
@@ -1347,6 +1402,214 @@ SCENARIO("GET /sync returns required spec fields", "[conformance][client-server]
                 // Do NOT remove — clients iterate rooms.join/invite/leave.
                 auto const* rooms = object_member_as_object(body, "rooms");
                 REQUIRE(rooms != nullptr);
+            }
+        }
+    }
+}
+
+// --- GET /_matrix/client/v3/sync (timeline.limited / prev_batch) -------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// Timeline object fields:
+//   limited    - "True if the number of events returned was limited by the
+//                 limit on the filter." It describes THIS sync window, not the
+//                 total number of events in the room. An incremental sync that
+//                 returns every event newer than the client's since token has
+//                 dropped nothing, so it MUST report limited = false. Reporting
+//                 limited = true here signals a non-existent gap; matrix-js-sdk
+//                 responds by discarding and re-fetching the timeline on every
+//                 sync ("Live timeline was reset"), so messages never render.
+//   prev_batch - "A token that can be supplied to the from parameter of the
+//                 /rooms/{roomId}/messages endpoint." Required for backfill; a
+//                 limited timeline without it cannot be filled.
+SCENARIO("GET /sync incremental timeline reports limited=false when no events are dropped",
+         "[conformance][client-server][sync][timeline]")
+{
+    GIVEN("a room whose total event count exceeds the timeline page size")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+
+        // Initial sync fixes the since token. Every room-creation event has a
+        // stream ordering <= this token, so none of them fall in the next
+        // incremental window — only genuinely new events will.
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const since = sync_next_batch(initial.response.body);
+
+        WHEN("one new message arrives and an incremental sync uses a small timeline limit")
+        {
+            (void)send_text(started.runtime, token, room_id, "m_one", "first");
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", R"(/_matrix/client/v3/sync?since=)" + since + R"(&filter={"room":{"timeline":{"limit":2}}})",
+                 token, {}});
+
+            THEN("the room timeline reports limited=false and carries a prev_batch token")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* rooms = object_member_as_object(body, "rooms");
+                REQUIRE(rooms != nullptr);
+                auto const* join = object_member_as_object(*rooms, "join");
+                REQUIRE(join != nullptr);
+                auto const* room_obj = object_member_as_object(*join, room_id);
+                REQUIRE(room_obj != nullptr);
+                auto const* timeline = object_member_as_object(*room_obj, "timeline");
+                REQUIRE(timeline != nullptr);
+
+                // Spec MUST: only one new event existed since `since` and the
+                // page size was 2, so nothing was dropped -> limited is false.
+                // The old implementation derived `limited` from the total event
+                // count and would wrongly report true here.
+                auto const* limited = bool_member(*timeline, "limited");
+                REQUIRE(limited != nullptr);
+                REQUIRE(*limited == false);
+
+                // Spec MUST: prev_batch is present so clients can backfill.
+                auto const* prev_batch = string_member(*timeline, "prev_batch");
+                REQUIRE(prev_batch != nullptr);
+                REQUIRE(!prev_batch->empty());
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// When more events exist in the window than the filter limit, the server MUST
+// return the MOST RECENT events (clients render newest history first), set
+// limited = true, and provide a prev_batch that, fed to
+// /rooms/{roomId}/messages?dir=b, returns the dropped older events with neither
+// a gap nor an overlap.
+SCENARIO("GET /sync truncated timeline returns the most recent events with a backfillable prev_batch",
+         "[conformance][client-server][sync][timeline]")
+{
+    GIVEN("a room and an established since token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, token);
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const since = sync_next_batch(initial.response.body);
+
+        WHEN("three new messages arrive but the timeline limit is two")
+        {
+            auto const e1 = send_text(started.runtime, token, room_id, "m_a", "alpha");
+            auto const e2 = send_text(started.runtime, token, room_id, "m_b", "bravo");
+            auto const e3 = send_text(started.runtime, token, room_id, "m_c", "charlie");
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", R"(/_matrix/client/v3/sync?since=)" + since + R"(&filter={"room":{"timeline":{"limit":2}}})",
+                 token, {}});
+            REQUIRE(response.response.status == 200U);
+            auto const body = parse_object(response.response.body);
+            auto const* rooms = object_member_as_object(body, "rooms");
+            REQUIRE(rooms != nullptr);
+            auto const* join = object_member_as_object(*rooms, "join");
+            REQUIRE(join != nullptr);
+            auto const* room_obj = object_member_as_object(*join, room_id);
+            REQUIRE(room_obj != nullptr);
+            auto const* timeline = object_member_as_object(*room_obj, "timeline");
+            REQUIRE(timeline != nullptr);
+
+            THEN("limited=true and the timeline holds the two most recent messages")
+            {
+                // Spec MUST: three events existed since `since`, page size 2,
+                // so one was dropped -> limited is true.
+                auto const* limited = bool_member(*timeline, "limited");
+                REQUIRE(limited != nullptr);
+                REQUIRE(*limited == true);
+
+                auto const* events = object_member_as_array(*timeline, "events");
+                REQUIRE(events != nullptr);
+                auto const ids = event_ids_in(*events);
+
+                // Spec MUST: the returned window is the most recent events, so
+                // it contains e2 and e3 and excludes the dropped older e1. The
+                // old implementation returned the OLDEST events (e1, e2).
+                REQUIRE(contains_id(ids, e2));
+                REQUIRE(contains_id(ids, e3));
+                REQUIRE(!contains_id(ids, e1));
+            }
+
+            THEN("paginating /messages backward from prev_batch returns the dropped older event")
+            {
+                auto const* prev_batch = string_member(*timeline, "prev_batch");
+                REQUIRE(prev_batch != nullptr);
+                REQUIRE(!prev_batch->empty());
+
+                auto const messages = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET",
+                     "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b&from=" + *prev_batch, token, {}});
+                REQUIRE(messages.response.status == 200U);
+                auto const messages_body = parse_object(messages.response.body);
+                auto const* chunk = object_member_as_array(messages_body, "chunk");
+                REQUIRE(chunk != nullptr);
+
+                // Spec MUST: prev_batch bridges the gap, so backfilling returns
+                // the older event that the truncated timeline dropped (e1) and
+                // does NOT repeat events already in the timeline window (e3).
+                auto const chunk_ids = event_ids_in(*chunk);
+                REQUIRE(contains_id(chunk_ids, e1));
+                REQUIRE(!contains_id(chunk_ids, e3));
+            }
+        }
+    }
+}
+
+// --- CORS preflight for /_matrix/ resources ---------------------------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#web-browser-clients
+//
+// "Servers MUST expose the following CORS headers ... in response to OPTIONS
+// requests ... Access-Control-Allow-Origin: *". This applies to ALL /_matrix/
+// resources, media included. A browser client whose OPTIONS preflight to a
+// media endpoint gets a non-2xx response (or no Access-Control-Allow-Origin)
+// reports "Response to preflight request doesn't pass access control check"
+// and the real request fails with net::ERR_FAILED. This test pins the
+// server-side behaviour so such a failure can be attributed to deployment
+// infrastructure (e.g. a reverse proxy) rather than Merovingian.
+SCENARIO("OPTIONS preflight on a media endpoint returns 200 with CORS headers",
+         "[conformance][client-server][cors]")
+{
+    GIVEN("a running server with the default CORS policy")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("a browser sends a CORS preflight to the media config endpoint")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"OPTIONS",
+                                  "/_matrix/media/v3/config",
+                                  {},
+                                  {},
+                                  {{"Origin", "https://app.element.io"}}});
+
+            THEN("the preflight is answered with HTTP 200 and Access-Control-Allow-Origin")
+            {
+                // Spec MUST: OPTIONS preflight returns a 2xx status, otherwise
+                // browsers report "preflight does not have HTTP ok status".
+                REQUIRE(response.response.status == 200U);
+
+                // Spec MUST: Access-Control-Allow-Origin is present (default
+                // policy is "*"), otherwise the browser blocks the response.
+                auto const allow_origin = response_header(response.response.headers, "Access-Control-Allow-Origin");
+                REQUIRE(allow_origin.has_value());
+                REQUIRE(!allow_origin->empty());
+
+                // Spec SHOULD: the allowed methods advertise the verbs clients use.
+                auto const allow_methods = response_header(response.response.headers, "Access-Control-Allow-Methods");
+                REQUIRE(allow_methods.has_value());
             }
         }
     }
@@ -9411,10 +9674,19 @@ SCENARIO("GET /v1/rooms/{roomId}/hierarchy conformance")
 // ============================================================================
 // 21     Third-party lookup
 // ============================================================================
-// Spec: Matrix v1.18 §21 third-party protocols, location, and user lookup
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+// Spec: Matrix v1.18 §third party networks
+//       GET /thirdparty/protocols is implemented and returns a (possibly empty)
+//       protocol map. The location/{protocol} and user/{protocol} lookups remain
+//       unimplemented and return 404 M_UNRECOGNIZED.
 
-SCENARIO("GET /thirdparty/protocols conformance")
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3thirdpartyprotocols
+//
+// MUST return 200 with a JSON object mapping protocol identifiers to metadata. A
+// server with no application services returns an empty object — NOT a 404. The
+// previous expectation (404 M_UNRECOGNIZED) was a placeholder for an unimplemented
+// endpoint; it was never spec-conformant, and a 404 makes clients (Element) log
+// "Failed to check for protocol support" and retry needlessly.
+SCENARIO("GET /thirdparty/protocols returns a 200 JSON object", "[conformance][client-server][thirdparty]")
 {
     GIVEN("a started homeserver with an authenticated user")
     {
@@ -9427,13 +9699,13 @@ SCENARIO("GET /thirdparty/protocols conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/thirdparty/protocols", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with a JSON object body")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 200 with an object body (empty when no appservices),
+                // never 404. parse_object REQUIREs the body parses as an object.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                std::ignore = body;
             }
         }
     }

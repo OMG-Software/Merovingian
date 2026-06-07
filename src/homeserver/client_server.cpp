@@ -2130,12 +2130,15 @@ namespace
             {
                 continue;
             }
-            auto timeline_events = canonicaljson::Array{};
-            auto event_count = std::size_t{0U};
             auto const timeline_cap = filter.room.timeline.limit != 0U
                                           ? std::min(filter.room.timeline.limit, rt.limits.max_sync_events_per_room)
                                           : rt.limits.max_sync_events_per_room;
 
+            // Collect this room's timeline-eligible events that are newer than
+            // `since`, in stream-ordering order. `limited` and `prev_batch` are
+            // derived from THIS window per the Matrix sync spec — never from the
+            // room's (or store's) total event count.
+            auto matched = std::vector<database::PersistentEvent const*>{};
             for (auto const& event : store.events)
             {
                 if (event.room_id != room.room_id)
@@ -2155,15 +2158,39 @@ namespace
                     // sender rules without requiring a type match.
                     continue;
                 }
-                if (event_count >= timeline_cap)
-                {
-                    break;
-                }
-                timeline_events.push_back(client_event_value(event));
-                ++event_count;
+                matched.push_back(&event);
             }
+            std::ranges::sort(matched, [](auto const* lhs, auto const* rhs) noexcept {
+                return lhs->stream_ordering < rhs->stream_ordering;
+            });
 
-            auto const limited = store.events.size() > timeline_cap;
+            // Spec MUST: `limited` is true only when older events were dropped
+            // from this window because it exceeded the page size. When so,
+            // return the MOST RECENT `timeline_cap` events (clients render
+            // newest history first); otherwise return the whole window. The old
+            // code compared the store's total event count to the cap, so any
+            // room with more total events than the page size reported
+            // limited=true on every sync, making matrix-js-sdk discard and
+            // re-fetch the timeline endlessly.
+            auto const limited = matched.size() > timeline_cap;
+            auto const window_begin =
+                limited ? matched.end() - static_cast<std::ptrdiff_t>(timeline_cap) : matched.begin();
+
+            auto timeline_events = canonicaljson::Array{};
+            for (auto it = window_begin; it != matched.end(); ++it)
+            {
+                timeline_events.push_back(client_event_value(**it));
+            }
+            auto const event_count = timeline_events.size();
+
+            // prev_batch lets clients backfill older history via
+            // /rooms/{roomId}/messages?from=<prev_batch>&dir=b, which returns
+            // events strictly older than the token. Anchor it at the oldest
+            // event we return (or the `since` position when the window is empty)
+            // so there is neither a gap nor an overlap with this batch.
+            auto const prev_batch = window_begin != matched.end()
+                                        ? std::to_string((*window_begin)->stream_ordering)
+                                        : std::to_string(since_ordering);
             auto room_account_data = build_account_data_events(store, filter.room.account_data, user, room.room_id,
                                                                since_sync_stream_id, max_observed_sync_stream_id);
 
@@ -2201,6 +2228,7 @@ namespace
                                 json_obj({
                                     json_member("events", json_arr(std::move(timeline_events))),
                                     json_member("limited", json_bool(limited)),
+                                    json_member("prev_batch", json_str(prev_batch)),
                                     json_member("event_count", json_int(static_cast<std::int64_t>(event_count))),
                                 })),
                     json_member("state", json_obj({json_member("events", json_arr(std::move(state_events)))})),
@@ -5069,6 +5097,16 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                                           })),
                                              })),
                              }))})));
+    }
+    // GET /_matrix/client/v3/thirdparty/protocols
+    // Spec: CS API v1.18 §third party networks — returns the third-party
+    // protocols the server supports as a (possibly empty) JSON object. Merovingian
+    // runs no application services, so the map is empty. Returning 404 here made
+    // clients (Element) log repeated "Failed to check for protocol support"
+    // errors and retry; an empty 200 object is the conformant answer.
+    if (req.method == "GET" && request_path == "/_matrix/client/v3/thirdparty/protocols")
+    {
+        return dispatch_resp(req, rt, 200U, "{}");
     }
     // Clients fetch /pushrules immediately after login to load the
     // server-default rules defined by Matrix v1.18.

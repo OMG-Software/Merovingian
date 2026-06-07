@@ -334,7 +334,8 @@ Listen 8448
 
 This example terminates TLS in nginx, serves the discovery JSON directly,
 and proxies Matrix traffic to Merovingian's loopback listeners. The `443`
-server block handles both client and delegated federation traffic by path.
+server block handles client, media, and delegated federation traffic by path.
+Media (`/_matrix/media/`) is served on the client-server listener (`8008`).
 
 ```nginx
 server {
@@ -389,6 +390,19 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    }
+
+    # Media is served on the client-server listener (8008). Omitting this block
+    # makes /_matrix/media/* fall through to `location /` (403), which fails the
+    # browser CORS preflight ("preflight does not have HTTP ok status") and
+    # breaks uploads, downloads, and avatars even though client traffic works.
+    # The larger body limit is required because uploads exceed nginx's 1m default.
+    location /_matrix/media/ {
+        proxy_pass http://127.0.0.1:8008;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        client_max_body_size 50m;
     }
 
     location / {
@@ -453,7 +467,9 @@ matrix.example.org {
     @federation path /_matrix/federation/* /_matrix/key/*
     reverse_proxy @federation 127.0.0.1:8009
 
-    @client path /_matrix/client/*
+    # Media (/_matrix/media/*) is served on the client listener too; omitting it
+    # makes uploads/downloads hit the `respond 403` catch-all and fail CORS.
+    @client path /_matrix/client/* /_matrix/media/*
     reverse_proxy @client 127.0.0.1:8008
 
     # Block everything else
@@ -497,7 +513,7 @@ entryPoints:
 http:
   routers:
     client-server:
-      rule: "Host(`matrix.example.org`) && PathPrefix(`/_matrix/client/`)"
+      rule: "Host(`matrix.example.org`) && (PathPrefix(`/_matrix/client/`) || PathPrefix(`/_matrix/media/`))"
       service: merovingian-client
       entryPoints: [websecure]
       tls: { certResolver: letsencrypt }
@@ -539,9 +555,10 @@ frontend ft_https
     bind *:443 ssl crt /etc/haproxy/certs/matrix.example.org.pem alpn h2,http/1.1
     http-request redirect scheme https code 301 if !{ ssl_fc }
     acl is_client        path_beg /_matrix/client/
+    acl is_media         path_beg /_matrix/media/
     acl is_federation    path_beg /_matrix/federation/
     acl is_key           path_beg /_matrix/key/
-    use_backend bk_merovingian_client     if is_client
+    use_backend bk_merovingian_client     if is_client || is_media
     use_backend bk_merovingian_federation if is_federation || is_key
     # /.well-known/matrix/{client,server} is served by the client backend,
     # which routes them to Merovingian.
@@ -630,6 +647,23 @@ Access-Control-Allow-Headers: authorization, content-type
 Access-Control-Max-Age: 86400
 Vary: Origin
 ```
+
+Run the same preflight against a media endpoint. This is the check that catches a
+missing `/_matrix/media/` proxy route — uploads, downloads, and avatars break
+even when client traffic works:
+
+```sh
+curl -X OPTIONS \
+    -H "Origin: vector://vector" \
+    -H "Access-Control-Request-Method: GET" \
+    -i https://matrix.example.org/_matrix/media/v3/config
+```
+
+A non-2xx here (typically `403` from a catch-all `location /`) is the classic
+symptom: the browser reports "Response to preflight request doesn't pass access
+control check: It does not have HTTP ok status" and the request fails with
+`net::ERR_FAILED`. Merovingian itself answers this OPTIONS with `200` + CORS on
+the client-server listener, so a failure is always a proxy routing gap.
 
 ## Registration Token Policy
 
