@@ -86,5 +86,12 @@ jobs:
           # Prevent the action running its own gcov pass — we already produced
           # the Cobertura XML above with the correct llvm-cov gcov executable.
           disable_search: true
+          # The Codecov action verifies its CLI binary with a GPG signature.
+          # The Ubuntu 24.04 runner cannot import the Codecov keyserver key
+          # reliably, causing "Can't check signature: No public key" failures
+          # before the upload is even attempted.  skip_validation bypasses
+          # that check; the binary is still downloaded over HTTPS from
+          # cli.codecov.io which is sufficient integrity for our threat model.
+          skip_validation: true
           fail_ci_if_error: true
           verbose: true
