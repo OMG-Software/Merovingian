@@ -1,3 +1,22 @@
+## 0.5.17
+
+- Fix four conformance-test accuracy issues identified by code review:
+  - **v1 auth fixture**: `make_create_event()` produces a v12 PDU (no `room_id`); added
+    `make_v1_create_event()` and `make_v1_non_federated_create_event()` with correct v1 shape
+    (`room_id` present, no `room_version` in content) and updated the two v1 auth scenarios to
+    use them (`test_event_auth_rules.cpp`)
+  - **PDU format header**: banner comment stated `room_id` is required for all room v3+ PDUs
+    without noting the v12 `m.room.create` exception; clarified with explicit exception note
+    (`test_pdu_format_conformance.cpp`)
+  - **Redaction assertions**: the v10 top-level scenario asserted `origin` but not `membership`
+    despite both being spec-protected in v1–v10; added the missing `REQUIRE`; added a new
+    `membership` / `prev_state` v10-vs-v11 comparison scenario that proves v11 strips both fields
+    (`test_redaction_conformance.cpp`)
+  - **Sync filter limit sentinel**: the `limit == 0` internal convention was in a `[conformance]`
+    scenario alongside the real spec assertion; separated it into a `[helper]`-tagged scenario
+    with a comment explaining the distinction from spec behaviour
+    (`test_sync_filter_conformance.cpp`)
+
 ## 0.5.16
 
 - Fix `GET /sync` timeline pagination, which made Element unable to render

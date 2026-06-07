@@ -1,3 +1,32 @@
+## v0.5.17 (in progress — fix/conformance-test-accuracy)
+
+### Fix: conformance-test accuracy (four issues identified in code review)
+
+No production behaviour changed. All four issues were in the test suite itself.
+
+| # | File | Issue | Fix |
+|---|------|-------|-----|
+| 1 | `test_event_auth_rules.cpp` | Both v1 auth scenarios (`[v1]` tag) supplied a **v12** create event fixture (no `room_id`, `room_version:"12"` in content). v1 PDUs must carry `room_id`; the room_id-less shape is a v12-only feature (MSC4291). | Added `make_v1_create_event()` (carries `room_id`, no `room_version` in content) and `make_v1_non_federated_create_event()`; updated both v1 scenarios to use them. |
+| 2 | `test_pdu_format_conformance.cpp` | Header banner stated "`room_id` required for all room v3+ PDUs" with no exception noted, contradicting the v12 scenario in the same file that correctly accepts a create event without `room_id`. | Added an explicit exception note to the banner citing room v12 `m.room.create`. |
+| 3 | `test_redaction_conformance.cpp` | The v10 top-level scenario comment said "origin AND membership ARE preserved pre-v11" but only asserted `origin`; `membership` had no `REQUIRE`. No test covered `prev_state` (also v1–v10 protected, removed in v11). | Added `REQUIRE(has_field(result, "membership"))` to the existing scenario; added a new `[v10][v11]` scenario asserting both `membership` and `prev_state` are preserved in v10 and stripped in v11. |
+| 4 | `test_sync_filter_conformance.cpp` | `limit == 0` sentinel (internal convention meaning "no client-imposed cap") was asserted in the same `[conformance]`-tagged `SCENARIO` as the real spec assertion for `limit:50`. The sentinel is not spec-defined behaviour. | Extracted into its own `[helper]`-tagged `SCENARIO` with a comment explaining the distinction and pointing to the route-level default-cap enforcement. |
+
+All 47/47 test suites pass after changes.
+
+#### Files changed
+
+| File | Change |
+|------|--------|
+| `tests/conformance/test_event_auth_rules.cpp` | Add `make_v1_create_event()` / `make_v1_non_federated_create_event()`; update two v1 scenarios |
+| `tests/conformance/test_pdu_format_conformance.cpp` | Update header banner — document v12 `room_id` exception |
+| `tests/conformance/test_redaction_conformance.cpp` | Add missing `membership` assertion; add `membership`/`prev_state` v10-vs-v11 scenario |
+| `tests/conformance/test_sync_filter_conformance.cpp` | Separate `limit==0` sentinel into `[helper]` scenario |
+| `CHANGELOG.md` | v0.5.17 entry |
+| `packaging/rpm/merovingian.spec` | v0.5.17 changelog entry |
+| Version files (9) | bumped to 0.5.17 |
+
+---
+
 ## v0.5.16 (in progress — fix/sync-timeline-limited-prev-batch)
 
 ### Fix: `/sync` timeline `limited`/`prev_batch` (clients could not see messages)

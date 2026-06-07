@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.16
+Version:        0.5.17
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.17-1
+- Fix four conformance-test accuracy issues: v1 auth scenarios now use
+  v1-valid create fixtures (with room_id); PDU format header documents the
+  v12 room_id exception; redaction tests assert membership and add a
+  membership/prev_state v10-vs-v11 scenario; sync filter limit==0 sentinel
+  is separated into a [helper]-tagged scenario distinct from spec tests.
 * Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.16-1
 - Fix /sync timeline.limited (was derived from the store's total event count, so
   it was true on every sync and made clients endlessly reset the timeline) and

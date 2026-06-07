@@ -116,8 +116,9 @@ SCENARIO("Redaction v1-v10: top-level fields are preserved as per spec",
                 REQUIRE(has_field(result, "prev_events"));
                 REQUIRE(has_field(result, "auth_events"));
                 REQUIRE(has_field(result, "origin_server_ts"));
-                // Spec (v1-v10): origin and membership ARE preserved pre-v11.
+                // Spec (v1-v10): origin AND membership are preserved; v11 removes both.
                 REQUIRE(has_field(result, "origin"));
+                REQUIRE(has_field(result, "membership"));
             }
 
             THEN("non-preserved top-level fields are stripped after redaction")
@@ -267,6 +268,53 @@ SCENARIO("Redaction v11+: origin is no longer preserved (v11 change from v10)",
                 // Spec MUST: "unsigned" is never preserved in any version.
                 REQUIRE_FALSE(has_field(result_v10, "unsigned"));
                 REQUIRE_FALSE(has_field(result_v11, "unsigned"));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec: membership and prev_state are preserved in v1–v10 but dropped in v11+
+// v10: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// v11: https://spec.matrix.org/v1.18/rooms/v11/#redactions
+//
+// v11 removes "origin", "membership", and "prev_state" from the protected set.
+// ---------------------------------------------------------------------------
+
+SCENARIO("Redaction v10 vs v11: membership and prev_state are preserved in v10 but stripped in v11",
+         "[conformance][redaction][v10][v11]")
+{
+    GIVEN("an event carrying top-level membership and prev_state fields")
+    {
+        // prev_state was an early Matrix PDU field (an array of prior state events).
+        // It appears in v1–v10 PDUs and is listed as a protected top-level key in
+        // that redaction rule set. v11 removes it from the protected set.
+        auto constexpr event_json = std::string_view{
+            R"({"event_id":"$ev:x","type":"m.room.message","room_id":"!r:x","sender":"@a:x",)"
+            R"("origin":"example.org","origin_server_ts":1,"depth":1,)"
+            R"("prev_events":[],"auth_events":[],"hashes":{"sha256":"h"},"signatures":{},)"
+            R"("membership":"join","prev_state":[],)"
+            R"("content":{"body":"hi"}})"};
+
+        WHEN("the event is redacted under v10 vs v11")
+        {
+            auto const result_v10 = redact_event(event_json, "10");
+            auto const result_v11 = redact_event(event_json, "11");
+
+            THEN("membership is preserved in v10 but stripped in v11")
+            {
+                // Spec (v1-v10): "membership" IS a protected top-level field.
+                REQUIRE(has_field(result_v10, "membership"));
+                // Spec (v11+): "membership" is NO LONGER protected. It MUST be stripped.
+                REQUIRE_FALSE(has_field(result_v11, "membership"));
+            }
+
+            THEN("prev_state is preserved in v10 but stripped in v11")
+            {
+                // Spec (v1-v10): "prev_state" IS a protected top-level field.
+                REQUIRE(has_field(result_v10, "prev_state"));
+                // Spec (v11+): "prev_state" is NO LONGER protected. It MUST be stripped.
+                REQUIRE_FALSE(has_field(result_v11, "prev_state"));
             }
         }
     }
