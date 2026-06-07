@@ -1,3 +1,22 @@
+## 0.5.21
+
+- Fix Codecov upload silently failing on every push to `main`: coverage
+  was generated correctly (76% lines, 88% functions) but the upload step
+  returned `{"message":"Token required because branch is protected"}` and
+  `fail_ci_if_error: false` swallowed it. Added `token: ${{ secrets.CODECOV_TOKEN }}`,
+  set `disable_search: true` to prevent a redundant second gcov pass, and
+  flipped `fail_ci_if_error: true` so future failures are visible.
+  Added `.codecov.yml` with a 60% line-coverage floor, 50% patch target,
+  and ignore rules for tests, packaging, and scripts.
+  **Action required**: add `CODECOV_TOKEN` as a repository secret from
+  https://app.codecov.io/gh/OMG-Software/Merovingian → Settings.
+
+- Fix misleading redaction conformance header: `prev_state` was missing
+  from the v1–v10 preserved top-level fields list; `m.room.join_rules`
+  incorrectly showed only `join_rule` instead of `join_rule, allow` for
+  v8–v10. Added explicit `REQUIRE_FALSE(invite)` assertion to the v10
+  `m.room.power_levels` scenario (field was present in fixture but untested).
+
 ## 0.5.20
 
 - Fix federated join stale membership loop: two related bugs caused a Merovingian user

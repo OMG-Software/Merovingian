@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: read
-  id-token: write   # required for Codecov GitHub App OIDC tokenless upload
 
 jobs:
   coverage:
@@ -51,11 +50,15 @@ jobs:
       - name: Generate coverage reports
         run: |
           mkdir -p coverage
+          # gcovr translates clang's gcov-compatible .gcno/.gcda files into
+          # Cobertura XML for Codecov.  llvm-cov gcov is required instead of
+          # plain gcov because the binaries were compiled with clang.
           gcovr \
             --root . \
             --gcov-executable "llvm-cov gcov" \
             --filter 'src/' \
             --filter 'include/' \
+            --exclude 'src/homeserver/main.cpp' \
             --exclude 'tests/' \
             --xml-pretty \
             --html-details \
@@ -74,6 +77,14 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
+          # CODECOV_TOKEN must be added as a repository secret.
+          # Obtain it from https://app.codecov.io/gh/OMG-Software/Merovingian
+          # then add it under Settings → Secrets → Actions → New repository secret.
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: coverage/coverage.xml
           flags: unit
-          fail_ci_if_error: false
+          # Prevent the action running its own gcov pass — we already produced
+          # the Cobertura XML above with the correct llvm-cov gcov executable.
+          disable_search: true
+          fail_ci_if_error: true
+          verbose: true
