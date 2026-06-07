@@ -73,16 +73,18 @@ namespace
 //
 // Top-level fields preserved: event_id, type, room_id, sender, state_key,
 //   content, hashes, signatures, depth, prev_events, auth_events, origin,
-//   origin_server_ts, membership
+//   origin_server_ts, membership, prev_state
+//   (v11 removes origin, membership, and prev_state from the protected set)
 //
 // Content fields preserved per event type:
-//   m.room.member:            membership
-//   m.room.create:            creator
-//   m.room.join_rules:        join_rule
-//   m.room.power_levels:      ban, events, events_default, kick, redact,
-//                              state_default, users, users_default
+//   m.room.member:             membership, join_authorised_via_users_server (v8+)
+//   m.room.create:             creator
+//   m.room.join_rules:         join_rule, allow  (v8–v10; v1–v7 preserved only join_rule)
+//   m.room.power_levels:       ban, events, events_default, kick, redact,
+//                               state_default, users, users_default
+//                               (invite is NOT preserved until v11+)
 //   m.room.history_visibility: history_visibility
-//   m.room.aliases:           aliases
+//   m.room.aliases:            aliases
 // ---------------------------------------------------------------------------
 
 SCENARIO("Redaction v1-v10: top-level fields are preserved as per spec",
@@ -211,7 +213,7 @@ SCENARIO("Redaction v1-v10: m.room.power_levels preserves the specified content 
         {
             auto const result = redact_event(event_json, "10");
 
-            THEN("spec-listed fields are preserved, extra is stripped")
+            THEN("spec-listed fields are preserved, extra and invite are stripped")
             {
                 REQUIRE(has_field(result, "ban"));
                 REQUIRE(has_field(result, "events"));
@@ -221,6 +223,9 @@ SCENARIO("Redaction v1-v10: m.room.power_levels preserves the specified content 
                 REQUIRE(has_field(result, "state_default"));
                 REQUIRE(has_field(result, "users"));
                 REQUIRE(has_field(result, "users_default"));
+                // Spec (v1-v10): "invite" is NOT in the preserved set for m.room.power_levels.
+                // It was added to the preserved set in v11. Stripping it in v10 is a MUST.
+                REQUIRE_FALSE(has_field(result, "invite"));
                 REQUIRE_FALSE(has_field(result, "extra"));
             }
         }
