@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.18
+Version:        0.5.20
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.20-1
+- Fix stale federated membership: federated invite no longer downgrades an
+  existing join membership; join_room retries federation when in-memory
+  member state is inconsistent with the persistent membership record.
 * Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.18-1
 - Fix reject-unsafe.sh scanning non-C++ files: restrict grep to C/C++ source
   extensions so Python/JavaScript test files do not trigger false positives.
