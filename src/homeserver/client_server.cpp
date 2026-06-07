@@ -277,6 +277,106 @@ namespace
         return enqueued;
     }
 
+    // Dispatch a single EDU to a specific remote server without needing a
+    // room — used for m.direct_to_device and m.device_list_update delivery
+    // where the destinations are known from user IDs rather than room membership.
+    auto dispatch_edu_to_server(HomeserverRuntime& runtime, std::string_view destination, std::string_view edu_type,
+                                std::string_view edu_content_json) -> bool
+    {
+        wire_federation_callbacks(runtime);
+        if (runtime.dispatch_worker == nullptr)
+        {
+            return false;
+        }
+        // Shared builder keys the EDU by "edu_type" per the federation spec.
+        auto const& server_name = runtime.config.server().server_name;
+        auto const tx_body = federation::build_edu_transaction_body(server_name, edu_type, edu_content_json);
+        if (!tx_body.has_value())
+        {
+            return false;
+        }
+        auto const tx_id = federation::make_federation_transaction_id();
+        auto target = "/_matrix/federation/v1/send/" + tx_id;
+        auto transaction =
+            federation::make_outbound_transaction(std::string{destination}, "PUT", target, server_name, *tx_body);
+        transaction.transaction_id = tx_id;
+        return runtime.dispatch_worker->enqueue(std::move(transaction));
+    }
+
+    // Collect all unique remote server names across every room that user_id is
+    // currently a member of. Used to find destinations for m.device_list_update.
+    [[nodiscard]] auto remote_servers_for_user(HomeserverRuntime const& runtime, std::string_view user_id)
+        -> std::vector<std::string>
+    {
+        auto const& server_name = runtime.config.server().server_name;
+        auto servers = std::vector<std::string>{};
+        for (auto const& room : runtime.database.rooms)
+        {
+            if (!std::ranges::any_of(room.members, [user_id](auto const& m) { return m == user_id; }))
+            {
+                continue;
+            }
+            for (auto const& member : room.members)
+            {
+                auto const colon = member.rfind(':');
+                if (colon == std::string::npos)
+                {
+                    continue;
+                }
+                auto const server = member.substr(colon + 1U);
+                if (server != server_name && std::ranges::find(servers, server) == servers.end())
+                {
+                    servers.emplace_back(server);
+                }
+            }
+        }
+        return servers;
+    }
+
+    // Send m.device_list_update EDUs for every device the user owns to each
+    // server in destinations. Called after key upload or room join so remote
+    // servers learn about the local user's devices and can establish Olm
+    // sessions (Matrix spec v1.18 device-list-updates-between-servers).
+    auto broadcast_device_list_updates(ClientServerRuntime& rt, std::string_view user_id,
+                                       std::vector<std::string> const& destinations) -> void
+    {
+        if (destinations.empty())
+        {
+            return;
+        }
+        auto const& store = rt.homeserver.database.persistent_store;
+        // stream_id is a monotonic counter remote servers use to detect gaps;
+        // reuse next_sync_stream_id since it is already monotonically bumped
+        // on every device list change and to-device enqueue.
+        auto const stream_id = static_cast<std::int64_t>(store.next_sync_stream_id);
+        for (auto const& device : store.devices)
+        {
+            if (device.user_id != user_id)
+            {
+                continue;
+            }
+            // Build EDU content per spec v1.18 device-list-updates-between-servers.
+            auto content_obj = canonicaljson::Object{};
+            content_obj.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device.device_id}));
+            content_obj.push_back(
+                canonicaljson::make_member("prev_id", canonicaljson::Value{canonicaljson::Array{}}));
+            content_obj.push_back(canonicaljson::make_member("stream_id", canonicaljson::Value{stream_id}));
+            content_obj.push_back(
+                canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
+            auto const serialized =
+                canonicaljson::serialize_canonical(canonicaljson::Value{std::move(content_obj)});
+            if (serialized.error != canonicaljson::CanonicalJsonError::none)
+            {
+                continue;
+            }
+            for (auto const& destination : destinations)
+            {
+                std::ignore =
+                    dispatch_edu_to_server(rt.homeserver, destination, "m.device_list_update", serialized.output);
+            }
+        }
+    }
+
     // Generate a 32-character lowercase hex filter ID from 16 random bytes.
     // Uses libsodium so the randomness is cryptographically strong, matching
     // the same pattern used for access tokens.
@@ -2922,6 +3022,9 @@ namespace
                     std::ignore = record_device_list_change(rt, change);
                 }
             }
+            // Notify remote servers so they can fetch the updated keys and
+            // deliver room keys to this device (spec v1.18 SS4.1).
+            broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
         }
         // Reject any one-time / fallback key that is not signed by the
         // device's own ed25519 identity. The Matrix v1.18 spec requires
@@ -3324,32 +3427,6 @@ namespace
                               json_member("one_time_keys", json_obj(std::move(users))),
                               json_member("failures", json_obj(std::move(failures))),
                           })));
-    }
-
-    // Dispatch a single EDU to a specific remote server without needing a
-    // room — used for m.direct_to_device delivery where the destinations are
-    // known from the recipient user IDs rather than room membership.
-    auto dispatch_edu_to_server(HomeserverRuntime& runtime, std::string_view destination, std::string_view edu_type,
-                                std::string_view edu_content_json) -> bool
-    {
-        wire_federation_callbacks(runtime);
-        if (runtime.dispatch_worker == nullptr)
-        {
-            return false;
-        }
-        // Shared builder keys the EDU by "edu_type" per the federation spec.
-        auto const& server_name = runtime.config.server().server_name;
-        auto const tx_body = federation::build_edu_transaction_body(server_name, edu_type, edu_content_json);
-        if (!tx_body.has_value())
-        {
-            return false;
-        }
-        auto const tx_id = federation::make_federation_transaction_id();
-        auto target = "/_matrix/federation/v1/send/" + tx_id;
-        auto transaction =
-            federation::make_outbound_transaction(std::string{destination}, "PUT", target, server_name, *tx_body);
-        transaction.transaction_id = tx_id;
-        return runtime.dispatch_worker->enqueue(std::move(transaction));
     }
 
     // PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}
@@ -5613,6 +5690,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                {"status",  std::to_string(result.status),                           false},
                                {"reason",  result.status == 200U ? std::string{"ok"} : result.body, false}
             });
+            // Notify remote servers that this user's devices now share the room
+            // so they can fetch keys and deliver encrypted room keys (spec v1.18).
+            if (result.status == 200U)
+            {
+                broadcast_device_list_updates(rt, *user, remote_servers_for_user(rt.homeserver, *user));
+            }
             return complete(result);
         }
         if (req.method == "POST" && suffix.size() > send_s.size() &&
@@ -6319,6 +6402,12 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                            {"status",           std::to_string(result.status),                           false},
                            {"reason",           result.status == 200U ? std::string{"ok"} : result.body, false}
         });
+        // Notify remote servers that this user's devices now share the room
+        // so they can fetch keys and deliver encrypted room keys (spec v1.18).
+        if (result.status == 200U)
+        {
+            broadcast_device_list_updates(rt, *user, remote_servers_for_user(rt.homeserver, *user));
+        }
         return complete(result);
     }
 
