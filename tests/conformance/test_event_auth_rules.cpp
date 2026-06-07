@@ -297,7 +297,7 @@ SCENARIO("Auth rules allow a member join event when sender matches state_key and
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -358,7 +358,7 @@ SCENARIO("Auth rules allow an invite when the inviter has sufficient power", "[e
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -458,7 +458,7 @@ SCENARIO("Auth rules allow a ban when the banner has sufficient power", "[events
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -528,9 +528,11 @@ SCENARIO("Auth rules allow message events from joined members", "[events][auth][
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        // In v12 @alice is the room creator (infinite power). The creator MUST NOT appear in
+        // content.users of m.room.power_levels. Use @moderator as the explicit user entry.
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 0))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 0))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -592,9 +594,11 @@ SCENARIO("Auth rules allow state events when sender has sufficient state_default
         REQUIRE(policy != nullptr);
         auto auth_events = merovingian::events::AuthEventMap{};
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
+        // In v12 @alice is the room creator (infinite power). The creator MUST NOT appear in
+        // content.users of m.room.power_levels. Use @moderator as the explicit user entry.
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 50))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 50))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -672,7 +676,7 @@ SCENARIO("Auth rules allow m.room.power_levels events from users with sufficient
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -798,9 +802,10 @@ SCENARIO("Room creators hold privileged power only in room version 12 (MSC4289)"
                         R"("room_version":"12","additional_creators":["@bob:example.org"]},)"
                         R"("origin_server_ts":1,"depth":0,"prev_events":[],"auth_events":[],)"
                         R"("hashes":{"sha256":"hash"}})"};
-        // state_default = 50, users_default = 0, only @alice present at 100.
+        // state_default = 50, users_default = 0. @alice is the room creator (infinite
+        // power in v12) so she MUST NOT appear in content.users; use @moderator instead.
         auto const power_json =
-            make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100);
+            make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 100);
         // A state event (m.room.topic) sent by the additional creator @bob.
         auto const topic_json = make_state_event("@bob:example.org", "m.room.topic", "");
 
@@ -884,7 +889,7 @@ SCENARIO("Auth rules allow a user to join a public room", "[events][auth][member
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.join_rules = merovingian::canonicaljson::parse_lossless(make_join_rules_event("public")).value;
 
@@ -914,7 +919,7 @@ SCENARIO("Auth rules reject a join to an invite-only room without an invite", "[
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.join_rules = merovingian::canonicaljson::parse_lossless(make_join_rules_event("invite")).value;
         auth_events.target_member = merovingian::canonicaljson::parse_lossless(
@@ -948,7 +953,7 @@ SCENARIO("Auth rules allow a join to an invite-only room for a previously invite
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.join_rules = merovingian::canonicaljson::parse_lossless(make_join_rules_event("invite")).value;
         auth_events.target_member = merovingian::canonicaljson::parse_lossless(
@@ -993,7 +998,7 @@ SCENARIO("Auth rules allow a restricted-room join when join_authorised_via_users
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 50, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.join_rules = merovingian::canonicaljson::parse_lossless(make_join_rules_event("restricted")).value;
         auth_events.authorising_user_member = merovingian::canonicaljson::parse_lossless(
@@ -1027,7 +1032,7 @@ SCENARIO("Auth rules allow a kicked user to rejoin an invite-only room after a n
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.join_rules = merovingian::canonicaljson::parse_lossless(make_join_rules_event("invite")).value;
         auth_events.target_member = merovingian::canonicaljson::parse_lossless(
@@ -1086,7 +1091,7 @@ SCENARIO("Auth rules allow a kick when the kicker has sufficient kick power", "[
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
                                         make_member_event("@alice:example.org", "@alice:example.org", "join"))
@@ -1158,7 +1163,7 @@ SCENARIO("Auth rules reject a user who is banned from joining", "[events][auth][
         auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@alice:example.org")).value;
         auth_events.power_levels =
             merovingian::canonicaljson::parse_lossless(
-                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100))
+                make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@moderator:example.org", 100))
                 .value;
         auth_events.join_rules = merovingian::canonicaljson::parse_lossless(make_join_rules_event("public")).value;
         auth_events.target_member = merovingian::canonicaljson::parse_lossless(

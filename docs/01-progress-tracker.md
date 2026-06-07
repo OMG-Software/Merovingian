@@ -1,3 +1,56 @@
+## v0.5.19 (in progress — fix/conformance-test-corrections)
+
+### Fix: redaction `allow` field for room versions 8–10
+
+**Root cause**: `RedactionRules::room_v1_v10` was a single enum value covering
+all of v1–v10. Room v8 introduced restricted joins (MSC3083), which added the
+`allow` key to the `m.room.join_rules` preserved set. The implementation treated
+v8-v10 the same as v1-v7 and stripped `allow`, producing wrong reference hashes
+for restricted rooms on those versions.
+
+**Fix**: split into `room_v1_v7` and `room_v8_v10`; updated the room version
+table; updated `redaction.cpp` to preserve `allow` for both `room_v8_v10` and
+`room_v11_plus`. Conformance tests split accordingly.
+
+### Fix: impossible `m.room.power_levels` fixtures in v12 auth tests
+
+**Root cause**: numerous auth-rule conformance scenarios set `@alice` as both
+the room creator (create event sender) AND as a user listed in `content.users`
+of the existing `m.room.power_levels` auth state. Room v12 (MSC4289) states that
+creators hold implicit infinite power and MUST NOT appear in `content.users`;
+such a power-levels event is invalid in v12. The fixtures represented a state
+that can never be reached in a conformant room.
+
+**Fix**: changed `user_level_user` from `@alice:example.org` to
+`@moderator:example.org` in all affected fixtures. "Reject" scenarios already
+correctly used `@admin` as the creator.
+
+### Add: wildcard type-pattern matching in sync filter
+
+Per Matrix CS API v1.18 §Filtering, `types`/`not_types` entries support:
+- `"*"` — matches any event type
+- `"prefix*"` — matches any type starting with `prefix`
+
+Implemented `matches_type_pattern` and `type_matches_list` in
+`src/sync/sync_filter.cpp`. Senders continue to use exact matching. Four
+wildcard conformance scenarios added.
+
+| File | Change |
+|------|--------|
+| `include/merovingian/rooms/room_version_policy.hpp` | Split `room_v1_v10` → `room_v1_v7` + `room_v8_v10` |
+| `src/rooms/room_version_policy.cpp` | Assign correct enum values per version |
+| `src/events/redaction.cpp` | Preserve `allow` for v8-v10 join_rules; update top-level field logic |
+| `src/sync/sync_filter.cpp` | Wildcard type-pattern matching |
+| `tests/conformance/test_redaction_conformance.cpp` | Split join_rules v1-v7 / v8-v10 scenarios |
+| `tests/conformance/test_event_auth_rules.cpp` | Fix impossible v12 power_levels fixtures |
+| `tests/conformance/test_events.cpp` | Update room_v10 redaction_rules assertion |
+| `tests/conformance/test_room_version_table_conformance.cpp` | Split v1-v7 / v8-v10 redaction rule checks |
+| `tests/conformance/test_sync_filter_conformance.cpp` | Add 4 wildcard filter scenarios |
+
+All 47/47 test suites pass.
+
+---
+
 ## v0.5.18 (in progress — fix/reject-unsafe-cpp-only)
 
 ### Fix: `scripts/reject-unsafe.sh` false positives on non-C++ files

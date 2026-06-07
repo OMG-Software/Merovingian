@@ -1,3 +1,20 @@
+## 0.5.19
+
+- Fix `m.room.join_rules` redaction: the `allow` field (restricted joins, MSC3083) must be
+  preserved in room versions 8–10 as well as v11+. Split `RedactionRules::room_v1_v10` into
+  `room_v1_v7` (join_rule only) and `room_v8_v10` (join_rule + allow); updated the version
+  table accordingly. The incorrect "v1-v10 join_rules" conformance test was renamed "v1-v7" and
+  a new "v8-v10" scenario added asserting both fields survive.
+- Fix v12 auth-rule conformance fixtures: many `m.room.power_levels` auth-state fixtures put
+  `@alice:example.org` (the room creator) in `content.users`, which is impossible in room v12
+  where creators hold implicit infinite power and MUST NOT appear in `content.users`. Changed
+  all affected entries to `@moderator:example.org` so the fixture represents a reachable v12
+  room state; all "reject" scenarios already used `@admin` as the creator.
+- Add wildcard type-pattern matching to `event_passes_filter` per the Matrix CS API v1.18 spec:
+  bare `*` matches all event types; `prefix*` matches any type starting with that prefix.
+  Senders continue to use exact matching. Added four conformance scenarios covering `*`,
+  `m.room.*`, `m.*` in `not_types`, and mixed exact-plus-wildcard lists.
+
 ## 0.5.18
 
 - Fix `scripts/reject-unsafe.sh` CI gate scanning non-C++ files: `grep -R`

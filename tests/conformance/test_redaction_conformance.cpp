@@ -439,14 +439,20 @@ SCENARIO("Redaction: unsigned is never preserved in any room version",
 
 // ---------------------------------------------------------------------------
 // Spec: m.room.join_rules — preserved content fields differ by version
-// v1–v10: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// v1–v7:  https://spec.matrix.org/v1.18/rooms/v7/#redactions
 //   m.room.join_rules preserves: join_rule
+// v8–v10: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+//   m.room.join_rules preserves: join_rule, allow  (restricted joins, MSC3083)
 // v11+:   https://spec.matrix.org/v1.18/rooms/v11/#redactions
 //   m.room.join_rules preserves: join_rule, allow
 // ---------------------------------------------------------------------------
 
-SCENARIO("Redaction v1-v10: m.room.join_rules preserves only join_rule from content",
-         "[conformance][redaction][v10][join-rules]")
+// Spec: room versions 1–7 do not include restricted joins (MSC3083); the
+// m.room.join_rules redaction algorithm for those versions preserves only
+// "join_rule" — not "allow".
+// URL: https://spec.matrix.org/v1.18/rooms/v7/#redactions
+SCENARIO("Redaction v1-v7: m.room.join_rules preserves only join_rule from content",
+         "[conformance][redaction][v7][join-rules]")
 {
     GIVEN("an m.room.join_rules event with join_rule, allow, and an extra field")
     {
@@ -456,17 +462,58 @@ SCENARIO("Redaction v1-v10: m.room.join_rules preserves only join_rule from cont
             R"("hashes":{"sha256":"h"},"signatures":{},)"
             R"("content":{"join_rule":"restricted","allow":[{"type":"m.room_membership","room_id":"!p:x"}],"extra":"strip"}})"};
 
-        WHEN("the event is redacted under v10")
+        WHEN("the event is redacted under v7")
         {
-            auto const result = redact_event(event_json, "10");
+            auto const result = redact_event(event_json, "7");
 
             THEN("join_rule is preserved; allow and extra are stripped")
             {
-                // Spec (v1-v10): m.room.join_rules preserves ONLY join_rule from content.
+                // Spec (v1-v7): m.room.join_rules preserves ONLY join_rule from content.
                 REQUIRE(has_field(result, "join_rule"));
-                // Spec MUST: allow is NOT in the v10 preserved set.
+                // Spec MUST: allow is NOT in the v1-v7 preserved set.
                 REQUIRE_FALSE(has_field(result, "allow"));
                 REQUIRE_FALSE(has_field(result, "extra"));
+            }
+        }
+    }
+}
+
+// Spec: room versions 8–10 introduce restricted joins (MSC3083). The
+// m.room.join_rules redaction algorithm for those versions preserves both
+// "join_rule" AND "allow".
+// URL: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+SCENARIO("Redaction v8-v10: m.room.join_rules preserves both join_rule and allow",
+         "[conformance][redaction][v8][v9][v10][join-rules]")
+{
+    GIVEN("an m.room.join_rules event with join_rule, allow, and an extra field")
+    {
+        auto constexpr event_json = std::string_view{
+            R"({"event_id":"$ev:x","type":"m.room.join_rules","room_id":"!r:x","sender":"@a:x",)"
+            R"("state_key":"","origin_server_ts":1,"depth":1,"prev_events":[],"auth_events":[],)"
+            R"("hashes":{"sha256":"h"},"signatures":{},)"
+            R"("content":{"join_rule":"restricted","allow":[{"type":"m.room_membership","room_id":"!p:x"}],"extra":"strip"}})"};
+
+        WHEN("the event is redacted under v8, v9, and v10")
+        {
+            auto const result_v8  = redact_event(event_json, "8");
+            auto const result_v9  = redact_event(event_json, "9");
+            auto const result_v10 = redact_event(event_json, "10");
+
+            THEN("both join_rule and allow are preserved; extra is stripped for all three versions")
+            {
+                // Spec (v8-v10): m.room.join_rules preserves join_rule AND allow.
+                // The allow field was introduced by restricted joins (MSC3083) in room v8.
+                REQUIRE(has_field(result_v8, "join_rule"));
+                REQUIRE(has_field(result_v8, "allow"));
+                REQUIRE_FALSE(has_field(result_v8, "extra"));
+
+                REQUIRE(has_field(result_v9, "join_rule"));
+                REQUIRE(has_field(result_v9, "allow"));
+                REQUIRE_FALSE(has_field(result_v9, "extra"));
+
+                REQUIRE(has_field(result_v10, "join_rule"));
+                REQUIRE(has_field(result_v10, "allow"));
+                REQUIRE_FALSE(has_field(result_v10, "extra"));
             }
         }
     }

@@ -206,10 +206,40 @@ auto parse_filter_argument(std::string_view filter_argument) -> SyncFilter
     return out;
 }
 
+// Spec: Matrix CS API v1.18 § Filtering
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#filtering
+//
+// Type entries in types/not_types support two wildcard forms:
+//   "*"        — matches every event type
+//   "prefix*"  — matches any event type that starts with prefix
+// All other entries are exact matches.
+[[nodiscard]] auto matches_type_pattern(std::string_view pattern, std::string_view event_type) noexcept -> bool
+{
+    if (pattern == "*")
+    {
+        return true; // bare wildcard: match everything
+    }
+    if (pattern.ends_with('*'))
+    {
+        // prefix wildcard: e.g. "m.room.*" matches "m.room.message"
+        auto const prefix = pattern.substr(0, pattern.size() - 1);
+        return event_type.starts_with(prefix);
+    }
+    return pattern == event_type; // exact match
+}
+
+[[nodiscard]] auto type_matches_list(std::vector<std::string> const& list, std::string_view event_type) noexcept -> bool
+{
+    return std::ranges::any_of(list, [event_type](std::string const& pattern) {
+        return matches_type_pattern(pattern, event_type);
+    });
+}
+
 auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_type,
                          std::string_view sender) noexcept -> bool
 {
-    auto const contains = [](std::vector<std::string> const& list, std::string_view value) noexcept -> bool {
+    // Senders use exact string matching (no wildcard support per spec).
+    auto const sender_in_list = [](std::vector<std::string> const& list, std::string_view value) noexcept -> bool {
         return std::ranges::any_of(list, [value](std::string const& candidate) { return candidate == value; });
     };
     // Skip type predicates entirely when the caller hasn't supplied the
@@ -218,20 +248,21 @@ auto event_passes_filter(EventTypeFilter const& filter, std::string_view event_t
     // applying types/not_types in that case would reject every event.
     if (!event_type.empty())
     {
-        if (!filter.types.empty() && !contains(filter.types, event_type))
+        // Spec MUST: types/not_types support wildcard patterns (* and prefix*).
+        if (!filter.types.empty() && !type_matches_list(filter.types, event_type))
         {
             return false;
         }
-        if (!filter.not_types.empty() && contains(filter.not_types, event_type))
+        if (!filter.not_types.empty() && type_matches_list(filter.not_types, event_type))
         {
             return false;
         }
     }
-    if (!filter.senders.empty() && !contains(filter.senders, sender))
+    if (!filter.senders.empty() && !sender_in_list(filter.senders, sender))
     {
         return false;
     }
-    if (!filter.not_senders.empty() && contains(filter.not_senders, sender))
+    if (!filter.not_senders.empty() && sender_in_list(filter.not_senders, sender))
     {
         return false;
     }

@@ -19,7 +19,10 @@ namespace
 
     [[nodiscard]] auto key_is_allowed(std::string_view key, rooms::RoomVersionPolicy const& policy) noexcept -> bool
     {
-        if (policy.redaction_rules == rooms::RedactionRules::room_v1_v10)
+        // v1–v10 (both the v1_v7 and v8_v10 buckets) preserve origin, prev_state,
+        // and membership as top-level fields; v11+ removed them from the survivor set.
+        if (policy.redaction_rules == rooms::RedactionRules::room_v1_v7 ||
+            policy.redaction_rules == rooms::RedactionRules::room_v8_v10)
         {
             return base_key_is_allowed(key) || key == "origin" || key == "prev_state" || key == "membership";
         }
@@ -62,10 +65,14 @@ namespace
         }
         if (event_type == "m.room.join_rules")
         {
-            // Spec: "join_rule" preserved all versions; "allow" key only in v11+.
-            // https://spec.matrix.org/v1.18/rooms/v11/#redactions
-            return key == "join_rule" ||
-                   (policy.redaction_rules == rooms::RedactionRules::room_v11_plus && key == "allow");
+            // Spec: "join_rule" preserved in all versions.
+            //       "allow" was introduced by restricted joins (MSC3083) in room v8
+            //       and is preserved from v8 onwards (v8-v10 and v11+).
+            // URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+            auto const allow_preserved =
+                policy.redaction_rules == rooms::RedactionRules::room_v8_v10 ||
+                policy.redaction_rules == rooms::RedactionRules::room_v11_plus;
+            return key == "join_rule" || (allow_preserved && key == "allow");
         }
         if (event_type == "m.room.power_levels")
         {
