@@ -1048,10 +1048,12 @@ SCENARIO("Room-version fixtures pin Matrix v10 v11 and v12 policy differences", 
                 REQUIRE(room_v10->event_id_format == merovingian::rooms::EventIdFormat::reference_hash);
                 REQUIRE(room_v11->event_id_format == merovingian::rooms::EventIdFormat::reference_hash);
                 REQUIRE(room_v12->event_id_format == merovingian::rooms::EventIdFormat::reference_hash);
-                // Spec MUST: room version 10 uses the legacy (v1-v10) redaction rule set.
+                // Spec MUST: room version 10 uses the v8-v10 redaction rule set.
+                // Room v8 introduced restricted joins (MSC3083) adding "allow" to the
+                // join_rules survivor set; v1–v7 use room_v1_v7 (join_rule only).
                 // Do NOT remove/change - assigning the wrong redaction rules corrupts the
                 // reference hash for all events in rooms using that version.
-                REQUIRE(room_v10->redaction_rules == merovingian::rooms::RedactionRules::room_v1_v10);
+                REQUIRE(room_v10->redaction_rules == merovingian::rooms::RedactionRules::room_v8_v10);
                 // Spec MUST: room versions 11 and 12 use the updated (v11+) redaction rules.
                 // Do NOT remove/change - using the legacy rules for v11+ events keeps
                 // obsolete fields in the reference hash, producing wrong event IDs.

@@ -660,3 +660,109 @@ SCENARIO("Filter include_leave defaults to false and is set correctly when prese
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Spec: Matrix CS API v1.18 § Filtering — type wildcard patterns
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#filtering
+//
+// "Entries can be specified as patterns where the wildcard * will match all
+//  types or a prefix of event type followed by * will match events whose type
+//  starts with that prefix."
+// ---------------------------------------------------------------------------
+
+// Spec: bare "*" in types matches every event type.
+SCENARIO("Filter type wildcard '*' matches any event type",
+         "[sync][filter][conformance][wildcard]")
+{
+    GIVEN("a filter whose types list contains only '*'")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"timeline":{"types":["*"]}}})");
+
+        THEN("any event type passes the filter")
+        {
+            // Spec MUST: bare * matches all event types.
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.room.member", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "com.example.custom", "@alice:example.org"));
+        }
+    }
+}
+
+// Spec: prefix wildcard "m.room.*" matches any type starting with "m.room.".
+SCENARIO("Filter type prefix wildcard 'm.room.*' matches only room event types",
+         "[sync][filter][conformance][wildcard]")
+{
+    GIVEN("a filter whose types list contains 'm.room.*'")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"timeline":{"types":["m.room.*"]}}})");
+
+        THEN("room event types pass the filter; non-room types are excluded")
+        {
+            // Spec MUST: prefix* matches any type starting with prefix.
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.room.member", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.room.power_levels", "@alice:example.org"));
+            // Spec MUST: non-matching types are excluded.
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.typing", "@alice:example.org"));
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "com.example.custom", "@alice:example.org"));
+        }
+    }
+}
+
+// Spec: not_types also supports wildcard patterns.
+SCENARIO("Filter not_types wildcard 'm.*' excludes all Matrix protocol event types",
+         "[sync][filter][conformance][wildcard]")
+{
+    GIVEN("a filter whose not_types list contains 'm.*'")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"timeline":{"not_types":["m.*"]}}})");
+
+        THEN("Matrix protocol types are excluded; third-party types pass through")
+        {
+            // Spec MUST: not_types wildcard exclusion works identically to types inclusion.
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.typing", "@alice:example.org"));
+            // A third-party type that does not start with "m." must pass through.
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "com.example.custom", "@alice:example.org"));
+        }
+    }
+}
+
+// Spec: exact type string still works alongside wildcard entries.
+SCENARIO("Filter types list with exact type and wildcard both applied correctly",
+         "[sync][filter][conformance][wildcard]")
+{
+    GIVEN("a filter whose types list contains an exact type and a wildcard prefix")
+    {
+        auto const filter = merovingian::sync::parse_filter_argument(
+            R"({"room":{"timeline":{"types":["m.room.message","com.example.*"]}}})");
+
+        THEN("exact matches and wildcard matches both pass; other types are excluded")
+        {
+            // Spec MUST: multiple patterns are ORed together.
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.room.message", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "com.example.custom", "@alice:example.org"));
+            REQUIRE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "com.example.other", "@alice:example.org"));
+            // A type matching neither pattern must be excluded.
+            REQUIRE_FALSE(merovingian::sync::event_passes_filter(
+                filter.room.timeline, "m.room.member", "@alice:example.org"));
+        }
+    }
+}

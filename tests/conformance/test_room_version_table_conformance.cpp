@@ -307,17 +307,38 @@ SCENARIO("Room version redaction rules match the spec table", "[rooms][versions]
 {
     GIVEN("the room version registry")
     {
-        for (auto const* v : {"1", "2", "3", "4", "5", "6", "7", "8", "9", "10"})
+        // Spec: v1–v7 use the original redaction rules; join_rules preserves
+        // only "join_rule" (no allow field — restricted joins didn't exist yet).
+        // URL: https://spec.matrix.org/v1.18/rooms/v7/#redactions
+        for (auto const* v : {"1", "2", "3", "4", "5", "6", "7"})
         {
             WHEN(std::string{"version "} + v + " policy is retrieved")
             {
                 auto const* policy = merovingian::rooms::find_room_version_policy(v);
                 REQUIRE(policy != nullptr);
 
-                THEN("redaction rules are room_v1_v10")
+                THEN("redaction rules are room_v1_v7")
                 {
-                    // Spec MUST: v1–v10 use the original redaction rules.
-                    REQUIRE(policy->redaction_rules == RedactionRules::room_v1_v10);
+                    // Spec MUST: v1–v7 use the original redaction rules.
+                    REQUIRE(policy->redaction_rules == RedactionRules::room_v1_v7);
+                }
+            }
+        }
+
+        // Spec: v8–v10 introduced restricted joins (MSC3083); the allow field in
+        // m.room.join_rules content is now preserved through redaction.
+        // URL: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+        for (auto const* v : {"8", "9", "10"})
+        {
+            WHEN(std::string{"version "} + v + " policy is retrieved")
+            {
+                auto const* policy = merovingian::rooms::find_room_version_policy(v);
+                REQUIRE(policy != nullptr);
+
+                THEN("redaction rules are room_v8_v10")
+                {
+                    // Spec MUST: v8–v10 use the v8 redaction rules (join_rule AND allow preserved).
+                    REQUIRE(policy->redaction_rules == RedactionRules::room_v8_v10);
                 }
             }
         }
