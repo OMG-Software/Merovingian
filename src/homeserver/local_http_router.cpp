@@ -1197,6 +1197,23 @@ namespace
             {
                 return {false, 500U, "invite signing failed", {}};
             }
+            // If the target user is already persistently "join" in this room, the
+            // remote server's view of room state has diverged from ours. We sign the
+            // invite event (to remain cooperative) but MUST NOT overwrite the local
+            // "join" membership with "invite": doing so corrupts sync — the room
+            // disappears from rooms.join and the user enters an infinite invite loop.
+            {
+                auto const& mems = rt->database.persistent_store.memberships;
+                auto const it    = std::ranges::find_if(mems, [&](database::PersistentMembership const& m) {
+                    return m.room_id == invite.room_id && m.user_id == *target_user &&
+                           m.membership == "join";
+                });
+                if (it != mems.end())
+                {
+                    // User is already joined: return the signed event without altering state.
+                    return {true, 200U, {}, std::move(*signed_event)};
+                }
+            }
             auto const stream_ordering = rt->database.next_stream_ordering++;
             if (!upsert_membership(rt->database.persistent_store, invite.room_id, *target_user, "invite",
                                    stream_ordering))

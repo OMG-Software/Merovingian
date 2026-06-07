@@ -1,4 +1,50 @@
-## v0.5.19 (in progress — fix/conformance-test-corrections)
+## v0.5.20 (in progress — fix/stale-federated-membership)
+
+### Fix: stale federated membership causes infinite invite loop
+
+**Symptoms**: A Merovingian user invited to a Synapse-hosted room would click Join,
+receive 200 OK from the server, but the room never appeared in sync. Every subsequent
+sync returned ~380 bytes with an empty invite state, and clicking Join again repeated
+the loop indefinitely.
+
+**Root cause — Bug 1 (invite handler downgrades "join" → "invite")**:
+`upsert_membership` in the federation invite handler updated the user's membership
+unconditionally. If the user had previously joined the room via federation, their
+persistent membership was "join". A re-invite from the remote server (state divergence)
+overwrote "join" with "invite". `store_event_with_state` simultaneously replaced the
+`m.room.member` state entry in `store.state` with the invite event. After this,
+`joined_membership_changed_since` found membership=invite (not "join"), so the room
+was suppressed from `rooms.join` in every incremental sync.
+
+**Root cause — Bug 2 (already_member ignores persistent state)**:
+`join_room` gated the federation path entirely on `find_room` returning null. With the
+room present in `runtime.database.rooms` (from the original successful join) and the
+user still in `room.members`, `room_has_member` returned true regardless of the
+persistent membership value. The `already_member` shortcut fired, called `delete_invite`
+(removing the invite metadata), and returned 200 OK without federating. This left
+`persistent_store.memberships` at "invite" with no invite state events — producing
+~380-byte syncs forever.
+
+**Fix — Bug 1**: The invite handler checks for an existing "join" membership before
+calling `upsert_membership`. If the user is already joined, the event is signed and
+returned cooperatively to the remote server without modifying any local state.
+
+**Fix — Bug 2**: Before the `if (room == nullptr)` federation branch in `join_room`,
+a new guard checks whether the room is remote AND the user's persistent membership is
+not "join". If so, the stale `LocalRoom` is erased from `runtime.database.rooms` and
+`room` is set to null, forcing the full make_join → send_join flow which re-establishes
+membership on both sides.
+
+| File | Change |
+|------|--------|
+| `src/homeserver/local_http_router.cpp` | Guard invite handler: skip upsert if already "join" |
+| `src/homeserver/room_service.cpp` | Detect stale remote membership; erase and retry federation |
+| `tests/unit/test_federation_invite_join.cpp` | Two regression scenarios |
+| `CHANGELOG.md` | Version entry |
+
+---
+
+## v0.5.19 (merged — fix/conformance-test-corrections)
 
 ### Fix: redaction `allow` field for room versions 8–10
 

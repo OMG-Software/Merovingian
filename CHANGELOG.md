@@ -1,3 +1,32 @@
+## 0.5.20
+
+- Fix federated join stale membership loop: two related bugs caused a Merovingian user
+  invited to a Synapse-hosted room to enter an infinite invite loop where `POST /join`
+  returned 200 OK but the room never appeared in sync.
+
+  **Bug 1 — invite handler downgraded "join" to "invite"**: When the remote server
+  re-sent an invite for a user already persistently "join" in that room (state divergence),
+  `upsert_membership` unconditionally overwrote "join" with "invite". `store_event_with_state`
+  then replaced the `m.room.member` state entry with the invite event. After this,
+  `joined_membership_changed_since` saw membership=invite, the room was suppressed from
+  `rooms.join`, and sync returned an empty invite the user couldn't dismiss.
+  Fix: the invite handler now checks for an existing "join" membership before calling
+  `upsert_membership`; if the user is already joined it signs and returns the event
+  cooperatively without altering any local state.
+
+  **Bug 2 — `already_member` path ignored persistent membership**: `join_room` gated the
+  federation join path purely on `find_room` returning null. If the in-memory `LocalRoom`
+  existed (from a previous join) but the persistent membership record was "invite" (from
+  Bug 1 or restart), `room_has_member` returned true and the code took the `already_member`
+  shortcut, returning 200 OK without federating. `delete_invite` then removed the invite
+  metadata, leaving membership="invite" with no invite state — 380-byte sync responses for
+  ever. Fix: before the `if (room == nullptr)` federation branch, a new guard checks whether
+  the room is remote AND the user's persistent membership is not "join". If so, the stale
+  `LocalRoom` is erased and `room` is set to null so the full make_join → send_join flow
+  runs, re-establishing membership on both the local server and the remote.
+
+  Two regression tests added to `test_federation_invite_join.cpp` covering both bugs.
+
 ## 0.5.19
 
 - Fix `m.room.join_rules` redaction: the `allow` field (restricted joins, MSC3083) must be

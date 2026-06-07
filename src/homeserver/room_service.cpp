@@ -1891,6 +1891,58 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     }
 
     auto* room = find_room(runtime.database, room_id);
+    // Guard: if the room is known in-memory but the user's PERSISTENT membership is
+    // not "join" (e.g. it was downgraded to "invite" by a stale federated invite
+    // while LocalRoom.members still listed them as joined), the in-memory state is
+    // stale. Erase the invalid record so the federation join path below can
+    // re-establish membership correctly on both the local server and the remote.
+    //
+    // This handles the following failure mode:
+    //   1. User successfully joins a remote room via federation → membership="join"
+    //   2. Remote server re-sends an invite (state divergence) → membership overwritten
+    //      to "invite" in the persistent store (Bug: invite handler didn't guard this)
+    //   3. User clicks Join → find_room returns the stale LocalRoom → room_has_member
+    //      returns true → already_member fires → returns 200 OK without federating
+    //   4. delete_invite removes invite metadata → persistent membership stays "invite"
+    //   5. Sync: room suppressed from rooms.join; shows as empty invite → loop
+    {
+        auto const our_server_name = runtime.config.server().server_name;
+        auto const room_domain     = server_name_from_room_id(room_id);
+        auto const is_remote_room  = !room_domain.empty() && room_domain != our_server_name;
+        if (room != nullptr && is_remote_room && room_has_member(*room, *user_id))
+        {
+            auto const mem_it = std::ranges::find_if(
+                runtime.database.persistent_store.memberships,
+                [&](database::PersistentMembership const& m) {
+                    return m.room_id == room_id && m.user_id == *user_id;
+                });
+            auto const persistently_joined =
+                mem_it != runtime.database.persistent_store.memberships.end() &&
+                mem_it->membership == "join";
+            if (!persistently_joined)
+            {
+                // Remove the stale in-memory record. The persistent event store
+                // retains all previously stored events, so the federation join
+                // path below can populate a fresh LocalRoom on success.
+                auto erase_it = std::ranges::find_if(runtime.database.rooms,
+                                                     [room_id](LocalRoom const& r) {
+                                                         return r.room_id == room_id;
+                                                     });
+                if (erase_it != runtime.database.rooms.end())
+                {
+                    runtime.database.rooms.erase(erase_it);
+                }
+                log_diagnostic("room.join.stale_membership_cleared",
+                               {
+                                   {"actor",        *user_id,             false},
+                                   {"room_id",      std::string{room_id}, false},
+                                   {"reason",       "in-memory join but persistent membership is not join; "
+                                                    "retrying federation",           false}
+                });
+                room = nullptr; // triggers the federation join path below
+            }
+        }
+    }
     if (room == nullptr)
     {
         // Remote room: attempt make_join → sign → send_join. The candidate resident

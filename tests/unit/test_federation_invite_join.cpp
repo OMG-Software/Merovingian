@@ -1233,3 +1233,216 @@ SCENARIO("send_join state array reflects pre-join room state with membership inv
         }
     }
 }
+
+// --- Invite must not downgrade existing "join" membership -------------------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2inviteroomideventid
+//
+// If a local user is already persistently "join" in a remote room (they joined
+// via federation previously), and the remote server re-sends an invite (e.g.
+// because their own state diverged), our server MUST NOT downgrade the
+// membership from "join" to "invite". Doing so corrupts sync: the room
+// disappears from rooms.join and reappears as an empty invite the user cannot
+// dismiss, creating an infinite join-loop.
+//
+// Regression test for: federated invite handler calling upsert_membership
+// unconditionally, overwriting "join" with "invite".
+SCENARIO("federated invite does not downgrade an existing join membership to invite",
+         "[homeserver][federation][invite-join][invite][regression]")
+{
+    GIVEN("a local user who is already persistently joined to a remote room")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "already_joined",
+                                                                       "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        merovingian::federation::upsert_remote(runtime.federation, remote_for_test());
+
+        auto const room_id       = std::string{"!already_joined_room:remote.example.org"};
+        auto const join_event_id = std::string{"$join_event_for_alice:remote.example.org"};
+
+        // Inject the room into the persistent store and in-memory rooms, simulating
+        // a successfully completed federation join that happened earlier.
+        REQUIRE(merovingian::database::store_room(runtime.database.persistent_store,
+                                                  {room_id, user.value}));
+        auto const join_stream = runtime.database.next_stream_ordering++;
+        REQUIRE(merovingian::database::store_membership(
+                    runtime.database.persistent_store,
+                    {room_id, user.value, "join", join_stream}) ==
+                merovingian::database::MembershipStoreResult::stored);
+        // Plant a join member-state event in store.state so joined_membership_changed_since
+        // can find it (mirrors what the federation join path stores).
+        {
+            auto pdu              = merovingian::database::PersistentEvent{};
+            pdu.event_id          = join_event_id;
+            pdu.room_id           = room_id;
+            pdu.sender_user_id    = user.value;
+            pdu.json              = R"({"type":"m.room.member","state_key":")" + user.value +
+                                    R"(","content":{"membership":"join"},"room_id":")" + room_id +
+                                    R"(","sender":")" + user.value +
+                                    R"(","event_id":")" + join_event_id +
+                                    R"(","depth":10,"prev_events":[],"auth_events":[],"hashes":{"sha256":"x"},"origin_server_ts":2000})";
+            pdu.stream_ordering   = join_stream;
+            auto state            = std::optional<merovingian::database::PersistentStateEvent>{
+                merovingian::database::PersistentStateEvent{room_id, "m.room.member", user.value, join_event_id}};
+            REQUIRE(merovingian::database::store_event_with_state(runtime.database.persistent_store,
+                                                                   std::move(pdu), std::move(state)));
+        }
+        // Also add to in-memory rooms so find_room succeeds.
+        runtime.database.rooms.push_back({room_id, user.value, {user.value}, {}});
+
+        // Verify pre-condition: membership is "join".
+        auto const& mems_before = runtime.database.persistent_store.memberships;
+        auto const before_it    = std::ranges::find_if(mems_before, [&](auto const& m) {
+            return m.room_id == room_id && m.user_id == user.value;
+        });
+        REQUIRE(before_it != mems_before.end());
+        REQUIRE(before_it->membership == "join");
+
+        WHEN("the remote server re-sends a federated invite for the same user to the same room")
+        {
+            auto const new_invite_event_id = std::string{"$stale_invite:remote.example.org"};
+            auto const invite_body =
+                std::string{R"({"room_version":"10","event":{"type":"m.room.member","state_key":")"} +
+                user.value +
+                R"(","content":{"membership":"invite"},"room_id":")" + room_id +
+                R"(","sender":"@remote_host:remote.example.org","event_id":")" + new_invite_event_id +
+                R"(","depth":5,"prev_events":[],"auth_events":[],"hashes":{"sha256":"x"},)" +
+                R"("origin_server_ts":3000,"signatures":{"remote.example.org":{"ed25519:auto":"aaaa"}}},)" +
+                R"("invite_room_state":[]})";
+
+            auto const path = "/_matrix/federation/v2/invite/" + room_id + "/" + new_invite_event_id;
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime.federation, signed_put(path, invite_body));
+
+            THEN("the invite is accepted (signed and returned to the remote)")
+            {
+                // Spec MUST: the server MUST sign and return the invite event.
+                REQUIRE(response.status == 200U);
+            }
+
+            THEN("the persistent membership is NOT downgraded from join to invite")
+            {
+                // The user is already a member. Overwriting "join" with "invite"
+                // would corrupt sync: the room vanishes from rooms.join and the
+                // user enters an infinite invite loop they cannot escape.
+                auto const& mems_after = runtime.database.persistent_store.memberships;
+                auto const after_it    = std::ranges::find_if(mems_after, [&](auto const& m) {
+                    return m.room_id == room_id && m.user_id == user.value;
+                });
+                REQUIRE(after_it != mems_after.end());
+                // Spec MUST: membership MUST remain "join"; a stale invite from
+                // the remote server MUST NOT overwrite a valid local join state.
+                REQUIRE(after_it->membership == "join");
+            }
+
+            THEN("the m.room.member state entry still points to the join event, not the invite")
+            {
+                // If store.state is updated to point at the invite event,
+                // joined_membership_changed_since returns false for the next sync
+                // and the room is suppressed from rooms.join — it appears empty.
+                auto const& state = runtime.database.persistent_store.state;
+                auto const state_it = std::ranges::find_if(state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.member" &&
+                           s.state_key == user.value;
+                });
+                REQUIRE(state_it != state.end());
+                // Spec MUST: the current join state must be preserved; the invite
+                // event MUST NOT replace it in the state snapshot.
+                REQUIRE(state_it->event_id == join_event_id);
+            }
+        }
+    }
+}
+
+// --- Stale in-memory membership triggers federation retry -------------------
+// Spec: Matrix Client-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#joining-rooms
+//
+// If a local user's in-memory LocalRoom.members still lists them as joined
+// but the persistent membership record is "invite" (not "join"), the in-memory
+// state is stale. The join endpoint MUST NOT return 200 OK via the already_member
+// shortcut; it MUST attempt a fresh federation join so the remote server learns
+// about the user's membership.
+//
+// Scenario: Bug 1 downgraded the persistent membership to "invite" while the
+// in-memory room still had the user in members. Without this fix, a subsequent
+// POST /join returns 200 and silently calls delete_invite, leaving persistent
+// membership == "invite" with no invite metadata — an empty-invite-state loop.
+SCENARIO("join_room retries federation for a remote room when persistent membership is stale",
+         "[homeserver][federation][invite-join][join][regression]")
+{
+    GIVEN("a local user in-memory joined to a remote room but persistently in invite state")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::wire_federation_callbacks(runtime);
+
+        auto const user = merovingian::homeserver::register_local_user(runtime, "stale_user",
+                                                                       "CorrectHorse7!",
+                                                                       merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+        auto const login = merovingian::homeserver::login_local_user(runtime, user.value,
+                                                                     "CorrectHorse7!", "DEVICE1");
+        REQUIRE(login.ok);
+
+        // Room on a remote server: the room ID domain gives us a candidate server.
+        auto const room_id = std::string{"!stale_room:remote.example.org"};
+
+        // Inject the room into the persistent store (it was joined before).
+        REQUIRE(merovingian::database::store_room(runtime.database.persistent_store,
+                                                  {room_id, user.value}));
+        // Persistent membership is "invite" — simulates Bug 1 downgrade.
+        auto const stale_stream = runtime.database.next_stream_ordering++;
+        REQUIRE(merovingian::database::store_membership(
+                    runtime.database.persistent_store,
+                    {room_id, user.value, "invite", stale_stream}) ==
+                merovingian::database::MembershipStoreResult::stored);
+        // In-memory room still lists the user as a member (the stale state).
+        runtime.database.rooms.push_back({room_id, user.value, {user.value}, {}});
+
+        WHEN("the user calls join_room for the remote room")
+        {
+            auto const result = merovingian::homeserver::join_room(runtime, login.value, room_id, {});
+
+            THEN("the already_member shortcut is NOT taken")
+            {
+                // Before the fix, already_member fired (in-memory member list matched)
+                // and returned 200 OK, leaving the user stuck with invite membership
+                // and an empty invite_state in sync. After the fix, the server detects
+                // the stale persistent state and attempts federation instead.
+                //
+                // In this test environment there is no actual remote server, so the
+                // federation attempt fails with a non-200 status — which is CORRECT
+                // behaviour: the user is informed the join did not succeed rather than
+                // silently receiving a 200 that masks the broken state.
+                REQUIRE_FALSE(result.ok);
+                // Spec MUST: the server MUST NOT pretend success when the membership
+                // state is inconsistent. 200 OK from already_member is incorrect here.
+                REQUIRE(result.status != 200U);
+            }
+
+            THEN("the stale in-memory room record is cleared so a real join can be retried")
+            {
+                // After the fix the stale LocalRoom entry is erased before the
+                // federation attempt. If the federation join were to succeed later
+                // (with a real remote), push_back would create a clean record.
+                // Verify the stale entry is gone from the in-memory list.
+                auto const& rooms = runtime.database.rooms;
+                auto const still_there = std::ranges::any_of(rooms, [&](auto const& r) {
+                    return r.room_id == room_id;
+                });
+                // The stale room is removed so it does not block a future join attempt.
+                REQUIRE_FALSE(still_there);
+            }
+        }
+    }
+}
