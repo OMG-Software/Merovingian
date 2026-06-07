@@ -62,11 +62,10 @@ jobs:
           #   - smoke tests     (run the instrumented server binary directly,
           #                      exercising startup, config, --dry-run paths)
           #
-          # --search-paths pins the .gcda search to the build directory so
-          # gcovr does not traverse the whole repo tree unnecessarily.
+          # build-coverage as a positional argument pins gcovr's .gcda search
+          # to the build directory so it does not traverse the whole repo tree.
           gcovr \
             --root . \
-            --search-paths build-coverage \
             --gcov-executable "llvm-cov gcov" \
             --filter 'src/' \
             --filter 'include/' \
@@ -76,7 +75,8 @@ jobs:
             --html-details \
             --print-summary \
             --output coverage/coverage.xml \
-            --html coverage/index.html
+            --html coverage/index.html \
+            build-coverage
 
       - name: Upload coverage artifact
         uses: actions/upload-artifact@v4
