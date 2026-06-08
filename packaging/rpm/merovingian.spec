@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.24
+Version:        0.5.25
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,14 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.25-1
+- Fix F3: accept relayed federation PDUs whose sender domain differs from the
+  transaction origin; remove incorrect sender-domain == origin constraint.
+- Fix F4: perform real Ed25519 signature verification on uploaded OTK/fallback
+  keys instead of a shallow key-ID presence check.
+- Fix F6: resolve room version from m.room.create state instead of hardcoding
+  "12" in PDU parsing and authorization.
+
 * Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.24-1
 - Fix E2EE: broadcast m.device_list_update EDUs to remote servers on key upload
   and room join so remote homeservers (e.g. Synapse) can fetch device keys,

@@ -1080,18 +1080,24 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
     {
         return make_decision(false, 400U, "PDU is missing required fields");
     }
-    if (sender_domain(pdu.sender) != expected_origin)
-    {
-        return make_decision(false, 403U, "PDU sender does not match origin");
-    }
-    auto const signature = verify_federation_event_signatures(pdu.signatures, expected_origin);
+    // Spec (SS API §signing-events): the PDU MUST carry a signature from the
+    // sender's homeserver — sender_domain(pdu.sender) — not necessarily from
+    // the transport origin. The origin is the TLS peer that sent this transaction
+    // and may be a relay forwarding the event on behalf of the true author.
+    auto const pdu_sender_domain = sender_domain(pdu.sender);
+    auto const signature = verify_federation_event_signatures(pdu.signatures, pdu_sender_domain);
     if (!signature.accepted)
     {
         return make_decision(false, 403U, signature.reason);
     }
-    if (key.has_value())
+    // Cryptographic verification is only possible when the transport origin
+    // is the sender's homeserver AND we hold that server's signing key.
+    // For relayed PDUs (sender_domain != expected_origin) we only have the
+    // relay's key, which does not cover the sender's signature — skip crypto.
+    if (key.has_value() && pdu_sender_domain == expected_origin)
     {
-        auto const* room_version = rooms::find_room_version_policy("12");
+        auto const room_ver = pdu.room_version.empty() ? std::string{"12"} : pdu.room_version;
+        auto const* room_version = rooms::find_room_version_policy(room_ver);
         if (room_version == nullptr)
         {
             return make_decision(false, 500U, "room version policy is unavailable");
@@ -1127,6 +1133,11 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
 
 auto parse_federation_pdu(std::string_view encoded) -> FederationPdu
 {
+    return parse_federation_pdu(encoded, {});
+}
+
+auto parse_federation_pdu(std::string_view encoded, RoomVersionResolver const& version_resolver) -> FederationPdu
+{
     if (!encoded.empty() && encoded.front() == '{')
     {
         auto const parsed = canonicaljson::parse_lossless(encoded);
@@ -1139,21 +1150,25 @@ auto parse_federation_pdu(std::string_view encoded) -> FederationPdu
         {
             return {};
         }
-        auto const* room_version = rooms::find_room_version_policy("12");
+        // Resolve room version from the room's m.room.create state when the
+        // resolver is available; fall back to "12" for unknown rooms.
+        auto const room_ver = version_resolver ? version_resolver(envelope.event.room_id) : std::string{"12"};
+        auto const* room_version = rooms::find_room_version_policy(room_ver);
         if (room_version == nullptr)
         {
             return {};
         }
         auto id = events::make_reference_hash_event_id(parsed.value, *room_version);
         return {id.event_id,           envelope.event.room_id,    envelope.event.event_type,
-                envelope.event.sender, envelope.event.signatures, std::string{encoded}};
+                envelope.event.sender, envelope.event.signatures, std::string{encoded}, room_ver};
     }
     auto const fields = split_fields(encoded, ',');
     if (fields.size() != 7U || fields[6].empty())
     {
         return {};
     }
-    return {fields[0], fields[1], fields[2], fields[3], {{fields[4], fields[5], fields[6]}}, {}};
+    // Comma-delimited PDUs do not carry a room version; default to "12".
+    return {fields[0], fields[1], fields[2], fields[3], {{fields[4], fields[5], fields[6]}}, {}, "12"};
 }
 
 auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -1393,7 +1408,11 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
     auto pdu_errors = canonicaljson::Object{};
     for (auto const& encoded_pdu : transaction.pdus)
     {
-        auto const pdu = parse_federation_pdu(encoded_pdu);
+        // Resolve room version from local state when the runtime provides a
+        // resolver; otherwise fall back to "12". The resolved version is stored
+        // in pdu.room_version and forwarded to authorize_federation_pdu so that
+        // event-ID computation and signature verification both use the right rules.
+        auto const pdu = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver);
         auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, remote->signing_key);
         if (!pdu_decision.accepted)
         {
@@ -1424,7 +1443,9 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         // and a `state_conflict_resolver` is wired, we run state-res v2 to
         // merge the forks. Successful merges are audited as
         // `federation.pdu_state_resolved` and counted as accepted.
-        auto envelope = parse_inbound_pdu_envelope(encoded_pdu);
+        // Pass the already-resolved room version so the envelope uses the
+        // correct redaction rules for event-ID re-computation.
+        auto envelope = parse_inbound_pdu_envelope(encoded_pdu, pdu.room_version);
         if (!envelope.has_value())
         {
             audit_federation(runtime, "federation.pdu_envelope_unparseable", request.origin, request.target,

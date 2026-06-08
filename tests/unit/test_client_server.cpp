@@ -20,10 +20,12 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/http/request.hpp"
@@ -31,9 +33,12 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <string>
 #include <vector>
+
+#include <sodium.h>
 
 namespace
 {
@@ -150,17 +155,14 @@ auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, s
                 .response.status == 200U);
 }
 
-auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
-                         std::string_view user_id, std::string_view device_id, std::string_view key_id,
-                         std::string_view key_value) -> void
+// make_signed_otk_json is provided by federation_signing_test_support.hpp
+// (merovingian::federation::test::make_signed_otk_json).
+// The local alias below keeps existing call sites concise.
+[[nodiscard]] auto make_signed_otk_json(std::string_view user_id, std::string_view device_id,
+                                         std::string_view key_value,
+                                         std::string const& secret_key_bytes) -> std::string
 {
-    auto const body =
-        std::string{R"({"one_time_keys":{"signed_curve25519:)" + std::string{key_id} + R"(":{"key":")" +
-                    std::string{key_value} + R"(","signatures":{"})" + std::string{user_id} + R"(":{"ed25519:)" +
-                    std::string{device_id} + R"(":")" + std::string{key_value} + R"(_SIG"}}}}})"};
-    REQUIRE(merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/keys/upload", token, body})
-                .response.status == 200U);
+    return merovingian::federation::test::make_signed_otk_json(user_id, device_id, key_value, secret_key_bytes);
 }
 
 using namespace merovingian::tests;
@@ -2697,9 +2699,19 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
         {
             // Simulate a real Cinny OTK bundle: device keys + many one-time keys.
             // The body must exceed 4096 bytes to prove the old limit is gone.
+            // All 40 OTKs share the same value so the signature is computed once
+            // and reused (same payload → same signature under deterministic Ed25519).
+            auto const large_kp =
+                merovingian::federation::test::keypair_from_seed("4kib-test-alice-seed");
+            auto const large_ed25519 = merovingian::federation::test::pubkey_b64(large_kp);
+            auto const otk_val = std::string(80U, 'a');
+            // Pre-compute one signature; all 40 OTK entries share the same key value.
+            auto const shared_otk_sig = merovingian::federation::test::sign_payload_b64(
+                std::string{R"({"key":")"} + otk_val + R"("})", large_kp.secret_key);
+
             auto large_body = std::string{
                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":")" +
-                std::string(64U, 'c') + R"(","ed25519:DEVICE1":")" + std::string(64U, 'd') +
+                std::string(64U, 'c') + R"(","ed25519:DEVICE1":")" + large_ed25519 +
                 R"("},"signatures":{}},"one_time_keys":{)"};
             for (int i = 0; i < 40; ++i)
             {
@@ -2707,9 +2719,10 @@ SCENARIO("Keys upload accepts bodies larger than 4 KiB", "[homeserver][client-se
                 {
                     large_body += ',';
                 }
-                large_body += "\"signed_curve25519:KEY" + std::to_string(i) + "\":{\"key\":\"" + std::string(80U, 'a') +
-                              "\",\"signatures\":{\"@alice:example.org\":{\"ed25519:DEVICE1\":\"sig" +
-                              std::to_string(i) + "\"}}}";
+                large_body +=
+                    "\"signed_curve25519:KEY" + std::to_string(i) + "\":{\"key\":\"" + otk_val +
+                    "\",\"signatures\":{\"@alice:example.org\":{\"ed25519:DEVICE1\":\"" +
+                    shared_otk_sig + "\"}}}";
             }
             large_body += "}}";
             REQUIRE(large_body.size() > 4096U);
@@ -3736,10 +3749,19 @@ SCENARIO("E2EE device_keys round-trip: inviter upload is visible to invitee quer
 
         WHEN("the inviter uploads realistic device_keys and the invitee queries them")
         {
+            // Real Ed25519 keypair required: OTK signature is now cryptographically verified.
+            auto const inviter_kp =
+                merovingian::federation::test::keypair_from_seed("query-test-inviter-seed");
+            auto const inviter_ed25519 = merovingian::federation::test::pubkey_b64(inviter_kp);
+            auto const inviter_otk = make_signed_otk_json(
+                "@inviter:example.org", "INVITER_DEV", "OTK_AAAA", inviter_kp.secret_key);
+            auto const upload_body =
+                std::string{
+                    R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":")"} +
+                inviter_ed25519 +
+                R"("}},"one_time_keys":{"signed_curve25519:AAAA":)" + inviter_otk + R"(}})";
             auto const upload = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
-                 R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":"BBBB_ED"}},"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_AAAA","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_AAAA"}}}}})"});
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", inviter_token, upload_body});
             REQUIRE(upload.response.status == 200U);
 
             auto const query = merovingian::homeserver::handle_client_server_request(
@@ -3754,9 +3776,9 @@ SCENARIO("E2EE device_keys round-trip: inviter upload is visible to invitee quer
                 REQUIRE(body.find("device_keys") != std::string::npos);
                 REQUIRE(body.find("@inviter:example.org") != std::string::npos);
                 REQUIRE(body.find("INVITER_DEV") != std::string::npos);
-                // The curve25519 base64 blob from the upload must round-trip.
+                // The curve25519 and ed25519 blobs from the upload must round-trip.
                 REQUIRE(body.find("AAAA_CURVE") != std::string::npos);
-                REQUIRE(body.find("BBBB_ED") != std::string::npos);
+                REQUIRE(body.find(inviter_ed25519) != std::string::npos);
             }
             AND_THEN("the persistent_store holds exactly one device_key row for the inviter")
             {
@@ -3928,11 +3950,22 @@ SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips"
 
         WHEN("both devices run the full Element Rust crypto bootstrap order")
         {
+            // Real Ed25519 keypair required: OTK signatures are cryptographically verified.
+            auto const bootstrap_kp =
+                merovingian::federation::test::keypair_from_seed("e2ee-bootstrap-inviter-seed");
+            auto const bootstrap_ed25519 = merovingian::federation::test::pubkey_b64(bootstrap_kp);
+            auto const bootstrap_otk = make_signed_otk_json(
+                "@inviter:example.org", "INVITER_DEV", "OTK_KEY_1", bootstrap_kp.secret_key);
+
             // 1. device_keys + one_time_keys for inviter
+            auto const bootstrap_body =
+                std::string{
+                    R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA","ed25519:INVITER_DEV":")"} +
+                bootstrap_ed25519 +
+                R"("},"signatures":{}},"one_time_keys":{"signed_curve25519:AAAA":)" +
+                bootstrap_otk + R"(}})";
             auto const inviter_device_upload = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
-                 R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA","ed25519:INVITER_DEV":"BBBB"},"signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"SIG1"}}},"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_1"}}}}})"});
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", inviter_token, bootstrap_body});
             REQUIRE(inviter_device_upload.response.status == 200U);
 
             // 2. cross-signing keys for inviter
@@ -3971,7 +4004,8 @@ SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips"
                 REQUIRE(body.find("@inviter:example.org") != std::string::npos);
                 REQUIRE(body.find("INVITER_DEV") != std::string::npos);
                 REQUIRE(body.find("AAAA") != std::string::npos);
-                REQUIRE(body.find("BBBB") != std::string::npos);
+                // bootstrap_ed25519 is the real base64 pubkey registered in WHEN.
+                REQUIRE(body.find(bootstrap_ed25519) != std::string::npos);
                 // Cross-signing keys must also be present, with the
                 // self-signing signature merged into the device_keys
                 // signature map.
@@ -4246,9 +4280,22 @@ SCENARIO("Encrypted invite join supports the full local room-key delivery sequen
         REQUIRE(bob_login.response.status == 200U);
         auto const bob_token = login_token(bob_login.response.body);
 
+        // Alice's device keys: no OTKs uploaded, so fake key material is fine.
         upload_device_keys(runtime, alice_token, "@alice:example.org", "ALICE_DEV", "ALICE_CURVE", "ALICE_ED");
-        upload_device_keys(runtime, bob_token, "@bob:example.org", "BOB_DEV", "BOB_CURVE", "BOB_ED");
-        upload_one_time_key(runtime, bob_token, "@bob:example.org", "BOB_DEV", "BOB_OTK_AAAA", "BOB_OTK_VALUE");
+
+        // Bob's device keys: a real Ed25519 keypair is required because Bob
+        // uploads OTKs that are cryptographically verified against this key.
+        auto const bob_keypair    = merovingian::federation::test::keypair_from_seed("bob-dev-seed");
+        auto const bob_pubkey_b64 = merovingian::events::matrix_base64_from_bytes(bob_keypair.public_key);
+        upload_device_keys(runtime, bob_token, "@bob:example.org", "BOB_DEV", "BOB_CURVE", bob_pubkey_b64);
+
+        // Build the signed OTK JSON using the real Ed25519 private key.
+        auto const bob_otk_json = make_signed_otk_json("@bob:example.org", "BOB_DEV",
+                                                        "BOB_OTK_VALUE", bob_keypair.secret_key);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/keys/upload", bob_token,
+                              R"({"one_time_keys":{"signed_curve25519:BOB_OTK_AAAA":)" + bob_otk_json + R"(}})"})
+                    .response.status == 200U);
 
         auto const create = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token,
@@ -4307,7 +4354,8 @@ SCENARIO("Encrypted invite join supports the full local room-key delivery sequen
             THEN("alice can fetch and claim bob's keys and bob receives the room key on /sync")
             {
                 REQUIRE(query.response.body.find("BOB_CURVE") != std::string::npos);
-                REQUIRE(query.response.body.find("BOB_ED") != std::string::npos);
+                // bob_pubkey_b64 is the real base64 Ed25519 key uploaded in GIVEN.
+                REQUIRE(query.response.body.find(bob_pubkey_b64) != std::string::npos);
                 REQUIRE(claim.response.body.find("BOB_OTK_VALUE") != std::string::npos);
 
                 auto const bob_join_sync = merovingian::homeserver::handle_client_server_request(

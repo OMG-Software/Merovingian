@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/events/event_signer.hpp"
+
 #include <array>
 #include <string>
 #include <string_view>
@@ -32,6 +34,55 @@ struct SigningKeypair final
     crypto_sign_seed_keypair(public_key.data(), secret_key.data(), seed.data());
     return {std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()},
             std::string{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()}};
+}
+
+// Returns the unpadded Matrix base64 encoding of the keypair's public key,
+// ready to be stored in the "ed25519:DEVICE_ID" field of a device_keys upload.
+[[nodiscard]] inline auto pubkey_b64(SigningKeypair const& kp) -> std::string
+{
+    return merovingian::events::matrix_base64_from_bytes(kp.public_key);
+}
+
+// Signs `payload` with the Ed25519 secret key and returns the unpadded base64
+// encoded signature. Suitable for constructing OTK / fallback key payloads.
+[[nodiscard]] inline auto sign_payload_b64(std::string_view payload,
+                                           std::string const& secret_key_bytes) -> std::string
+{
+    auto sig = std::array<unsigned char, crypto_sign_BYTES>{};
+    crypto_sign_detached(sig.data(), nullptr,
+                         reinterpret_cast<unsigned char const*>(payload.data()), payload.size(),
+                         reinterpret_cast<unsigned char const*>(secret_key_bytes.data()));
+    return merovingian::events::matrix_base64_from_bytes(
+        {reinterpret_cast<char const*>(sig.data()), crypto_sign_BYTES});
+}
+
+// Builds a complete signed_curve25519 OTK JSON value (no wrapping key-id object).
+// The signature covers the canonical JSON payload {"key":"key_value"}.
+// Use the same keypair's public key (via pubkey_b64()) in the device_keys upload.
+[[nodiscard]] inline auto make_signed_otk_json(std::string_view user_id, std::string_view device_id,
+                                               std::string_view key_value,
+                                               std::string const& secret_key_bytes) -> std::string
+{
+    auto const payload = std::string{R"({"key":")"} + std::string{key_value} + R"("})";
+    auto const sig_b64 = sign_payload_b64(payload, secret_key_bytes);
+    return std::string{R"({"key":")"} + std::string{key_value} +
+           R"(","signatures":{")" + std::string{user_id} +
+           R"(":{"ed25519:)" + std::string{device_id} + R"(":")" + sig_b64 + R"("}}})" ;
+}
+
+// Builds a complete signed fallback key JSON value (includes "fallback":true).
+// The signature covers {"fallback":true,"key":"key_value"} (canonical field order).
+// Use the same keypair's public key in the device_keys upload.
+[[nodiscard]] inline auto make_signed_fallback_key_json(std::string_view user_id, std::string_view device_id,
+                                                        std::string_view key_value,
+                                                        std::string const& secret_key_bytes) -> std::string
+{
+    // "fallback" sorts before "key" in canonical JSON.
+    auto const payload = std::string{R"({"fallback":true,"key":")"} + std::string{key_value} + R"("})";
+    auto const sig_b64 = sign_payload_b64(payload, secret_key_bytes);
+    return std::string{R"({"fallback":true,"key":")"} + std::string{key_value} +
+           R"(","signatures":{")" + std::string{user_id} +
+           R"(":{"ed25519:)" + std::string{device_id} + R"(":")" + sig_b64 + R"("}}})" ;
 }
 
 } // namespace merovingian::federation::test

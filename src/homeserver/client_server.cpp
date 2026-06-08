@@ -13,6 +13,7 @@
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/core/query_params.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/outbound_membership.hpp"
@@ -2784,15 +2785,24 @@ namespace
                                   }));
     }
 
-    // Extract the device's own ed25519 key id from a parsed `device_keys`
-    // object. The Matrix v1.18 spec requires the device to publish a
-    // `keys` map whose ed25519 member is the device's own identity key;
-    // every SignedKey (one-time key, fallback key) MUST be signed by it.
-    // Returns the empty string when the object has no ed25519 member;
-    // the caller treats that as "no identity known" and skips the OTK
-    // signature check so the device's first /keys/upload still succeeds.
-    [[nodiscard]] auto device_signing_key_id_from_device_keys_object(canonicaljson::Object const& device_keys_object)
-        -> std::string
+    // Holds both the key ID (e.g. "ed25519:DEVICE1") and the base64-encoded
+    // public key bytes for a device's own Ed25519 signing key, extracted from
+    // a parsed `device_keys` object. Both fields are empty when absent.
+    struct DeviceSigningKeyInfo final
+    {
+        std::string key_id{};
+        std::string public_key_b64{};
+    };
+
+    // Extract the device's own ed25519 key id AND public key (base64) from a
+    // parsed `device_keys` object. The Matrix v1.18 spec requires the device
+    // to publish a `keys` map whose ed25519 member is the device's own
+    // identity key; every SignedKey (OTK, fallback key) MUST be signed by it.
+    // Returns empty strings when the object has no ed25519 member; the caller
+    // treats that as "no identity known" and skips the OTK signature check so
+    // the device's first /keys/upload still succeeds.
+    [[nodiscard]] auto device_signing_key_info_from_device_keys_object(
+        canonicaljson::Object const& device_keys_object) -> DeviceSigningKeyInfo
     {
         auto const* keys_map = object_member_as_object(device_keys_object, "keys");
         if (keys_map == nullptr)
@@ -2807,25 +2817,26 @@ namespace
             }
             if (member.key.size() > 8U && member.key.substr(0U, 8U) == "ed25519:")
             {
-                return member.key;
+                auto const* val_str = std::get_if<std::string>(&member.value->storage());
+                return {member.key, val_str != nullptr ? *val_str : std::string{}};
             }
         }
         return {};
     }
 
-    // Resolve the device's ed25519 signing key id, preferring the in-body
-    // `device_keys` (so the very same /keys/upload that publishes the
-    // identity is honored) and falling back to the persisted device_keys
-    // row. Returns the empty string if neither source yields an identity.
-    [[nodiscard]] auto device_signing_key_id_for_upload(database::PersistentStore const& store, std::string_view user,
-                                                        std::string_view device_id,
-                                                        canonicaljson::Object const* const in_body_device_keys)
-        -> std::string
+    // Resolve the device's ed25519 signing key info (key ID + base64 public key),
+    // preferring the in-body `device_keys` (so the very same /keys/upload that
+    // publishes the identity is honored) and falling back to the persisted
+    // device_keys row. Returns empty fields if neither source yields an identity.
+    [[nodiscard]] auto device_signing_key_info_for_upload(database::PersistentStore const& store,
+                                                          std::string_view user, std::string_view device_id,
+                                                          canonicaljson::Object const* const in_body_device_keys)
+        -> DeviceSigningKeyInfo
     {
         if (in_body_device_keys != nullptr)
         {
-            auto const from_body = device_signing_key_id_from_device_keys_object(*in_body_device_keys);
-            if (!from_body.empty())
+            auto const from_body = device_signing_key_info_from_device_keys_object(*in_body_device_keys);
+            if (!from_body.key_id.empty())
             {
                 return from_body;
             }
@@ -2840,19 +2851,25 @@ namespace
         {
             return {};
         }
-        return device_signing_key_id_from_device_keys_object(*parsed);
+        return device_signing_key_info_from_device_keys_object(*parsed);
     }
 
-    // Return true if `key_value` is a SignedKey that carries a signature
-    // made by `signing_key_id` (an "ed25519:..." key id). Non-SignedKey
-    // members (e.g. the legacy integer-count form, or a bare string) are
-    // treated as not signed: v1.18 requires SignedKey objects for both
-    // one-time keys and fallback keys.
-    [[nodiscard]] auto key_object_is_signed_by(canonicaljson::Value const& key_value, std::string_view signing_key_id)
-        -> bool
+    // Return true when `key_value` is a well-formed SignedKey that carries a
+    // cryptographically valid Ed25519 signature under `signing_key_id`, verified
+    // against `ed25519_public_key_b64` (the device's own identity key in Matrix
+    // unpadded base64). The signed payload is the canonical JSON of the key
+    // object with the `signatures` field removed.
+    //
+    // When `signing_key_id` is empty (no device identity known yet), the check
+    // is skipped and the key is accepted; this allows a device's first
+    // /keys/upload to succeed before any identity has been published.
+    [[nodiscard]] auto key_object_is_signed_by(canonicaljson::Value const& key_value,
+                                               std::string_view signing_key_id,
+                                               std::string_view ed25519_public_key_b64) -> bool
     {
         if (signing_key_id.empty())
         {
+            // No device identity known — skip the check (first upload path).
             return true;
         }
         auto const* key_obj = std::get_if<canonicaljson::Object>(&key_value.storage());
@@ -2865,6 +2882,9 @@ namespace
         {
             return false;
         }
+
+        // Find the signature bytes for the correct key ID.
+        std::string_view sig_b64{};
         for (auto const& user_member : *signatures)
         {
             if (user_member.value == nullptr)
@@ -2880,19 +2900,71 @@ namespace
             {
                 if (key_member.key == signing_key_id && key_member.value != nullptr)
                 {
-                    return true;
+                    auto const* sig_str = std::get_if<std::string>(&key_member.value->storage());
+                    if (sig_str != nullptr)
+                    {
+                        sig_b64 = *sig_str;
+                    }
+                    break;
                 }
             }
+            if (!sig_b64.empty())
+            {
+                break;
+            }
         }
-        return false;
+        if (sig_b64.empty())
+        {
+            return false;
+        }
+
+        // Decode the signature bytes and validate length.
+        auto const sig_bytes = events::matrix_bytes_from_base64(sig_b64);
+        if (sig_bytes.size() != crypto_sign_BYTES)
+        {
+            return false;
+        }
+
+        // Decode the device's Ed25519 public key and validate length.
+        auto const pubkey_bytes = events::matrix_bytes_from_base64(ed25519_public_key_b64);
+        if (pubkey_bytes.size() != crypto_sign_PUBLICKEYBYTES)
+        {
+            return false;
+        }
+
+        // Build the signable payload: canonical JSON of the key object minus
+        // the `signatures` field (same convention as event signing).
+        auto stripped = canonicaljson::Object{};
+        stripped.reserve(key_obj->size());
+        for (auto const& m : *key_obj)
+        {
+            if (m.key != "signatures" && m.value != nullptr)
+            {
+                stripped.push_back(canonicaljson::make_member(m.key, *m.value));
+            }
+        }
+        auto const payload_value = canonicaljson::Value{std::move(stripped)};
+        auto const serialized    = canonicaljson::serialize_canonical(payload_value);
+        if (serialized.error != canonicaljson::CanonicalJsonError::none)
+        {
+            return false;
+        }
+
+        return crypto_sign_verify_detached(
+                   reinterpret_cast<unsigned char const*>(sig_bytes.data()),
+                   reinterpret_cast<unsigned char const*>(serialized.output.data()),
+                   serialized.output.size(),
+                   reinterpret_cast<unsigned char const*>(pubkey_bytes.data())) == 0;
     }
 
     // Validate that every member of an OTK or fallback-key object is a
-    // SignedKey whose signature is made by the device's own ed25519 key.
+    // SignedKey carrying a cryptographically valid signature from the device's
+    // own ed25519 identity key.
     // Returns the empty string when every key is valid, or a short reason
     // identifying the first invalid member when at least one fails.
-    [[nodiscard]] auto validate_key_object_members(canonicaljson::Object const& object, std::string_view signing_key_id)
-        -> std::string
+    [[nodiscard]] auto validate_key_object_members(canonicaljson::Object const& object,
+                                                   std::string_view signing_key_id,
+                                                   std::string_view ed25519_public_key_b64) -> std::string
     {
         for (auto const& member : object)
         {
@@ -2900,7 +2972,7 @@ namespace
             {
                 return std::string{member.key} + ": null value";
             }
-            if (!key_object_is_signed_by(*member.value, signing_key_id))
+            if (!key_object_is_signed_by(*member.value, signing_key_id, ed25519_public_key_b64))
             {
                 return std::string{member.key} + ": not signed by device identity";
             }
@@ -3037,11 +3109,16 @@ namespace
         // When neither is known, the OTK is accepted (the device's very
         // first /keys/upload can't be checked against a prior identity).
         auto const* in_body_device_keys = object_member_object(*object, "device_keys");
-        auto const device_signing_key_id =
-            device_signing_key_id_for_upload(store, user, device_id, in_body_device_keys);
+        // Resolve both the key ID and the base64 public key so that
+        // key_object_is_signed_by can perform real Ed25519 verification.
+        auto const signing_info =
+            device_signing_key_info_for_upload(store, user, device_id, in_body_device_keys);
+        auto const& device_signing_key_id  = signing_info.key_id;
+        auto const& device_signing_pubkey  = signing_info.public_key_b64;
         if (auto const* keys = object_member_object(*object, "one_time_keys"); keys != nullptr)
         {
-            if (auto const reason = validate_key_object_members(*keys, device_signing_key_id); !reason.empty())
+            if (auto const reason = validate_key_object_members(*keys, device_signing_key_id,
+                                                                device_signing_pubkey); !reason.empty())
             {
                 return err(400U, "M_INVALID_SIGNATURE",
                            "one-time key " + reason + " (device signing key " + device_signing_key_id + ")");
@@ -3053,7 +3130,8 @@ namespace
         }
         if (auto const* keys = object_member_object(*object, "fallback_keys"); keys != nullptr)
         {
-            if (auto const reason = validate_key_object_members(*keys, device_signing_key_id); !reason.empty())
+            if (auto const reason = validate_key_object_members(*keys, device_signing_key_id,
+                                                                device_signing_pubkey); !reason.empty())
             {
                 return err(400U, "M_INVALID_SIGNATURE",
                            "fallback key " + reason + " (device signing key " + device_signing_key_id + ")");

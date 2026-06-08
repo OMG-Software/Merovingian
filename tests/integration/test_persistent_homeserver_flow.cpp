@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration.hpp"
@@ -180,10 +181,24 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
                      {},
                      R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@keys:example.org"},"password":"CorrectHorse7!","device_id":"KEYS1"})"});
                 token = token_from_login_body(login.response.body);
+                // Real Ed25519 keypair required: OTK and fallback signatures
+                // are now cryptographically verified server-side.
+                auto const keys_kp =
+                    merovingian::federation::test::keypair_from_seed("persistent-keys-seed");
+                auto const keys_ed25519 = merovingian::federation::test::pubkey_b64(keys_kp);
+                auto const otk_json = merovingian::federation::test::make_signed_otk_json(
+                    "@keys:example.org", "KEYS1", "otk", keys_kp.secret_key);
+                auto const fb_json = merovingian::federation::test::make_signed_fallback_key_json(
+                    "@keys:example.org", "KEYS1", "fallback", keys_kp.secret_key);
+                auto const keys_upload_body =
+                    std::string{
+                        R"({"device_keys":{"algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"device_id":"KEYS1","keys":{"curve25519:KEYS1":"curve-key","ed25519:KEYS1":")"} +
+                    keys_ed25519 +
+                    R"("},"signatures":{},"user_id":"@keys:example.org"},"one_time_keys":{"signed_curve25519:AAA":)" +
+                    otk_json +
+                    R"(},"fallback_keys":{"signed_curve25519:FB":)" + fb_json + R"(}})";
                 auto const upload = merovingian::homeserver::handle_client_server_request(
-                    runtime,
-                    {"POST", "/_matrix/client/v3/keys/upload", token,
-                     R"({"device_keys":{"algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"device_id":"KEYS1","keys":{"curve25519:KEYS1":"curve-key","ed25519:KEYS1":"ed-key"},"signatures":{},"user_id":"@keys:example.org"},"one_time_keys":{"signed_curve25519:AAA":{"key":"otk","signatures":{"@keys:example.org":{"ed25519:KEYS1":"otk-sig"}}}},"fallback_keys":{"signed_curve25519:FB":{"key":"fallback","fallback":true,"signatures":{"@keys:example.org":{"ed25519:KEYS1":"fallback-sig"}}}}})"});
+                    runtime, {"POST", "/_matrix/client/v3/keys/upload", token, keys_upload_body});
 
                 REQUIRE(registered.response.status == 200U);
                 REQUIRE(login.response.status == 200U);

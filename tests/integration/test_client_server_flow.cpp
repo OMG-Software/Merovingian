@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/json_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
@@ -91,14 +92,16 @@ auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, s
     REQUIRE(upload.response.status == 200U);
 }
 
+// device_secret_key MUST match the public key registered by upload_device_keys for
+// this device. OTK signatures are now cryptographically verified server-side.
 auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                          std::string_view user_id, std::string_view device_id, std::string_view key_id,
-                         std::string_view key_value) -> void
+                         std::string_view key_value, std::string const& device_secret_key) -> void
 {
-    auto const body =
-        std::string{R"({"one_time_keys":{"signed_curve25519:)" + std::string{key_id} + R"(":{"key":")" +
-                    std::string{key_value} + R"(","signatures":{"})" + std::string{user_id} + R"(":{"ed25519:)" +
-                    std::string{device_id} + R"(":")" + std::string{key_value} + R"(_SIG"}}}}})"};
+    auto const otk_json = merovingian::federation::test::make_signed_otk_json(
+        user_id, device_id, key_value, device_secret_key);
+    auto const body = std::string{R"({"one_time_keys":{"signed_curve25519:)"} + std::string{key_id} +
+                      "\":" + otk_json + "}}";
     auto const upload = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/keys/upload", token, body});
     REQUIRE(upload.response.status == 200U);
@@ -149,8 +152,12 @@ SCENARIO("Integrated Matrix v1.18 interop flow covers login join key exchange me
         auto const bob = register_and_login(runtime, "bob", "CorrectHorse8!", "BOB_DEV");
 
         upload_device_keys(runtime, alice, "@alice:example.org", "ALICE_DEV", "ALICE_CURVE", "ALICE_ED");
-        upload_device_keys(runtime, bob, "@bob:example.org", "BOB_DEV", "BOB_CURVE", "BOB_ED");
-        upload_one_time_key(runtime, bob, "@bob:example.org", "BOB_DEV", "BOB_OTK_AAAA", "BOB_OTK_VALUE");
+        // Bob needs a real Ed25519 keypair: OTK signatures are verified server-side.
+        auto const bob_kp = merovingian::federation::test::keypair_from_seed("flow-test-bob-seed");
+        upload_device_keys(runtime, bob, "@bob:example.org", "BOB_DEV", "BOB_CURVE",
+                           merovingian::federation::test::pubkey_b64(bob_kp));
+        upload_one_time_key(runtime, bob, "@bob:example.org", "BOB_DEV", "BOB_OTK_AAAA",
+                            "BOB_OTK_VALUE", bob_kp.secret_key);
 
         auto const create = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -359,9 +366,11 @@ SCENARIO("Integrated Matrix v1.18 interop flow works with registration-issued se
 
         upload_device_keys(runtime, alice.access_token, alice.user_id, alice.device_id, "ALICE_REG_CURVE",
                            "ALICE_REG_ED");
-        upload_device_keys(runtime, bob.access_token, bob.user_id, bob.device_id, "BOB_REG_CURVE", "BOB_REG_ED");
+        auto const bob_reg_kp = merovingian::federation::test::keypair_from_seed("flow-test-bob-reg-seed");
+        upload_device_keys(runtime, bob.access_token, bob.user_id, bob.device_id, "BOB_REG_CURVE",
+                           merovingian::federation::test::pubkey_b64(bob_reg_kp));
         upload_one_time_key(runtime, bob.access_token, bob.user_id, bob.device_id, "BOB_REG_OTK_AAAA",
-                            "BOB_REG_OTK_VALUE");
+                            "BOB_REG_OTK_VALUE", bob_reg_kp.secret_key);
 
         auto const create_body = std::string{"{\"preset\":\"private_chat\",\"invite\":[\""} + bob.user_id +
                                  "\"],\"initial_state\":[{\"type\":\"m.room.encryption\",\"state_key\":\"\","

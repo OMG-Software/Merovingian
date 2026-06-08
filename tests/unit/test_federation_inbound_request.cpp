@@ -579,20 +579,27 @@ SCENARIO("Inbound federation applies backoff and increments failure count", "[fe
     }
 }
 
-// Implementation hardening policy (not a Matrix spec MUST):
-// The Matrix spec permits any server to deliver a PDU in a federation transaction;
-// the transport origin need not equal the event sender's domain. Merovingian
-// additionally requires origin == sender_domain as a hardening measure — this
-// eliminates a class of origin-spoofing attacks at the cost of disallowing transit
-// delivery. The policy also validates that the sender-server signature is present.
+// Spec: Matrix Server-Server API v1.18
+// Section: Signing Events (per-PDU signing)
+// URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
 //
-// See: tests/conformance/test_pdu_format_conformance.cpp for the spec-required
-// sender-server signature validation test.
-SCENARIO("Federation PDU authorization: hardening policy rejects origin-sender mismatch",
-         "[federation][inbound][pdu][hardening]")
+// The sender's homeserver MUST sign every PDU it creates. The transport origin
+// (the server making the HTTPS request) MAY be a relay that forwards PDUs on
+// behalf of another server. Authorization checks MUST verify that the PDU
+// carries a signature from sender_domain(pdu.sender) — not from the transport
+// origin — so that relayed/backfilled PDUs are not incorrectly rejected.
+SCENARIO("Federation PDU authorization validates the sender server's signature, not the transport origin's",
+         "[federation][inbound][pdu][conformance]")
 {
-    GIVEN("PDUs where origin does not match sender domain, and a PDU with a missing sender signature")
+    GIVEN("PDUs where the sender domain lacks a signature entry in the PDU")
     {
+        // valid: sender=@alice:matrix.example.org, sig from matrix.example.org
+        // bad_sender: sender changed to @alice:elsewhere — the PDU still only
+        //   has a sig from matrix.example.org, not from elsewhere.example.org
+        // spoofed_sender: sender changed to @alice:matrix.example.org.evil —
+        //   no sig from matrix.example.org.evil in the PDU
+        // bad_signature: sig entry changed to elsewhere.example.org — sender
+        //   @alice:matrix.example.org now has no sig from matrix.example.org
         auto valid = merovingian::federation::parse_federation_pdu(comma_delimited_pdu("matrix.example.org"));
         auto bad_sender = valid;
         bad_sender.sender = "@alice:elsewhere.example.org";
@@ -611,19 +618,89 @@ SCENARIO("Federation PDU authorization: hardening policy rejects origin-sender m
             auto const rejected_signature =
                 merovingian::federation::authorize_federation_pdu(bad_signature, "matrix.example.org");
 
-            THEN("origin-sender mismatches and missing sender signatures are rejected")
+            THEN("only a PDU whose sender server has signed the event is accepted")
             {
-                // Hardening policy: sender domain != expected origin → reject.
-                // This is stricter than the spec (which allows transit delivery) but
-                // eliminates origin-spoofing attacks. Do NOT relabel as [conformance].
+                // Spec MUST: signature from sender_domain(pdu.sender) is required.
+                // bad_sender/spoofed_sender: sender domain changed, no matching
+                // signature entry → rejected for missing sender-server signature.
                 REQUIRE(accepted.accepted);
                 REQUIRE_FALSE(rejected_sender.accepted);
-                REQUIRE(rejected_sender.reason == "PDU sender does not match origin");
+                REQUIRE(rejected_sender.reason == "missing event signature for expected server");
                 REQUIRE_FALSE(rejected_spoofed_sender.accepted);
-                REQUIRE(rejected_spoofed_sender.reason == "PDU sender does not match origin");
-                // Spec-required: missing sender-server signature MUST be rejected.
+                REQUIRE(rejected_spoofed_sender.reason == "missing event signature for expected server");
+                // Spec MUST: missing sender-server signature MUST be rejected.
                 REQUIRE_FALSE(rejected_signature.accepted);
                 REQUIRE(rejected_signature.reason == "missing event signature for expected server");
+            }
+        }
+    }
+}
+
+SCENARIO("Federation PDU authorization accepts relayed PDUs from non-originating servers",
+         "[federation][inbound][pdu][conformance]")
+{
+    GIVEN("a JSON PDU created and signed by alice.example.org but delivered by relay.example.org")
+    {
+        // The spec allows any server to be the transport origin for a PDU.
+        // The event was authored by alice.example.org; relay.example.org is
+        // forwarding it. The PDU carries a signature from alice.example.org.
+        auto const event_server = std::string{"alice.example.org"};
+        auto const relay_origin  = std::string{"relay.example.org"};
+        auto const key_id        = std::string{"ed25519:auto"};
+        auto const token         = std::string{"alice-server-key"};
+        auto const pdu = merovingian::federation::parse_federation_pdu(
+            signed_json_pdu(event_server, key_id, token));
+
+        WHEN("the PDU is authorized with relay.example.org as the transport origin")
+        {
+            // No signing key for the relay is provided; structural check only.
+            auto const accepted = merovingian::federation::authorize_federation_pdu(pdu, relay_origin);
+
+            THEN("the PDU is accepted because alice.example.org signed the event")
+            {
+                // Spec conformance: transport origin != sender_domain is permitted.
+                // The signature entry from alice.example.org is present in the
+                // PDU, so the structural check passes.
+                REQUIRE(accepted.accepted);
+            }
+        }
+    }
+}
+
+SCENARIO("Federation transaction handler uses room_version_resolver for PDU authorization",
+         "[federation][inbound][pdu][room-version]")
+{
+    GIVEN("a runtime with a known remote and a room version resolver that returns '12'")
+    {
+        auto runtime    = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin  = std::string{"matrix.example.org"};
+        auto const key_id  = std::string{"ed25519:auto"};
+        auto const token   = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        WHEN("the resolver is set and a valid signed PDU is delivered")
+        {
+            runtime.room_version_resolver = [](std::string_view) -> std::string { return "12"; };
+            auto const json_pdu = signed_json_pdu(origin, key_id, token);
+            auto const request  = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the transaction is accepted using the resolver-provided room version")
+            {
+                REQUIRE(response.status == 200U);
+            }
+        }
+
+        WHEN("the resolver is unset and a valid signed PDU is delivered")
+        {
+            // No resolver set: fallback to room version "12"
+            auto const json_pdu = signed_json_pdu(origin, key_id, token);
+            auto const request  = signed_request(origin, key_id, token, transaction_body(origin, json_pdu));
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the transaction is accepted using the default room version '12' fallback")
+            {
+                REQUIRE(response.status == 200U);
             }
         }
     }

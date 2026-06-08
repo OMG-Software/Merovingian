@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.5.24',
+  version: '0.5.25',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [

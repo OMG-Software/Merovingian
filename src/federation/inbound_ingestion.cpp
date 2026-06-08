@@ -76,6 +76,12 @@ namespace
 
 auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<InboundPduEnvelope>
 {
+    return parse_inbound_pdu_envelope(pdu_json, "12");
+}
+
+auto parse_inbound_pdu_envelope(std::string_view pdu_json, std::string_view room_version)
+    -> std::optional<InboundPduEnvelope>
+{
     if (pdu_json.empty() || pdu_json.front() != '{')
     {
         log_diagnostic("pdu.parse.rejected", {
@@ -108,10 +114,11 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
         return std::nullopt;
     }
 
-    // Room version is currently fixed to 12 in this codebase; the call into
-    // make_reference_hash_event_id needs the version policy to compute the
-    // canonical event identifier consistently with the local send path.
-    auto const* room_version_policy = rooms::find_room_version_policy("12");
+    // Use the caller-supplied room version (resolved from m.room.create state
+    // when available) for event-ID computation so all versions use their own
+    // redaction rules rather than hard-coding "12".
+    auto const resolved_ver = room_version.empty() ? std::string_view{"12"} : room_version;
+    auto const* room_version_policy = rooms::find_room_version_policy(resolved_ver);
     if (room_version_policy == nullptr)
     {
         log_diagnostic("pdu.parse.rejected", {
@@ -141,7 +148,7 @@ auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<Inbo
     {
         out.room_id = envelope.event.room_id;
     }
-    out.room_version = "12";
+    out.room_version = std::string{resolved_ver};
     out.sender = envelope.event.sender;
     out.event_type = envelope.event.event_type;
     if (find_member(*root, "state_key") != nullptr)

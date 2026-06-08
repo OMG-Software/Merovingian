@@ -31,6 +31,7 @@
 // |    rooms.join[id].timeline.prev_batch - backfill token (when limited)   |
 // +-------------------------------------------------------------------------+
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
@@ -381,6 +382,18 @@ SCENARIO("Client-server v1.18 conformance fixture covers beta endpoint families"
 
         WHEN("each endpoint family step runs against the runtime")
         {
+            // Pre-compute real Ed25519 values for the keys/upload fixture step.
+            // The fixture JSON uses {{placeholder}} tokens that are interpolated
+            // by run_complement_fixture; the signatures must match the ed25519 key
+            // we inject here so the server's real crypto_sign_verify_detached passes.
+            auto const fix_kp =
+                merovingian::federation::test::keypair_from_seed("fixture-device-seed");
+            bindings["fixture_ed25519_key"] = merovingian::federation::test::pubkey_b64(fix_kp);
+            bindings["fixture_otk_sig"] = merovingian::federation::test::sign_payload_b64(
+                R"({"key":"one-time-key"})", fix_kp.secret_key);
+            bindings["fixture_fallback_sig"] = merovingian::federation::test::sign_payload_b64(
+                R"({"fallback":true,"key":"fallback-key"})", fix_kp.secret_key);
+
             run_complement_fixture("client_server_v1_18.json", rt, bindings);
 
             THEN("auth, devices, rooms, sync, media, reports, and E2EE keys have fixture coverage")
