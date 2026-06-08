@@ -1,3 +1,24 @@
+## 0.5.24
+
+- **Fix (E2EE):** Merovingian never sent `m.device_list_update` EDUs to remote
+  servers. When a local user uploaded device keys or joined a room, Synapse (and
+  any other remote homeserver) was never notified, so remote servers never queried
+  the user's devices, never claimed one-time keys, and therefore never delivered
+  encrypted room keys. Clients on the local server could not decrypt any messages
+  from federated encrypted rooms.
+
+  **Fix**: Added `remote_servers_for_user` (collects distinct remote servers from
+  all rooms a user is in), `broadcast_device_list_updates` (builds an
+  `m.device_list_update` EDU per device and dispatches it to each destination),
+  and two call sites: one in `handle_key_upload` (keys uploaded) and one in the
+  `/rooms/{roomId}/join` and `/join/{roomIdOrAlias}` handlers (user joined room).
+
+  **Tests**: Three new BDD scenarios in `test_outbound_dispatch.cpp`:
+  (1) key upload with a remote room member dispatches `m.device_list_update`;
+  (2) key upload with only local room members dispatches nothing;
+  (3) local join to a room containing a remote member dispatches
+  `m.device_list_update` for the joining user.
+
 ## 0.5.23
 
 - **Security:** Raw access token no longer persisted to audit log on rate-limit

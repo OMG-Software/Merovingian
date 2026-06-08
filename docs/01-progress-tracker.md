@@ -1,3 +1,38 @@
+## v0.5.24 (fix/outbound-device-list-update-edu)
+
+### Fix: No outbound `m.device_list_update` EDUs — encrypted rooms broken for local users
+
+**Symptoms**: A Merovingian user (`@jcc:pong.ping.me.uk`) in a federated encrypted
+room hosted on Synapse could not send or receive encrypted messages. Synapse never
+delivered room keys to the Merovingian-side device because it had no record of that
+device — it had never been prompted to fetch it.
+
+**Root cause**: Merovingian never sent `m.device_list_update` EDUs outbound. The
+spec (v1.18 §device-list-updates-between-servers) requires a homeserver to fan
+these out to every remote server sharing a room with a local user whenever: (a) the
+user uploads or changes device keys, or (b) the user joins a new room. Without the
+EDU, remote servers have no trigger to call
+`GET /_matrix/federation/v1/user/devices/{userId}`, claim one-time keys, or
+deliver encrypted room keys. An audit of `src/` confirmed the string
+`"m.device_list_update"` appeared only in the inbound-ingestion path — outbound
+emission was entirely absent.
+
+**Fix**:
+
+| File | Change |
+|------|--------|
+| `src/homeserver/client_server.cpp` | Add `remote_servers_for_user()` — collects distinct remote server names from all rooms a user is a member of |
+| `src/homeserver/client_server.cpp` | Add `broadcast_device_list_updates()` — builds one `m.device_list_update` EDU per device and dispatches it to each remote destination via `dispatch_edu_to_server()` |
+| `src/homeserver/client_server.cpp` | Call `broadcast_device_list_updates` in `handle_key_upload` after storing device keys |
+| `src/homeserver/client_server.cpp` | Call `broadcast_device_list_updates` in `/rooms/{roomId}/join` and `/join/{roomIdOrAlias}` handlers after a successful join |
+| `tests/unit/test_outbound_dispatch.cpp` | Add helpers `device_list_update_transactions`, `device_list_update_user_id` and three new BDD scenarios covering key-upload broadcast, no-op on local-only rooms, and join broadcast |
+
+**Tests** (all green):
+- `SCENARIO "key upload broadcasts m.device_list_update to remote servers in shared rooms"` — two GIVENs: remote member present (EDU dispatched), local-only room (no EDU)
+- `SCENARIO "local join to a room with remote members broadcasts m.device_list_update"`
+
+---
+
 ## v0.5.23 (in progress — fix/security-audit-token-pdu-auth)
 
 ### Fix: Raw access token leaked to audit log on auth rejection

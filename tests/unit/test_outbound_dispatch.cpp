@@ -125,6 +125,52 @@ namespace
     return transaction->body;
 }
 
+[[nodiscard]] auto device_list_update_transactions(merovingian::database::PersistentStore const& store,
+                                                   std::string_view destination = "")
+    -> std::vector<merovingian::database::PersistentFederationTransaction const*>
+{
+    auto transactions = std::vector<merovingian::database::PersistentFederationTransaction const*>{};
+    for (auto const& transaction : store.federation_transactions)
+    {
+        if (transaction.body.find(R"("edu_type":"m.device_list_update")") == std::string::npos)
+        {
+            continue;
+        }
+        if (!destination.empty() && transaction.server_name != destination)
+        {
+            continue;
+        }
+        transactions.push_back(&transaction);
+    }
+    return transactions;
+}
+
+// Extract the user_id field from the first EDU in a m.device_list_update transaction body.
+[[nodiscard]] auto device_list_update_user_id(std::string_view transaction_body) -> std::string
+{
+    auto const parsed = merovingian::canonicaljson::parse_lossless(std::string{transaction_body});
+    if (parsed.error != merovingian::canonicaljson::ParseError::none)
+    {
+        return {};
+    }
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+    if (root == nullptr) return {};
+    auto const edus_it = std::ranges::find_if(*root, [](auto const& m) { return m.key == "edus"; });
+    if (edus_it == root->end() || edus_it->value == nullptr) return {};
+    auto const* edus = std::get_if<merovingian::canonicaljson::Array>(&edus_it->value->storage());
+    if (edus == nullptr || edus->empty()) return {};
+    auto const* edu = std::get_if<merovingian::canonicaljson::Object>(&(*edus)[0].storage());
+    if (edu == nullptr) return {};
+    auto const content_it = std::ranges::find_if(*edu, [](auto const& m) { return m.key == "content"; });
+    if (content_it == edu->end() || content_it->value == nullptr) return {};
+    auto const* content = std::get_if<merovingian::canonicaljson::Object>(&content_it->value->storage());
+    if (content == nullptr) return {};
+    auto const user_it = std::ranges::find_if(*content, [](auto const& m) { return m.key == "user_id"; });
+    if (user_it == content->end() || user_it->value == nullptr) return {};
+    auto const* uid = std::get_if<std::string>(&user_it->value->storage());
+    return uid != nullptr ? *uid : std::string{};
+}
+
 [[nodiscard]] auto direct_to_device_transactions(merovingian::database::PersistentStore const& store)
     -> std::vector<merovingian::database::PersistentFederationTransaction const*>
 {
@@ -720,6 +766,207 @@ SCENARIO("createRoom outbound invites carry the created room's version",
                 auto const* version_text = std::get_if<std::string>(&room_version->value->storage());
                 REQUIRE(version_text != nullptr);
                 REQUIRE(*version_text == "11");
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Spec device-list-updates-between-servers: the homeserver MUST send
+// m.device_list_update EDUs to remote servers that share rooms with the
+// local user whenever that user's device list changes.
+// ---------------------------------------------------------------------------
+
+SCENARIO("key upload broadcasts m.device_list_update to remote servers in shared rooms",
+         "[homeserver][e2ee][device-list-update][key-upload]")
+{
+    GIVEN("a user in a room that contains a remote member and a dispatch worker is wired")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        // Inject a remote member so the server has a remote destination to notify
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@bob:remote.example.org");
+
+        WHEN("alice uploads her device keys")
+        {
+            auto const txns_before = device_list_update_transactions(homeserver.database.persistent_store).size();
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1",)"
+                 R"("algorithms":["m.olm.v1.curve25519-aes-sha2"],)"
+                 R"("keys":{"curve25519:DEVICE1":"aGFzaGVkY3VydmU=","ed25519:DEVICE1":"aGFzaGVkZWQ="},)"
+                 R"("signatures":{"@alice:example.org":{"ed25519:DEVICE1":"c2ln"}}}})"});
+
+            THEN("a m.device_list_update EDU is dispatched to remote.example.org for alice's device")
+            {
+                REQUIRE(upload.response.status == 200U);
+                auto const txns = device_list_update_transactions(homeserver.database.persistent_store,
+                                                                  "remote.example.org");
+                REQUIRE(txns.size() > txns_before);
+                // The EDU must identify alice as the user whose device list changed
+                auto const any_for_alice = std::ranges::any_of(txns, [](auto const* tx) {
+                    return device_list_update_user_id(tx->body) == "@alice:example.org";
+                });
+                REQUIRE(any_for_alice);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+
+    GIVEN("a user in a room with only local members and a dispatch worker is wired")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", token, {}});
+        REQUIRE(room.response.status == 200U);
+        // Room contains only alice -- no remote servers to notify
+
+        WHEN("alice uploads her device keys")
+        {
+            auto const txns_before = device_list_update_transactions(homeserver.database.persistent_store).size();
+            std::ignore = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", token,
+                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1",)"
+                 R"("algorithms":["m.olm.v1.curve25519-aes-sha2"],)"
+                 R"("keys":{"curve25519:DEVICE1":"aGFzaGVkY3VydmU=","ed25519:DEVICE1":"aGFzaGVkZWQ="},)"
+                 R"("signatures":{"@alice:example.org":{"ed25519:DEVICE1":"c2ln"}}}})"});
+
+            THEN("no m.device_list_update EDU is dispatched (no remote servers in room)")
+            {
+                auto const txns_after = device_list_update_transactions(homeserver.database.persistent_store).size();
+                REQUIRE(txns_after == txns_before);
+            }
+        }
+
+        homeserver.dispatch_worker->request_shutdown();
+        homeserver.dispatch_worker->join();
+    }
+}
+
+SCENARIO("local join to a room with remote members broadcasts m.device_list_update",
+         "[homeserver][e2ee][device-list-update][join]")
+{
+    GIVEN("a public room with a remote member and a second local user with a device")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto& homeserver = runtime.homeserver;
+
+        // alice creates a public room
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE1"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        // Inject a remote member so there is a remote server to notify on join
+        auto local_room = std::ranges::find_if(homeserver.database.rooms, [&id](auto const& r) {
+            return r.room_id == id;
+        });
+        REQUIRE(local_room != homeserver.database.rooms.end());
+        local_room->members.push_back("@remote:other.example.org");
+
+        // charlie is a second local user who will join the room
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("charlie", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const charlie_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@charlie:example.org"},"password":"CorrectHorse7!","device_id":"CHARLIE1"})"});
+        REQUIRE(charlie_login.response.status == 200U);
+        auto const charlie_token = login_token(charlie_login.response.body);
+
+        auto client = merovingian::http::OutboundClient{};
+        auto worker = make_dispatch_worker(client, &homeserver.database.persistent_store);
+        homeserver.dispatch_worker.reset(worker.get());
+        std::ignore = worker.release();
+
+        WHEN("charlie joins the room")
+        {
+            auto const txns_before =
+                device_list_update_transactions(homeserver.database.persistent_store, "other.example.org").size();
+            auto const join_resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/join", charlie_token, {}});
+
+            THEN("a m.device_list_update EDU is dispatched to other.example.org for charlie")
+            {
+                REQUIRE(join_resp.response.status == 200U);
+                auto const txns = device_list_update_transactions(homeserver.database.persistent_store,
+                                                                  "other.example.org");
+                REQUIRE(txns.size() > txns_before);
+                auto const any_for_charlie = std::ranges::any_of(txns, [](auto const* tx) {
+                    return device_list_update_user_id(tx->body) == "@charlie:example.org";
+                });
+                REQUIRE(any_for_charlie);
             }
         }
 
