@@ -33,11 +33,13 @@ Implemented now:
   resolved from the operating-system package
 - TLS listener accept path with bounded handshake timeout
 - single-mutex serialisation of runtime mutation across acceptors
-- self-sufficient CORS preflight emission: every response carries
-  `Access-Control-Allow-Origin`, `Vary: Origin`, and (for `OPTIONS`)
-  `Access-Control-Allow-Methods` / `-Headers` / `-Max-Age` derived from
-  the runtime's `server.cors.*` config (0.4.60). Reverse proxies no
-  longer need to synthesise CORS headers; see
+- self-sufficient CORS emission: every response carries
+  `Access-Control-Allow-Origin` and `Vary: Origin`; `OPTIONS` preflight
+  responses additionally carry `Access-Control-Allow-Methods`,
+  `-Headers`, and `-Max-Age` derived from the runtime's `server.cors.*`
+  config (0.4.60 preflight; 0.5.30 extended to all non-OPTIONS
+  responses via a single `handle_client_server_request` boundary).
+  Reverse proxies must not add their own CORS headers; see
   `docs/configuration.md` Reverse proxy examples.
 
 Not implemented yet:

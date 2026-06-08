@@ -5041,3 +5041,118 @@ SCENARIO("Trusted-proxy X-Forwarded-For is used for rate-limit keying", "[homese
         }
     }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CORS on non-OPTIONS responses
+//
+// Matrix spec §web-browser-clients (v1.18):
+//   "The server MUST add Access-Control-Allow-Origin: * to every response."
+//
+// Before the fix these tests fail because complete() and sync_json() returned
+// DispatchResult without calling apply_cors_headers(). Only dispatch_resp /
+// dispatch_err applied CORS. The fix applies CORS at the single public
+// handle_client_server_request boundary so all code paths are covered.
+// ─────────────────────────────────────────────────────────────────────────────
+
+SCENARIO("GET /versions response carries Access-Control-Allow-Origin when Origin is present",
+         "[homeserver][client-server][cors]")
+{
+    // Spec: §web-browser-clients — ACAO must be present on every response so
+    // browsers can read the body, not just on OPTIONS preflight.
+    GIVEN("a started client-server runtime with the default CORS wildcard policy")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("GET /versions is sent with an Origin header from a browser client at localhost")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{
+                "GET", "/_matrix/client/versions", {}, {},
+                {merovingian::http::Header{"Origin", "http://localhost:44548"}},
+            };
+            auto const result = merovingian::homeserver::handle_client_server_request(runtime, request);
+
+            THEN("the 200 response carries Access-Control-Allow-Origin so the browser can read the body")
+            {
+                REQUIRE(result.response.status == 200U);
+                REQUIRE(response_header(result.response, "Access-Control-Allow-Origin") == "*");
+            }
+
+            THEN("Vary: Origin is present so CDN caches do not serve a CORS-less response to browser clients")
+            {
+                REQUIRE(response_header(result.response, "Vary") == "Origin");
+            }
+        }
+    }
+}
+
+SCENARIO("Authenticated GET /sync response carries Access-Control-Allow-Origin",
+         "[homeserver][client-server][cors]")
+{
+    // Spec: §web-browser-clients — sync is the most frequent call a browser
+    // client makes; ACAO missing on a 200 sync causes the entire client to
+    // silently hang (browser discards the body without an error visible to JS).
+    GIVEN("a registered user and a runtime with the default CORS wildcard policy")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg_body = std::string{merovingian::tests::registration_json("syncuser", "CorrectHorse7!")};
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, reg_body, {}});
+        REQUIRE(reg.response.status == 200U);
+        auto const token = login_token(reg.response.body);
+
+        WHEN("GET /sync?timeout=0 is sent with a Bearer token and an Origin header")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{
+                "GET", "/_matrix/client/v3/sync?timeout=0", token, {},
+                {merovingian::http::Header{"Origin", "http://localhost:44548"}},
+            };
+            auto const result = merovingian::homeserver::handle_client_server_request(runtime, request);
+
+            THEN("the 200 sync response carries Access-Control-Allow-Origin so the browser can read it")
+            {
+                REQUIRE(result.response.status == 200U);
+                REQUIRE(response_header(result.response, "Access-Control-Allow-Origin") == "*");
+            }
+        }
+    }
+}
+
+SCENARIO("Key API 404 response carries Access-Control-Allow-Origin",
+         "[homeserver][client-server][cors]")
+{
+    // Spec: §web-browser-clients — error responses (4xx) must also carry ACAO
+    // so the browser can read the error body and surface it to the user rather
+    // than showing a generic network error.
+    GIVEN("a registered user with no key backup and a runtime with the default CORS policy")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg_body = std::string{merovingian::tests::registration_json("keyuser", "CorrectHorse7!")};
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {}, reg_body, {}});
+        REQUIRE(reg.response.status == 200U);
+        auto const token = login_token(reg.response.body);
+
+        WHEN("GET /room_keys/version is sent with an Origin header and no backup exists")
+        {
+            auto request = merovingian::homeserver::LocalHttpRequest{
+                "GET", "/_matrix/client/v3/room_keys/version", token, {},
+                {merovingian::http::Header{"Origin", "http://localhost:44548"}},
+            };
+            auto const result = merovingian::homeserver::handle_client_server_request(runtime, request);
+
+            THEN("the 404 response still carries Access-Control-Allow-Origin so the browser can read the error body")
+            {
+                REQUIRE(result.response.status == 404U);
+                REQUIRE(response_header(result.response, "Access-Control-Allow-Origin") == "*");
+            }
+        }
+    }
+}
