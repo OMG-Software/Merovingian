@@ -26,7 +26,8 @@ namespace merovingian::federation
                                                       std::string_view request_body) -> std::string;
 
 // Builds the response body for `GET /_matrix/federation/v1/user/devices/{userId}`.
-// Returns an empty string when the user has no published device keys.
+// Returns an empty string when the user has no published device keys (the HTTP
+// handler maps this to 404 M_NOT_FOUND per Matrix SS API v1.18).
 [[nodiscard]] auto build_user_devices_response(database::PersistentStore const& store, std::string_view user_id)
     -> std::string;
 

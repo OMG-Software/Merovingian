@@ -1,3 +1,21 @@
+## 0.5.31
+
+- **Fix (cross-server E2EE decryption failure):** `m.device_list_update` EDUs
+  were sent without the `keys` field. When a Merovingian user uploaded device
+  keys, remote servers (e.g. Synapse) had to schedule an asynchronous
+  `GET /_matrix/federation/v1/user/devices/{userId}` refetch before they could
+  encrypt to that device. If a remote client encrypted during the refetch window
+  it used stale or empty device keys, producing `OlmError::MissingCiphertext` on
+  the Merovingian-side recipient — cross-server messages could not be decrypted.
+  Fixed by including the device identity keys object in every `m.device_list_update`
+  EDU so the remote server can update its cache immediately without a separate
+  fetch (Matrix spec v1.18 §m.device_list_update `keys` field).
+- **Fix (`stream_id` hardcoded to 0 in `GET /user/devices`):**
+  `build_user_devices_response` always returned `"stream_id": 0` regardless of
+  the actual device-list version. Remote servers use this value to detect gaps
+  between device-list-update EDUs; a constant zero caused every incoming EDU to
+  appear to require a refetch. Now reflects `store.next_sync_stream_id`.
+
 ## 0.5.30
 
 - **Fix (CORS missing on non-OPTIONS responses):** `complete()` and `sync_json()`
