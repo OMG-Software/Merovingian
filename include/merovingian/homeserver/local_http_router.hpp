@@ -22,6 +22,13 @@ struct LocalHttpRequest final
     // `build_local_request` from the wire request head. Tests construct a
     // request directly and set this field to drive CORS logic.
     std::vector<http::Header> headers{};
+    // Source IP address of the direct TCP peer (e.g. "192.0.2.1" or
+    // "::1"). Set by the HTTP acceptor from getpeername(). Empty in
+    // tests that do not exercise transport-level peer resolution.
+    // When the peer is a configured trusted proxy, `allow()` replaces
+    // this value with the leftmost X-Forwarded-For address before
+    // constructing the per-IP rate-limit bucket key.
+    std::string remote_addr{};
 };
 
 struct LocalHttpResponse final

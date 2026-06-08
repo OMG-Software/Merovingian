@@ -1612,16 +1612,64 @@ namespace
             // production path always has an engine.
             return true;
         }
-        // Per-IP bucket: today `LocalHttpRequest` does not carry a source
-        // IP, so the engine sees a single synthetic "local" IP for the
-        // entire process. We still include the *normalized* target in
-        // the key so different endpoints (e.g. /register vs /versions)
-        // get independent buckets and route templates (e.g.
-        // /rooms/{roomId}/send for two different room IDs) coalesce
-        // into the same bucket. The per-endpoint cap is the binding
-        // constraint, and a global per-IP cap would conflate them.
+        // Resolve the effective client IP for rate-limit keying.
+        // When remote_addr is empty (test-only paths that skip the
+        // transport layer) we fall back to "unknown" so per-route
+        // caps still apply.  When the direct peer is a configured
+        // trusted proxy we look for the leftmost X-Forwarded-For
+        // address instead, so the bucket isolates each downstream
+        // client rather than collapsing all traffic through the
+        // proxy into a single bucket.
+        auto const& trusted_proxies = rt.homeserver.config.server().trusted_proxies;
+        auto effective_ip = [&]() -> std::string {
+            auto const& raw = req.remote_addr;
+            if (raw.empty())
+            {
+                return "unknown";
+            }
+            // Check if the peer is one of the operator-configured trusted proxies.
+            auto const is_trusted = std::ranges::find(trusted_proxies, raw) != trusted_proxies.end();
+            if (is_trusted)
+            {
+                // Honour the leftmost non-empty value in X-Forwarded-For.
+                // Case-insensitive header name comparison per RFC 7230.
+                for (auto const& h : req.headers)
+                {
+                    auto lower = h.name;
+                    std::ranges::transform(lower, lower.begin(), [](unsigned char c) {
+                        return static_cast<char>(std::tolower(c));
+                    });
+                    if (lower == "x-forwarded-for")
+                    {
+                        auto sv = std::string_view{h.value};
+                        auto const comma = sv.find(',');
+                        auto first = comma == std::string_view::npos ? sv : sv.substr(0U, comma);
+                        // Trim leading and trailing ASCII spaces.
+                        while (!first.empty() && first.front() == ' ')
+                        {
+                            first.remove_prefix(1U);
+                        }
+                        while (!first.empty() && first.back() == ' ')
+                        {
+                            first.remove_suffix(1U);
+                        }
+                        if (!first.empty())
+                        {
+                            return std::string{first};
+                        }
+                    }
+                }
+            }
+            return raw;
+        }();
+        // Per-IP bucket keyed by (effective_ip, normalised_route) so
+        // different endpoints get independent counters and route
+        // templates (e.g. /rooms/{roomId}/send) coalesce into the
+        // same bucket regardless of which room ID appears in the URL.
         auto const norm = normalized_target(req.target);
-        auto const ip_key = std::string{"local|"} + norm;
+        auto ip_key = effective_ip;
+        ip_key.push_back('|');
+        ip_key.append(norm);
         // Per-user bucket: the bearer token is the user identity in this
         // pre-authentication call site (callers have not yet resolved it
         // to a user_id). Unauthenticated paths pass an empty token, so
@@ -1653,7 +1701,8 @@ namespace
                                      {"max_requests",   std::to_string(decision.max_requests),            false},
                                      {"window_seconds", std::to_string(decision.window_seconds),          false},
                                      {"per_ip_count",   std::to_string(decision.per_ip_count),            false},
-                                     {"per_user_count", std::to_string(decision.per_user_count),          false}
+                                     {"per_user_count", std::to_string(decision.per_user_count),          false},
+                                     {"effective_ip",   effective_ip,                                     false}
             },
                                  observability::LogEventSeverity::warning, observability::AuditCategory::policy,
                                  "rate_limit.exceeded", req.access_token, req.target,

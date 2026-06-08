@@ -11,6 +11,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <string_view>
 
 namespace merovingian::homeserver
 {
@@ -68,9 +69,13 @@ enum class HttpDispatchMode
 // closes the fd normally.
 //
 // The acceptor's fd is taken by value (already-accepted client socket).
+// `peer_addr` is the dotted-decimal or colon-separated peer IP captured at
+// accept() time; it is threaded onto LocalHttpRequest::remote_addr so the
+// rate limiter can key per-IP buckets. Empty string is safe (falls back to
+// the "unknown" synthetic key used by tests that skip transport).
 [[nodiscard]] auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
-                                             HttpDispatchMode dispatch_mode,
-                                             net::ThreadPool* sync_pool = nullptr) -> bool;
+                                             HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool = nullptr,
+                                             std::string_view peer_addr = {}) -> bool;
 
 // Block until `shutdown` fires, accepting connections from `acceptor` and
 // submitting them to `pool` for dispatch. Returns when either the shutdown

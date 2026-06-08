@@ -1,3 +1,27 @@
+## 0.5.28
+
+- **Security (Finding 5 — Per-IP rate limiting):** `LocalHttpRequest` had no
+  `remote_addr` field, so every unauthenticated request was bucketed under the
+  synthetic key `"local|<route>"`. A single source could exhaust the
+  login/register budget (default 5 per 60 s) for all other clients. Fixed by:
+  (1) adding `std::string remote_addr` to `LocalHttpRequest`; (2) capturing the
+  peer address via `sockaddr_storage` at `::accept()` time in both the plain and
+  TLS acceptor loops and threading it through `serve_one_http_connection` →
+  `serve_stream` → `build_local_request`; (3) replacing the synthetic `"local|"`
+  prefix with the actual peer IP in `allow()` — keyed as
+  `"<ip>|<normalised_route>"`; (4) trusted-proxy support: when `remote_addr`
+  matches an entry in `server.trusted_proxies`, the leftmost `X-Forwarded-For`
+  address is used instead, so downstream clients behind a reverse proxy each get
+  their own bucket. New BDD scenarios: per-IP isolation (two IPs do not share a
+  bucket) and trusted-proxy XFF keying.
+
+- **Supply-chain (Finding 7 — Artifact provenance):** The alpha release workflow
+  now generates a SLSA provenance attestation for each tarball via
+  `actions/attest-build-provenance@v2` immediately after the checksum is written.
+  Both Linux and FreeBSD build jobs were updated with `attestations: write` and
+  `id-token: write` permissions. Attestations are verifiable offline with
+  `gh attestation verify`. Release notes updated to reference the provenance step.
+
 ## 0.5.27
 
 - **Bug fix (send_join state ingestion — empty state_key):** When a local user

@@ -4929,3 +4929,115 @@ SCENARIO("Room members response is derived from current state even when the memb
         }
     }
 }
+
+// Spec: Matrix CS API v1.18
+// Section: Rate limiting
+// URL: https://spec.matrix.org/v1.18/client-server-api/#rate-limiting
+//
+// The rate limiter MUST key unauthenticated buckets by (source-IP, route)
+// so that one client cannot exhaust the login/register budget for others.
+SCENARIO("Rate limit buckets are isolated per source IP", "[homeserver][client-server][rate-limit]")
+{
+    GIVEN("a started runtime with a 1-request-per-60s cap on every route")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
+
+        WHEN("IP-A sends two requests and IP-B sends one request to the same route")
+        {
+            auto req_a1 = merovingian::homeserver::LocalHttpRequest{
+                "POST", "/_matrix/client/v3/register", {}, R"({"username":"rla1","password":"P@ssw0rd1!"})"};
+            req_a1.remote_addr = "192.0.2.1";
+
+            auto req_a2 = merovingian::homeserver::LocalHttpRequest{
+                "POST", "/_matrix/client/v3/register", {}, R"({"username":"rla2","password":"P@ssw0rd1!"})"};
+            req_a2.remote_addr = "192.0.2.1";
+
+            auto req_b1 = merovingian::homeserver::LocalHttpRequest{
+                "POST", "/_matrix/client/v3/register", {}, R"({"username":"rlb1","password":"P@ssw0rd1!"})"};
+            req_b1.remote_addr = "192.0.2.2";
+
+            auto const r_a1 = merovingian::homeserver::handle_client_server_request(runtime, req_a1);
+            auto const r_a2 = merovingian::homeserver::handle_client_server_request(runtime, req_a2);
+            auto const r_b1 = merovingian::homeserver::handle_client_server_request(runtime, req_b1);
+
+            THEN("IP-A's second request is rate-limited but IP-B's first request proceeds independently")
+            {
+                // Spec MUST: first request from any IP must not return 429.
+                REQUIRE(r_a1.response.status != 429U);
+                // Spec MUST: second request from same IP within window is rate-limited.
+                REQUIRE(r_a2.response.status == 429U);
+                // Spec MUST: independent source IP has its own bucket -- not affected.
+                REQUIRE(r_b1.response.status != 429U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix CS API v1.18
+// Section: Rate limiting / trusted-proxy headers
+// URL: https://spec.matrix.org/v1.18/client-server-api/#rate-limiting
+//
+// If the direct peer is a configured trusted proxy the server MUST
+// use the leftmost X-Forwarded-For address for rate-limit keying so
+// the entire downstream network is not collapsed into a single bucket.
+SCENARIO("Trusted-proxy X-Forwarded-For is used for rate-limit keying", "[homeserver][client-server][rate-limit]")
+{
+    GIVEN("a runtime with one trusted proxy and a 1-request-per-60s cap")
+    {
+        auto cfg = registration_enabled_config();
+        cfg.server().trusted_proxies = {"10.0.0.1"};
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        merovingian::homeserver::install_test_rate_limit_engine(runtime);
+
+        WHEN("two requests arrive from the trusted proxy with different X-Forwarded-For clients")
+        {
+            auto req1 = merovingian::homeserver::LocalHttpRequest{
+                "POST", "/_matrix/client/v3/register", {}, R"({"username":"xff1","password":"P@ssw0rd1!"})"};
+            req1.remote_addr = "10.0.0.1";
+            req1.headers    = {{"X-Forwarded-For", "203.0.113.10"}};
+
+            auto req2 = merovingian::homeserver::LocalHttpRequest{
+                "POST", "/_matrix/client/v3/register", {}, R"({"username":"xff2","password":"P@ssw0rd1!"})"};
+            req2.remote_addr = "10.0.0.1";
+            req2.headers    = {{"X-Forwarded-For", "203.0.113.20"}};
+
+            auto const r1 = merovingian::homeserver::handle_client_server_request(runtime, req1);
+            auto const r2 = merovingian::homeserver::handle_client_server_request(runtime, req2);
+
+            THEN("each forwarded client IP gets an independent bucket and is not limited on its first request")
+            {
+                // Spec MUST: distinct forwarded IPs are independent.
+                REQUIRE(r1.response.status != 429U);
+                REQUIRE(r2.response.status != 429U);
+            }
+        }
+
+        WHEN("the same X-Forwarded-For IP sends two consecutive requests via the trusted proxy")
+        {
+            auto req_s1 = merovingian::homeserver::LocalHttpRequest{
+                "POST", "/_matrix/client/v3/register", {}, R"({"username":"xffs1","password":"P@ssw0rd1!"})"};
+            req_s1.remote_addr = "10.0.0.1";
+            req_s1.headers    = {{"X-Forwarded-For", "203.0.113.30"}};
+
+            auto req_s2 = merovingian::homeserver::LocalHttpRequest{
+                "POST", "/_matrix/client/v3/register", {}, R"({"username":"xffs2","password":"P@ssw0rd1!"})"};
+            req_s2.remote_addr = "10.0.0.1";
+            req_s2.headers    = {{"X-Forwarded-For", "203.0.113.30"}};
+
+            auto const r_s1 = merovingian::homeserver::handle_client_server_request(runtime, req_s1);
+            auto const r_s2 = merovingian::homeserver::handle_client_server_request(runtime, req_s2);
+
+            THEN("the second request from the same forwarded IP is rate-limited")
+            {
+                // Spec MUST: same forwarded IP shares one bucket.
+                REQUIRE(r_s1.response.status != 429U);
+                REQUIRE(r_s2.response.status == 429U);
+            }
+        }
+    }
+}
