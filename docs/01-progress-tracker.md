@@ -1,3 +1,46 @@
+## v0.5.25 (fix/federation-pdu-origin-otk-room-version)
+
+### Security: Three federation/E2EE findings fixed
+
+#### Finding 3 — `authorize_federation_pdu` rejected legitimate relayed PDUs
+
+**Root cause**: The function compared `sender_domain(pdu.sender)` against `expected_origin` and rejected any PDU where they differed. The Matrix spec permits any server to relay PDUs — only the sender's homeserver signature needs to be valid, not the transport origin.
+
+**Fix**: Removed the `sender_domain != expected_origin` rejection. Signature verification now looks up the key under `pdu_sender_domain`, and `crypto_sign_verify_detached` is guarded to the non-relayed case (`sender_domain == expected_origin`).
+
+#### Finding 4 — `key_object_is_signed_by` never verified signature bytes
+
+**Root cause**: The function found the correct key ID in the `signatures` map but returned `true` without calling `crypto_sign_verify_detached`. Any garbage bytes under the right key ID would pass.
+
+**Fix**: Full Ed25519 verification: base64-decode the signature (must be `crypto_sign_BYTES`), base64-decode the device's public key (must be `crypto_sign_PUBLICKEYBYTES`), strip `signatures` from a copy of the key object, canonical-JSON serialise, call `crypto_sign_verify_detached`. All test helpers updated to produce real signatures via `make_signed_otk_json` / `make_signed_fallback_key_json` in the shared support header.
+
+#### Finding 6 — Event-ID and auth-rule computation hardcoded room version "12"
+
+**Root cause**: `parse_federation_pdu()` and `parse_inbound_pdu_envelope()` both hardcoded `"12"`, giving wrong event IDs and redaction rules for v10/v11 rooms.
+
+**Fix**: Added `RoomVersionResolver` callback type and `room_version_resolver` field to `FederationRuntimeState`. New `parse_federation_pdu(encoded, resolver)` overload calls the resolver with the parsed `room_id`. `parse_inbound_pdu_envelope(pdu_json, room_version)` overload accepts the version directly. Both fall back to `"12"` when unresolved.
+
+| File | Change |
+|------|--------|
+| `include/merovingian/federation/inbound_request.hpp` | `FederationPdu::room_version`, `RoomVersionResolver` type, `room_version_resolver` in `FederationRuntimeState`, overload declarations |
+| `include/merovingian/federation/inbound_ingestion.hpp` | `parse_inbound_pdu_envelope(pdu_json, room_version)` overload |
+| `src/federation/inbound_request.cpp` | Finding 3 + 6 fixes; resolver overload; transaction handler wired |
+| `src/federation/inbound_ingestion.cpp` | Finding 6 overload |
+| `src/homeserver/client_server.cpp` | Finding 4: real Ed25519 verify in `key_object_is_signed_by` |
+| `tests/federation_signing_test_support.hpp` | `pubkey_b64`, `sign_payload_b64`, `make_signed_otk_json`, `make_signed_fallback_key_json` |
+| `tests/unit/test_federation_inbound_request.cpp` | New BDD scenarios for relay accept, sender mismatch reject, resolver wiring |
+| `tests/unit/test_otk_signature_validation.cpp` | Real keypair in existing tests; new "garbage sig under correct key ID" scenario |
+| `tests/unit/test_client_server.cpp` | All fake OTK sigs replaced with real ones |
+| `tests/conformance/test_client_server_conformance.cpp` | `upload_one_time_key` uses real sigs; inline uploads fixed |
+| `tests/integration/test_client_server_flow.cpp` | Same |
+| `tests/integration/test_persistent_homeserver_flow.cpp` | Same |
+| `tests/integration/test_sync_complement_fixture.cpp` | Pre-computes `{{fixture_*}}` bindings |
+| `tests/fixtures/complement/client_server_v1_18.json` | Placeholder tokens for ed25519 key and OTK/fallback sigs |
+
+**Tests**: 47/47 pass.
+
+---
+
 ## v0.5.24 (fix/outbound-device-list-update-edu)
 
 ### Fix: No outbound `m.device_list_update` EDUs — encrypted rooms broken for local users

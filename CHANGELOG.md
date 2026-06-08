@@ -1,3 +1,39 @@
+## 0.5.25
+
+- **Security (Finding 3 — Federation PDU relay):** `authorize_federation_pdu()`
+  was rejecting any PDU where `sender_domain(pdu.sender) != expected_origin`,
+  which incorrectly blocked legitimate relayed PDUs (backfill, missing-events,
+  normal propagation via relay servers). The constraint is not required by the
+  Matrix spec — only the sender's homeserver signature matters. Removed the
+  domain-equality check; signature verification now uses `pdu_sender_domain`
+  instead of `expected_origin`, and crypto verify is guarded to the case where
+  both are equal (i.e. non-relayed PDUs). Added conformance BDD scenarios
+  covering the relay-accept and sender-mismatch-reject cases.
+
+- **Security (Finding 4 — OTK signature verification):** `key_object_is_signed_by()`
+  was only checking that the correct key ID *existed* in the `signatures` map —
+  it never called `crypto_sign_verify_detached`. OTK and fallback keys uploaded
+  via `POST /keys/upload` therefore passed validation with any garbage bytes
+  under the right key ID. Fixed: the function now decodes the signature and the
+  device's Ed25519 public key from unpadded base64, verifies sizes, strips the
+  `signatures` field from a copy of the key object, serialises to canonical JSON,
+  and calls `crypto_sign_verify_detached`. Returns `false` on any step failure.
+  All test helpers updated to produce real Ed25519 signatures via
+  `merovingian::federation::test::make_signed_otk_json` /
+  `make_signed_fallback_key_json` from the shared support header.
+
+- **Correctness (Finding 6 — Room version hardcoded to "12"):**
+  `parse_federation_pdu()` and `parse_inbound_pdu_envelope()` both hardcoded
+  room version `"12"` for event-ID computation and auth-rule selection. For
+  rooms on older versions (v10, v11) this produces wrong event IDs and applies
+  the wrong redaction rules. Fixed: added `RoomVersionResolver` callback type
+  and `room_version_resolver` field to `FederationRuntimeState`; added a
+  `parse_federation_pdu(encoded, resolver)` overload; the resolver is called
+  with the parsed `room_id` to look up the room's `m.room.create` state.
+  Falls back to `"12"` when the room is unknown or no resolver is wired.
+  `parse_inbound_pdu_envelope()` likewise accepts an explicit version string.
+  Added BDD scenario confirming the resolver is used during transaction handling.
+
 ## 0.5.24
 
 - **Fix (E2EE):** Merovingian never sent `m.device_list_update` EDUs to remote

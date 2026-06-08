@@ -152,14 +152,17 @@ auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, s
                 .response.status == 200U);
 }
 
+// device_secret_key MUST be the raw 64-byte Ed25519 secret key whose matching
+// public key was uploaded via upload_device_keys for this device. Real OTK
+// signature verification requires both sides to use the same keypair.
 auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                          std::string_view user_id, std::string_view device_id, std::string_view key_id,
-                         std::string_view key_value) -> void
+                         std::string_view key_value, std::string const& device_secret_key) -> void
 {
-    auto const body =
-        std::string{R"({"one_time_keys":{"signed_curve25519:)" + std::string{key_id} + R"(":{"key":")" +
-                    std::string{key_value} + R"(","signatures":{"})" + std::string{user_id} + R"(":{"ed25519:)" +
-                    std::string{device_id} + R"(":")" + std::string{key_value} + R"(_SIG"}}}}})"};
+    auto const otk_json = merovingian::federation::test::make_signed_otk_json(
+        user_id, device_id, key_value, device_secret_key);
+    auto const body = std::string{R"({"one_time_keys":{"signed_curve25519:)"} + std::string{key_id} +
+                      "\":" + otk_json + "}}";
     REQUIRE(merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/keys/upload", token, body})
                 .response.status == 200U);
@@ -954,11 +957,21 @@ SCENARIO("POST /keys/upload with OTKs then POST /keys/claim returns and consumes
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
+        // Use a real Ed25519 keypair so that the OTK signature passes real
+        // crypto_sign_verify_detached verification.
+        auto const alice_kp = merovingian::federation::test::keypair_from_seed("conformance-alice-otk-seed");
+        auto const alice_ed25519 = merovingian::federation::test::pubkey_b64(alice_kp);
+        auto const otk_json = merovingian::federation::test::make_signed_otk_json(
+            "@alice:example.org", "DEVICE1", "otk+base64+key", alice_kp.secret_key);
+        auto const upload_body =
+            std::string{R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"pubkey1","ed25519:DEVICE1":")"} +
+            alice_ed25519 +
+            R"("},"signatures":{}},"one_time_keys":{"signed_curve25519:AAAAAAAA":)" +
+            otk_json + R"(}})";
         REQUIRE(
             merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/keys/upload", token,
-                 R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"pubkey1","ed25519:DEVICE1":"device-signing-key"},"signatures":{}},"one_time_keys":{"signed_curve25519:AAAAAAAA":{"key":"otk+base64+key","signatures":{"@alice:example.org":{"ed25519:DEVICE1":"otk-signature"}}}}})"})
+                {"POST", "/_matrix/client/v3/keys/upload", token, upload_body})
                 .response.status == 200U);
 
         WHEN("another device claims a one-time key for DEVICE1")
@@ -3700,8 +3713,13 @@ SCENARIO("Encrypted invite join completes the local query claim sendToDevice boo
         auto const bob = register_and_login(started.runtime, "bob");
 
         upload_device_keys(started.runtime, alice, "@alice:example.org", "DEVICE1", "ALICE_CURVE", "ALICE_ED");
-        upload_device_keys(started.runtime, bob, "@bob:example.org", "bob_DEV", "BOB_CURVE", "BOB_ED");
-        upload_one_time_key(started.runtime, bob, "@bob:example.org", "bob_DEV", "BOB_OTK_AAAA", "BOB_OTK_VALUE");
+        // Bob needs a real Ed25519 keypair because OTK signatures are now
+        // cryptographically verified against the stored device identity key.
+        auto const bob_kp = merovingian::federation::test::keypair_from_seed("conformance-bob-seed");
+        upload_device_keys(started.runtime, bob, "@bob:example.org", "bob_DEV", "BOB_CURVE",
+                           merovingian::federation::test::pubkey_b64(bob_kp));
+        upload_one_time_key(started.runtime, bob, "@bob:example.org", "bob_DEV", "BOB_OTK_AAAA",
+                            "BOB_OTK_VALUE", bob_kp.secret_key);
 
         auto const create = merovingian::homeserver::handle_client_server_request(
             started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
@@ -3756,7 +3774,9 @@ SCENARIO("Encrypted invite join completes the local query claim sendToDevice boo
 
                 REQUIRE(query.response.status == 200U);
                 REQUIRE(query.response.body.find("BOB_CURVE") != std::string::npos);
-                REQUIRE(query.response.body.find("BOB_ED") != std::string::npos);
+                // bob_kp.public_key was registered in GIVEN; check the real base64 key round-trips.
+                REQUIRE(query.response.body.find(
+                            merovingian::federation::test::pubkey_b64(bob_kp)) != std::string::npos);
 
                 REQUIRE(claim.response.status == 200U);
                 REQUIRE(claim.response.body.find("BOB_OTK_VALUE") != std::string::npos);

@@ -20,16 +20,21 @@
 // |    -> Do NOT weaken, comment out, or remove assertions to make CI pass. |
 // +-------------------------------------------------------------------------+
 
+#include "../federation_signing_test_support.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/event_signer.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <string>
+
+#include <sodium.h>
 
 namespace
 {
@@ -84,6 +89,54 @@ namespace
     return std::string{R"({"username":")"} + std::string{localpart} + R"(","password":")" +
            std::string{password} +
            R"(","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})";
+}
+
+// Builds the JSON for a SignedKey (OTK or fallback key) that carries a real
+// Ed25519 signature from the device's own signing key. The payload is the
+// canonical JSON of the key object WITHOUT the signatures field; the
+// signature is computed with crypto_sign_detached and base64-encoded using
+// the same unpadded variant that the server expects.
+//
+// key_object_prefix: optional JSON fields to include before "key" (e.g. "\"fallback\":true,")
+[[nodiscard]] auto make_valid_signed_otk(std::string_view user_id, std::string_view device_id,
+                                         std::string_view key_value, std::string_view key_object_prefix,
+                                         std::string const& secret_key_bytes) -> std::string
+{
+    // Payload: canonical JSON of the key object minus the signatures field.
+    // Keys must be sorted (canonical JSON); include any prefix fields first.
+    auto payload = std::string{};
+    if (key_object_prefix.empty())
+    {
+        payload = std::string{R"({"key":")"} + std::string{key_value} + R"("})";
+    }
+    else
+    {
+        payload = "{" + std::string{key_object_prefix} + R"("key":")" + std::string{key_value} + "\"}";
+    }
+
+    auto signature = std::array<unsigned char, crypto_sign_BYTES>{};
+    crypto_sign_detached(signature.data(), nullptr,
+                         reinterpret_cast<unsigned char const*>(payload.data()), payload.size(),
+                         reinterpret_cast<unsigned char const*>(secret_key_bytes.data()));
+
+    auto const sig_b64 = merovingian::events::matrix_base64_from_bytes(
+        {reinterpret_cast<char const*>(signature.data()), crypto_sign_BYTES});
+
+    // Build the full signed key JSON (with signatures field appended).
+    auto result = std::string{};
+    if (key_object_prefix.empty())
+    {
+        result = std::string{R"({"key":")"} + std::string{key_value} +
+                 R"(","signatures":{")" + std::string{user_id} +
+                 R"(":{"ed25519:)" + std::string{device_id} + R"(":")" + sig_b64 + R"("}}})" ;
+    }
+    else
+    {
+        result = "{" + std::string{key_object_prefix} + R"("key":")" + std::string{key_value} +
+                 R"(","signatures":{")" + std::string{user_id} +
+                 R"(":{"ed25519:)" + std::string{device_id} + R"(":")" + sig_b64 + R"("}}})" ;
+    }
+    return result;
 }
 
 } // namespace
@@ -162,10 +215,12 @@ SCENARIO("E2EE /keys/upload rejects one-time keys signed by a different ed25519 
 //
 // The OTK signature validator must not regress the happy path: a one-time
 // key signed by the device's own ed25519 identity key MUST be accepted.
+// This test uses a real Ed25519 keypair so that cryptographic verification
+// (not just key-ID presence) is exercised on the happy path.
 SCENARIO("E2EE /keys/upload accepts one-time keys signed by the device's own ed25519 key",
          "[homeserver][client-server][e2ee][otk-signature][regression]")
 {
-    GIVEN("a logged-in inviter whose device_keys identity key is ed25519:INVITER_DEV")
+    GIVEN("a logged-in inviter whose device_keys identity key is a real Ed25519 key")
     {
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
@@ -182,23 +237,31 @@ SCENARIO("E2EE /keys/upload accepts one-time keys signed by the device's own ed2
         REQUIRE(inviter_login.response.status == 200U);
         auto const inviter_token = login_token(inviter_login.response.body);
 
+        // Derive a real deterministic Ed25519 keypair from a seed.
+        auto const keypair     = merovingian::federation::test::keypair_from_seed("inviter-dev-seed");
+        auto const pubkey_b64  = merovingian::events::matrix_base64_from_bytes(keypair.public_key);
+
         auto const device_keys_upload = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
-             R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":"BBBB_ED"}}})"});
+             std::string{R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":")"} +
+             pubkey_b64 + R"("}}})"});
         REQUIRE(device_keys_upload.response.status == 200U);
 
-        WHEN("the inviter uploads a one_time_key signed by ed25519:INVITER_DEV")
+        WHEN("the inviter uploads a one_time_key with a valid Ed25519 signature")
         {
+            auto const otk_json = make_valid_signed_otk("@inviter:example.org", "INVITER_DEV",
+                                                        "OTK_KEY_1", {}, keypair.secret_key);
             auto const otk_upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
-                 R"({"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_1"}}}}})"});
+                 R"({"one_time_keys":{"signed_curve25519:AAAA":)" + otk_json + R"(}})"});
 
             THEN("the upload succeeds and the OTK is stored")
             {
                 // Regression guard: the signature validator must accept
-                // OTKs signed by the device's own identity key.
+                // OTKs carrying a cryptographically valid signature from
+                // the device's own identity key.
                 REQUIRE(otk_upload.response.status == 200U);
 
                 auto const& store = runtime.homeserver.database.persistent_store;
@@ -208,6 +271,77 @@ SCENARIO("E2EE /keys/upload accepts one-time keys signed by the device's own ed2
                         return k.device_id == "INVITER_DEV";
                     });
                 REQUIRE(stored != store.one_time_keys.end());
+            }
+        }
+    }
+}
+
+// --- Finding 4: garbage signature bytes under correct key ID MUST be rejected -
+//
+// Spec: Matrix Client-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysupload
+//
+// The server MUST perform real Ed25519 signature verification, not just check
+// that the correct key ID is present. An OTK with a syntactically valid
+// signatures map entry (correct user_id AND correct key ID) but with garbage
+// signature bytes MUST be rejected. A peer that receives such a key via
+// /keys/claim will fail to verify the signature and cannot establish an Olm
+// session.
+SCENARIO("E2EE /keys/upload rejects one-time keys with garbage signature bytes under the correct key ID",
+         "[homeserver][client-server][e2ee][otk-signature][regression]")
+{
+    GIVEN("a logged-in device whose published ed25519 identity key is a real Ed25519 public key")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              register_body("inviter", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        auto const inviter_login = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {},
+                      login_body("@inviter:example.org", "CorrectHorse7!", "INVITER_DEV")});
+        REQUIRE(inviter_login.response.status == 200U);
+        auto const inviter_token = login_token(inviter_login.response.body);
+
+        auto const keypair    = merovingian::federation::test::keypair_from_seed("inviter-dev-seed");
+        auto const pubkey_b64 = merovingian::events::matrix_base64_from_bytes(keypair.public_key);
+
+        auto const device_keys_upload = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
+             std::string{R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":")"} +
+             pubkey_b64 + R"("}}})"});
+        REQUIRE(device_keys_upload.response.status == 200U);
+
+        WHEN("an OTK is uploaded with garbage signature bytes under the correct key ID")
+        {
+            // The signatures map uses the correct user_id AND the correct
+            // key ID (ed25519:INVITER_DEV) — only the signature bytes are garbage.
+            // A shallow check (key-ID presence only) would accept this; real
+            // Ed25519 verification must reject it.
+            auto const otk_upload = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
+                 R"({"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"GARBAGE_BYTES_NOT_A_VALID_SIGNATURE"}}}}})"});
+
+            THEN("the upload is rejected with 400 M_INVALID_SIGNATURE")
+            {
+                // Spec MUST: real cryptographic verification is required.
+                // Presence of the correct key ID is insufficient.
+                REQUIRE(otk_upload.response.status == 400U);
+                REQUIRE(otk_upload.response.body.find("M_INVALID_SIGNATURE") != std::string::npos);
+
+                auto const& store = runtime.homeserver.database.persistent_store;
+                auto const stored = std::ranges::find_if(
+                    store.one_time_keys,
+                    [](merovingian::database::PersistentOneTimeKey const& k) {
+                        return k.device_id == "INVITER_DEV";
+                    });
+                REQUIRE(stored == store.one_time_keys.end());
             }
         }
     }

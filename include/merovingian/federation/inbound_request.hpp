@@ -78,6 +78,10 @@ struct FederationPdu final
     std::string sender{};
     std::vector<events::EventSignature> signatures{};
     std::string json{};
+    // Room version resolved from the room's m.room.create state. Populated by
+    // parse_federation_pdu when a room_version_resolver is provided; falls back
+    // to "12" when the room is unknown or no resolver is wired.
+    std::string room_version{"12"};
 };
 
 struct FederationAcceptedTransaction final
@@ -138,6 +142,13 @@ using StateIdsQueryProvider = std::function<std::string(std::string_view room_id
 using MissingEventsQueryProvider =
     std::function<std::string(std::string_view room_id, std::string_view request_body)>;
 
+// Resolves the room version for a given room ID by consulting the local
+// persistent state (typically the m.room.create event's content.room_version
+// field). Returns a version string such as "10", "11", "12". When the room
+// is unknown the resolver should return the current default ("12").
+// Optional: when unset PDU parsing falls back to "12".
+using RoomVersionResolver = std::function<std::string(std::string_view room_id)>;
+
 struct FederationRuntimeState final
 {
     RuntimeFederationConfig config{};
@@ -182,6 +193,11 @@ struct FederationRuntimeState final
     StateQueryProvider state_query_provider{};
     StateIdsQueryProvider state_ids_query_provider{};
     MissingEventsQueryProvider missing_events_query_provider{};
+    // Optional resolver for room version. When set, parse_federation_pdu
+    // calls it with the room_id from the PDU JSON and uses the returned
+    // version string for event-ID computation and signature verification.
+    // When unset, both operations fall back to room version "12".
+    RoomVersionResolver room_version_resolver{};
 };
 
 struct FederationDecision final
@@ -227,7 +243,13 @@ auto upsert_remote(FederationRuntimeState& runtime, FederationRemoteRuntime remo
     -> FederationDecision;
 [[nodiscard]] auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
                                             std::optional<FederationKeyRecord> const& key) -> FederationDecision;
+// Parses a raw PDU string (JSON or comma-delimited) into a FederationPdu.
+// When version_resolver is provided it is called with the parsed room_id to
+// determine the room version for event-ID computation; pdu.room_version is
+// set to the resolved version. When the resolver is empty, falls back to "12".
 [[nodiscard]] auto parse_federation_pdu(std::string_view encoded) -> FederationPdu;
+[[nodiscard]] auto parse_federation_pdu(std::string_view encoded,
+                                        RoomVersionResolver const& version_resolver) -> FederationPdu;
 [[nodiscard]] auto handle_inbound_federation_request(FederationRuntimeState& runtime,
                                                      SignedFederationRequest const& request) -> FederationResponse;
 [[nodiscard]] auto federation_runtime_summary(FederationRuntimeState const& runtime) -> std::string;

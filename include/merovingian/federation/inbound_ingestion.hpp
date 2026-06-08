@@ -140,6 +140,11 @@ using EduSink = std::function<EduDispositionResult(InboundEduEnvelope const&)>;
 // re-verified here — the caller has already done that through
 // authorize_federation_pdu.
 [[nodiscard]] auto parse_inbound_pdu_envelope(std::string_view pdu_json) -> std::optional<InboundPduEnvelope>;
+// Overload that accepts a pre-resolved room version string, avoiding the
+// hardcoded "12" default when the caller already knows the correct version
+// (e.g. from a prior parse_federation_pdu call with a room_version_resolver).
+[[nodiscard]] auto parse_inbound_pdu_envelope(std::string_view pdu_json,
+                                              std::string_view room_version) -> std::optional<InboundPduEnvelope>;
 
 // Classifies an EDU type name against the set the inbound flow handles.
 // Unknown types are dropped at the handler boundary rather than rejected
