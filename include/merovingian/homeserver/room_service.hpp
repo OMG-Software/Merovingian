@@ -4,6 +4,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <cstddef>
 #include <optional>
@@ -83,6 +84,18 @@ struct ValidatedMakeJoinResponse final
                                               federation::OutboundTransaction const& transaction,
                                               std::string_view key_id, std::string_view secret_key,
                                               std::string_view diagnostic_event) -> std::pair<bool, std::string>;
+
+// Ingests the `state` array from a send_join response. Every event is stored
+// in the persistent event graph. State events — identified by the PRESENCE of
+// the "state_key" field in the raw JSON, even when its value is "" — are also
+// written to the state table. This is the correct discriminator: the Matrix
+// spec defines any event with a "state_key" field as a state event, regardless
+// of whether that value is empty. Returns the user IDs found with
+// membership="join" among the ingested state entries.
+[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime,
+                                          canonicaljson::Array const& state_arr,
+                                          rooms::RoomVersionPolicy const& policy)
+    -> std::vector<std::string>;
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;
