@@ -138,12 +138,12 @@ struct LoggingSecurityConfig final
 // (`docs/log-filtering-design.md`) lists the operator-agreed defaults:
 // 20/min per IP for /login and /register, 5/min per user for /login,
 // 30/min for keys/devices, 20/min for media, 120/min for federation,
-// 60/min for everything else.
+// 90/min for everything else.
 struct ClientRateLimitsConfig final
 {
     std::unordered_map<std::string, http::RateLimitPolicy> per_ip{};
     std::unordered_map<std::string, http::RateLimitPolicy> per_user{};
-    http::RateLimitPolicy default_per_ip{60U, 60U};
+    http::RateLimitPolicy default_per_ip{90U, 60U};
 };
 
 // Per-module log level overrides. Populated from `log_modules.<name>=<level>`

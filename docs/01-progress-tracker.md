@@ -1,3 +1,21 @@
+## v0.5.29 (fix/trusted-proxy-rate-limit-default)
+
+### Fix: reverse-proxy CORS duplicate header, trusted-proxy docs, default rate limit
+
+| File | Change |
+|------|--------|
+| `config/merovingian.conf.example` | Expand `server.trusted_proxies` comment to explain rate-limit bucket collapse behind a proxy; change `client_rate_limits.default_per_ip` default to `90/60s` |
+| `docs/configuration.md` | Remove proxy-level CORS headers from nginx and Apache examples; fix nginx to use `$remote_addr` (not `$proxy_add_x_forwarded_for`); add `X-Forwarded-For` to Apache example; add "Rate limiting behind a reverse proxy" subsection; add `trusted_proxies` guidance to the reverse proxy intro |
+| `include/merovingian/http/rate_limit.hpp` | `RateLimitPolicy::max_requests` default `60U` → `90U`; `RateLimitConfig::default_per_ip` `{60U,60U}` → `{90U,60U}` |
+| `include/merovingian/config/config.hpp` | `ClientRateLimitsConfig::default_per_ip` `{60U,60U}` → `{90U,60U}`; update comment |
+| `src/http/rate_limit.cpp` | `endpoint_default_rate_limit()` generic fallback `{60U,60U}` → `{90U,60U}` |
+| `tests/unit/test_config_client_rate_limits.cpp` | Update default assertion `60U` → `90U` and scenario description |
+| `tests/unit/test_http_rate_limit.cpp` | Update generic endpoint assertion `60U` → `90U` |
+
+**Tests**: 47/47 pass.
+
+---
+
 ## v0.5.28 (fix/per-ip-rate-limit-artifact-signing)
 
 ### Security: Per-IP rate limiting and release provenance

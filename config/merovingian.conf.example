@@ -5,8 +5,16 @@
 # Server identity
 # server.name is the Matrix server name used in user IDs and federation.
 # public_baseurl is the HTTPS URL clients use to reach this homeserver.
-# trusted_proxies is empty by default; set it only to reverse proxies that
-# sanitize and replace forwarding headers before traffic reaches Merovingian.
+# trusted_proxies is a comma-separated list of reverse-proxy IPs that sanitize
+# X-Forwarded-For before passing traffic to Merovingian.  When a request
+# arrives from a trusted proxy, the rate limiter uses the leftmost
+# X-Forwarded-For value as the effective client IP instead of the raw peer
+# address.  Without this setting, all clients share one rate-limit bucket
+# (the proxy IP) and a single active Matrix client can exhaust the cap for
+# everyone.  For a typical same-host nginx/Apache/Traefik/HAProxy deployment:
+#   server.trusted_proxies=127.0.0.1
+# The proxy MUST overwrite X-Forwarded-For with the direct peer IP it
+# received — never append to client-supplied values (see docs/configuration.md).
 server.name=example.org
 server.public_baseurl=https://matrix.example.org
 server.trusted_proxies=
@@ -21,6 +29,14 @@ server.trusted_proxies=
 # allow_credentials=true is rejected at parse time when combined with a
 # wildcard '*' origin (CORS spec violation).
 # max_age is how long the browser may cache the preflight result, in seconds.
+#
+# WARNING: When allowed_origins is non-empty, Merovingian emits
+# Access-Control-Allow-Origin on every /_matrix/ response.  Your reverse
+# proxy MUST NOT also add Access-Control-Allow-Origin.  Duplicate header
+# values (e.g. "*, *") cause browsers to reject the response with a CORS
+# error — clients will show "Failed to connect" even though the server
+# returns HTTP 200.  Remove any CORS add_header / Header directives from
+# nginx, Apache, HAProxy, or Traefik configs.
 server.cors.allowed_origins=*
 server.cors.allow_methods=GET, POST, PUT, DELETE, OPTIONS
 server.cors.allow_headers=authorization, content-type
@@ -127,7 +143,7 @@ security.logging.structured=true
 client_rate_limits.per_ip./_matrix/client/v3/login=20/60s
 client_rate_limits.per_ip./_matrix/client/v3/register=20/60s
 client_rate_limits.per_user./_matrix/client/v3/login=5/60s
-client_rate_limits.default_per_ip=60/60s
+client_rate_limits.default_per_ip=90/60s
 
 # Per-module log level overrides (0.5.0)
 # Each entry maps a logger name to a level (trace|debug|info|notice|

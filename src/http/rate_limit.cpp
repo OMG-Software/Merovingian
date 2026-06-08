@@ -79,7 +79,7 @@ auto endpoint_default_rate_limit(std::string_view method, std::string_view targe
         return {120U, 60U};
     }
 
-    return {60U, 60U};
+    return {90U, 60U};
 }
 
 auto rate_limit_summary(RateLimitPolicy const& policy) -> std::string

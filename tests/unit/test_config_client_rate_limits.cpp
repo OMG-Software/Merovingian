@@ -38,15 +38,15 @@ SCENARIO("Default config leaves the per-IP and per-user maps empty and falls bac
         {
             auto const result = parse_key_value_config(input);
 
-            THEN("the per-IP and per-user maps are empty and default_per_ip is the 60/60s fallback")
+            THEN("the per-IP and per-user maps are empty and default_per_ip is the 90/60s fallback")
             {
                 REQUIRE(result.findings.empty());
                 auto const& limits = result.config.client_rate_limits();
                 REQUIRE(limits.per_ip.empty());
                 REQUIRE(limits.per_user.empty());
                 // The struct default keeps the rate-limit engine's
-                // "everything else" bucket at 60 requests per 60s.
-                REQUIRE(limits.default_per_ip.max_requests == 60U);
+                // "everything else" bucket at 90 requests per 60s.
+                REQUIRE(limits.default_per_ip.max_requests == 90U);
                 REQUIRE(limits.default_per_ip.window_seconds == 60U);
             }
         }
