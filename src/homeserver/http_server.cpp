@@ -28,6 +28,8 @@
 #include <cxxabi.h>
 #endif
 
+#include <arpa/inet.h>
+#include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
@@ -40,6 +42,32 @@ namespace
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
     {
         LOG_DEBUG(observability::diagnostic_log_summary("http_server", event, std::move(fields)));
+    }
+
+    // Convert the peer sockaddr captured at accept() time to a dotted-decimal
+    // (IPv4) or colon-separated (IPv6) string. Returns an empty string when
+    // the address family is unknown rather than crashing — the rate limiter
+    // treats empty as "unknown" and falls back to the synthetic global bucket.
+    [[nodiscard]] auto peer_addr_to_string(sockaddr_storage const& sa) noexcept -> std::string
+    {
+        char buf[INET6_ADDRSTRLEN] = {};
+        if (sa.ss_family == AF_INET)
+        {
+            auto const* in4 = reinterpret_cast<sockaddr_in const*>(&sa);
+            if (::inet_ntop(AF_INET, &in4->sin_addr, buf, sizeof(buf)) == nullptr)
+            {
+                return {};
+            }
+        }
+        else if (sa.ss_family == AF_INET6)
+        {
+            auto const* in6 = reinterpret_cast<sockaddr_in6 const*>(&sa);
+            if (::inet_ntop(AF_INET6, &in6->sin6_addr, buf, sizeof(buf)) == nullptr)
+            {
+                return {};
+            }
+        }
+        return {buf};
     }
 
     // C2: the three swallowed-exception sites in this file (sync wait, sync
@@ -416,17 +444,22 @@ namespace
         return std::string{authorization.substr(prefix.size())};
     }
 
-    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body) -> LocalHttpRequest
+    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body,
+                                            std::string_view peer_addr) -> LocalHttpRequest
     {
         auto request = LocalHttpRequest{};
         request.method = head.method;
         request.target = head.target;
         request.body = std::move(body);
+        // Copy all request headers so downstream code (CORS, trusted-proxy
+        // X-Forwarded-For resolution) has the full wire header set.
+        request.headers = head.headers;
         auto const authorization = find_header_value(head, "authorization");
         if (!authorization.empty())
         {
             request.access_token = extract_bearer_token(authorization);
         }
+        request.remote_addr = std::string{peer_addr};
         return request;
     }
 
@@ -475,7 +508,8 @@ namespace
     // NOT shut down or close it). Returns false in all other cases — the caller
     // retains ownership of the fd.
     [[nodiscard]] auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, HttpServeStats& stats,
-                                    HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool) -> bool
+                                    HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool,
+                                    std::string_view peer_addr = {}) -> bool
     {
         auto const limits = http::RequestLimits{};
         auto const head_cap = header_size_cap(limits);
@@ -544,7 +578,7 @@ namespace
             }
         }
 
-        auto const local_request = build_local_request(parse.request, std::move(body));
+        auto const local_request = build_local_request(parse.request, std::move(body), peer_addr);
         log_diagnostic("request.dispatch",
                        {
                            {"method",           local_request.method,                                       false},
@@ -671,10 +705,11 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
 }
 
 auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
-                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool) -> bool
+                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool,
+                               std::string_view peer_addr) -> bool
 {
     auto stream = PlainConnectionStream{client_fd};
-    return serve_stream(stream, runtime, stats, dispatch_mode, sync_pool);
+    return serve_stream(stream, runtime, stats, dispatch_mode, sync_pool, peer_addr);
 }
 
 auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::ShutdownSignal& shutdown,
@@ -707,7 +742,9 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
             continue;
         }
 
-        auto raw_client = ::accept(acceptor.fd(), nullptr, nullptr);
+        sockaddr_storage peer_sa{};
+        socklen_t peer_len = sizeof(peer_sa);
+        auto raw_client = ::accept(acceptor.fd(), reinterpret_cast<sockaddr*>(&peer_sa), &peer_len);
         if (raw_client < 0)
         {
             if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
@@ -729,16 +766,17 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
             });
             return;
         }
+        auto peer_addr = peer_addr_to_string(peer_sa);
         // Release from SocketHandle so the fd ownership transfers into the
         // pool lambda. If the pool is stopping, submit returns false and we
         // close the fd immediately. Inside the lambda the fd is wrapped in a
         // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
         auto fd = client.release();
-        auto submitted = pool.submit([&runtime, &stats, dispatch_mode, sync_pool, fd] {
+        auto submitted = pool.submit([&runtime, &stats, dispatch_mode, sync_pool, fd, peer_addr = std::move(peer_addr)] {
             auto guard = core::SocketHandle{fd};
             ++stats.accepted_connections;
-            auto const handed_off = serve_one_http_connection(fd, runtime, stats, dispatch_mode, sync_pool);
+            auto const handed_off = serve_one_http_connection(fd, runtime, stats, dispatch_mode, sync_pool, peer_addr);
             if (handed_off)
             {
                 // The sync pool thread owns the fd; do NOT shut it down here.
@@ -789,7 +827,9 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
             continue;
         }
 
-        auto raw_client = ::accept(acceptor.fd(), nullptr, nullptr);
+        sockaddr_storage tls_peer_sa{};
+        socklen_t tls_peer_len = sizeof(tls_peer_sa);
+        auto raw_client = ::accept(acceptor.fd(), reinterpret_cast<sockaddr*>(&tls_peer_sa), &tls_peer_len);
         if (raw_client < 0)
         {
             if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)
@@ -809,30 +849,32 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
             });
             return;
         }
+        auto tls_peer_addr = peer_addr_to_string(tls_peer_sa);
         // Release from SocketHandle so the fd ownership transfers into the
         // pool lambda. If the pool is stopping, submit returns false and we
         // close the fd immediately. Inside the lambda the fd is wrapped in a
         // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
         auto fd = client.release();
-        auto submitted = pool.submit([&tls_context, &runtime, &stats, dispatch_mode, fd] {
-            auto guard = core::SocketHandle{fd};
-            ++stats.accepted_connections;
-            auto accepted_tls = accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
-            if (!accepted_tls.ok())
-            {
-                ++stats.rejected_requests;
-                log_diagnostic("tls.handshake.rejected", {
-                                                             {"reason", accepted_tls.error, false}
-                });
-                std::ignore = ::shutdown(fd, SHUT_RDWR);
-                return;
-                // ~SocketHandle closes fd on both normal and exceptional exit.
-            }
-            auto stream = TlsConnectionStream{*accepted_tls.connection};
-            // TLS async offload is not yet implemented; sync waits block the
-            // pool thread (nullptr sync_pool = fall back to synchronous wait).
-            std::ignore = serve_stream(stream, runtime, stats, dispatch_mode, nullptr);
+        auto submitted =
+            pool.submit([&tls_context, &runtime, &stats, dispatch_mode, fd, tls_peer_addr = std::move(tls_peer_addr)] {
+                auto guard = core::SocketHandle{fd};
+                ++stats.accepted_connections;
+                auto accepted_tls = accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
+                if (!accepted_tls.ok())
+                {
+                    ++stats.rejected_requests;
+                    log_diagnostic("tls.handshake.rejected", {
+                                                                 {"reason", accepted_tls.error, false}
+                    });
+                    std::ignore = ::shutdown(fd, SHUT_RDWR);
+                    return;
+                    // ~SocketHandle closes fd on both normal and exceptional exit.
+                }
+                auto stream = TlsConnectionStream{*accepted_tls.connection};
+                // TLS async offload is not yet implemented; sync waits block the
+                // pool thread (nullptr sync_pool = fall back to synchronous wait).
+                std::ignore = serve_stream(stream, runtime, stats, dispatch_mode, nullptr, tls_peer_addr);
             std::ignore = ::shutdown(fd, SHUT_RDWR);
             // ~SocketHandle closes fd.
         });

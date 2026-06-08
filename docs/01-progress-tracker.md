@@ -1,3 +1,35 @@
+## v0.5.28 (fix/per-ip-rate-limit-artifact-signing)
+
+### Security: Per-IP rate limiting and release provenance
+
+#### Finding 5 — Unauthenticated rate limiting was process-global per route
+
+**Root cause**: `LocalHttpRequest` had no `remote_addr` field. Every unauthenticated request was bucketed under `"local|<normalised-route>"`, so a single source IP could exhaust the login/register window (5 per 60 s) for all other clients.
+
+**Fix**:
+- Added `std::string remote_addr{}` to `LocalHttpRequest`.
+- Capture peer address at `::accept()` using `sockaddr_storage` + `inet_ntop` in both `serve_http` and `serve_tls_http`; formatted string moved into the pool lambda and threaded through `serve_one_http_connection` → `serve_stream` → `build_local_request`.
+- `allow()` in `client_server.cpp` now builds `ip_key = "<effective_ip>|<normalised_route>"`.
+- Trusted-proxy support: if `remote_addr` is in `server.trusted_proxies`, the leftmost `X-Forwarded-For` address is used as the effective IP, isolating downstream clients behind a reverse proxy.
+- `effective_ip` emitted in the `rate_limit.exceeded` audit row.
+
+#### Finding 7 — Release artifacts had no provenance attestations
+
+**Root cause**: The alpha release workflow produced tarballs and SHA-256 checksums only. No signed provenance chain existed for downloaded assets.
+
+**Fix**: Both `linux-alpha-package` and `freebsd-alpha-package` jobs now run `actions/attest-build-provenance@v2` immediately after the checksum step, publishing a SLSA provenance attestation for each tarball. Jobs updated with `attestations: write` and `id-token: write` permissions. Attestations are verifiable with `gh attestation verify`. Release notes updated to reference the provenance step.
+
+| File | Change |
+|------|--------|
+| `include/merovingian/homeserver/local_http_router.hpp` | Add `remote_addr` field to `LocalHttpRequest` |
+| `include/merovingian/homeserver/http_server.hpp` | Update `serve_one_http_connection` signature to accept `peer_addr` |
+| `src/homeserver/http_server.cpp` | Peer addr capture at `::accept()`; `peer_addr_to_string()`; thread through `serve_stream` + `build_local_request` |
+| `src/homeserver/client_server.cpp` | `allow()`: trusted-proxy X-Forwarded-For resolution; per-IP bucket key |
+| `.github/workflows/release.yml` | SLSA provenance attestation steps in both build jobs |
+| `tests/unit/test_client_server.cpp` | BDD scenarios: per-IP isolation and trusted-proxy XFF keying |
+
+---
+
 ## v0.5.27 (fix/send-join-state-empty-state-key)
 
 ### Bug fix: send_join state ingestion — empty `state_key` events dropped from state table

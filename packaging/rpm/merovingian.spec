@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.27
+Version:        0.5.28
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,10 +89,18 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.28-1
+- Fix F5: add remote_addr to LocalHttpRequest; key unauthenticated rate-limit
+  buckets by (source-IP, route) instead of a process-global synthetic key;
+  honour X-Forwarded-For from configured trusted proxies.
+- Fix F7: add SLSA provenance attestations to alpha release workflow via
+  actions/attest-build-provenance.
+
 * Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.27-1
 - Fix send_join state ingestion: state events with empty state_key (m.room.encryption,
   m.room.create, m.room.power_levels, etc.) are now correctly written to the state table
   when joining a remote room via federation.
+
 * Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.25-1
 - Fix F3: accept relayed federation PDUs whose sender domain differs from the
   transaction origin; remove incorrect sender-domain == origin constraint.
