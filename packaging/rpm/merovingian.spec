@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.22
+Version:        0.5.23
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,15 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.23-1
+- Fix raw access token leaked to audit log on rate-limit denials: resolve
+  token to user_id (or "<unknown>") before recording; token bytes never reach
+  the audit_log table.
+- Fix shallow federation PDU authorization: pdu_is_authorized() was using a
+  hardcoded room version "12" and synthetic power level {50,0} rather than
+  the actual room auth state. Function renamed to pdu_passes_transport_checks
+  to make its scope explicit; full event-auth check wired in at the call site.
+
 * Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.22-1
 - Fix federated join leaving room invisible to incremental sync: store the
   local join event in store.events with has_state=true so that

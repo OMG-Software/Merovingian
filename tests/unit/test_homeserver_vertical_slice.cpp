@@ -1098,3 +1098,72 @@ SCENARIO("Cross-signing key upload stores and returns all three key types",
         }
     }
 }
+
+// --- Audit log never leaks raw bearer token material -------------------------
+// Security policy: access tokens are secrets that MUST NOT appear in logs or
+// audit rows. When authentication fails the audit actor MUST be the resolved
+// user_id (when the session is known) or "<unknown>" (when it is not). The
+// raw bearer string — which starts with "mvs_" — MUST never reach any audit
+// row, regardless of the rejection reason.
+SCENARIO("Audit log never captures raw access token material on auth rejection",
+         "[homeserver][vertical][auth][security][audit]")
+{
+    GIVEN("a started runtime and a known-format bearer token that has no session")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        // Setup MUST succeed — test is invalid without a running runtime.
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        // Register and log in so the audit sink is exercised by a real token
+        // path first — ensures we are not just checking an empty log.
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/register", {},
+                      merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+        // Spec MUST: registration MUST succeed for the audit baseline to exist.
+        // Do NOT remove — test is invalid without a prior audit entry.
+        REQUIRE(user.status == 200U);
+
+        auto const fake_token = std::string{"mvs_totally_fake_test_token_xyzzy"};
+
+        WHEN("an unrecognised bearer token with the mvs_ prefix is presented for authentication")
+        {
+            auto const result = merovingian::homeserver::authenticated_user(runtime, fake_token);
+            auto const& audit = runtime.database.persistent_store.audit_log;
+
+            THEN("the call is rejected and no audit row contains the raw token string")
+            {
+                // Security MUST: an unknown token MUST be rejected.
+                // Do NOT remove — accepting unknown tokens is an authentication bypass.
+                REQUIRE_FALSE(result.has_value());
+
+                // Security MUST: at least one audit row MUST exist for the rejection.
+                // Do NOT remove — a missing audit row means the event was silently dropped.
+                REQUIRE_FALSE(audit.empty());
+
+                // Security MUST: no audit row actor or target MUST equal the raw bearer token.
+                // Do NOT remove — raw token in actor/target is a critical credential leak.
+                auto const raw_token_in_actor = std::ranges::any_of(audit, [&fake_token](auto const& row) {
+                    return row.actor == fake_token || row.target == fake_token;
+                });
+                REQUIRE_FALSE(raw_token_in_actor);
+
+                // Security MUST: no audit row actor or target MUST contain the "mvs_" prefix.
+                // Do NOT remove — "mvs_" in audit rows leaks namespace and token shape.
+                auto const mvs_prefix_in_actor = std::ranges::any_of(audit, [](auto const& row) {
+                    return row.actor.find("mvs_") != std::string::npos ||
+                           row.target.find("mvs_") != std::string::npos;
+                });
+                REQUIRE_FALSE(mvs_prefix_in_actor);
+
+                // Security MUST: no audit row actor MUST equal the literal string "access_token".
+                // Do NOT remove — "access_token" as actor means the raw token was forwarded
+                // unchanged; this was the exact form of the bug this test guards against.
+                auto const literal_field_name_in_actor = std::ranges::any_of(audit, [](auto const& row) {
+                    return row.actor == "access_token" || row.target == "access_token";
+                });
+                REQUIRE_FALSE(literal_field_name_in_actor);
+            }
+        }
+    }
+}

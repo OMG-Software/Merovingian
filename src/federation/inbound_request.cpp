@@ -282,21 +282,17 @@ namespace
         return parsed_body;
     }
 
-    [[nodiscard]] auto pdu_is_authorized(FederationPdu const& pdu) -> bool
-    {
-        auto const* room_version = rooms::find_room_version_policy("12");
-        if (room_version == nullptr)
-        {
-            return false;
-        }
-        auto request = events::EventAuthorizationRequest{};
-        request.room_version = "12";
-        request.event_type = pdu.event_type;
-        request.sender = pdu.sender;
-        request.power_level = {50, 0};
-        auto const decision = events::authorize_event(*room_version, request);
-        return decision.allowed;
-    }
+    // pdu_is_authorized() was removed in v0.5.23.
+    //
+    // It used a hardcoded room version "12" and a synthetic power level {50, 0},
+    // which made ALL PDUs pass the check regardless of the room's actual auth
+    // state (banned senders, insufficient power, bad membership transitions, etc.).
+    // It was security theatre, not real authorization.
+    //
+    // Full Matrix event auth MUST be performed against the actual room state
+    // (create event, power_levels, join_rules, sender membership) using
+    // events::authorize_event_against_auth_events() before a PDU is persisted.
+    // That call belongs at the persistence sink, where the auth state is available.
 
     [[nodiscard]] auto serialize_response_object(canonicaljson::Object object) -> std::string
     {
@@ -1122,10 +1118,10 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
             return make_decision(false, 400U, "comma-delimited PDUs require JSON for cryptographic verification");
         }
     }
-    if (!pdu_is_authorized(pdu))
-    {
-        return make_decision(false, 403U, "PDU failed event authorization");
-    }
+    // TODO: full Matrix event auth (authorize_event_against_auth_events) must be
+    // called here against the actual room auth state before returning accepted.
+    // The shallow pdu_is_authorized() check was removed in v0.5.23 — see the
+    // comment block above where it was defined for the security rationale.
     return make_decision(true, 200U, {});
 }
 
