@@ -1871,6 +1871,114 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     return candidates;
 }
 
+// Persists the `state` array from a send_join response. Each event is stored to
+// the persistent event graph. Events that carry a "state_key" field in their raw
+// JSON (even when that value is "") are also written to the state table. That is
+// the correct discriminant per the Matrix spec: any event with a "state_key"
+// field is a state event, regardless of whether the value is empty.
+//
+// Returns the user IDs with membership="join" found within the ingested events.
+//
+// IMPORTANT: this function is also called directly from unit tests to verify
+// that state events with empty state_key (m.room.encryption, m.room.create, etc.)
+// are correctly persisted. Do NOT change the state-key check without updating the
+// corresponding test in tests/unit/test_federation_invite_join.cpp.
+[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime,
+                                          canonicaljson::Array const& state_arr,
+                                          rooms::RoomVersionPolicy const& policy)
+    -> std::vector<std::string>
+{
+    auto joined_members = std::vector<std::string>{};
+    for (auto const& state_entry : state_arr)
+    {
+        auto const serialized = canonicaljson::serialize_canonical(state_entry);
+        if (serialized.error == canonicaljson::CanonicalJsonError::none)
+        {
+            auto const parsed = events::parse_event_envelope(state_entry);
+            if (parsed.error.empty())
+            {
+                auto const* entry_obj = std::get_if<canonicaljson::Object>(&state_entry.storage());
+                auto event_id = std::string{};
+                if (entry_obj != nullptr)
+                {
+                    if (policy.event_id_format == rooms::EventIdFormat::reference_hash)
+                    {
+                        auto const eid = events::make_reference_hash_event_id(state_entry, policy);
+                        event_id = eid.event_id;
+                    }
+                    else
+                    {
+                        auto const* id_field = json_string_member(*entry_obj, "event_id");
+                        if (id_field != nullptr)
+                        {
+                            event_id = *id_field;
+                        }
+                    }
+                }
+                auto depth = std::uint64_t{0U};
+                if (entry_obj != nullptr)
+                {
+                    if (auto const* d = json_integer_member(*entry_obj, "depth"); d != nullptr && *d >= 0)
+                    {
+                        depth = static_cast<std::uint64_t>(*d);
+                    }
+                }
+                auto prev_ids = std::vector<std::string>{};
+                auto auth_ids = std::vector<std::string>{};
+                if (entry_obj != nullptr)
+                {
+                    if (auto const* pv = json_object_member(*entry_obj, "prev_events"); pv != nullptr)
+                    {
+                        prev_ids = json_string_array(*pv);
+                    }
+                    if (auto const* av = json_object_member(*entry_obj, "auth_events"); av != nullptr)
+                    {
+                        auth_ids = json_string_array(*av);
+                    }
+                }
+                auto const stream_ordering = runtime.database.next_stream_ordering++;
+                // A state event is identified by the PRESENCE of the "state_key" field
+                // in the raw JSON, even when its value is "". EventEnvelope::state_key
+                // defaults to "" both for state events with state_key="" AND for
+                // non-state events (where the field is absent), so .empty() cannot
+                // distinguish the two. Check the raw JSON field instead.
+                auto state = std::optional<database::PersistentStateEvent>{};
+                if (entry_obj != nullptr)
+                {
+                    if (auto const* raw_sk = json_string_member(*entry_obj, "state_key");
+                        raw_sk != nullptr)
+                    {
+                        state = database::PersistentStateEvent{parsed.event.room_id,
+                                                               parsed.event.event_type, *raw_sk,
+                                                               event_id};
+                    }
+                }
+                auto pe = database::PersistentEvent{};
+                pe.event_id = event_id;
+                pe.room_id = parsed.event.room_id;
+                pe.sender_user_id = parsed.event.sender;
+                pe.json = serialized.output;
+                pe.depth = depth;
+                pe.stream_ordering = stream_ordering;
+                pe.prev_event_ids = std::move(prev_ids);
+                pe.auth_event_ids = std::move(auth_ids);
+                pe.signatures = parsed.event.signatures;
+                std::ignore = database::store_event_with_state(runtime.database.persistent_store,
+                                                               std::move(pe), state);
+                // Track joined members for the in-memory LocalRoom population step.
+                // state_key is non-empty for membership events (it holds the user ID).
+                if (parsed.event.event_type == "m.room.member" &&
+                    !parsed.event.state_key.empty() &&
+                    events::extract_content_membership(state_entry) == "join")
+                {
+                    append_unique_member(joined_members, parsed.event.state_key);
+                }
+            }
+        }
+    }
+    return joined_members;
+}
+
 [[nodiscard]] auto join_room(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                              std::vector<std::string> const& via_servers) -> OperationResult
 {
@@ -2163,79 +2271,14 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             auto const* state_arr = std::get_if<canonicaljson::Array>(&state_arr_member->value->storage());
             if (state_arr != nullptr)
             {
-                for (auto const& state_entry : *state_arr)
+                // Persist every state event in the send_join response. ingest_send_join_state
+                // correctly handles events with empty state_key (m.room.encryption,
+                // m.room.create, m.room.power_levels, etc.) by checking the raw JSON for
+                // the presence of the "state_key" field rather than its emptiness.
+                auto const state_members = ingest_send_join_state(runtime, *state_arr, *policy);
+                for (auto const& m : state_members)
                 {
-                    auto const serialized = canonicaljson::serialize_canonical(state_entry);
-                    if (serialized.error == canonicaljson::CanonicalJsonError::none)
-                    {
-                        auto const parsed = events::parse_event_envelope(state_entry);
-                        if (parsed.error.empty())
-                        {
-                            auto const* entry_obj = std::get_if<canonicaljson::Object>(&state_entry.storage());
-                            auto event_id = std::string{};
-                            if (entry_obj != nullptr)
-                            {
-                                if (policy->event_id_format == rooms::EventIdFormat::reference_hash)
-                                {
-                                    auto const eid = events::make_reference_hash_event_id(state_entry, *policy);
-                                    event_id = eid.event_id;
-                                }
-                                else
-                                {
-                                    auto const* id_field = json_string_member(*entry_obj, "event_id");
-                                    if (id_field != nullptr)
-                                    {
-                                        event_id = *id_field;
-                                    }
-                                }
-                            }
-                            auto depth = std::uint64_t{0U};
-                            if (entry_obj != nullptr)
-                            {
-                                if (auto const* d = json_integer_member(*entry_obj, "depth"); d != nullptr && *d >= 0)
-                                {
-                                    depth = static_cast<std::uint64_t>(*d);
-                                }
-                            }
-                            auto prev_ids = std::vector<std::string>{};
-                            auto auth_ids = std::vector<std::string>{};
-                            if (entry_obj != nullptr)
-                            {
-                                if (auto const* pv = json_object_member(*entry_obj, "prev_events"); pv != nullptr)
-                                {
-                                    prev_ids = json_string_array(*pv);
-                                }
-                                if (auto const* av = json_object_member(*entry_obj, "auth_events"); av != nullptr)
-                                {
-                                    auth_ids = json_string_array(*av);
-                                }
-                            }
-                            auto const stream_ordering = runtime.database.next_stream_ordering++;
-                            auto state = std::optional<database::PersistentStateEvent>{};
-                            if (!parsed.event.state_key.empty())
-                            {
-                                state = database::PersistentStateEvent{parsed.event.room_id, parsed.event.event_type,
-                                                                       parsed.event.state_key, event_id};
-                            }
-                            auto pe = database::PersistentEvent{};
-                            pe.event_id = event_id;
-                            pe.room_id = parsed.event.room_id;
-                            pe.sender_user_id = parsed.event.sender;
-                            pe.json = serialized.output;
-                            pe.depth = depth;
-                            pe.stream_ordering = stream_ordering;
-                            pe.prev_event_ids = std::move(prev_ids);
-                            pe.auth_event_ids = std::move(auth_ids);
-                            pe.signatures = parsed.event.signatures;
-                            std::ignore = database::store_event_with_state(runtime.database.persistent_store,
-                                                                           std::move(pe), state);
-                            if (parsed.event.event_type == "m.room.member" && !parsed.event.state_key.empty() &&
-                                events::extract_content_membership(state_entry) == "join")
-                            {
-                                append_unique_member(joined_members, parsed.event.state_key);
-                            }
-                        }
-                    }
+                    append_unique_member(joined_members, m);
                 }
             }
         }

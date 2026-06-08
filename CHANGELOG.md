@@ -1,3 +1,27 @@
+## 0.5.27
+
+- **Bug fix (send_join state ingestion — empty state_key):** When a local user
+  joined a remote room via federation, the `state[]` array from the `send_join`
+  response was processed with an incorrect condition: `!parsed.event.state_key.empty()`.
+  `EventEnvelope::state_key` defaults to `""` for *both* state events with
+  `state_key=""` (e.g. `m.room.encryption`, `m.room.create`, `m.room.power_levels`,
+  `m.room.join_rules`) *and* non-state events (where the JSON field is absent
+  entirely). The check therefore silently dropped every empty-state-key event from
+  the state table. Only membership events (whose `state_key` is a user ID) were
+  written correctly.
+
+  Consequence: after a federated join, `store.state` contained only membership rows.
+  The post-join sync omitted `m.room.encryption` from the room state, preventing
+  E2E encryption setup — the joining user could not decrypt room content or send
+  messages.
+
+  Fix: extracted the state ingestion loop into `ingest_send_join_state()` and
+  replaced the `.empty()` check with a raw-JSON `"state_key"` field-presence check
+  via `json_string_member(*entry_obj, "state_key") != nullptr`. A state event is any
+  event whose JSON carries a `"state_key"` field, regardless of whether its value is
+  empty. Added a BDD regression test (`ingest_send_join_state writes empty-state-key
+  events to store.state`) in `tests/unit/test_federation_invite_join.cpp`.
+
 ## 0.5.25
 
 - **Security (Finding 3 — Federation PDU relay):** `authorize_federation_pdu()`

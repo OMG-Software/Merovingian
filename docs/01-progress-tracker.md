@@ -1,3 +1,44 @@
+## v0.5.27 (fix/send-join-state-empty-state-key)
+
+### Bug fix: send_join state ingestion — empty `state_key` events dropped from state table
+
+**Symptoms**: After `@jcc:pong.ping.me.uk` (Merovingian) joined a remote encrypted
+room (`m.megolm.v1.aes-sha2`) hosted on Synapse, the user was unable to decrypt
+room content or send messages. Server log confirmed `has_state=false` for every
+non-membership state event in the `send_join` response.
+
+**Root cause**: In `join_room()` (`src/homeserver/room_service.cpp`), the state
+ingestion loop checked `!parsed.event.state_key.empty()` to decide whether to write
+a state row. `EventEnvelope::state_key` is a plain `std::string` that defaults to
+`""` both for state events with `state_key=""` *and* for non-state events (where the
+JSON field is absent). The `.empty()` check is therefore indistinguishable — it
+silently dropped every empty-`state_key` event (`m.room.encryption`, `m.room.create`,
+`m.room.power_levels`, `m.room.join_rules`, `m.room.history_visibility`, etc.) from
+the state table. Only membership events (whose `state_key` is a non-empty user ID)
+were written correctly.
+
+Result: `store.state` for a remotely joined room contained only membership rows. The
+post-join sync therefore omitted `m.room.encryption` from the room state section,
+preventing E2E encryption setup.
+
+**Fix**: Extracted the state ingestion loop into `ingest_send_join_state()` (now
+declared in `room_service.hpp`). Replaced `!parsed.event.state_key.empty()` with a
+raw-JSON field-presence check: `json_string_member(*entry_obj, "state_key") != nullptr`.
+This correctly handles the three cases:
+- `"state_key":""` → pointer to `""` (not null) → state row written ✓
+- `"state_key":"@user:server"` → pointer to user ID (not null) → state row written ✓
+- no `"state_key"` field → `nullptr` → no state row (non-state event) ✓
+
+| File | Change |
+|------|--------|
+| `include/merovingian/homeserver/room_service.hpp` | Add `ingest_send_join_state()` declaration; add `rooms/room_version_policy.hpp` include |
+| `src/homeserver/room_service.cpp` | Extract state loop into `ingest_send_join_state()`; fix the state-key check; replace inline loop in `join_room()` with call |
+| `tests/unit/test_federation_invite_join.cpp` | New BDD scenario `"ingest_send_join_state writes empty-state-key events to store.state"` with four THENs covering `m.room.encryption`, `m.room.create`, non-empty member, and returned join-membership list |
+
+**Tests**: 47/47 pass.
+
+---
+
 ## v0.5.25 (fix/federation-pdu-origin-otk-room-version)
 
 ### Security: Three federation/E2EE findings fixed

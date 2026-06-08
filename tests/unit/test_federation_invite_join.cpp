@@ -41,6 +41,7 @@
 #include "merovingian/homeserver/local_http_router.hpp"
 #include "merovingian/homeserver/room_service.hpp"
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/rooms/room_version_policy.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -1442,6 +1443,134 @@ SCENARIO("join_room retries federation for a remote room when persistent members
                 });
                 // The stale room is removed so it does not block a future join attempt.
                 REQUIRE_FALSE(still_there);
+            }
+        }
+    }
+}
+
+// --- send_join state ingestion: empty state_key events reach store.state -------
+// Spec: Matrix Server-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+//
+// The Matrix spec defines a state event as any event whose JSON carries a
+// "state_key" field. The value of that field may be empty (""). Events such as
+// m.room.create, m.room.power_levels, m.room.encryption, m.room.history_visibility,
+// and m.room.join_rules all use state_key="". They MUST be written to the state
+// table when processing the state[] array from a send_join response.
+//
+// The bug: the original code checked `!parsed.event.state_key.empty()` to decide
+// whether to create a state row. EventEnvelope::state_key defaults to "" both for
+// (a) state events with state_key="" and (b) non-state events (no "state_key"
+// field at all). The .empty() check is therefore indistinguishable — it incorrectly
+// excluded every empty-state-key event from the state table.
+//
+// The consequence: after a federated join, store.state contained only membership
+// rows. The post-join sync omitted m.room.encryption, m.room.create, etc. from the
+// room state section. The joining client could not set up E2E encryption, leaving
+// the user unable to decrypt messages or send new ones to the room.
+//
+// The fix: check whether the raw JSON Object carries a "state_key" field at all,
+// regardless of its value.
+SCENARIO("ingest_send_join_state writes empty-state-key events to store.state",
+         "[homeserver][federation][send_join][e2ee][spec]")
+{
+    GIVEN("a send_join response state array with m.room.encryption and m.room.create (state_key=\"\")")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const room_id = std::string{"!enc_room:matrix.example.org"};
+        auto const creator  = std::string{"@creator:matrix.example.org"};
+
+        // A minimal state array as a remote Synapse returns in send_join.
+        // Three event types cover both code paths:
+        //   m.room.create     — state_key=""  (was silently dropped by the bug)
+        //   m.room.encryption — state_key=""  (the critical E2E event, also dropped)
+        //   m.room.member     — state_key=user_id  (non-empty, always worked)
+        auto const state_json =
+            std::string{
+                R"([)"
+                R"({"type":"m.room.create","state_key":"","room_id":")" + room_id + R"(",)"
+                R"("sender":")" + creator + R"(","depth":1,"origin_server_ts":1000,)"
+                R"("prev_events":[],"auth_events":[],"hashes":{"sha256":"aGFzaA"},)"
+                R"("content":{"room_version":"10"},)"
+                R"("signatures":{"matrix.example.org":{"ed25519:auto":"aaaa"}}},)"
+                R"({"type":"m.room.encryption","state_key":"","room_id":")" + room_id + R"(",)"
+                R"("sender":")" + creator + R"(","depth":2,"origin_server_ts":1000,)"
+                R"("prev_events":[],"auth_events":[],"hashes":{"sha256":"aGFzaA"},)"
+                R"("content":{"algorithm":"m.megolm.v1.aes-sha2"},)"
+                R"("signatures":{"matrix.example.org":{"ed25519:auto":"aaaa"}}},)"
+                R"({"type":"m.room.member","state_key":")" + creator + R"(","room_id":")" + room_id + R"(",)"
+                R"("sender":")" + creator + R"(","depth":3,"origin_server_ts":1000,)"
+                R"("prev_events":[],"auth_events":[],"hashes":{"sha256":"aGFzaA"},)"
+                R"("content":{"membership":"join"},)"
+                R"("signatures":{"matrix.example.org":{"ed25519:auto":"aaaa"}}})"
+                R"(])"};
+
+        auto const parsed_arr = merovingian::canonicaljson::parse_lossless(state_json);
+        REQUIRE(parsed_arr.error == merovingian::canonicaljson::ParseError::none);
+        auto const* arr =
+            std::get_if<merovingian::canonicaljson::Array>(&parsed_arr.value.storage());
+        REQUIRE(arr != nullptr);
+        REQUIRE(arr->size() == 3U);
+
+        // Room version 10 policy: reference-hash event IDs, standard v6+ auth rules.
+        auto const policy = merovingian::rooms::RoomVersionPolicy{
+            .id              = "10",
+            .event_id_format = merovingian::rooms::EventIdFormat::reference_hash,
+        };
+
+        WHEN("the state array is ingested via ingest_send_join_state")
+        {
+            auto const members = merovingian::homeserver::ingest_send_join_state(runtime, *arr, policy);
+
+            THEN("m.room.encryption is present in store.state with state_key=\"\"")
+            {
+                // Spec MUST: the "state_key" field is present (value "") → this IS a
+                // state event and MUST appear in the state table after ingestion.
+                // If it is absent, the post-join sync omits it from the room state and
+                // the joining client cannot set up E2E encryption.
+                // Do NOT remove — this is the primary regression guard for the
+                // !state_key.empty() bug that caused E2E failures on federated joins.
+                auto const& state = runtime.database.persistent_store.state;
+                auto const has_encryption = std::any_of(state.begin(), state.end(), [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.encryption" &&
+                           s.state_key.empty();
+                });
+                REQUIRE(has_encryption);
+            }
+
+            THEN("m.room.create is present in store.state with state_key=\"\"")
+            {
+                // m.room.create also uses state_key="". Without it in state, clients
+                // cannot determine the room version and auth-rule lookups fail.
+                auto const& state = runtime.database.persistent_store.state;
+                auto const has_create = std::any_of(state.begin(), state.end(), [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.create" &&
+                           s.state_key.empty();
+                });
+                REQUIRE(has_create);
+            }
+
+            THEN("m.room.member with non-empty state_key is also in store.state")
+            {
+                // Non-empty state_key membership events must continue to be stored.
+                // This guards the non-regression of the path that previously worked.
+                auto const& state = runtime.database.persistent_store.state;
+                auto const has_member = std::any_of(state.begin(), state.end(), [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.member" &&
+                           s.state_key == creator;
+                });
+                REQUIRE(has_member);
+            }
+
+            THEN("the join-membership user IDs from the state array are returned")
+            {
+                // ingest_send_join_state must return the user IDs with membership="join"
+                // so join_room can populate the in-memory LocalRoom.members list.
+                REQUIRE(std::find(members.begin(), members.end(), creator) != members.end());
             }
         }
     }
