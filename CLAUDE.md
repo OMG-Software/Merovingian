@@ -1,5 +1,5 @@
 ## Project Overview
-The most secure Matrix Protocol homeserver ever created. Secure by design, implementation, and during runtime. Bulletproof!
+The most secure Matrix Protocol homeserver ever created. Secure by design, implementation, and during runtime.
 
 ## Language & Stack
 - C++26
@@ -31,7 +31,7 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - If something is ambiguous, ask clarifying questions, never assume.
 - Prefer simple, readable solutions over clever ones.
 - Flag potential bugs or edge cases after the code explanation if relevant.
-- With every change, update the documents in the docs folder.
+- With every change, update the relevant docs. See `docs/CLAUDE.md` for the full list of which documents to update and when.
 - Use behaviour driven development in a GIVEN WHEN THEN style.
 - Tests should test behaviour and state rather than specific outcomes.
 - Create a new test(s) for the desired outcome prior to making the code change.
@@ -43,7 +43,7 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Ignore `.clwb` folder.
 - Always work in feature or bug branches, never main.
 - Make the correct change for the ask, not the smallest.
-- Update docs\01-progress-tracker.md on each change, along with the other docs including CHANGELOG.
+- Update `CHANGELOG.md` on every change.
 
 ## Project Layout
 Source headers (`include/merovingian/`) and implementations (`src/`) mirror each other by module.
@@ -96,6 +96,24 @@ Source headers (`include/merovingian/`) and implementations (`src/`) mirror each
 
 ### Key docs
 `architecture.md` · `coding-rules.md` · `testing-standards.md` · `versioning.md` · `threat-model.md` · `security-review-checklist.md` · `crypto-boundary.md` · `database-persistence.md` · `configuration.md` · `auth-identity.md` · `event-engine.md` · `http-transport.md` · `media-repository.md` · `getting-started.md` · `dev-environment.md` · `build-warning-policy.md` · `hardening-alpha-exceptions.md` · `release-process.md` · `canonical-json.md` · `trust-safety.md` · `observability-audit.md` · `matrix-v1.18-client-server-api.md` · `create-room-spec-conformance-plan.md` · `01-progress-tracker.md`
+
+## Subdirectory CLAUDE.md Files
+
+More specific guidance lives alongside the code it governs. Read the relevant file before working in a module:
+
+| Directory | Focus |
+|---|---|
+| `src/CLAUDE.md` | Implementation conventions: SPDX header, include order, anonymous namespaces, error handling |
+| `include/merovingian/CLAUDE.md` | Header design: `#pragma once`, forward declarations, namespace rules |
+| `src/crypto/CLAUDE.md` | Crypto security boundary: libsodium isolation, constant-time, key validation |
+| `src/federation/CLAUDE.md` | Federation security rules: X-Matrix auth, PDU verification, key cache |
+| `src/events/CLAUDE.md` | Event pipeline: canonical JSON, signing, auth rules, state resolution, redaction |
+| `tests/unit/CLAUDE.md` | Unit test structure and what belongs here vs conformance vs integration |
+| `tests/conformance/CLAUDE.md` | Conformance test rules: spec citation format, non-negotiable assertions |
+| `tests/integration/CLAUDE.md` | Integration test structure and real-dependency requirements |
+| `tests/fuzz/CLAUDE.md` | Fuzz target conventions and regression test policy |
+| `migrations/CLAUDE.md` | Migration format, numbering, and safety rules |
+| `docs/CLAUDE.md` | Which documents to update and when |
 
 ## Matrix Spec v1.18 Reference
 Base: https://spec.matrix.org/v1.18/
@@ -167,5 +185,5 @@ python build.py
 - **Unit tests**: `tests/unit/test_<module>.cpp` — Catch2 BDD style (GIVEN/WHEN/THEN)
 - **Integration tests**: `tests/integration/test_<module>_flow.cpp`
 - **Migrations**: `migrations/<NNN>_<description>.sql` — zero-padded sequential number
-- **Includes**: Use `#include <merovingian/module/name.hpp>` (angle brackets, project-relative)
+- **Includes**: Use `#include "merovingian/module/name.hpp"` (quotes for project headers; angle brackets for STL and third-party)
 - **Test macros**: `TEST_CASE`, `SCENARIO`, `GIVEN`, `WHEN`, `THEN` from Catch2 v3
