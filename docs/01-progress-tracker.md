@@ -1,3 +1,30 @@
+## v0.5.32 (fix/federated-room-leave)
+
+### Fix: Federated room leave (403 + missing outbound leave event)
+
+**Bug 1 — 403 after server restart mid-join**: `leave_room` returned 403 "user is not
+joined or invited" when the `memberships` row was absent. This occurred when the server
+restarted between `store_room` and `store_membership` during a federated join. The fix
+checks `persistent_store.state` for an `m.room.member` event confirming `membership: join`
+and synthesises the missing row before proceeding.
+
+**Bug 2 — no outbound leave event for remote rooms**: `leave_room` called
+`persist_membership_transition` (local DB update only) for rooms hosted on remote
+servers. The resident server was never notified. `leave_room` now follows the full
+Matrix federated-leave flow: `GET /make_leave` → sign → `PUT /send_leave` → update
+local state.
+
+| File | Change |
+|------|--------|
+| `include/merovingian/homeserver/room_service.hpp` | Add `ValidatedMakeLeaveResponse` struct; declare `validate_make_leave_response` |
+| `src/homeserver/room_service.cpp` | Add `validate_make_leave_event` helper; rewrite `leave_room` with membership recovery + federated make_leave/send_leave path; add `validate_make_leave_response` public function |
+| `tests/unit/test_review_regressions.cpp` | Two new BDD regression scenarios: membership-row recovery from state; federated leave path confirmed by 502 when federation unavailable |
+| `CHANGELOG.md` | `## 0.5.32` entry |
+
+**Tests**: 47/47 pass.
+
+---
+
 ## v0.5.31 (fix/e2ee-device-list-update-keys)
 
 ### Fix: Cross-server E2EE decryption failure (OlmError::MissingCiphertext)

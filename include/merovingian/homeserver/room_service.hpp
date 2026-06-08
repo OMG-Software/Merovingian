@@ -39,6 +39,14 @@ struct ValidatedMakeJoinResponse final
     canonicaljson::Object event{};
 };
 
+struct ValidatedMakeLeaveResponse final
+{
+    bool ok{false};
+    std::string reason{};
+    std::string room_version{};
+    canonicaljson::Object event{};
+};
+
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token,
                                CreateRoomOptions const& options) -> OperationResult;
@@ -76,6 +84,8 @@ struct ValidatedMakeJoinResponse final
                                           std::string_view our_server) -> std::vector<std::string>;
 [[nodiscard]] auto validate_make_join_response(std::string_view requested_room_id, std::string_view requested_user_id,
                                                std::string_view body) -> ValidatedMakeJoinResponse;
+[[nodiscard]] auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
+                                                std::string_view body) -> ValidatedMakeLeaveResponse;
 // Synchronous outbound federation call — signs, discovers, and executes a
 // single transaction. Returns {true, body} on HTTP 2xx, {false, reason} otherwise.
 // Used by both room_service and client_server for blocking federation requests.
