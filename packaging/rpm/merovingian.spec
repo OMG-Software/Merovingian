@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.23
+Version:        0.5.24
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.24-1
+- Fix E2EE: broadcast m.device_list_update EDUs to remote servers on key upload
+  and room join so remote homeservers (e.g. Synapse) can fetch device keys,
+  claim one-time keys, and deliver encrypted room keys to local users.
+
 * Sat Jun 07 2026 James Chapman <claude@ping.me.uk> - 0.5.23-1
 - Fix raw access token leaked to audit log on rate-limit denials: resolve
   token to user_id (or "<unknown>") before recording; token bytes never reach
