@@ -359,6 +359,24 @@ namespace
             // Build EDU content per spec v1.18 device-list-updates-between-servers.
             auto content_obj = canonicaljson::Object{};
             content_obj.push_back(canonicaljson::make_member("device_id", canonicaljson::Value{device.device_id}));
+            // Include device identity keys so the receiving server (e.g. Synapse)
+            // updates its cache immediately without a separate GET /user/devices
+            // fetch.  Without this field there is a race window between the EDU
+            // and the async refetch: if the remote client encrypts during that
+            // window it uses stale keys, producing OlmError::MissingCiphertext on
+            // the Merovingian-side recipient (Matrix spec v1.18 §m.device_list_update).
+            auto const dk_it = std::ranges::find_if(
+                store.device_keys, [&device, user_id](database::PersistentDeviceKey const& dk) {
+                    return dk.user_id == user_id && dk.device_id == device.device_id;
+                });
+            if (dk_it != store.device_keys.end())
+            {
+                auto const parsed_keys = canonicaljson::parse_lossless(dk_it->json);
+                if (parsed_keys.error == canonicaljson::ParseError::none)
+                {
+                    content_obj.push_back(canonicaljson::make_member("keys", parsed_keys.value));
+                }
+            }
             content_obj.push_back(
                 canonicaljson::make_member("prev_id", canonicaljson::Value{canonicaljson::Array{}}));
             content_obj.push_back(canonicaljson::make_member("stream_id", canonicaljson::Value{stream_id}));

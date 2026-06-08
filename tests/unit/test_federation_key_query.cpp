@@ -341,8 +341,98 @@ SCENARIO("Federation user-devices query lists a user's published devices", "[fed
 
             THEN("an empty string signals no published devices")
             {
-                // Spec: a user with no published devices yields no response body.
+                // Spec MUST: 404 M_NOT_FOUND for a user with no published device keys.
+                // The HTTP handler converts the empty-string sentinel to 404.
                 REQUIRE(body.empty());
+            }
+        }
+    }
+}
+
+// Spec: stream_id MUST be a monotonically increasing integer so remote servers
+// can detect gaps and schedule refetches when a device list changes.
+// https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1userdevicescircumflex
+SCENARIO("Federation user-devices response reflects the store sync stream counter",
+         "[federation][keys][devices]")
+{
+    GIVEN("a store with a device and a non-zero sync stream counter")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.device_keys.push_back({"@alice:example.org", "ALICE1", R"({"device_id":"ALICE1","keys":{}})"});
+        store.next_sync_stream_id = 42U;
+
+        WHEN("the user's devices are queried")
+        {
+            auto const body = merovingian::federation::build_user_devices_response(store, "@alice:example.org");
+
+            THEN("stream_id in the response matches the store counter")
+            {
+                REQUIRE_FALSE(body.empty());
+                auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* sid_val = json_get(*root, std::string{"stream_id"});
+                REQUIRE(sid_val != nullptr);
+                auto const* sid_int = std::get_if<std::int64_t>(&sid_val->storage());
+                REQUIRE(sid_int != nullptr);
+                REQUIRE(*sid_int == 42);
+            }
+        }
+    }
+}
+
+// Spec: each device entry's keys field MUST carry the device identity keys so
+// remote servers can build Olm sessions with the correct curve25519 key.
+// A missing or wrong key causes OlmError::MissingCiphertext on the recipient.
+// https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1userdevicescircumflex
+SCENARIO("Federation user-devices response device entry carries the curve25519 identity key",
+         "[federation][keys][devices]")
+{
+    GIVEN("a store with a device that has a curve25519 identity key")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.device_keys.push_back(
+            {"@alice:example.org", "ALICE1",
+             R"({"algorithms":["m.olm.v1.curve25519-aes-sha2"],"device_id":"ALICE1","keys":{"curve25519:ALICE1":"AAAAAA","ed25519:ALICE1":"BBBBBB"},"user_id":"@alice:example.org","signatures":{}})"});
+
+        WHEN("the user's devices are queried")
+        {
+            auto const body = merovingian::federation::build_user_devices_response(store, "@alice:example.org");
+
+            THEN("the device entry's keys field contains the curve25519 identity key")
+            {
+                REQUIRE_FALSE(body.empty());
+                auto const parsed = merovingian::canonicaljson::parse_lossless(body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                auto const* devs_val = json_get(*root, std::string{"devices"});
+                auto const* devs_arr = std::get_if<merovingian::canonicaljson::Array>(&devs_val->storage());
+                REQUIRE(devs_arr->size() == 1U);
+
+                auto const* device_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&(*devs_arr)[0].storage());
+                REQUIRE(device_obj != nullptr);
+
+                // Spec MUST: keys field contains the full device keys object.
+                auto const* keys_val = json_get(*device_obj, std::string{"keys"});
+                REQUIRE(keys_val != nullptr);
+                auto const* keys_obj = std::get_if<merovingian::canonicaljson::Object>(&keys_val->storage());
+                REQUIRE(keys_obj != nullptr);
+
+                // Spec MUST: device keys object has a nested keys map with the curve25519 key.
+                auto const* inner_keys_val = json_get(*keys_obj, std::string{"keys"});
+                REQUIRE(inner_keys_val != nullptr);
+                auto const* inner_keys_obj =
+                    std::get_if<merovingian::canonicaljson::Object>(&inner_keys_val->storage());
+                REQUIRE(inner_keys_obj != nullptr);
+                auto const* curve_val = json_get(*inner_keys_obj, std::string{"curve25519:ALICE1"});
+                REQUIRE(curve_val != nullptr);
+                auto const* curve_str = std::get_if<std::string>(&curve_val->storage());
+                REQUIRE(curve_str != nullptr);
+                REQUIRE(*curve_str == "AAAAAA");
             }
         }
     }

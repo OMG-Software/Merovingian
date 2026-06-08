@@ -310,16 +310,19 @@ auto build_user_devices_response(database::PersistentStore const& store, std::st
         device.push_back(canonicaljson::make_member("keys", std::move(*keys)));
         devices.push_back(canonicaljson::Value{std::move(device)});
     }
+    auto response = canonicaljson::Object{};
+    response.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
+    response.push_back(canonicaljson::make_member("stream_id",
+                                                  canonicaljson::Value{static_cast<std::int64_t>(store.next_sync_stream_id)}));
     if (devices.empty())
     {
         log_diagnostic("user_devices.empty", {
                                                  {"user_id", std::string{user_id}, false}
         });
+        // Empty string signals "no published devices" to the HTTP handler, which
+        // maps it to 404 M_NOT_FOUND per the Matrix SS API spec.
         return {};
     }
-    auto response = canonicaljson::Object{};
-    response.push_back(canonicaljson::make_member("user_id", canonicaljson::Value{std::string{user_id}}));
-    response.push_back(canonicaljson::make_member("stream_id", canonicaljson::Value{std::int64_t{0}}));
     response.push_back(canonicaljson::make_member("devices", canonicaljson::Value{std::move(devices)}));
     auto master_keys = canonicaljson::Object{};
     auto self_signing_keys = canonicaljson::Object{};

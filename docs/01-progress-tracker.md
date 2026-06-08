@@ -1,3 +1,15 @@
+## v0.5.31 (fix/e2ee-device-list-update-keys)
+
+### Fix: Cross-server E2EE decryption failure (OlmError::MissingCiphertext)
+
+| File | Change |
+|------|--------|
+| `src/homeserver/client_server.cpp` | `broadcast_device_list_updates()`: include `keys` field in every `m.device_list_update` EDU so remote servers update their device cache immediately, eliminating the async-refetch race window |
+| `src/federation/key_query.cpp` | `build_user_devices_response()`: use `store.next_sync_stream_id` instead of hardcoded `0` for the `stream_id` field |
+| `include/merovingian/federation/key_query.hpp` | Update doc comment to reflect 404 mapping |
+| `tests/unit/test_federation_key_query.cpp` | Two new BDD scenarios: `stream_id` reflects store counter; device entry carries curve25519 identity key |
+| `CHANGELOG.md` | `## 0.5.31` entry |
+
 ## v0.5.30 (fix/cors-headers-non-options-responses)
 
 ### Fix: CORS headers missing from non-OPTIONS responses
