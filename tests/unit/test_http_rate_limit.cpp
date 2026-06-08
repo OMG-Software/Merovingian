@@ -78,7 +78,7 @@ SCENARIO("HTTP endpoint defaults protect sensitive Matrix endpoints", "[http][ra
                 REQUIRE(keys.max_requests == 30U);
                 REQUIRE(media.max_requests == 20U);
                 REQUIRE(federation.max_requests == 120U);
-                REQUIRE(generic.max_requests == 60U);
+                REQUIRE(generic.max_requests == 90U);
             }
         }
     }

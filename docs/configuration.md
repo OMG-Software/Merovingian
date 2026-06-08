@@ -193,15 +193,32 @@ Forwarding every `/_matrix/` request on `443` to the client listener will break
 federation authentication because remote homeservers will hit the client-server
 access-token gate instead of the federation router.
 
-**CORS preflight is handled by Merovingian itself (since 0.4.60).** The reverse
-proxy only needs to forward `Origin` and `Authorization` headers unmodified;
-it does **not** need to synthesise `Access-Control-Allow-*` headers. The
-examples below set CORS headers at the proxy purely as a defence-in-depth
-fallback. If you want the proxy to be the source of truth instead, set
-`server.cors.allowed_origins` to a single explicit origin (or an empty list)
-and the CORS headers Merovingian emits will be absent — the proxy headers
-will then be authoritative. See [CORS policy](#cors-policy) for the full
-config surface.
+**CORS preflight is handled by Merovingian itself (fully active since v0.5.28).**
+The reverse proxy only needs to forward `Origin` and `Authorization` headers
+unmodified. The proxy must **not** add `Access-Control-Allow-*` headers to
+proxied responses. If both Merovingian and the proxy emit
+`Access-Control-Allow-Origin`, the browser receives duplicate header values
+(e.g. `*, *`), which the Fetch spec treats as invalid — browser clients will
+show "Failed to connect" even though the server returns HTTP 200. The examples
+below do **not** include proxy-level CORS headers. See
+[CORS policy](#cors-policy) for the Merovingian-side config surface.
+
+The `.well-known/matrix/client` and `.well-known/matrix/server` discovery
+files are **served by the proxy itself** (not forwarded to Merovingian) in the
+Apache and nginx examples, so those specific locations still need their own
+`Access-Control-Allow-Origin` header — that is not a duplicate.
+
+**Rate limiting requires `server.trusted_proxies`.**
+When all traffic arrives through a reverse proxy, every request has the same
+peer IP (`127.0.0.1`). Without `trusted_proxies`, all clients share one per-IP
+rate-limit bucket — a single active Matrix client can exhaust the default
+`90/60s` cap for everyone. Set `server.trusted_proxies=127.0.0.1` in
+`merovingian.conf` so the rate limiter reads the real client IP from
+`X-Forwarded-For`. The reverse proxy must set `X-Forwarded-For` to the direct
+TCP peer IP it received; the examples below do this correctly. **Do not use
+`$proxy_add_x_forwarded_for` (nginx) or omit the header (Apache):** both
+allow a malicious client to forge a victim's IP and exhaust their rate-limit
+bucket by injecting a fake `X-Forwarded-For` value into the request.
 
 **Apache** serves these discovery files from static files — create them once
 before reloading:
@@ -224,42 +241,88 @@ and `8448`; Merovingian listens only on loopback ports `8008` and `8009`. The
 `443` vhost handles both client and delegated federation traffic by path.
 
 ```apache
+# Port 8448 must be declared before the VirtualHost blocks that use it.
 Listen 8448
 
+# ── HTTP → HTTPS redirect ─────────────────────────────────────────────────────
+# Redirect all plain-HTTP requests to HTTPS so no Matrix credentials or tokens
+# are ever sent in the clear.
 <VirtualHost *:80>
     ServerName matrix.example.org
     RewriteEngine On
     RewriteRule ^ https://%{SERVER_NAME}%{REQUEST_URI} [END,NE,R=permanent]
 </VirtualHost>
 
+# ── Primary HTTPS block (client-server API + delegated federation) ────────────
+# Handles: Matrix clients (/_matrix/client/), media (/_matrix/media/), and
+# federation delegated from port 443 via /.well-known/matrix/server.
 <VirtualHost *:443>
     ServerName matrix.example.org
 
+    # ── TLS ───────────────────────────────────────────────────────────────────
+    # Terminate TLS here; Merovingian binds to cleartext loopback only.
     SSLEngine on
     SSLCertificateFile    /etc/letsencrypt/live/matrix.example.org/fullchain.pem
     SSLCertificateKeyFile /etc/letsencrypt/live/matrix.example.org/privkey.pem
+    # Disable TLS 1.0 and 1.1 — both have known practical attacks.
+    # Matrix spec requires TLS; older versions are non-compliant.
     SSLProtocol           -all +TLSv1.2 +TLSv1.3
 
+    # ── Security response headers ──────────────────────────────────────────────
+    # HSTS: instructs browsers to enforce HTTPS for one year and opts the domain
+    # into browser-bundled preload lists for first-visit protection.
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    # Prevent MIME-type sniffing that could cause a browser to execute an
+    # uploaded file served with a safe content-type.
     Header always set X-Content-Type-Options "nosniff"
+    # Block this domain from being embedded in a frame on another origin,
+    # protecting the login page against clickjacking.
     Header always set X-Frame-Options "DENY"
-    Header always set Access-Control-Allow-Origin "*"
-    Header always set Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS"
-    Header always set Access-Control-Allow-Headers "X-Requested-With, Content-Type, Authorization, Date"
+    # Do NOT add Access-Control-Allow-* here — Merovingian emits CORS headers on
+    # all /_matrix/ responses. Adding them at the proxy level creates duplicate
+    # values (e.g. "*, *") that browsers reject; clients show "Failed to connect"
+    # even though the server returns HTTP 200.
 
+    # ── Forwarding headers ────────────────────────────────────────────────────
+    # Pass the original Host: header to Merovingian so it knows the server name
+    # when constructing federation responses and verifying X-Matrix signatures.
     ProxyPreserveHost On
+    # Tell Merovingian the downstream connection arrived over HTTPS.  Without
+    # this, code that inspects the forwarded protocol sees cleartext.
     RequestHeader set X-Forwarded-Proto "https"
+    # Overwrite X-Forwarded-For with the IP Apache received the TCP connection
+    # from.  The unset+set pair prevents a client from injecting a fake IP to
+    # steal another client's rate-limit budget (IP-bucket forgery).
+    # Requires server.trusted_proxies=127.0.0.1 in merovingian.conf so
+    # Merovingian reads this header for per-client rate limiting instead of
+    # using the raw peer address (127.0.0.1 for all proxied traffic).
+    RequestHeader unset X-Forwarded-For
+    RequestHeader set X-Forwarded-For "expr=%{REMOTE_ADDR}"
 
-    # Exclude /.well-known/ from proxying so the Alias below is reached.
-    # Without this, Apache forwards /.well-known/ requests to Merovingian.
+    # ── Proxy routing ─────────────────────────────────────────────────────────
+    # Exclude /.well-known/ from proxying so the Alias directives below are
+    # reached.  Without the "!" exclusion, Apache forwards well-known requests
+    # to Merovingian, which returns 404 because it does not own those paths.
     ProxyPass        "/.well-known/" "!"
+    # /_matrix/federation/ and /_matrix/key/ go to the federation listener (8009)
+    # so X-Matrix signature auth is applied, not the client access-token gate.
     ProxyPass        "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
     ProxyPassReverse "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
+    # /_matrix/key/ exposes Merovingian's signing keys for remote servers to
+    # verify federation request signatures and PDU event signatures.
     ProxyPass        "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
     ProxyPassReverse "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
+    # Client-server API and media go to the client listener (8008).
+    # Apache does not impose a default body-size limit, so no special handling
+    # is needed for media uploads; if you add LimitRequestBody, set it to at
+    # least the value of security.media.max_upload_size in merovingian.conf.
     ProxyPass        "/_matrix/client/" "http://127.0.0.1:8008/_matrix/client/"
     ProxyPassReverse "/_matrix/client/" "http://127.0.0.1:8008/_matrix/client/"
 
+    # ── Static discovery files ────────────────────────────────────────────────
+    # Served by Apache directly (see the shell snippet above) so they are
+    # available even when Merovingian is restarting.  The ProxyPass "!" above
+    # ensures requests for these paths are never forwarded to Merovingian.
     Alias "/.well-known/matrix/client" "/var/www/merovingian/.well-known/matrix/client"
     Alias "/.well-known/matrix/server" "/var/www/merovingian/.well-known/matrix/server"
 
@@ -267,8 +330,11 @@ Listen 8448
         Require all granted
     </Directory>
 
-    # Deny everything by default. Specific allows below must come AFTER this
-    # block — Apache Location merging uses document order; later = wins.
+    # ── Access control ────────────────────────────────────────────────────────
+    # Default-deny: block every path so a misconfiguration never accidentally
+    # exposes internal services.  Apache Location directives merge in document
+    # order with later entries winning, so these specific allows must come AFTER
+    # the "Require all denied" catch-all below.
     <Location "/">
         Require all denied
     </Location>
@@ -285,6 +351,10 @@ Listen 8448
         Require all granted
     </Location>
 
+    # /.well-known discovery — CORS is required here because browser clients
+    # fetch these from a different origin (e.g. element.io or localhost).  This
+    # is NOT a duplicate of Merovingian's CORS: Apache serves these files
+    # directly from disk and never proxies them to Merovingian.
     <Location "/.well-known/matrix/client">
         Require all granted
         ForceType application/json
@@ -298,24 +368,36 @@ Listen 8448
     </Location>
 </VirtualHost>
 
+# ── Native federation listener (port 8448) ────────────────────────────────────
+# Handles direct federation connections from servers that do not follow the
+# .well-known/matrix/server delegation to port 443.  Optional if all remote
+# servers support .well-known discovery, but harmless to keep.
 <VirtualHost *:8448>
     ServerName matrix.example.org
 
+    # Same certificate as port 443.
     SSLEngine on
     SSLCertificateFile    /etc/letsencrypt/live/matrix.example.org/fullchain.pem
     SSLCertificateKeyFile /etc/letsencrypt/live/matrix.example.org/privkey.pem
     SSLProtocol           -all +TLSv1.2 +TLSv1.3
 
+    # HSTS on the federation port prevents protocol-downgrade during server
+    # discovery even when the remote server connects directly to port 8448.
     Header always set Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
 
     ProxyPreserveHost On
     RequestHeader set X-Forwarded-Proto "https"
+    RequestHeader unset X-Forwarded-For
+    RequestHeader set X-Forwarded-For "expr=%{REMOTE_ADDR}"
 
+    # Only federation and key endpoints are reachable on port 8448.
+    # The client-server API is never exposed here.
     ProxyPass        "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
     ProxyPassReverse "/_matrix/federation/" "http://127.0.0.1:8009/_matrix/federation/"
     ProxyPass        "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
     ProxyPassReverse "/_matrix/key/" "http://127.0.0.1:8009/_matrix/key/"
 
+    # Default-deny: block everything not explicitly allowed above.
     <Location "/">
         Require all denied
     </Location>
@@ -338,78 +420,150 @@ server block handles client, media, and delegated federation traffic by path.
 Media (`/_matrix/media/`) is served on the client-server listener (`8008`).
 
 ```nginx
+# ── HTTP → HTTPS redirect ─────────────────────────────────────────────────────
+# Reject plain-HTTP connections immediately so no Matrix credentials are ever
+# sent in the clear.  All Matrix clients follow the 301 redirect to port 443.
 server {
     listen 80;
     server_name matrix.example.org;
     return 301 https://$host$request_uri;
 }
 
+# ── Primary HTTPS block (client-server API + delegated federation) ────────────
+# Handles: Matrix clients (/_matrix/client/), media (/_matrix/media/), and
+# federation delegated from port 443 via /.well-known/matrix/server.  A
+# separate block below covers native port 8448 for servers that do not follow
+# .well-known delegation.
 server {
     listen 443 ssl http2;
     server_name matrix.example.org;
 
+    # ── TLS ───────────────────────────────────────────────────────────────────
+    # Let's Encrypt certificate pair.  Merovingian binds to cleartext loopback
+    # (127.0.0.1:8008/8009); all TLS is terminated here by nginx.
     ssl_certificate     /etc/letsencrypt/live/matrix.example.org/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/matrix.example.org/privkey.pem;
+    # Disable TLS 1.0 and 1.1 — both have known practical attacks (BEAST,
+    # POODLE).  Matrix spec requires TLS; older versions are non-compliant.
     ssl_protocols       TLSv1.2 TLSv1.3;
 
+    # ── Security response headers ──────────────────────────────────────────────
+    # HSTS: instructs browsers to enforce HTTPS for one year and opts the domain
+    # into browser-bundled HSTS preload lists so first-visit connections are
+    # also protected before any header has been seen.
     add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+    # Prevent MIME-type sniffing.  Without this a browser could execute an
+    # uploaded file served as "text/plain" if it detects executable content.
     add_header X-Content-Type-Options "nosniff" always;
+    # Forbid this domain from being embedded in a frame on another origin,
+    # protecting the login page against clickjacking attacks.
     add_header X-Frame-Options "DENY" always;
-    add_header Access-Control-Allow-Origin "*" always;
-    add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
-    add_header Access-Control-Allow-Headers "X-Requested-With, Content-Type, Authorization, Date" always;
+    # Do NOT add Access-Control-Allow-* here — Merovingian emits CORS headers on
+    # all /_matrix/ responses.  Adding them at the proxy level creates duplicate
+    # values (e.g. "*, *") that the Fetch spec treats as invalid; browsers reject
+    # the response and clients show "Failed to connect" even on HTTP 200.
 
+    # ── Matrix homeserver discovery (served by nginx, not proxied) ────────────
+    # These two well-known endpoints are required by the Matrix spec.  nginx
+    # serves them inline so they remain available while Merovingian restarts.
+    #
+    # /.well-known/matrix/client: tells Matrix clients (Element, Cinny, etc.)
+    # the base URL of the homeserver.  Clients request this before logging in.
     location = /.well-known/matrix/client {
         default_type application/json;
+        # CORS is required here — browser clients fetch this from a different
+        # origin (e.g. element.io or localhost in development).  This header is
+        # NOT a duplicate of Merovingian's CORS: nginx serves this path directly
+        # and never proxies it to Merovingian.
         add_header Access-Control-Allow-Origin "*" always;
         return 200 '{"m.homeserver":{"base_url":"https://matrix.example.org"}}';
     }
 
+    # /.well-known/matrix/server: tells remote homeservers where to send
+    # federation traffic.  Pointing at port 443 here delegates federation to
+    # this server block so no separate port 8448 DNS entry is required.
     location = /.well-known/matrix/server {
         default_type application/json;
+        # Same CORS rationale as the client discovery above.
         add_header Access-Control-Allow-Origin "*" always;
         return 200 '{"m.server":"matrix.example.org:443"}';
     }
 
+    # ── Federation API (server-to-server) ─────────────────────────────────────
+    # Routes /_matrix/federation/ to Merovingian's dedicated federation listener
+    # (8009).  The split between port 8008 (client) and 8009 (federation) is
+    # intentional: federation uses X-Matrix signature auth, not Bearer tokens,
+    # and must never be routed through the client-server access-token gate.
     location /_matrix/federation/ {
         proxy_pass http://127.0.0.1:8009;
+        # Pass the original Host header so Merovingian knows the server name
+        # when constructing federation responses and verifying signatures.
         proxy_set_header Host $host;
+        # Tell Merovingian the downstream connection arrived over HTTPS.
+        # Without this, code inspecting the forwarded protocol sees cleartext.
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        # Pass the real client IP for per-client rate limiting.  Use $remote_addr
+        # (the IP nginx received the TCP connection from) — NOT
+        # $proxy_add_x_forwarded_for, which appends to whatever the client sent
+        # and allows a malicious client to forge a victim's rate-limit bucket.
+        # Effective only when server.trusted_proxies=127.0.0.1 is set in
+        # merovingian.conf; without that setting all traffic shares one bucket.
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 
+    # ── Server key API ────────────────────────────────────────────────────────
+    # Routes /_matrix/key/ to the federation listener.  Remote servers fetch
+    # these endpoints to obtain and verify Merovingian's Ed25519 signing keys
+    # when authenticating incoming federation requests and PDUs.
     location /_matrix/key/ {
         proxy_pass http://127.0.0.1:8009;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 
+    # ── Client-server API ─────────────────────────────────────────────────────
+    # Routes all Matrix client traffic to the client listener (8008).  Covers
+    # login, registration, sync, sending messages, invites, device keys, etc.
     location /_matrix/client/ {
         proxy_pass http://127.0.0.1:8008;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 
-    # Media is served on the client-server listener (8008). Omitting this block
-    # makes /_matrix/media/* fall through to `location /` (403), which fails the
-    # browser CORS preflight ("preflight does not have HTTP ok status") and
-    # breaks uploads, downloads, and avatars even though client traffic works.
-    # The larger body limit is required because uploads exceed nginx's 1m default.
+    # ── Media repository ──────────────────────────────────────────────────────
+    # Media (/_matrix/media/) is served on the client listener (8008) and
+    # requires its own location block for two reasons:
+    # (1) Without this block, /_matrix/media/ falls through to `location /`
+    #     below (403).  The browser CORS preflight then fails with "preflight
+    #     does not have HTTP ok status" — uploads, downloads, and user avatars
+    #     all break even though all other client traffic works correctly.
+    # (2) nginx's default client_max_body_size is 1 MiB.  File uploads silently
+    #     return 413 before reaching Merovingian.  Set this to match
+    #     security.media.max_upload_size in merovingian.conf (default 50 MiB).
     location /_matrix/media/ {
         proxy_pass http://127.0.0.1:8008;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
         client_max_body_size 50m;
     }
 
+    # ── Catch-all: deny everything else ───────────────────────────────────────
+    # Explicitly block any path not matched above so a misconfiguration never
+    # accidentally exposes an internal service on this hostname.
     location / {
         return 403;
     }
 }
 
+# ── Native federation listener (port 8448) ────────────────────────────────────
+# Some homeservers connect directly to port 8448 rather than following the
+# .well-known/matrix/server delegation.  This block covers those servers.
+# If your /.well-known/matrix/server points at port 443 and you do not need
+# backwards compatibility with non-.well-known-aware servers, this block is
+# optional but harmless to keep.
 server {
     listen 8448 ssl http2;
     server_name matrix.example.org;
@@ -418,18 +572,20 @@ server {
     ssl_certificate_key /etc/letsencrypt/live/matrix.example.org/privkey.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
 
+    # Only federation and key endpoints are reachable on port 8448.
+    # The client-server API is never exposed here.
     location /_matrix/federation/ {
         proxy_pass http://127.0.0.1:8009;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 
     location /_matrix/key/ {
         proxy_pass http://127.0.0.1:8009;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-For $remote_addr;
     }
 
     location / {
@@ -447,15 +603,32 @@ Federation is reached either via the same `:443` block (with `/.well-known/
 matrix/server` pointing at `:443`) or a separate `:8448` site.
 
 ```caddyfile
-# Client + delegated federation (port 443)
+# ── Client-server API + delegated federation (port 443) ──────────────────────
+# Caddy automatically obtains and renews a Let's Encrypt certificate for this
+# site — no ssl_certificate directives are needed.  Caddy also adds HSTS,
+# enforces modern TLS, and enables OCSP stapling by default.
 matrix.example.org {
-    # Inline discovery responses
+
+    # ── Matrix homeserver discovery (served inline, not proxied) ─────────────
+    # These two well-known endpoints are required by the Matrix spec and are
+    # served inline by Caddy so they remain available while Merovingian restarts.
+    #
+    # /.well-known/matrix/client: tells Matrix clients the base URL of the
+    # homeserver.  Clients request this before logging in.  CORS is required
+    # here because browser clients fetch it from a different origin
+    # (e.g. element.io).  This is NOT a duplicate of Merovingian's CORS —
+    # Caddy serves this path directly and never proxies it.
     @clientDiscovery path /.well-known/matrix/client
     handle_response @clientDiscovery {
         header Content-Type application/json
         header Access-Control-Allow-Origin "*"
         respond `{"m.homeserver":{"base_url":"https://matrix.example.org"}}` 200
     }
+
+    # /.well-known/matrix/server: tells remote homeservers where to send
+    # federation traffic.  "m.server":"matrix.example.org:443" delegates
+    # federation to this site block so no separate port 8448 DNS entry is
+    # required.  Remote servers fetch this during server discovery.
     @serverDiscovery path /.well-known/matrix/server
     handle_response @serverDiscovery {
         header Content-Type application/json
@@ -463,20 +636,33 @@ matrix.example.org {
         respond `{"m.server":"matrix.example.org:443"}` 200
     }
 
-    # Matrix routes -> Merovingian
+    # ── Federation and key-server API ─────────────────────────────────────────
+    # Routes /_matrix/federation/ and /_matrix/key/ to the federation listener
+    # (8009).  The split from port 8008 (client) is intentional: federation uses
+    # X-Matrix signature auth, not Bearer tokens, and must not be routed through
+    # the client-server access-token gate.
     @federation path /_matrix/federation/* /_matrix/key/*
     reverse_proxy @federation 127.0.0.1:8009
 
-    # Media (/_matrix/media/*) is served on the client listener too; omitting it
-    # makes uploads/downloads hit the `respond 403` catch-all and fail CORS.
+    # ── Client-server API and media ───────────────────────────────────────────
+    # /_matrix/client/ handles login, registration, sync, messages, etc.
+    # /_matrix/media/ must be listed alongside — without it media requests fall
+    # through to the `respond 403` catch-all below, failing the browser CORS
+    # preflight and breaking uploads, downloads, and user avatars.
     @client path /_matrix/client/* /_matrix/media/*
     reverse_proxy @client 127.0.0.1:8008
 
-    # Block everything else
+    # ── Catch-all: deny everything else ───────────────────────────────────────
+    # Block any path not matched above so a misconfiguration never accidentally
+    # exposes an internal service on this hostname.
     respond 403
 }
 
-# Native federation listener (port 8448)
+# ── Native federation listener (port 8448) ────────────────────────────────────
+# Handles direct federation connections from servers that do not follow the
+# .well-known/matrix/server delegation to port 443.  Optional if all remote
+# servers support .well-known discovery, but harmless to keep.  Only federation
+# and key endpoints are forwarded; all other paths return 403.
 matrix.example.org:8448 {
     @federation path /_matrix/federation/* /_matrix/key/*
     reverse_proxy @federation 127.0.0.1:8009
@@ -498,30 +684,49 @@ provider or a tiny HTTP backend.
 ```yaml
 # traefik.yml (excerpt)
 entryPoints:
+  # Redirect all plain-HTTP traffic to HTTPS so no Matrix credentials are
+  # sent in the clear.
   web:
     address: ":80"
     http:
       redirections:
         entryPoint:
           to: websecure
+  # Main TLS entry point for client-server API and delegated federation.
   websecure:
     address: ":443"
+  # Native Matrix federation port.  Required for servers that do not follow
+  # .well-known/matrix/server delegation; optional but harmless otherwise.
   federation:
     address: ":8448"
 
 # dynamic.yml
 http:
   routers:
+    # ── Client-server API + media ──────────────────────────────────────────────
+    # Routes /_matrix/client/ and /_matrix/media/ to the client listener (8008).
+    # Media must be included here: omitting it causes media requests to match no
+    # router, return a CORS error, and break uploads, downloads, and avatars.
     client-server:
       rule: "Host(`matrix.example.org`) && (PathPrefix(`/_matrix/client/`) || PathPrefix(`/_matrix/media/`))"
       service: merovingian-client
       entryPoints: [websecure]
       tls: { certResolver: letsencrypt }
+
+    # ── Federation + key API on port 443 (delegated) ──────────────────────────
+    # Routes /_matrix/federation/ and /_matrix/key/ to the federation listener
+    # (8009) so X-Matrix signature auth is applied, not the client access-token
+    # gate on 8008.
     federation-443:
       rule: "Host(`matrix.example.org`) && (PathPrefix(`/_matrix/federation/`) || PathPrefix(`/_matrix/key/`))"
       service: merovingian-federation
       entryPoints: [websecure]
       tls: { certResolver: letsencrypt }
+
+    # ── Native federation listener on port 8448 ───────────────────────────────
+    # Accepts connections from servers that do not follow .well-known delegation.
+    # The wildcard Host rule is safe here because only the federation entryPoint
+    # binds port 8448 — no other services are reachable on this port.
     federation-8448:
       rule: "Host(`matrix.example.org`)"
       service: merovingian-federation
@@ -529,9 +734,12 @@ http:
       tls: { certResolver: letsencrypt }
 
   services:
+    # Client listener (8008): login, registration, sync, messages, media, keys.
     merovingian-client:
       loadBalancer:
         servers: [{ url: "http://127.0.0.1:8008" }]
+    # Federation listener (8009): server-to-server PDU exchange, key fetching,
+    # and X-Matrix signature authentication.
     merovingian-federation:
       loadBalancer:
         servers: [{ url: "http://127.0.0.1:8009" }]
@@ -539,9 +747,8 @@ http:
 
 `/.well-known/matrix/client` and `/server` are served by Merovingian
 itself; with the wildcard CORS default no Traefik middleware is needed.
-Add a `headers.customRequestHeaders` block only if you want to strip
-Merovingian's `Access-Control-*` headers and replace them with stricter
-ones.
+Do **not** add a `headers` middleware that sets `Access-Control-Allow-Origin` —
+this would create duplicate header values that browsers reject.
 
 ### HAProxy
 
@@ -551,40 +758,67 @@ forward to the loopback listeners. ACLs route by path prefix so client
 and federation traffic land on the correct backend.
 
 ```haproxy
+# ── HTTPS frontend (port 443) ─────────────────────────────────────────────────
+# Terminates TLS and routes to backends by path-prefix ACL.  ACLs are evaluated
+# in order; the first matching use_backend rule wins.
 frontend ft_https
     bind *:443 ssl crt /etc/haproxy/certs/matrix.example.org.pem alpn h2,http/1.1
+    # Redirect any plain-HTTP request to HTTPS so no Matrix credentials are
+    # sent in the clear (applies when the client connects on port 80 to the
+    # same listener, e.g. if bind *:80 is also present).
     http-request redirect scheme https code 301 if !{ ssl_fc }
+
+    # Path-prefix ACLs — determines which backend handles each request.
     acl is_client        path_beg /_matrix/client/
     acl is_media         path_beg /_matrix/media/
     acl is_federation    path_beg /_matrix/federation/
     acl is_key           path_beg /_matrix/key/
+
+    # Client-server API and media both target the client listener (8008).
     use_backend bk_merovingian_client     if is_client || is_media
+    # Federation and key-server API target the federation listener (8009) so
+    # X-Matrix signature auth is applied, not the client access-token gate.
     use_backend bk_merovingian_federation if is_federation || is_key
-    # /.well-known/matrix/{client,server} is served by the client backend,
-    # which routes them to Merovingian.
+    # /.well-known/matrix/{client,server} falls through to the client backend;
+    # Merovingian does not own those paths but the client listener returns 404,
+    # which is sufficient — serve them from a separate static backend if needed.
     use_backend bk_merovingian_client
     default_backend bk_merovingian_client
 
+# ── Client-server backend ─────────────────────────────────────────────────────
+# Serves the client-server API and media repository on port 8008.
 backend bk_merovingian_client
+    # Append the real client IP to X-Forwarded-For so Merovingian can use it
+    # for per-client rate limiting.  Requires server.trusted_proxies=127.0.0.1
+    # in merovingian.conf; without that, all clients share one rate-limit bucket.
     option forwardfor header X-Forwarded-For
+    # Tell Merovingian the downstream connection arrived over HTTPS.
     http-request set-header X-Forwarded-Proto https
     server merovingian 127.0.0.1:8008 check
 
+# ── Federation backend ────────────────────────────────────────────────────────
+# Serves the server-to-server API and signing-key endpoints on port 8009.
 backend bk_merovingian_federation
     option forwardfor header X-Forwarded-For
     http-request set-header X-Forwarded-Proto https
     server merovingian 127.0.0.1:8009 check
 
+# ── Native federation listener (port 8448) ────────────────────────────────────
+# Accepts direct federation connections from servers that do not follow the
+# .well-known/matrix/server delegation to port 443.  Optional if all remote
+# servers support .well-known discovery, but harmless to keep.  All traffic on
+# this port is forwarded to the federation backend; the backend's Merovingian
+# router returns 403 for any path that is not /_matrix/federation/ or
+# /_matrix/key/.
 frontend ft_federation_native
     bind *:8448 ssl crt /etc/haproxy/certs/matrix.example.org.pem alpn h2,http/1.1
     default_backend bk_merovingian_federation
 ```
 
 HAProxy does not edit response headers unless told to; CORS preflight
-therefore reaches the client as Merovingian emits it. To override,
-add `http-response set-header Access-Control-Allow-Origin "*"` to each
-backend (defence-in-depth only; the spec already permits wildcard
-origins for Matrix because clients use bearer tokens).
+therefore reaches the client as Merovingian emits it. Do **not** add
+`http-response set-header Access-Control-Allow-Origin` to the backends —
+this would create duplicate header values that browsers reject.
 
 ### Cloudflare
 
@@ -865,12 +1099,17 @@ relevant config keys live under `server.cors.*`:
 | `server.cors.allow_credentials` | bool | `false` | When `true`, sets `Access-Control-Allow-Credentials: true`. The CORS spec forbids combining this with a wildcard `*` origin; the config parser rejects the combination. |
 | `server.cors.max_age` | non-negative integer | `86400` | How long, in seconds, the browser may cache the preflight result. 24h by default; reduce to 0 to disable caching. |
 
-The reverse proxy in front of Merovingian does **not** need to add
-`Access-Control-Allow-*` headers — Merovingian already emits them. If the
-proxy does add them, the browser will keep whichever one is most
-permissive, so the proxy can be used to add a stricter override (for
-example, replacing the wildcard with an explicit origin in a multi-tenant
-deployment).
+The reverse proxy in front of Merovingian must **not** add
+`Access-Control-Allow-*` headers to proxied `/_matrix/` responses —
+Merovingian already emits them. If the proxy also emits
+`Access-Control-Allow-Origin`, the browser receives multiple values for the
+same header (e.g. `*, *`). The Fetch spec treats this as invalid; the browser
+rejects the response and browser clients show "Failed to connect" even though
+the server returns HTTP 200.
+
+Remove any `add_header Access-Control-*` / `Header always set Access-Control-*`
+directives from your proxy config and let Merovingian be the sole source of CORS
+headers for `/_matrix/` traffic.
 
 CORS is not hot-reloadable: a change to any `server.cors.*` key requires
 a server restart. This matches how other HTTP-behaviour keys behave; see
@@ -888,7 +1127,7 @@ or zero-cap policy at startup rather than letting the engine loop.
 |-----|------|---------|-------|
 | `client_rate_limits.per_ip.<target>` | `<N>/<Ws>s` | unset | Per-IP cap for any request whose target starts with `<target>`. The longest matching prefix wins. |
 | `client_rate_limits.per_user.<target>` | `<N>/<Ws>s` | unset | Per-user cap (keyed by access token) for the same target. Empty by default; populate `/_matrix/client/v3/login` to mitigate credential-stuffing. |
-| `client_rate_limits.default_per_ip` | `<N>/<Ws>s` | `60/60s` | Fallback for targets not matched by any `per_ip.*` entry. |
+| `client_rate_limits.default_per_ip` | `<N>/<Ws>s` | `90/60s` | Fallback for targets not matched by any `per_ip.*` entry. |
 
 The map keys are dotted to support target prefixes that themselves
 contain slashes — e.g.
@@ -897,6 +1136,27 @@ contain slashes — e.g.
 Rate-limit changes are not hot-reloadable: the engine is built once at
 `start_client_server` and stored in the runtime. Restart the server for
 changes to take effect.
+
+### Rate limiting behind a reverse proxy
+
+Per-IP limits key on the **effective client IP** — which is the raw TCP peer
+address unless `server.trusted_proxies` is configured. Behind a reverse proxy
+the raw peer is always the proxy (`127.0.0.1`), collapsing every downstream
+client into one shared bucket.
+
+**Symptom:** a single Cinny or Element session doing rapid-fire sync
+(`timeout=0`) generates ~60 requests/min, exhausting the default `90/60s` cap
+for all clients simultaneously. Subsequent requests — including the client's
+own `GET /_matrix/client/versions` health-check — receive `429 Too Many
+Requests`, and the client shows "Failed to connect" or "Server unavailable".
+
+**Fix:** set `server.trusted_proxies=127.0.0.1` in `merovingian.conf` (adjust
+the IP if your proxy does not bind to loopback). Merovingian then reads the
+leftmost `X-Forwarded-For` value as the effective IP, giving each downstream
+client its own isolated bucket. The proxy must overwrite `X-Forwarded-For`
+with the direct peer IP it received — not append to whatever the client sent.
+See [Reverse proxy examples](#reverse-proxy-examples) for the correct
+per-proxy directives.
 
 See `docs/log-filtering.md` for the operator recipe, including the
 default values for `/login`, `/register`, keys, devices, media, and

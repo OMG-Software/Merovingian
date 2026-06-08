@@ -1,3 +1,28 @@
+## 0.5.29
+
+- **Fix (CORS regression):** PR #218 activated previously-dormant CORS code by
+  populating `req.headers` for the first time. With the default
+  `cors.allowed_origins=*`, Merovingian now emits `Access-Control-Allow-Origin`
+  on every `/_matrix/` response. Reverse-proxy configs that also set this header
+  (nginx `add_header`, Apache `Header always set`) produce duplicate values
+  (`*, *`), which browsers reject with a CORS error — clients show "Failed to
+  connect" even though the server returns HTTP 200. Updated `docs/configuration.md`
+  and `config/merovingian.conf.example` to remove all proxy-level CORS directives
+  and warn against re-adding them.
+- **Fix (trusted-proxy documentation gap):** Without `server.trusted_proxies`,
+  all traffic arriving through a reverse proxy is bucketed under the proxy's IP
+  (`127.0.0.1`), collapsing all clients into a single rate-limit bucket. A
+  single active Matrix client polling sync at ~60 req/min exhausts the entire
+  `default_per_ip` quota, causing `429` for every other client. Added guidance
+  to `merovingian.conf.example` and a "Rate limiting behind a reverse proxy"
+  subsection to `docs/configuration.md`. Fixed nginx example to use `$remote_addr`
+  (not `$proxy_add_x_forwarded_for`, which allows IP-bucket forgery); added
+  `X-Forwarded-For` to the Apache example which previously omitted it entirely.
+- **Config (rate-limit default):** Raised `client_rate_limits.default_per_ip`
+  default from `60/60s` to `90/60s` to accommodate typical Matrix client
+  behaviour (sync loop + periodic `/versions` health-check) without requiring
+  manual config adjustment.
+
 ## 0.5.28
 
 - **Security (Finding 5 — Per-IP rate limiting):** `LocalHttpRequest` had no

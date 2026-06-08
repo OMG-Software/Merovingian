@@ -15,7 +15,7 @@ namespace merovingian::http
 
 struct RateLimitPolicy final
 {
-    std::uint32_t max_requests{60U};
+    std::uint32_t max_requests{90U};
     std::uint32_t window_seconds{60U};
 };
 
@@ -43,7 +43,7 @@ struct RateLimitConfig final
     // per-IP cap is the only limit.
     std::unordered_map<std::string, RateLimitPolicy> per_user{};
     // Fallback for target prefixes not in the per_ip map.
-    RateLimitPolicy default_per_ip{60U, 60U};
+    RateLimitPolicy default_per_ip{90U, 60U};
 };
 
 // The decision returned by RateLimitEngine::check. When allowed is true,

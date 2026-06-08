@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.28
+Version:        0.5.29
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,14 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.29-1
+- Fix reverse-proxy CORS duplicate-header regression: document that proxy-level
+  CORS headers must be removed; update nginx example to use $remote_addr instead
+  of $proxy_add_x_forwarded_for; add X-Forwarded-For to Apache example.
+- Add trusted_proxies guidance to example config and docs; without it all
+  clients share one rate-limit bucket behind a reverse proxy.
+- Raise default per-IP rate limit from 60/60s to 90/60s.
+
 * Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.28-1
 - Fix F5: add remote_addr to LocalHttpRequest; key unauthenticated rate-limit
   buckets by (source-IP, route) instead of a process-global synthetic key;
