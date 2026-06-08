@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.29
+Version:        0.5.30
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.30-1
+- Fix CORS headers missing from non-OPTIONS responses: browsers could not read
+  200 sync responses or 4xx error bodies because complete() and sync_json()
+  returned DispatchResult without calling apply_cors_headers(). Fixed by
+  applying CORS at the single handle_client_server_request public boundary.
+
 * Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.29-1
 - Fix reverse-proxy CORS duplicate-header regression: document that proxy-level
   CORS headers must be removed; update nginx example to use $remote_addr instead

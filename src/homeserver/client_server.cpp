@@ -4711,7 +4711,12 @@ auto handle_client_server_http_request(ClientServerRuntime& rt, std::string_view
         .response;
 }
 
-auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req, bool can_wait) -> DispatchResult
+// Internal implementation — does NOT guarantee CORS headers on every code
+// path (complete() and sync_json() build raw DispatchResult structs).
+// All callers MUST go through the public handle_client_server_request wrapper
+// which applies CORS at the boundary unconditionally.
+static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttpRequest const& req, bool can_wait)
+    -> DispatchResult
 {
     log_diagnostic("request.received", {
                                            {"method",           req.method,                                       false},
@@ -6756,6 +6761,27 @@ auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest cons
                                                   {"status", "404",                                            false}
     });
     return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+}
+
+// Matrix spec §web-browser-clients (v1.18):
+//   "The server MUST add Access-Control-Allow-Origin: * to every response."
+//
+// This is the single public entry point. The impl above has multiple code paths
+// (complete(), sync_json(), direct DispatchResult construction) that return
+// without calling apply_cors_headers(). Applying CORS here at the boundary
+// covers all of them in one place without touching every return site.
+//
+// needs_wait responses carry no HTTP response yet — CORS is applied on the
+// second call (can_wait=false) after the sync notifier fires, at which point
+// status will be complete and this branch runs normally.
+auto handle_client_server_request(ClientServerRuntime& rt, LocalHttpRequest const& req, bool can_wait) -> DispatchResult
+{
+    auto result = handle_client_server_request_impl(rt, req, can_wait);
+    if (result.status == DispatchResult::Status::complete)
+    {
+        apply_cors_headers(req, result.response, rt.cors);
+    }
+    return result;
 }
 
 auto device_count(ClientServerRuntime const& rt, std::string_view user) noexcept -> std::size_t

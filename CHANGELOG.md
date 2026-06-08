@@ -1,3 +1,17 @@
+## 0.5.30
+
+- **Fix (CORS missing on non-OPTIONS responses):** `complete()` and `sync_json()`
+  returned `DispatchResult` without calling `apply_cors_headers()`, so browsers
+  silently discarded `200 /sync` response bodies and could not read `4xx` error
+  payloads from the key API and other routes. Only `dispatch_resp` / `dispatch_err`
+  applied CORS, meaning OPTIONS preflights succeeded but the actual responses that
+  followed were CORS-blocked. Fixed by renaming the implementation to
+  `handle_client_server_request_impl` (static) and adding a public wrapper that
+  calls `apply_cors_headers` on every `complete` result — a single boundary
+  covering all code paths. Three new BDD scenarios verify CORS on `GET /versions`
+  (unauthenticated 200), `GET /sync` (authenticated 200), and
+  `GET /room_keys/version` (authenticated 404).
+
 ## 0.5.29
 
 - **Fix (CORS regression):** PR #218 activated previously-dormant CORS code by

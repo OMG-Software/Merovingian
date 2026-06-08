@@ -1,3 +1,18 @@
+## v0.5.30 (fix/cors-headers-non-options-responses)
+
+### Fix: CORS headers missing from non-OPTIONS responses
+
+| File | Change |
+|------|--------|
+| `src/homeserver/client_server.cpp` | Rename `handle_client_server_request` → `handle_client_server_request_impl` (static); add public wrapper that calls `apply_cors_headers` on every `complete` result so all code paths (including `complete()` and `sync_json()`) carry `Access-Control-Allow-Origin` |
+| `tests/unit/test_client_server.cpp` | Three new BDD scenarios: CORS on `GET /versions` 200, CORS on `GET /sync` 200, CORS on `GET /room_keys/version` 404 |
+| `docs/http-transport.md` | Correct CORS description: headers now emitted on all responses, not only OPTIONS preflight |
+| `CHANGELOG.md` | `## 0.5.30` entry |
+
+**Tests**: 47/47 pass.
+
+---
+
 ## v0.5.29 (fix/trusted-proxy-rate-limit-default)
 
 ### Fix: reverse-proxy CORS duplicate header, trusted-proxy docs, default rate limit
