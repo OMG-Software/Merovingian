@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.32
+Version:        0.5.33
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,13 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 09 2026 James Chapman <claude@ping.me.uk> - 0.5.33-1
+- fix: GET /rooms/{roomId}/members returns 403 for non-members (spec §11.1)
+- fix: POST /account/password requires UIA before changing password (spec §5.7)
+- fix: registration honours device_id, initial_device_display_name, inhibit_login
+- fix: registration UIA token challenge is now conditional on require_token config
+- fix: POST /login stores initial_device_display_name on the created device
+
 * Mon Jun 09 2026 James Chapman <claude@ping.me.uk> - 0.5.32-1
 - fix(rooms): recover missing membership row from current_state on leave_room
   so a server restart mid-join no longer causes permanent 403 on leave.

@@ -33,5 +33,7 @@ namespace merovingian::homeserver
     -> OperationResult;
 [[nodiscard]] auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view new_password) -> OperationResult;
+[[nodiscard]] auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
+                                              std::string_view password) -> bool;
 
 } // namespace merovingian::homeserver

@@ -811,6 +811,9 @@ namespace
         std::string localpart{};
         std::string password{};
         std::string registration_token{};
+        std::string device_id{};
+        std::string display_name{};
+        bool inhibit_login{false};
     };
 
     struct MatrixRegisterEmailRequestBody final
@@ -835,6 +838,7 @@ namespace
         std::string user_id{};
         std::string password{};
         std::string device_id{};
+        std::string display_name{};
         bool supports_refresh_tokens{false};
     };
 
@@ -1195,7 +1199,13 @@ namespace
                 token = auth_token;
             }
         }
-        return MatrixRegisterBody{*username, *password, token == nullptr ? std::string{} : *token};
+        auto const* device_id = string_member(*object, "device_id");
+        auto const* display_name = string_member(*object, "initial_device_display_name");
+        auto const* inhibit_login = boolean_member(*object, "inhibit_login");
+        return MatrixRegisterBody{*username, *password, token == nullptr ? std::string{} : *token,
+                                  device_id == nullptr ? std::string{} : *device_id,
+                                  display_name == nullptr ? std::string{} : *display_name,
+                                  inhibit_login != nullptr && *inhibit_login};
     }
 
     [[nodiscard]] auto query_param_value(std::string_view target, std::string_view key) -> std::optional<std::string>
@@ -1453,9 +1463,11 @@ namespace
             return std::nullopt;
         }
         auto const* device_id = string_member(*object, "device_id");
+        auto const* display_name = string_member(*object, "initial_device_display_name");
         auto const* supports_refresh_tokens = boolean_member(*object, "refresh_token");
         return MatrixLoginBody{matrix_user_id(server_name, *user), *password,
                                device_id == nullptr ? std::string{} : *device_id,
+                               display_name == nullptr ? std::string{} : *display_name,
                                supports_refresh_tokens != nullptr && *supports_refresh_tokens};
     }
 
@@ -4946,30 +4958,35 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "registration body must be Matrix JSON");
         }
-        // Matrix UI-auth: the auth dict must contain a recognized type with all
-        // required parameters.  Per spec v1.18 §5.5.1, incomplete credentials MUST
-        // receive 401 with the challenge — not proceed to registration and fail 403.
-        auto const uia_challenge = json_obj({
-            json_member("flows", json_arr({json_obj(
-                                     {json_member("stages", json_arr({json_str("m.login.registration_token")}))})})),
-            json_member("params", json_obj({})),
-            json_member("session", json_str("merovingian-ui-auth")),
-        });
-        auto const* auth = object_member_object(*registration_object, "auth");
-        if (auth == nullptr)
+        // Spec §5.5.1: UIA is only required when the server is configured to
+        // require a registration token. When require_token is false the client
+        // may register without any auth block.
+        auto const require_token = rt.homeserver.config.security().registration.require_token;
+        if (require_token)
         {
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
-        }
-        // Validate that auth.type is the expected stage and that the required
-        // parameter (token) is present.  Unknown or incomplete types get 401.
-        auto const* auth_type = string_member(*auth, "type");
-        if (auth_type == nullptr || *auth_type != "m.login.registration_token")
-        {
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
-        }
-        if (string_member(*auth, "token") == nullptr)
-        {
-            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            // Per spec v1.18 §5.5.1, incomplete credentials MUST receive 401
+            // with the challenge — not proceed to registration and fail 403.
+            auto const uia_challenge = json_obj({
+                json_member("flows",
+                            json_arr({json_obj(
+                                {json_member("stages", json_arr({json_str("m.login.registration_token")}))})})),
+                json_member("params", json_obj({})),
+                json_member("session", json_str("merovingian-ui-auth")),
+            });
+            auto const* auth = object_member_object(*registration_object, "auth");
+            if (auth == nullptr)
+            {
+                return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            }
+            auto const* auth_type = string_member(*auth, "type");
+            if (auth_type == nullptr || *auth_type != "m.login.registration_token")
+            {
+                return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            }
+            if (string_member(*auth, "token") == nullptr)
+            {
+                return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+            }
         }
         auto const body = parse_register_body(req.body);
         if (!body.has_value())
@@ -4987,21 +5004,26 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, result.status, registration_error_code(result.status, result.reason),
                                 result.reason);
         }
-        // Spec §5.5.1: when inhibit_login is false (the default), the response
-        // MUST include access_token and device_id.  Create a session immediately
-        // so the client can act without a separate /login round trip.
         auto const full_user_id = result.value;
-        auto const reg_device_id = std::string{body->localpart} + "_DEVICE";
-        auto const session = login_local_user(rt.homeserver, full_user_id, body->password, reg_device_id);
-        if (!session.ok)
+        // Spec §5.5.1: inhibit_login suppresses session creation; return only user_id.
+        if (body->inhibit_login)
         {
-            // Session creation failed — return user_id only.
             return dispatch_resp(req, rt, 200U,
                                  json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
         }
-        // Note: we intentionally do NOT push to rt.devices here. The registration
-        // device is ephemeral; rt.devices is populated only by explicit /login calls
-        // so that /devices and device-count queries reflect user-chosen sessions.
+        // Use the client-supplied device_id when provided; generate one otherwise.
+        auto const reg_device_id = body->device_id.empty() ? generate_device_id() : body->device_id;
+        auto const session = login_local_user(rt.homeserver, full_user_id, body->password, reg_device_id);
+        if (!session.ok)
+        {
+            return dispatch_resp(req, rt, 200U,
+                                 json_serialize(json_obj({json_member("user_id", json_str(full_user_id))})));
+        }
+        auto const reg_display_name = body->display_name.empty() ? reg_device_id : body->display_name;
+        if (find_device(rt, full_user_id, reg_device_id) == nullptr)
+        {
+            rt.devices.push_back({full_user_id, reg_device_id, reg_display_name});
+        }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({
                                  json_member("access_token", json_str(session.value)),
@@ -5035,7 +5057,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         if (find_device(rt, body->user_id, body->device_id) == nullptr)
         {
-            rt.devices.push_back({body->user_id, body->device_id, body->device_id});
+            auto const dn = body->display_name.empty() ? body->device_id : body->display_name;
+            rt.devices.push_back({body->user_id, body->device_id, dn});
         }
         auto response_body = canonicaljson::Object{
             json_member("access_token", json_str(result.value)),
@@ -5278,6 +5301,34 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         if (new_password == nullptr || new_password->empty())
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "new_password is required");
+        }
+        // Spec §5.5 (UIA): POST /account/password requires m.login.password to
+        // prove account ownership. A missing, incomplete, or wrong-credential
+        // auth block must return 401 with the UIA challenge — not 403.
+        auto const uia_challenge = json_obj({
+            json_member("flows",
+                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
+            json_member("params", json_obj({})),
+            json_member("session", json_str("password_change")),
+        });
+        auto const* auth = object_member_object(*object, "auth");
+        if (auth == nullptr)
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        auto const* auth_type = string_member(*auth, "type");
+        if (auth_type == nullptr || *auth_type != "m.login.password")
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        auto const* current_password = string_member(*auth, "password");
+        if (current_password == nullptr || current_password->empty())
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
         auto const result = change_local_user_password(rt.homeserver, req.access_token, *new_password);
         if (!result.ok)
@@ -5993,6 +6044,30 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 if (room_it == store.rooms.end())
                 {
                     return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
+                }
+
+                // Spec §GET /rooms/{roomId}/members: 403 if the requester is not a
+                // current or previous room member. Check memberships first; fall back to
+                // state events so the state-only code path (e.g. regression tests that
+                // deliberately clear the membership projection) still works correctly.
+                auto const is_or_was_member =
+                    std::ranges::any_of(store.memberships,
+                                        [&](database::PersistentMembership const& m) {
+                                            return m.room_id == room_id && m.user_id == *user;
+                                        }) ||
+                    std::ranges::any_of(store.state, [&](database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.member" &&
+                               s.state_key == *user;
+                    });
+                if (!is_or_was_member)
+                {
+                    log_diagnostic("room.members.rejected",
+                                   {
+                                       {"actor",   *user,                               false},
+                                       {"room_id", room_id,                             false},
+                                       {"reason",  "user is not a member of this room", false}
+                                   });
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
                 }
 
                 auto chunk = canonicaljson::Array{};

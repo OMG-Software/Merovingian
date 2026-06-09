@@ -704,10 +704,11 @@ SCENARIO("POST /account/password changes the authenticated user's password",
         auto const value_end = login.response.body.find('"', value_begin);
         auto const token = login.response.body.substr(value_begin, value_end - value_begin);
 
-        WHEN("the user changes their password")
+        WHEN("the user changes their password with the correct current password in the auth block")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                rt, {"POST", "/_matrix/client/v3/account/password", token, R"({"new_password":"NewHorse99!!"})"});
+                rt, {"POST", "/_matrix/client/v3/account/password", token,
+                     R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"NewHorse99!!"})"});
 
             THEN("the server returns 200 and the new password is accepted at login")
             {

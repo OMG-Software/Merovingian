@@ -570,18 +570,43 @@
       "expect_keys_present": ["errcode", "error"]
     },
     {
-      "method": "POST",
-      "path": "/_matrix/client/v3/account/password",
-      "auth_from": "refreshed_token",
-      "body": {"new_password": "weak"},
-      "expect_status": 400,
-      "expect_keys_present": ["errcode", "error"]
-    },
-    {
+      "comment": "UIA: authenticated request with no auth block must receive 401 with flows/params/session",
       "method": "POST",
       "path": "/_matrix/client/v3/account/password",
       "auth_from": "refreshed_token",
       "body": {"new_password": "NewCorrectHorse99!!"},
+      "expect_status": 401,
+      "expect_keys_present": ["flows", "params", "session"]
+    },
+    {
+      "comment": "UIA: valid auth block but weak new_password must still return 400",
+      "method": "POST",
+      "path": "/_matrix/client/v3/account/password",
+      "auth_from": "refreshed_token",
+      "body": {
+        "auth": {
+          "type": "m.login.password",
+          "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+          "password": "CorrectHorse7!"
+        },
+        "new_password": "weak"
+      },
+      "expect_status": 400,
+      "expect_keys_present": ["errcode", "error"]
+    },
+    {
+      "comment": "UIA: valid auth block and strong new_password succeeds",
+      "method": "POST",
+      "path": "/_matrix/client/v3/account/password",
+      "auth_from": "refreshed_token",
+      "body": {
+        "auth": {
+          "type": "m.login.password",
+          "identifier": {"type": "m.id.user", "user": "@alice:example.org"},
+          "password": "CorrectHorse7!"
+        },
+        "new_password": "NewCorrectHorse99!!"
+      },
       "expect_status": 200
     },
     {

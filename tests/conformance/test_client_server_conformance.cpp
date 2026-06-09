@@ -559,6 +559,183 @@ SCENARIO("POST /register success response contains required spec fields", "[conf
     }
 }
 
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3register
+//
+// §5.5.1: If a device_id is specified in the request body the server MUST include
+// that exact device_id in the response.
+SCENARIO("POST /register with device_id in request returns matching device_id in response",
+         "[conformance][client-server][register]")
+{
+    GIVEN("a running client-server with token-gated registration enabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("a registration request includes a device_id")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/register", {},
+                 R"({"username":"devid","password":"CorrectHorse7!","device_id":"CLIENT_DEVICE_1","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
+
+            THEN("the response device_id equals the requested device_id")
+            {
+                // Spec MUST: device_id in response MUST match device_id from request.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* reg_device_id = string_member(body, "device_id");
+                REQUIRE(reg_device_id != nullptr);
+                REQUIRE(*reg_device_id == "CLIENT_DEVICE_1");
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3register
+//
+// §5.5.1: If inhibit_login is true the server MUST NOT return an access_token
+// or device_id in the response body; only user_id is present.
+SCENARIO("POST /register with inhibit_login:true returns only user_id",
+         "[conformance][client-server][register]")
+{
+    GIVEN("a running client-server with token-gated registration enabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("a registration request sets inhibit_login to true")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/register", {},
+                 R"({"username":"nologin","password":"CorrectHorse7!","inhibit_login":true,"auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
+
+            THEN("the response has user_id but no access_token or device_id")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                // Spec MUST: user_id present.
+                auto const* user_id = string_member(body, "user_id");
+                REQUIRE(user_id != nullptr);
+                REQUIRE(!user_id->empty());
+                // Spec MUST NOT: access_token absent when inhibit_login is true.
+                REQUIRE(string_member(body, "access_token") == nullptr);
+                // Spec MUST NOT: device_id absent when inhibit_login is true.
+                REQUIRE(string_member(body, "device_id") == nullptr);
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3register
+//
+// The device created by registration is a real session and MUST appear in
+// GET /devices so the client can manage it.
+SCENARIO("POST /register device is visible via GET /devices",
+         "[conformance][client-server][register][devices]")
+{
+    GIVEN("a successful registration that returns an access token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST", "/_matrix/client/v3/register", {},
+             merovingian::tests::registration_json("regdeviceuser", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+        auto const token = response_string_field(reg.response.body, "access_token");
+        auto const reg_device_id = response_string_field(reg.response.body, "device_id");
+
+        WHEN("the registered session calls GET /devices")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/devices", token, {}});
+
+            THEN("the registration device is listed")
+            {
+                // Spec MUST: all active sessions visible in the devices list.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* devices = object_member_as_array(body, "devices");
+                REQUIRE(devices != nullptr);
+                auto found = false;
+                for (auto const& dval : *devices)
+                {
+                    auto const* dev = std::get_if<merovingian::canonicaljson::Object>(&dval.storage());
+                    if (dev == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* did = string_member(*dev, "device_id");
+                    if (did != nullptr && *did == reg_device_id)
+                    {
+                        found = true;
+                        break;
+                    }
+                }
+                REQUIRE(found);
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3register
+//
+// initial_device_display_name from the registration request MUST be stored as
+// the device's display name.
+SCENARIO("POST /register with initial_device_display_name stores it as the device display name",
+         "[conformance][client-server][register][devices]")
+{
+    GIVEN("a successful registration that includes an initial_device_display_name")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST", "/_matrix/client/v3/register", {},
+             R"({"username":"dispreguser","password":"CorrectHorse7!","initial_device_display_name":"Registration Phone","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
+        REQUIRE(reg.response.status == 200U);
+        auto const token = response_string_field(reg.response.body, "access_token");
+        auto const reg_device_id = response_string_field(reg.response.body, "device_id");
+
+        WHEN("the registered session calls GET /devices")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/devices", token, {}});
+
+            THEN("the device appears with the supplied display name")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* devices = object_member_as_array(body, "devices");
+                REQUIRE(devices != nullptr);
+                auto found = false;
+                for (auto const& dval : *devices)
+                {
+                    auto const* dev = std::get_if<merovingian::canonicaljson::Object>(&dval.storage());
+                    if (dev == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* did = string_member(*dev, "device_id");
+                    if (did != nullptr && *did == reg_device_id)
+                    {
+                        found = true;
+                        // Spec MUST: display name matches initial_device_display_name.
+                        auto const* dn = string_member(*dev, "display_name");
+                        REQUIRE(dn != nullptr);
+                        REQUIRE(*dn == "Registration Phone");
+                        break;
+                    }
+                }
+                REQUIRE(found);
+            }
+        }
+    }
+}
+
 // --- GET /_matrix/client/v3/login --------------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3login
 //
@@ -658,6 +835,66 @@ SCENARIO("POST /login success response contains required spec fields", "[conform
                 REQUIRE(!device_id->empty());
 
                 // Note: "home_server" was deprecated in v1.2 and is not asserted.
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3login
+//
+// initial_device_display_name in the login request MUST be stored as the
+// device display name and appear in GET /devices.
+SCENARIO("POST /login with initial_device_display_name stores it as the device display name",
+         "[conformance][client-server][login]")
+{
+    GIVEN("a running client-server and a registered user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("displayuser", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        WHEN("the user logs in with initial_device_display_name set")
+        {
+            auto const login = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/login", {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@displayuser:example.org"},"password":"CorrectHorse7!","device_id":"DISP_DEV","initial_device_display_name":"My Test Phone"})"});
+            REQUIRE(login.response.status == 200U);
+            auto const token = response_string_field(login.response.body, "access_token");
+
+            auto const devices_resp = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/devices", token, {}});
+
+            THEN("the device appears in the list with the supplied display name")
+            {
+                REQUIRE(devices_resp.response.status == 200U);
+                auto const body = parse_object(devices_resp.response.body);
+                auto const* devs = object_member_as_array(body, "devices");
+                REQUIRE(devs != nullptr);
+                auto found = false;
+                for (auto const& dval : *devs)
+                {
+                    auto const* dev = std::get_if<merovingian::canonicaljson::Object>(&dval.storage());
+                    if (dev == nullptr)
+                    {
+                        continue;
+                    }
+                    auto const* did = string_member(*dev, "device_id");
+                    if (did != nullptr && *did == "DISP_DEV")
+                    {
+                        found = true;
+                        // Spec MUST: display_name from initial_device_display_name.
+                        auto const* dn = string_member(*dev, "display_name");
+                        REQUIRE(dn != nullptr);
+                        REQUIRE(*dn == "My Test Phone");
+                        break;
+                    }
+                }
+                REQUIRE(found);
             }
         }
     }
@@ -2653,6 +2890,72 @@ SCENARIO("PUT /v1/admin/suspend/{userId} returns 404 M_UNRECOGNIZED (implementat
 // --- POST /_matrix/client/v3/account/password ---------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3accountpassword
 //
+// Uses User-Interactive Authentication (UIA). The only mandatory stage is
+// m.login.password. A request without an auth field MUST receive 401 with
+// a flows/params/session body (not 403 or 400).
+SCENARIO("POST /account/password without auth returns 401 UIA challenge",
+         "[conformance][client-server][account]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("POST /account/password is sent with new_password but no auth block")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/account/password", token, R"({"new_password":"NewHorse7!+Ab"})"});
+
+            THEN("the server returns 401 with a UIA flows body")
+            {
+                // Spec MUST: 401 when authentication has not yet been completed.
+                REQUIRE(response.response.status == 401U);
+                auto const body = parse_object(response.response.body);
+                // Spec MUST: response body contains a 'flows' array.
+                auto const* flows = object_member_as_array(body, "flows");
+                REQUIRE(flows != nullptr);
+                REQUIRE(!flows->empty());
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3accountpassword
+//
+// When auth.type is m.login.password but the supplied password is wrong,
+// the server MUST return 401 (re-issue the UIA challenge).
+SCENARIO("POST /account/password with wrong current password returns 401",
+         "[conformance][client-server][account]")
+{
+    GIVEN("a running client-server and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("POST /account/password is sent with an incorrect current password in the auth block")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/account/password", token,
+                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"WrongPassword9!"},"new_password":"NewHorse7!+Ab"})"});
+
+            THEN("the server returns 401 because the credential was rejected")
+            {
+                // Spec MUST: 401 when the provided authentication is invalid.
+                REQUIRE(response.response.status == 401U);
+                auto const body = parse_object(response.response.body);
+                auto const* flows = object_member_as_array(body, "flows");
+                REQUIRE(flows != nullptr);
+            }
+        }
+    }
+}
+
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3accountpassword
+//
 // MUST return 200 with an empty JSON object on success.
 SCENARIO("POST /account/password returns 200 with empty JSON object", "[conformance][client-server][account]")
 {
@@ -2662,11 +2965,12 @@ SCENARIO("POST /account/password returns 200 with empty JSON object", "[conforma
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /account/password is called with a new password")
+        WHEN("POST /account/password is called with a valid auth block and a new password")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/account/password", token, R"({"new_password":"NewHorse7!+Ab"})"});
+                {"POST", "/_matrix/client/v3/account/password", token,
+                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"NewHorse7!+Ab"})"});
 
             THEN("the response is 200 with a valid JSON object body")
             {
@@ -10451,13 +10755,20 @@ SCENARIO("GET /devices returns a devices array containing the authenticated devi
                 REQUIRE(devs != nullptr);
                 REQUIRE(!devs->empty());
 
-                // Spec MUST: each device entry carries device_id
-                auto const* first_obj =
-                    std::get_if<merovingian::canonicaljson::Object>(&(*devs)[0].storage());
-                REQUIRE(first_obj != nullptr);
-                auto const* did = string_member(*first_obj, "device_id");
-                REQUIRE(did != nullptr);
-                REQUIRE(*did == "DEVICE1");
+                // Spec MUST: each device entry carries device_id; the login
+                // device (DEVICE1) must appear somewhere in the array.
+                // Registration also creates a device, so we search rather than
+                // assume index 0.
+                auto found_device1 = false;
+                for (auto const& dev_val : *devs)
+                {
+                    auto const* obj =
+                        std::get_if<merovingian::canonicaljson::Object>(&dev_val.storage());
+                    if (obj == nullptr) { continue; }
+                    auto const* did = string_member(*obj, "device_id");
+                    if (did != nullptr && *did == "DEVICE1") { found_device1 = true; break; }
+                }
+                REQUIRE(found_device1);
             }
         }
     }

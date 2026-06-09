@@ -319,7 +319,8 @@ SCENARIO("Client-server runtime account and device endpoints use real sessions",
                 REQUIRE(devices.response.body.find("DEVICE1") != std::string::npos);
                 REQUIRE(update.response.status == 200U);
                 REQUIRE(updated_devices.response.body.find("Alice laptop") != std::string::npos);
-                REQUIRE(merovingian::homeserver::device_count(runtime, "@alice:example.org") == 1U);
+                // Registration creates one device, login creates a second — both are tracked in rt.devices.
+                REQUIRE(merovingian::homeserver::device_count(runtime, "@alice:example.org") == 2U);
             }
         }
     }
@@ -4925,6 +4926,136 @@ SCENARIO("Room members response is derived from current state even when the memb
 
                 REQUIRE(saw_alice);
                 REQUIRE(saw_bob);
+            }
+        }
+    }
+}
+
+// Spec: Matrix CS API v1.18
+// Section: GET /rooms/{roomId}/members
+// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
+//
+// MUST return 403 if the requester is not a current or previous room member.
+SCENARIO("GET /rooms/{roomId}/members returns 403 for a user who has never been a member",
+         "[homeserver][client-server][rooms][members][security]")
+{
+    GIVEN("alice has created a private room and charlie has never been invited or joined")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("charlie", "CorrectHorse9!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const charlie_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@charlie:example.org"},"password":"CorrectHorse9!","device_id":"CHARLIE_DEV"})"});
+        REQUIRE(charlie_login.response.status == 200U);
+        auto const charlie_token = login_token(charlie_login.response.body);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token,
+                      R"({"preset":"private_chat"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const created_room_id = room_id(create.response.body);
+        auto const encoded_room_id = percent_encode_room_identifier(created_room_id);
+
+        WHEN("charlie (never a member) requests the room member list")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + encoded_room_id + "/members",
+                 charlie_token, {}});
+
+            THEN("the server returns 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+SCENARIO("GET /rooms/{roomId}/members returns 200 for a user who previously left",
+         "[homeserver][client-server][rooms][members][security]")
+{
+    GIVEN("alice created a room, bob joined and then left")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/register", {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token,
+                      R"({"preset":"public_chat"})"});
+        REQUIRE(create.response.status == 200U);
+        auto const created_room_id = room_id(create.response.body);
+        auto const encoded_room_id = percent_encode_room_identifier(created_room_id);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/rooms/" + created_room_id + "/join", bob_token, "{}"})
+                    .response.status == 200U);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/rooms/" + created_room_id + "/leave", bob_token, "{}"})
+                    .response.status == 200U);
+
+        WHEN("bob (a previous member who left) requests the room member list")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/client/v3/rooms/" + encoded_room_id + "/members",
+                 bob_token, {}});
+
+            THEN("the server returns 200 because bob was previously a member")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
             }
         }
     }
