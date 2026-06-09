@@ -16,6 +16,10 @@
   local state.
 - Add `ValidatedMakeLeaveResponse` / `validate_make_leave_response` public API
   mirroring the existing join validation surface.
+- **Docs:** Deleted `docs/01-progress-tracker.md`. All open TODO items extracted
+  into `docs/todos/` (`priorities.md`, `beta-milestone.md`,
+  `production-milestone.md`, `capability-gaps.md`). References updated across
+  `CLAUDE.md`, `AGENTS.md`, `README.md`, and all live doc files.
 
 ## 0.5.31
 

@@ -171,7 +171,7 @@ Retest:
   - [src/main.cpp](/C:/dev/Merovingian/src/main.cpp:555)
   - [src/net/listener.cpp](/C:/dev/Merovingian/src/net/listener.cpp:38)
   - [src/homeserver/local_http_router.cpp](/C:/dev/Merovingian/src/homeserver/local_http_router.cpp:215)
-  - [docs/01-progress-tracker.md](/C:/dev/Merovingian/docs/01-progress-tracker.md:388)
+  - [docs/todos/capability-gaps.md](/C:/dev/Merovingian/docs/todos/capability-gaps.md)
 - Exploitability: High whenever the federation listener is internet-reachable
 - Impact: Unnecessary attack-surface expansion on the federation port
 
@@ -249,7 +249,7 @@ Recommended fix:
 - Severity: Medium
 - Affected code:
   - [docs/security-review-checklist.md](/C:/dev/Merovingian/docs/security-review-checklist.md:44)
-  - [docs/01-progress-tracker.md](/C:/dev/Merovingian/docs/01-progress-tracker.md:324)
+  - [docs/todos/production-milestone.md](/C:/dev/Merovingian/docs/todos/production-milestone.md)
   - [docs/release-process.md](/C:/dev/Merovingian/docs/release-process.md:45)
   - [\.github/workflows/release.yml](/C:/dev/Merovingian/.github/workflows/release.yml:173)
 - Exploitability: Moderate

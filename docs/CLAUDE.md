@@ -9,7 +9,6 @@ new documents.
 | Document | What to add/update |
 |---|---|
 | `../CHANGELOG.md` (repo root) | New `## X.Y.Z` section describing what changed |
-| `01-progress-tracker.md` | Mark the feature/fix row for the change |
 
 ## Update when the matching domain changes
 

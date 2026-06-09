@@ -1079,7 +1079,7 @@ Production package assets are intentionally separated from the bootstrap config:
 - `Dockerfile`
 
 These assets are deployment scaffolds until the production gates in
-`docs/01-progress-tracker.md` pass. Do not publish them as a production release
+`docs/todos/production-milestone.md` pass. Do not publish them as a production release
 while runtime listeners, durable storage, federation verification, or hardening
 checks remain incomplete.
 | `secret redaction policy` | Enabled by validated logging defaults |
