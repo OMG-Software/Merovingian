@@ -1,3 +1,31 @@
+## 0.5.33
+
+- **Fix (`GET /rooms/{roomId}/members` — missing access check):** The endpoint
+  returned membership data to any authenticated user regardless of whether they
+  were a current or previous member of the room. The spec (§11.1) requires 403
+  M_FORBIDDEN for callers who have never been a member. The fix checks both
+  `store.memberships` (current state) and `store.state` (historical
+  `m.room.member` events) before returning data.
+- **Fix (`POST /account/password` — no UIA):** The endpoint accepted
+  `new_password` without first verifying the account owner via the
+  User-Interactive Authentication API. The fix adds a full UIA round-trip: a
+  bare request returns 401 with the `m.login.password` flow; the client must
+  supply `auth.type`, `auth.identifier`, and `auth.password` (current password)
+  before the change is applied.
+- **Fix (registration ignores `device_id`, `initial_device_display_name`,
+  `inhibit_login`):** The parser now extracts all three fields. When
+  `inhibit_login` is true only `user_id` is returned. Otherwise the
+  client-supplied `device_id` is used (or a generated one if absent), the
+  display name is stored, and the session is added to `rt.devices` so it
+  appears in `GET /devices`.
+- **Fix (registration always demands token UIA):** The `m.login.registration_token`
+  UIA challenge is now conditional on `security.registration.require_token`.
+  Code paths that cannot reach open registration (blocked by config validation)
+  are now correctly handled at the handler level too.
+- **Fix (`POST /login` ignores `initial_device_display_name`):** The login
+  parser now extracts the field and passes it to `rt.devices` when creating a
+  new device record, so `GET /devices` reflects the client-chosen display name.
+
 ## 0.5.32
 
 - **Fix (federated room leave — 403 on leave after server restart):** `leave_room`

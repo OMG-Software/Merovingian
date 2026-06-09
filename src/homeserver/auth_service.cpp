@@ -688,4 +688,20 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     return make_operation_result(true, *user_id);
 }
 
+auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
+                                std::string_view password) -> bool
+{
+    auto const user_id = authenticated_user(runtime, access_token);
+    if (!user_id.has_value())
+    {
+        return false;
+    }
+    auto const* user = find_user(runtime.database, *user_id);
+    if (user == nullptr)
+    {
+        return false;
+    }
+    return password_matches(user->password_hash, password);
+}
+
 } // namespace merovingian::homeserver

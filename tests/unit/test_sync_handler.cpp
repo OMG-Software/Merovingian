@@ -110,14 +110,15 @@ namespace
     return {user_id, token};
 }
 
+// Returns the most-recently-added device for `user`. Registration now creates
+// a device first; callers want the login device which is always added last.
 [[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt,
                                        std::string_view user) -> std::string
 {
-    auto const it = std::ranges::find_if(rt.devices, [user](merovingian::homeserver::ClientDevice const& d) {
-        return d.user_id == user;
-    });
-    REQUIRE(it != rt.devices.end());
-    return it->device_id;
+    auto const result = std::ranges::find_last_if(
+        rt.devices, [user](merovingian::homeserver::ClientDevice const& d) { return d.user_id == user; });
+    REQUIRE(!result.empty());
+    return result.begin()->device_id;
 }
 
 [[nodiscard]] auto parse_body(std::string const& body) -> merovingian::canonicaljson::Value
