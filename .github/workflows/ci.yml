@@ -71,7 +71,7 @@ jobs:
           mkdir -p artifacts/bin artifacts/config artifacts/docs
           cp build/src/merovingian-server artifacts/bin/
           cp config/merovingian.conf.example artifacts/config/
-          cp README.md docs/configuration.md docs/01-progress-tracker.md docs/security-review-checklist.md artifacts/docs/
+          cp README.md docs/configuration.md docs/security-review-checklist.md artifacts/docs/
           tar -C artifacts -czf merovingian-ci-artifacts.tar.gz .
 
       - name: Upload CI artifacts
@@ -152,7 +152,7 @@ jobs:
             mkdir -p artifacts/bin artifacts/config artifacts/docs
             cp build/src/merovingian-server artifacts/bin/
             cp config/merovingian.conf.example artifacts/config/
-            cp README.md docs/configuration.md docs/01-progress-tracker.md docs/security-review-checklist.md artifacts/docs/
+            cp README.md docs/configuration.md docs/security-review-checklist.md artifacts/docs/
             tar -C artifacts -czf merovingian-freebsd-artifacts.tar.gz .
 
       - name: Upload FreeBSD CI artifacts
