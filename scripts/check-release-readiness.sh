@@ -24,7 +24,8 @@ require_file packaging/netbsd/Makefile
 require_file packaging/systemd/merovingian.service
 require_file packaging/openrc/merovingian
 require_file packaging/rc.d/merovingian
-require_file docs/01-progress-tracker.md
+require_file docs/todos/priorities.md
+require_file docs/todos/production-milestone.md
 require_file docs/release-process.md
 require_file docs/security-review-checklist.md
 require_file docs/build-warning-policy.md

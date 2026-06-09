@@ -95,7 +95,7 @@ Source headers (`include/merovingian/`) and implementations (`src/`) mirror each
 - `include/merovingian/homeserver/runtime.hpp` — Runtime state manager
 
 ### Key docs
-`architecture.md` · `coding-rules.md` · `testing-standards.md` · `versioning.md` · `threat-model.md` · `security-review-checklist.md` · `crypto-boundary.md` · `database-persistence.md` · `configuration.md` · `auth-identity.md` · `event-engine.md` · `http-transport.md` · `media-repository.md` · `getting-started.md` · `dev-environment.md` · `build-warning-policy.md` · `hardening-alpha-exceptions.md` · `release-process.md` · `canonical-json.md` · `trust-safety.md` · `observability-audit.md` · `matrix-v1.18-client-server-api.md` · `create-room-spec-conformance-plan.md` · `01-progress-tracker.md`
+`architecture.md` · `coding-rules.md` · `testing-standards.md` · `versioning.md` · `threat-model.md` · `security-review-checklist.md` · `crypto-boundary.md` · `database-persistence.md` · `configuration.md` · `auth-identity.md` · `event-engine.md` · `http-transport.md` · `media-repository.md` · `getting-started.md` · `dev-environment.md` · `build-warning-policy.md` · `hardening-alpha-exceptions.md` · `release-process.md` · `canonical-json.md` · `trust-safety.md` · `observability-audit.md` · `matrix-v1.18-client-server-api.md` · `create-room-spec-conformance-plan.md` · `todos/priorities.md` · `todos/beta-milestone.md` · `todos/production-milestone.md` · `todos/capability-gaps.md`
 
 ## Subdirectory CLAUDE.md Files
 

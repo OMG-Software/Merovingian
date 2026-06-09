@@ -35,7 +35,7 @@ Merovingian is intentionally shaped around defensive engineering choices:
 - redaction-aware logs so secrets, tokens, and event content do not spill into diagnostics
 - security review, static analysis, sanitizers, and packaging gates wired into CI
 
-The current capability and readiness ledger lives in [docs/01-progress-tracker.md](C:/dev/Merovingian/docs/01-progress-tracker.md). That document is the authoritative source for what is implemented, what is still partial, and what remains blocked before production use.
+Open work items, capability gaps, and milestone blockers live in [docs/todos/](C:/dev/Merovingian/docs/todos/). See `priorities.md` for the ordered short list, `capability-gaps.md` for per-area gaps, and `beta-milestone.md` / `production-milestone.md` for milestone gates.
 
 ## Deploying And Running
 
@@ -81,4 +81,4 @@ python build.py wsl --builddir build-tsan --buildtype debug --sanitize thread
 
 ## Project Status
 
-Merovingian is beyond a toy prototype, but it is still an in-development homeserver with incomplete production gates. Federation, persistence, packaging, and security controls are actively being built out and corrected. The project should be treated as test-only until the blocking items in [docs/01-progress-tracker.md](C:/dev/Merovingian/docs/01-progress-tracker.md) are closed.
+Merovingian is beyond a toy prototype, but it is still an in-development homeserver with incomplete production gates. Federation, persistence, packaging, and security controls are actively being built out and corrected. The project should be treated as test-only until the blocking items in [docs/todos/production-milestone.md](C:/dev/Merovingian/docs/todos/production-milestone.md) are closed.

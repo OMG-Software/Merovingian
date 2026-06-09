@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.31
+Version:        0.5.32
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 09 2026 James Chapman <claude@ping.me.uk> - 0.5.32-1
+- fix(rooms): recover missing membership row from current_state on leave_room
+  so a server restart mid-join no longer causes permanent 403 on leave.
+  Implement full federated leave (make_leave + send_leave) for rooms hosted
+  on remote servers.
+
 * Sun Jun 08 2026 James Chapman <claude@ping.me.uk> - 0.5.31-1
 - Fix cross-server E2EE: include keys field in m.device_list_update EDU so
   remote servers update device caches immediately, eliminating the race window

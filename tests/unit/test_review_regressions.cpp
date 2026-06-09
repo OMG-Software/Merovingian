@@ -841,3 +841,134 @@ SCENARIO("Sending a state event mirrors current state", "[homeserver][rooms][rev
         }
     }
 }
+
+// Regression: leave_room returned 403 "user is not joined or invited" when the
+// membership row was absent (server restarted between store_room and store_membership
+// during a federated join). The row should be recovered from the current_state table
+// before the membership check, allowing the leave to proceed.
+SCENARIO("leave_room recovers missing membership row from current state before rejecting with 403",
+         "[homeserver][rooms][leave][regression][recovery]")
+{
+    GIVEN("a started runtime with a registered user whose membership row is absent "
+          "but current_state has a join event for a remote room")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        // Register and log in the user.
+        auto const reg_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/register", {},
+                 merovingian::tests::registration_json("bob", "SecurePass1!")});
+        REQUIRE(reg_resp.response.status == 200U);
+        auto const login_resp = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"SecurePass1!","device_id":"DEV1"})"});
+        REQUIRE(login_resp.response.status == 200U);
+        auto const access_token = extract_json_string(login_resp.response.body, "access_token");
+
+        // Simulate a partial join: room stored, join state event stored, but NO
+        // membership row — this is the state left behind by a mid-join server restart.
+        auto constexpr room_id   = "!partialroom:remote.example.org";
+        auto constexpr user_id   = "@bob:example.org";
+        auto constexpr event_id  = "$join_ev1:remote.example.org";
+        auto const join_event_json = std::string{
+            R"({"type":"m.room.member","state_key":")" + std::string{user_id} +
+            R"(","sender":")" + std::string{user_id} +
+            R"(","room_id":")" + std::string{room_id} +
+            R"(","origin_server_ts":1700000000000,"depth":1,)"
+            R"("auth_events":[],"prev_events":[],)"
+            R"("content":{"membership":"join"}})"};
+        {
+            auto& store = rt.homeserver.database.persistent_store;
+            store.rooms.push_back({std::string{room_id}, std::string{user_id}});
+            auto pe            = merovingian::database::PersistentEvent{};
+            pe.event_id        = event_id;
+            pe.room_id         = room_id;
+            pe.sender_user_id  = user_id;
+            pe.json            = join_event_json;
+            pe.stream_ordering = rt.homeserver.database.next_stream_ordering++;
+            auto state = std::optional<merovingian::database::PersistentStateEvent>{
+                merovingian::database::PersistentStateEvent{
+                    std::string{room_id}, "m.room.member", std::string{user_id}, std::string{event_id}}};
+            std::ignore = merovingian::database::store_event_with_state(store, std::move(pe), state);
+            // Deliberately do NOT store a membership row.
+        }
+
+        WHEN("the user attempts to leave the remote room")
+        {
+            // outbound_client is null → federation fails → 502 expected.
+            // The key assertion is that we do NOT get 403 "user is not joined",
+            // which would mean the recovery logic did not fire.
+            auto const result = merovingian::homeserver::leave_room(
+                rt.homeserver, access_token, room_id);
+
+            THEN("the response is not 403 — membership was recovered from state")
+            {
+                // 502 = federation not available (null outbound client), which means
+                // the recovery path fired and we reached the federated-leave attempt.
+                REQUIRE(result.status != 403U);
+                REQUIRE(result.status != 404U);
+            }
+        }
+    }
+}
+
+// Regression: leave_room for a remote room called persist_membership_transition
+// (local-only) instead of making outbound make_leave / send_leave federation calls.
+// Verify that the federated leave path is entered by observing a 502 when the
+// federation infrastructure is unavailable.
+SCENARIO("leave_room takes the federated make_leave/send_leave path for remote rooms",
+         "[homeserver][rooms][leave][federation][regression]")
+{
+    GIVEN("a started runtime with a user joined to a remote room via a persisted membership row")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+
+        auto const reg_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/register", {},
+                 merovingian::tests::registration_json("carol", "SecurePass2!")});
+        REQUIRE(reg_resp.response.status == 200U);
+        auto const login_resp = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@carol:example.org"},"password":"SecurePass2!","device_id":"DEV2"})"});
+        REQUIRE(login_resp.response.status == 200U);
+        auto const access_token = extract_json_string(login_resp.response.body, "access_token");
+
+        auto constexpr room_id   = "!fedroom:remote.example.org";
+        auto constexpr user_id   = "@carol:example.org";
+
+        {
+            auto& store = rt.homeserver.database.persistent_store;
+            store.rooms.push_back({std::string{room_id}, std::string{user_id}});
+            auto const stream = rt.homeserver.database.next_stream_ordering++;
+            std::ignore = merovingian::database::store_membership(
+                store, {std::string{room_id}, std::string{user_id}, "join", stream});
+        }
+
+        WHEN("the user leaves and the federation infrastructure is unavailable")
+        {
+            // Ensure outbound_client and discovery_network are null so the
+            // federation call returns {false, "federation not available"}.
+            rt.homeserver.outbound_client    = nullptr;
+            rt.homeserver.discovery_network  = nullptr;
+
+            auto const result = merovingian::homeserver::leave_room(
+                rt.homeserver, access_token, room_id);
+
+            THEN("the call fails with 502 indicating the federated leave path was taken")
+            {
+                // 403 would mean the membership check failed (local path entered).
+                // 502 means make_leave was attempted and the remote was unreachable.
+                REQUIRE(result.status == 502U);
+                REQUIRE(result.ok == false);
+                // The reason must mention make_leave, not a membership mismatch.
+                REQUIRE(result.reason.find("make_leave") != std::string::npos);
+            }
+        }
+    }
+}

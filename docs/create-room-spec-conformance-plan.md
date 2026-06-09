@@ -399,4 +399,4 @@ Each step above is a separate commit on a dedicated branch. Bump the version onc
 branch creation (see `docs/versioning.md`). Do not bump per intermediate commit.
 
 Record completed steps in `CHANGELOG.md` under the new version and update
-`docs/01-progress-tracker.md` after each step.
+`docs/todos/` after each step.

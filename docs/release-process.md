@@ -36,7 +36,6 @@ The packaged tarballs include:
 - `bin/merovingian-server`
 - `bin/merovingian-db-migrate`
 - `config/merovingian.conf.example`
-- `docs/01-progress-tracker.md`
 - `docs/configuration.md`
 - `docs/release-process.md`
 - `docs/security-review-checklist.md`
@@ -55,7 +54,7 @@ The current workflow does not yet attach:
 - provenance attestations
 - a release-attached dependency or license report
 
-Those remain tracked production gaps in `docs/01-progress-tracker.md`.
+Those remain tracked production gaps in `docs/todos/production-milestone.md`.
 
 ## Operator sequence
 

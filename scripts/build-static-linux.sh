@@ -3,7 +3,7 @@
 # Build a portable Linux fallback tarball with musl-linked static PIE binaries.
 set -eu
 
-VERSION="${MEROVINGIAN_VERSION:-0.5.31}"
+VERSION="${MEROVINGIAN_VERSION:-0.5.32}"
 BUILD_DIR="${BUILD_DIR:-build-static-linux}"
 STAGING="staging-static-linux"
 PACKAGE_ROOT="merovingian-${VERSION}-linux-static-x86_64"
@@ -36,7 +36,7 @@ install -m 0755 "${STAGING}/usr/bin/merovingian-server" "${PACKAGE_ROOT}/bin/"
 install -m 0755 "${STAGING}/usr/bin/merovingian-db-migrate" "${PACKAGE_ROOT}/bin/"
 install -m 0644 config/merovingian.conf.example "${PACKAGE_ROOT}/config/merovingian.conf.example"
 install -m 0644 README.md LICENSE "${PACKAGE_ROOT}/"
-install -m 0644 docs/01-progress-tracker.md docs/configuration.md docs/release-process.md \
+install -m 0644 docs/configuration.md docs/release-process.md \
     docs/security-review-checklist.md "${PACKAGE_ROOT}/docs/"
 
 tar -czf "$TARBALL" "$PACKAGE_ROOT"

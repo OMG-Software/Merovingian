@@ -48,5 +48,5 @@ listeners if any check reports `disabled`.
    `enabled` or `disabled`.
 3. Update the matching row in this document and remove it from the table when
    no longer deferred.
-4. Update [`docs/01-progress-tracker.md`](01-progress-tracker.md) and
+4. Update [`docs/todos/capability-gaps.md`](todos/capability-gaps.md) and
    [`CHANGELOG.md`](../CHANGELOG.md) to record the removal.

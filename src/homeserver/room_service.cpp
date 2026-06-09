@@ -436,6 +436,58 @@ namespace
         return {true, {}, room_version_str == nullptr ? std::string{"1"} : *room_version_str, *event_object};
     }
 
+    // Validates the make_leave response body. Mirrors validate_make_join_event
+    // but checks content.membership == "leave".
+    [[nodiscard]] auto validate_make_leave_event(std::string_view requested_room_id,
+                                                 std::string_view requested_user_id,
+                                                 canonicaljson::Object const& response_object)
+        -> ValidatedMakeLeaveResponse
+    {
+        auto const* room_version_str = string_member(response_object, "room_version");
+        auto const* event_value = object_member(response_object, "event");
+        auto const* event_object =
+            event_value == nullptr ? nullptr : std::get_if<canonicaljson::Object>(&event_value->storage());
+        if (event_object == nullptr)
+        {
+            return {false, "make_leave missing event field"};
+        }
+        auto const* room_id_field = string_member(*event_object, "room_id");
+        if (room_id_field == nullptr || *room_id_field != requested_room_id)
+        {
+            return {false, "make_leave event room_id does not match request"};
+        }
+        auto const* sender = string_member(*event_object, "sender");
+        if (sender == nullptr || *sender != requested_user_id)
+        {
+            return {false, "make_leave event sender does not match request"};
+        }
+        auto const* state_key = string_member(*event_object, "state_key");
+        if (state_key == nullptr || *state_key != requested_user_id)
+        {
+            return {false, "make_leave event state_key does not match request"};
+        }
+        auto const* event_type = string_member(*event_object, "type");
+        if (event_type == nullptr || *event_type != "m.room.member")
+        {
+            return {false, "make_leave event type must be m.room.member"};
+        }
+        if (integer_member(*event_object, "origin_server_ts") == nullptr)
+        {
+            return {false, "make_leave event origin_server_ts is required"};
+        }
+        auto const* content = object_member_as_object(*event_object, "content");
+        if (content == nullptr)
+        {
+            return {false, "make_leave event content must be an object"};
+        }
+        auto const* membership = string_member(*content, "membership");
+        if (membership == nullptr || *membership != "leave")
+        {
+            return {false, "make_leave event content.membership must be leave"};
+        }
+        return {true, {}, room_version_str == nullptr ? std::string{"10"} : *room_version_str, *event_object};
+    }
+
     [[nodiscard]] auto previous_events_for_room(database::PersistentStore const& store, std::string_view room_id)
         -> std::vector<std::string>
     {
@@ -2670,11 +2722,58 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
-    auto const membership = std::ranges::find_if(runtime.database.persistent_store.memberships,
-                                                 [&](database::PersistentMembership const& current) {
-                                                     return current.room_id == room_id && current.user_id == *user_id;
-                                                 });
-    if (membership == runtime.database.persistent_store.memberships.end())
+    // Look up the membership row. If missing, attempt recovery from current_state:
+    // a server restart between store_room and store_membership (during a federated
+    // join) can leave the room known but the membership row absent. If current_state
+    // holds an m.room.member event confirming membership:join we synthesise the row
+    // so the leave can proceed without manual intervention.
+    auto membership_it = std::ranges::find_if(
+        runtime.database.persistent_store.memberships,
+        [&](database::PersistentMembership const& current) {
+            return current.room_id == room_id && current.user_id == *user_id;
+        });
+
+    if (membership_it == runtime.database.persistent_store.memberships.end())
+    {
+        auto const state_it = std::ranges::find_if(
+            runtime.database.persistent_store.state,
+            [&](database::PersistentStateEvent const& s) {
+                return s.room_id == room_id && s.event_type == "m.room.member" &&
+                       s.state_key == *user_id;
+            });
+        if (state_it != runtime.database.persistent_store.state.end())
+        {
+            auto const event_it = std::ranges::find_if(
+                runtime.database.persistent_store.events,
+                [&](database::PersistentEvent const& e) { return e.event_id == state_it->event_id; });
+            if (event_it != runtime.database.persistent_store.events.end())
+            {
+                auto const parsed   = canonicaljson::parse_lossless(event_it->json);
+                auto const* obj     = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                auto const* content = obj == nullptr ? nullptr : object_member_as_object(*obj, "content");
+                auto const* mem     = content == nullptr ? nullptr : string_member(*content, "membership");
+                if (mem != nullptr && *mem == "join")
+                {
+                    // Re-create the missing membership row so the leave path can proceed.
+                    auto const recovered_stream = runtime.database.next_stream_ordering++;
+                    std::ignore = store_or_update_membership(
+                        runtime.database.persistent_store, room_id, *user_id, "join", recovered_stream);
+                    log_diagnostic("room.leave.membership_recovered", {
+                                                                          {"actor",   *user_id,             false},
+                                                                          {"room_id", std::string{room_id}, false}
+                    });
+                    // Re-find: push_back may have reallocated the vector.
+                    membership_it = std::ranges::find_if(
+                        runtime.database.persistent_store.memberships,
+                        [&](database::PersistentMembership const& current) {
+                            return current.room_id == room_id && current.user_id == *user_id;
+                        });
+                }
+            }
+        }
+    }
+
+    if (membership_it == runtime.database.persistent_store.memberships.end())
     {
         auto const status = static_cast<std::uint16_t>(room_exists(runtime, room_id) ? 403U : 404U);
         auto const reason = status == 403U ? "user is not joined or invited" : "room not found";
@@ -2686,7 +2785,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         });
         return make_operation_result(false, {}, reason, status);
     }
-    if (membership->membership != "join" && membership->membership != "invite")
+    if (membership_it->membership != "join" && membership_it->membership != "invite")
     {
         log_diagnostic("room.leave.rejected", {
                                                   {"actor",   *user_id,                        false},
@@ -2697,6 +2796,213 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         return make_operation_result(false, {}, "user is not joined or invited", 403U);
     }
 
+    // For rooms hosted on a remote server, perform a federated leave:
+    // make_leave (get a signed template) → sign → send_leave.
+    auto const our_server  = runtime.config.server().server_name;
+    auto const room_domain = server_name_from_room_id(room_id);
+    auto const is_remote   = !room_domain.empty() && room_domain != our_server;
+
+    if (is_remote)
+    {
+        wire_federation_callbacks(runtime);
+        auto* outbound_client    = runtime.outbound_client.get();
+        auto* discovery_network  = runtime.discovery_network.get();
+        auto const remote_server = std::string{room_domain};
+        auto const signing_key   = ensure_runtime_server_signing_key(runtime);
+        auto const key_id        = signing_key.has_value() ? signing_key->key_id : std::string{};
+        auto const secret_key    = std::string{
+            reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
+            runtime.database.signing_secret_key.size()};
+
+        guard.unlock();
+
+        // Step 1: make_leave — fetch a leave event template from the remote server.
+        auto make_leave_tx = federation::make_outbound_make_membership(
+            federation::FederationEndpoint::make_leave, remote_server, our_server, room_id, *user_id, {});
+        log_diagnostic("room.leave.remote.make_leave", {
+                                                           {"actor",         *user_id,             false},
+                                                           {"room_id",       std::string{room_id}, false},
+                                                           {"remote_server", remote_server,        false}
+        });
+        auto const [make_ok, make_body] = perform_sync_outbound_call(outbound_client, discovery_network,
+                                                                     make_leave_tx, key_id, secret_key,
+                                                                     "room.leave.remote.make_leave_failed");
+        if (!make_ok)
+        {
+            guard.lock();
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,             false},
+                                                      {"room_id", std::string{room_id}, false},
+                                                      {"status",  "502",                false},
+                                                      {"reason",  "make_leave failed",  false}
+            });
+            return make_operation_result(false, {}, "make_leave failed: " + make_body, 502U);
+        }
+
+        // Step 2: validate the leave event template.
+        auto const make_response = canonicaljson::parse_lossless(make_body);
+        auto const* make_obj =
+            std::get_if<canonicaljson::Object>(&make_response.value.storage());
+        if (make_obj == nullptr)
+        {
+            guard.lock();
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,                     false},
+                                                      {"room_id", std::string{room_id},         false},
+                                                      {"status",  "502",                        false},
+                                                      {"reason",  "malformed make_leave body",  false}
+            });
+            return make_operation_result(false, {}, "malformed make_leave response", 502U);
+        }
+        auto const validated = validate_make_leave_event(room_id, *user_id, *make_obj);
+        if (!validated.ok)
+        {
+            guard.lock();
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,             false},
+                                                      {"room_id", std::string{room_id}, false},
+                                                      {"status",  "502",                false},
+                                                      {"reason",  validated.reason,     false}
+            });
+            return make_operation_result(false, {}, validated.reason, 502U);
+        }
+        auto const room_version = validated.room_version;
+        auto event_object       = validated.event;
+
+        // Step 3: add content hash and sign the leave event.
+        auto const content_hash = events::make_content_hash(canonicaljson::Value{event_object});
+        if (!content_hash.error.empty())
+        {
+            guard.lock();
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,             false},
+                                                      {"room_id", std::string{room_id}, false},
+                                                      {"status",  "500",                false},
+                                                      {"reason",  content_hash.error,   false}
+            });
+            return make_operation_result(false, {}, "leave event content hash failed", 500U);
+        }
+        auto hashes_obj = canonicaljson::Object{};
+        hashes_obj.push_back(
+            canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
+        event_object.push_back(
+            canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes_obj)}));
+
+        auto event_to_sign      = canonicaljson::Value{event_object};
+        auto const* policy      = rooms::find_room_version_policy(room_version);
+        if (policy == nullptr)
+        {
+            guard.lock();
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,                      false},
+                                                      {"room_id", std::string{room_id},          false},
+                                                      {"status",  "500",                         false},
+                                                      {"reason",  "room version policy missing", false}
+            });
+            return make_operation_result(false, {}, "room version policy missing", 500U);
+        }
+        auto key_store = RuntimeSigningKeyStore{our_server, signing_key.value()};
+        auto secret_key_array = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+        if (secret_key.size() == crypto_sign_SECRETKEYBYTES)
+        {
+            std::copy(secret_key.begin(), secret_key.end(), secret_key_array.begin());
+        }
+        auto provider      = RuntimeEd25519Provider{std::move(secret_key_array)};
+        auto const signed_event =
+            events::sign_event_for_server(event_to_sign, *policy, key_store, provider, our_server);
+        if (!signed_event.error.empty())
+        {
+            guard.lock();
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,             false},
+                                                      {"room_id", std::string{room_id}, false},
+                                                      {"status",  "500",                false},
+                                                      {"reason",  signed_event.error,   false}
+            });
+            return make_operation_result(false, {}, "event signing failed", 500U);
+        }
+        auto const signed_value    = canonicaljson::parse_lossless(signed_event.event_json);
+        auto const event_id_result = events::make_reference_hash_event_id(signed_value.value, *policy);
+        if (!event_id_result.error.empty() || event_id_result.event_id.empty())
+        {
+            guard.lock();
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,                      false},
+                                                      {"room_id", std::string{room_id},          false},
+                                                      {"status",  "500",                         false},
+                                                      {"reason",  "event_id computation failed", false}
+            });
+            return make_operation_result(false, {}, "event_id computation failed", 500U);
+        }
+
+        // Step 4: send_leave — deliver the signed leave event to the remote server.
+        auto send_leave_tx = federation::make_outbound_send_membership(
+            federation::FederationEndpoint::send_leave, remote_server, our_server, room_id,
+            event_id_result.event_id, signed_event.event_json);
+        log_diagnostic("room.leave.remote.send_leave", {
+                                                           {"actor",         *user_id,                   false},
+                                                           {"room_id",       std::string{room_id},       false},
+                                                           {"remote_server", remote_server,              false},
+                                                           {"event_id",      event_id_result.event_id,  false}
+        });
+        auto const [send_ok, send_body] = perform_sync_outbound_call(outbound_client, discovery_network,
+                                                                     send_leave_tx, key_id, secret_key,
+                                                                     "room.leave.remote.send_leave_failed");
+
+        guard.lock();
+
+        if (!send_ok)
+        {
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,             false},
+                                                      {"room_id", std::string{room_id}, false},
+                                                      {"status",  "502",                false},
+                                                      {"reason",  "send_leave failed",  false}
+            });
+            return make_operation_result(false, {}, "send_leave failed: " + send_body, 502U);
+        }
+
+        // Step 5: update local membership, device lists and in-memory state.
+        auto const membership_stream = runtime.database.next_stream_ordering++;
+        if (!store_or_update_membership(runtime.database.persistent_store, room_id, *user_id, "leave",
+                                        membership_stream))
+        {
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,                        false},
+                                                      {"room_id", std::string{room_id},            false},
+                                                      {"status",  "500",                           false},
+                                                      {"reason",  "membership persistence failed", false}
+            });
+            return make_operation_result(false, {}, "membership persistence failed", 500U);
+        }
+        if (!record_room_share_ended_device_changes(runtime, room_id, *user_id))
+        {
+            log_diagnostic("room.leave.rejected", {
+                                                      {"actor",   *user_id,                                false},
+                                                      {"room_id", std::string{room_id},                    false},
+                                                      {"status",  "500",                                   false},
+                                                      {"reason",  "device list change persistence failed", false}
+            });
+            return make_operation_result(false, {}, "device list change persistence failed", 500U);
+        }
+        apply_runtime_membership(runtime.database, room_id, *user_id, "leave");
+        std::ignore = database::delete_invite(runtime.database.persistent_store, room_id, *user_id);
+        runtime.database.persistent_store.next_sync_stream_id += 1U;
+        if (runtime.sync_notifier != nullptr)
+        {
+            runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
+                                           runtime.database.persistent_store.next_sync_stream_id);
+        }
+        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.left_remote",
+                           *user_id, room_id, "left via federation");
+        log_diagnostic("room.leave.accepted", {
+                                                  {"actor",   *user_id,             false},
+                                                  {"room_id", std::string{room_id}, false}
+        });
+        return make_operation_result(true, std::string{room_id});
+    }
+
+    // Local room: compose, sign and persist a leave event through the standard path.
     auto const result = persist_membership_transition(runtime, room_id, *user_id, *user_id, "leave");
     if (!result.ok)
     {
@@ -3133,6 +3439,22 @@ auto validate_make_join_response(std::string_view requested_room_id, std::string
         return {false, "make_join response must be a JSON object"};
     }
     return validate_make_join_event(requested_room_id, requested_user_id, *response_object);
+}
+
+auto validate_make_leave_response(std::string_view requested_room_id, std::string_view requested_user_id,
+                                  std::string_view body) -> ValidatedMakeLeaveResponse
+{
+    auto const parsed = canonicaljson::parse_lossless(body);
+    if (parsed.error != canonicaljson::ParseError::none)
+    {
+        return {false, "make_leave response is not valid canonical JSON"};
+    }
+    auto const* response_object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+    if (response_object == nullptr)
+    {
+        return {false, "make_leave response must be a JSON object"};
+    }
+    return validate_make_leave_event(requested_room_id, requested_user_id, *response_object);
 }
 
 } // namespace merovingian::homeserver

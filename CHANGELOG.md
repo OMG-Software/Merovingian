@@ -1,3 +1,26 @@
+## 0.5.32
+
+- **Fix (federated room leave — 403 on leave after server restart):** `leave_room`
+  returned 403 "user is not joined or invited" when the membership row was absent
+  from `persistent_store.memberships`. This happened when the server restarted
+  between `store_room` and `store_membership` during a federated join (non-atomic
+  write sequence). The fix checks `persistent_store.state` for an `m.room.member`
+  event confirming `membership: join` and synthesises the missing row before
+  proceeding, so the user can leave without manual intervention.
+- **Fix (federated room leave — no outbound leave event):** `leave_room` called
+  `persist_membership_transition` (local-only) for rooms on remote servers. The
+  remote server was never notified of the departure. For remote rooms `leave_room`
+  now executes the full Matrix federated-leave flow: `GET make_leave` to obtain a
+  signed leave-event template, add content hash, sign with the server key, then
+  `PUT send_leave` to deliver the event to the resident server before updating
+  local state.
+- Add `ValidatedMakeLeaveResponse` / `validate_make_leave_response` public API
+  mirroring the existing join validation surface.
+- **Docs:** Deleted `docs/01-progress-tracker.md`. All open TODO items extracted
+  into `docs/todos/` (`priorities.md`, `beta-milestone.md`,
+  `production-milestone.md`, `capability-gaps.md`). References updated across
+  `CLAUDE.md`, `AGENTS.md`, `README.md`, and all live doc files.
+
 ## 0.5.31
 
 - **Fix (cross-server E2EE decryption failure):** `m.device_list_update` EDUs
