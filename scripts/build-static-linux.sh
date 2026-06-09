@@ -36,7 +36,7 @@ install -m 0755 "${STAGING}/usr/bin/merovingian-server" "${PACKAGE_ROOT}/bin/"
 install -m 0755 "${STAGING}/usr/bin/merovingian-db-migrate" "${PACKAGE_ROOT}/bin/"
 install -m 0644 config/merovingian.conf.example "${PACKAGE_ROOT}/config/merovingian.conf.example"
 install -m 0644 README.md LICENSE "${PACKAGE_ROOT}/"
-install -m 0644 docs/01-progress-tracker.md docs/configuration.md docs/release-process.md \
+install -m 0644 docs/configuration.md docs/release-process.md \
     docs/security-review-checklist.md "${PACKAGE_ROOT}/docs/"
 
 tar -czf "$TARBALL" "$PACKAGE_ROOT"
