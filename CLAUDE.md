@@ -41,6 +41,7 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Bump the version number on creating a new branch. See versioning doc for all the places where the version number needs updating.
 - Record changes for each version in CHANGELOG.md
 - Ignore `.clwb` folder.
+- Ignore `build*/` directories (Meson build output).
 - Always work in feature or bug branches, never main.
 - Make the correct change for the ask, not the smallest.
 - Update `CHANGELOG.md` on every change.

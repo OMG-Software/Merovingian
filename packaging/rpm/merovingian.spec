@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.36
+Version:        0.5.37
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Jun 10 2026 James Chapman <claude@ping.me.uk> - 0.5.37-1
+- fix(federation): verify relayed PDU signatures against sender domain key, not transport origin
+- fix(federation): run authorize_event_against_auth_events before persisting any inbound PDU
 * Tue Jun 10 2026 James Chapman <claude@ping.me.uk> - 0.5.36-1
 - fix: DELETE /devices/{deviceId} requires UIA re-authentication (spec §10.7.1)
 - fix: key backup version no longer hardcoded to "1" — each POST assigns a unique ID

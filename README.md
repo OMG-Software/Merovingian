@@ -1,4 +1,8 @@
-# The Merovingian
+# Merovingian
+
+**Note: Merovingian is still in active development and is not ready for real-world use yet. Do not deploy it as a production Matrix homeserver.**
+
+Merovingian is a Matrix homeserver written in modern C++26 with a security-first design. The project goal is not just to speak Matrix protocol, but to do it with a narrow attack surface, fail-closed behavior, strong operational visibility, and explicit security boundaries around federation, storage, media, and administration.
 
 [![Build](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml)
 [![Coverage](https://codecov.io/gh/OMG-Software/Merovingian/graph/badge.svg)](https://codecov.io/gh/OMG-Software/Merovingian)
@@ -11,9 +15,6 @@
 [![C++26](https://img.shields.io/badge/C%2B%2B-26-blue.svg)]()
 [![Meson](https://img.shields.io/badge/build-Meson-blue.svg)]()
 
-**Merovingian is still in active development and is not ready for real-world use yet. Do not deploy it as a production Matrix homeserver.**
-
-Merovingian is a Matrix homeserver written in modern C++26 with a security-first design. The project goal is not just to speak Matrix, but to do it with a narrow attack surface, fail-closed behavior, strong operational visibility, and explicit security boundaries around federation, storage, media, and administration.
 
 ## What Merovingian is
 

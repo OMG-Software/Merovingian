@@ -1073,7 +1073,8 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
     return authorize_federation_pdu(pdu, expected_origin, std::nullopt);
 }
 
-auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expected_origin,
+auto authorize_federation_pdu(FederationPdu const& pdu,
+                              [[maybe_unused]] std::string_view expected_origin,
                               std::optional<FederationKeyRecord> const& key) -> FederationDecision
 {
     if (pdu.event_id.empty() || pdu.room_id.empty() || pdu.event_type.empty() || pdu.sender.empty())
@@ -1090,11 +1091,13 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
     {
         return make_decision(false, 403U, signature.reason);
     }
-    // Cryptographic verification is only possible when the transport origin
-    // is the sender's homeserver AND we hold that server's signing key.
-    // For relayed PDUs (sender_domain != expected_origin) we only have the
-    // relay's key, which does not cover the sender's signature — skip crypto.
-    if (key.has_value() && pdu_sender_domain == expected_origin)
+    // Verify the sender's signature when we hold a key for the sender's domain.
+    // For direct connections, key->server_name == pdu_sender_domain (transport peer
+    // is the event author). For relayed PDUs, the caller resolves the sender domain's
+    // key via remote_key_resolver and passes it here before calling this function.
+    // Matching on key->server_name (not expected_origin) ensures the right signatures
+    // entry is used for both direct and relayed PDUs without changing the API contract.
+    if (key.has_value() && key->server_name == pdu_sender_domain)
     {
         auto const room_ver = pdu.room_version.empty() ? std::string{"12"} : pdu.room_version;
         auto const* room_version = rooms::find_room_version_policy(room_ver);
@@ -1111,8 +1114,10 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
             }
             auto const& public_key = key->public_key_bytes;
             auto verifier = FederationEd25519Verifier{};
+            // Use key->server_name (the sender domain) to look up the right signature
+            // entry in the PDU's signatures object — correct for both direct and relayed PDUs.
             auto const verified =
-                events::verify_event_signature(parsed.value, *room_version, {std::string{expected_origin}, key->key_id},
+                events::verify_event_signature(parsed.value, *room_version, {key->server_name, key->key_id},
                                                crypto::Ed25519PublicKey{public_key}, verifier);
             if (!verified.valid)
             {
@@ -1124,10 +1129,8 @@ auto authorize_federation_pdu(FederationPdu const& pdu, std::string_view expecte
             return make_decision(false, 400U, "comma-delimited PDUs require JSON for cryptographic verification");
         }
     }
-    // TODO: full Matrix event auth (authorize_event_against_auth_events) must be
-    // called here against the actual room auth state before returning accepted.
-    // The shallow pdu_is_authorized() check was removed in v0.5.23 — see the
-    // comment block above where it was defined for the security rationale.
+    // Event-authorization rules (authorize_event_against_auth_events) are enforced
+    // in the pdu_sink before persistence — see local_http_router.cpp wire_federation_callbacks_impl.
     return make_decision(true, 200U, {});
 }
 
@@ -1413,7 +1416,50 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         // in pdu.room_version and forwarded to authorize_federation_pdu so that
         // event-ID computation and signature verification both use the right rules.
         auto const pdu = parse_federation_pdu(encoded_pdu, runtime.room_version_resolver);
-        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, remote->signing_key);
+        // For relayed PDUs (sender domain != transport origin), the transport peer's
+        // signing key cannot verify the sender's PDU signature. Resolve the sender
+        // domain's key separately so authorize_federation_pdu can perform real
+        // Ed25519 verification. Fail-closed: if the resolver is wired but returns
+        // no key, the PDU is rejected rather than persisted without verification.
+        auto const pdu_sender_dom = sender_domain(pdu.sender);
+        auto key_for_pdu          = std::optional<FederationKeyRecord>{remote->signing_key};
+        if (!pdu_sender_dom.empty() && pdu_sender_dom != request.origin && runtime.remote_key_resolver)
+        {
+            auto sender_key_id = std::string{};
+            for (auto const& sig : pdu.signatures)
+            {
+                if (sig.server_name == pdu_sender_dom)
+                {
+                    sender_key_id = sig.key_id;
+                    break;
+                }
+            }
+            if (!sender_key_id.empty())
+            {
+                auto resolved = runtime.remote_key_resolver(pdu_sender_dom, sender_key_id);
+                if (resolved.has_value())
+                {
+                    key_for_pdu = resolved->signing_key;
+                }
+                else
+                {
+                    ++remote->trust.consecutive_failures;
+                    auto const reason = std::string{"relayed PDU: could not resolve sender domain signing key"};
+                    log_diagnostic("pdu.rejected", {
+                                                       {"origin",     request.origin, false},
+                                                       {"sender_dom", std::string{pdu_sender_dom}, false},
+                                                       {"reason",     reason, false}
+                    });
+                    audit_federation(runtime, "federation.rejected", request.origin, request.target, reason);
+                    pdu_errors.push_back(canonicaljson::make_member(
+                        pdu.event_id,
+                        canonicaljson::Value{canonicaljson::Object{
+                            canonicaljson::make_member("error", canonicaljson::Value{reason})}}));
+                    continue;
+                }
+            }
+        }
+        auto const pdu_decision = authorize_federation_pdu(pdu, request.origin, key_for_pdu);
         if (!pdu_decision.accepted)
         {
             ++remote->trust.consecutive_failures;
