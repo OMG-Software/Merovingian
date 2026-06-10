@@ -2130,4 +2130,79 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
+auto repair_missing_state_entries(PersistentStore& store) -> std::size_t
+{
+    // Older code in ingest_send_join_state and the auth-chain loop detected state
+    // events by !parsed.event.state_key.empty(). Events with state_key="" (such as
+    // m.room.create, m.room.join_rules, m.room.power_levels) were stored in
+    // store.events but never registered in store.state. This causes
+    // build_pdu_auth_event_map to find no create event, so auth step 2 fails for
+    // every subsequent federated PDU in rooms joined with the old code.
+    //
+    // This function scans all events, identifies any that are state events (JSON
+    // has a "state_key" field) but lack a store.state entry, and creates those
+    // entries. For each (room_id, event_type, state_key) tuple with no entry the
+    // highest-stream-ordering event is chosen as the current state.
+    struct StateTuple
+    {
+        std::string room_id;
+        std::string event_type;
+        std::string state_key;
+        [[nodiscard]] auto operator==(StateTuple const& other) const noexcept -> bool
+        {
+            return room_id == other.room_id && event_type == other.event_type && state_key == other.state_key;
+        }
+    };
+
+    auto candidates = std::vector<std::pair<StateTuple, PersistentEvent const*>>{};
+
+    for (auto const& event : store.events)
+    {
+        auto const json_state_key = top_level_json_string_field(event.json, "state_key");
+        if (!json_state_key.has_value())
+        {
+            continue; // state_key field absent — not a state event
+        }
+        auto const json_event_type = top_level_json_string_field(event.json, "type");
+        if (!json_event_type.has_value() || json_event_type->empty())
+        {
+            continue;
+        }
+
+        auto const tuple = StateTuple{event.room_id, *json_event_type, *json_state_key};
+
+        // Skip tuples that already have a state entry.
+        if (std::ranges::any_of(store.state, [&tuple](PersistentStateEvent const& s) {
+                return s.room_id == tuple.room_id && s.event_type == tuple.event_type &&
+                       s.state_key == tuple.state_key;
+            }))
+        {
+            continue;
+        }
+
+        // Track the highest-stream-ordering event for each unrepaired tuple.
+        auto it = std::ranges::find_if(candidates, [&tuple](auto const& pair) {
+            return pair.first == tuple;
+        });
+        if (it == candidates.end())
+        {
+            candidates.emplace_back(tuple, &event);
+        }
+        else if (event.stream_ordering > it->second->stream_ordering)
+        {
+            it->second = &event;
+        }
+    }
+
+    auto repaired = std::size_t{0U};
+    for (auto const& [tuple, event] : candidates)
+    {
+        if (store_state(store, {tuple.room_id, tuple.event_type, tuple.state_key, event->event_id}))
+        {
+            ++repaired;
+        }
+    }
+    return repaired;
+}
+
 } // namespace merovingian::database

@@ -450,6 +450,13 @@ enum class MembershipStoreResult
 [[nodiscard]] auto store_state(PersistentStore& store, PersistentStateEvent state) -> bool;
 [[nodiscard]] auto store_event_with_state(PersistentStore& store, PersistentEvent event,
                                           std::optional<PersistentStateEvent> state) -> bool;
+// Startup repair: finds events in store.events that are state events (JSON has a
+// "state_key" field) but have no corresponding entry in store.state, and creates
+// those missing entries. Returns the number of state entries created.
+// Required when upgrading from versions that used !state_key.empty() to detect
+// state events — that check silently dropped events with state_key="" such as
+// m.room.create, m.room.join_rules, and m.room.power_levels.
+[[nodiscard]] auto repair_missing_state_entries(PersistentStore& store) -> std::size_t;
 [[nodiscard]] auto store_room_alias(PersistentStore& store, PersistentRoomAlias alias) -> bool;
 [[nodiscard]] auto find_room_alias(PersistentStore const& store, std::string_view room_alias)
     -> std::optional<PersistentRoomAlias>;

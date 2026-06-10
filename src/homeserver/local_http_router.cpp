@@ -671,6 +671,47 @@ namespace
             {
                 return {federation::PduIngestionStatus::internal_error, "event persistence failed"};
             }
+            // Track remote membership changes so LocalRoom.members and persistent_store.memberships
+            // stay consistent. Without this, remote users who joined via federation are lost from
+            // LocalRoom.members on restart (hydrate_local_database only reads memberships, not state).
+            if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
+            {
+                auto const mem_parsed = canonicaljson::parse_lossless(envelope.json);
+                auto const* mem_obj =
+                    mem_parsed.error == canonicaljson::ParseError::none
+                        ? std::get_if<canonicaljson::Object>(&mem_parsed.value.storage())
+                        : nullptr;
+                auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;
+                if (membership_str != nullptr)
+                {
+                    auto const stream = rt->database.next_stream_ordering - 1U;
+                    std::ignore =
+                        upsert_membership(rt->database.persistent_store, envelope.room_id,
+                                          *envelope.state_key, *membership_str, stream);
+                    auto const room_it =
+                        std::ranges::find_if(rt->database.rooms, [&](LocalRoom const& r) {
+                            return r.room_id == envelope.room_id;
+                        });
+                    if (room_it != rt->database.rooms.end())
+                    {
+                        auto& members = room_it->members;
+                        if (*membership_str == "join")
+                        {
+                            if (!std::ranges::any_of(members, [&](std::string const& m) {
+                                    return m == *envelope.state_key;
+                                }))
+                            {
+                                members.push_back(*envelope.state_key);
+                            }
+                        }
+                        else
+                        {
+                            auto const to_erase = std::ranges::remove(members, *envelope.state_key);
+                            members.erase(to_erase.begin(), to_erase.end());
+                        }
+                    }
+                }
+            }
             if (rt->sync_notifier != nullptr)
             {
                 rt->sync_notifier->publish(rt->database.next_stream_ordering - 1U,

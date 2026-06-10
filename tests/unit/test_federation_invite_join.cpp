@@ -35,6 +35,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/events/event.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/federation/inbound_request.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
@@ -1571,6 +1572,98 @@ SCENARIO("ingest_send_join_state writes empty-state-key events to store.state",
                 // ingest_send_join_state must return the user IDs with membership="join"
                 // so join_room can populate the in-memory LocalRoom.members list.
                 REQUIRE(std::find(members.begin(), members.end(), creator) != members.end());
+            }
+        }
+    }
+}
+
+// --- v12 send_join: m.room.create room_id derivation -----------------------
+// Spec: Matrix Server-Server API v1.18 / Room Version 12 (MSC4291)
+// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+//
+// In room version 12 the m.room.create event carries no "room_id" field.
+// The room ID equals the create event's reference hash with the sigil swapped:
+//   room_id = "!" + event_id.substr(1)
+//
+// Bug: ingest_send_join_state used parsed.event.room_id (empty for v12 create
+// events) when building PersistentStateEvent. The state row was stored with
+// room_id="" instead of the derived room ID. build_pdu_auth_event_map filters
+// by room_id == envelope.room_id and therefore missed the entry, leaving
+// auth_events.create empty. Every subsequent inbound PDU failed event-auth at
+// step 2: "room has no create event".
+//
+// Fix: when parsed.event.room_id is empty and the policy's
+// create_event_is_room_id flag is set, derive room_id = "!" + event_id.substr(1).
+SCENARIO("ingest_send_join_state stores v12 m.room.create with room_id derived from event_id",
+         "[homeserver][federation][send_join][v12][spec][regression]")
+{
+    GIVEN("a send_join state array for a v12 room whose create event has no room_id field")
+    {
+        REQUIRE(sodium_init() >= 0);
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const creator = std::string{"@creator:remote.example.org"};
+
+        // v12 m.room.create: no room_id field, state_key is present but empty.
+        auto const create_json =
+            std::string{
+                R"({"type":"m.room.create","state_key":"",)"
+                R"("sender":")" + creator + R"(","depth":1,"origin_server_ts":1000,)"
+                R"("prev_events":[],"auth_events":[],)"
+                R"("hashes":{"sha256":"aGFzaA"},)"
+                R"("content":{"room_version":"12"},)"
+                R"("signatures":{"remote.example.org":{"ed25519:auto":"aaaa"}}})"};
+
+        auto const state_json = std::string{"["} + create_json + std::string{"]"};
+        auto const parsed_arr = merovingian::canonicaljson::parse_lossless(state_json);
+        REQUIRE(parsed_arr.error == merovingian::canonicaljson::ParseError::none);
+        auto const* arr = std::get_if<merovingian::canonicaljson::Array>(&parsed_arr.value.storage());
+        REQUIRE(arr != nullptr);
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        REQUIRE(policy->create_event_is_room_id);
+
+        // Compute the expected room_id from the reference hash so the assertion
+        // is exact rather than just checking for non-emptiness.
+        auto const parsed_create = merovingian::canonicaljson::parse_lossless(create_json);
+        REQUIRE(parsed_create.error == merovingian::canonicaljson::ParseError::none);
+        auto const eid = merovingian::events::make_reference_hash_event_id(parsed_create.value, *policy);
+        REQUIRE_FALSE(eid.event_id.empty());
+        auto const expected_room_id = "!" + eid.event_id.substr(1);
+
+        WHEN("the state array is ingested via ingest_send_join_state")
+        {
+            std::ignore = merovingian::homeserver::ingest_send_join_state(runtime, *arr, *policy);
+
+            THEN("m.room.create appears in store.state with the derived room_id, not \"\"")
+            {
+                // Spec MUST (MSC4291): the state row MUST use the room_id derived
+                // from the create event's reference hash. Storing "" breaks
+                // build_pdu_auth_event_map which filters by room_id, causing every
+                // inbound PDU to fail event-auth at step 2 ("room has no create event").
+                auto const& state = runtime.database.persistent_store.state;
+                auto const it = std::ranges::find_if(state, [](auto const& s) {
+                    return s.event_type == "m.room.create" && s.state_key.empty();
+                });
+                // The create state row must exist at all.
+                REQUIRE(it != state.end());
+                // It must carry the correct derived room_id, not "".
+                REQUIRE(it->room_id == expected_room_id);
+            }
+
+            THEN("no m.room.create state entry is stored with an empty room_id")
+            {
+                // Regression guard: the bug produced room_id="" for every v12 create
+                // event. Verify that entry is gone so a future refactor cannot
+                // silently reintroduce the bad row.
+                auto const& state = runtime.database.persistent_store.state;
+                auto const has_empty = std::ranges::any_of(state, [](auto const& s) {
+                    return s.event_type == "m.room.create" && s.room_id.empty();
+                });
+                REQUIRE_FALSE(has_empty);
             }
         }
     }

@@ -1128,3 +1128,151 @@ SCENARIO("SQLite migration bootstrap records the applied migration in schema_mig
         std::filesystem::remove(sqlite_path);
     }
 }
+
+SCENARIO("repair_missing_state_entries creates state entries for events with state_key='' that have none",
+         "[database][persistent_store][repair][regression]")
+{
+    GIVEN("a store with m.room.create and m.room.power_levels events stored but missing state entries, a member event "
+          "with an existing state entry, and a non-state message event")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.open = true;
+        store.backend = merovingian::database::PersistentStoreBackend::memory;
+
+        auto const room_id = std::string{"!repair_test:example.org"};
+
+        store.events.push_back({.event_id = "$create:example.org",
+                                .room_id = room_id,
+                                .sender_user_id = "@james:example.org",
+                                .json =
+                                    R"({"type":"m.room.create","state_key":"","content":{"room_version":"10"}})",
+                                .depth = 1U,
+                                .stream_ordering = 1U});
+        store.events.push_back(
+            {.event_id = "$power_levels:example.org",
+             .room_id = room_id,
+             .sender_user_id = "@james:example.org",
+             .json = R"({"type":"m.room.power_levels","state_key":"","content":{}})",
+             .depth = 2U,
+             .stream_ordering = 2U});
+        store.events.push_back(
+            {.event_id = "$member:example.org",
+             .room_id = room_id,
+             .sender_user_id = "@james:example.org",
+             .json =
+                 R"({"type":"m.room.member","state_key":"@james:example.org","content":{"membership":"join"}})",
+             .depth = 3U,
+             .stream_ordering = 3U});
+        // Non-state event — no state_key field in JSON.
+        store.events.push_back(
+            {.event_id = "$message:example.org",
+             .room_id = room_id,
+             .sender_user_id = "@james:example.org",
+             .json = R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"hello"}})",
+             .depth = 4U,
+             .stream_ordering = 4U});
+
+        // Member state entry exists; create/power_levels entries are missing.
+        store.state.push_back({room_id, "m.room.member", "@james:example.org", "$member:example.org"});
+
+        WHEN("repair_missing_state_entries is called")
+        {
+            auto const repaired = merovingian::database::repair_missing_state_entries(store);
+
+            THEN("exactly two state entries are created for the events that had none")
+            {
+                REQUIRE(repaired == 2U);
+            }
+
+            THEN("the m.room.create state entry points to the create event")
+            {
+                auto const has_create = std::ranges::any_of(store.state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.create" && s.state_key.empty() &&
+                           s.event_id == "$create:example.org";
+                });
+                REQUIRE(has_create);
+            }
+
+            THEN("the m.room.power_levels state entry points to the power_levels event")
+            {
+                auto const has_pl = std::ranges::any_of(store.state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.power_levels" && s.state_key.empty() &&
+                           s.event_id == "$power_levels:example.org";
+                });
+                REQUIRE(has_pl);
+            }
+
+            THEN("no state entry is created for the non-state message event")
+            {
+                auto const has_message = std::ranges::any_of(
+                    store.state, [&](auto const& s) { return s.event_id == "$message:example.org"; });
+                REQUIRE_FALSE(has_message);
+            }
+
+            THEN("the total state entry count is three (two repaired plus the pre-existing member)")
+            {
+                REQUIRE(store.state.size() == 3U);
+            }
+
+            AND_WHEN("repair is called a second time")
+            {
+                auto const repaired_again = merovingian::database::repair_missing_state_entries(store);
+
+                THEN("no additional entries are created because the repair is idempotent")
+                {
+                    REQUIRE(repaired_again == 0U);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("repair_missing_state_entries selects the highest stream_ordering event when multiple events share the "
+         "same (room_id, type, state_key) tuple",
+         "[database][persistent_store][repair][regression]")
+{
+    GIVEN("a store with an older join and a newer leave event for the same user, both missing a state entry")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        store.open = true;
+        store.backend = merovingian::database::PersistentStoreBackend::memory;
+
+        auto const room_id = std::string{"!ordering_test:example.org"};
+
+        store.events.push_back(
+            {.event_id = "$join_old:example.org",
+             .room_id = room_id,
+             .sender_user_id = "@alice:example.org",
+             .json =
+                 R"({"type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"join"}})",
+             .depth = 1U,
+             .stream_ordering = 1U});
+        store.events.push_back(
+            {.event_id = "$leave:example.org",
+             .room_id = room_id,
+             .sender_user_id = "@alice:example.org",
+             .json =
+                 R"({"type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"leave"}})",
+             .depth = 2U,
+             .stream_ordering = 5U});
+
+        WHEN("repair_missing_state_entries is called")
+        {
+            auto const repaired = merovingian::database::repair_missing_state_entries(store);
+
+            THEN("exactly one state entry is created for the (room, type, state_key) tuple")
+            {
+                REQUIRE(repaired == 1U);
+            }
+
+            THEN("the state entry points to the event with the higher stream_ordering (the leave)")
+            {
+                auto const has_leave = std::ranges::any_of(store.state, [&](auto const& s) {
+                    return s.room_id == room_id && s.event_type == "m.room.member" &&
+                           s.state_key == "@alice:example.org" && s.event_id == "$leave:example.org";
+                });
+                REQUIRE(has_leave);
+            }
+        }
+    }
+}

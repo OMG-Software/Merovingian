@@ -1,3 +1,22 @@
+## Unreleased
+
+- **Fix (member visibility — startup state repair):** Added `repair_missing_state_entries` called
+  at the end of `hydrate_local_database`. This scans all events in `persistent_store.events`,
+  identifies state events (JSON contains a `"state_key"` field) that have no corresponding entry
+  in `persistent_store.state`, and creates those missing entries using the event with the highest
+  `stream_ordering` for each `(room_id, type, state_key)` tuple. Fixes rooms where the old
+  `!state_key.empty()` bug silently dropped `m.room.create`, `m.room.power_levels`, and
+  `m.room.join_rules` from state on the initial send_join, leaving `build_pdu_auth_event_map`
+  unable to find the create event and causing auth step 2 to reject all subsequent inbound PDUs.
+
+- **Fix (remote member tracking in pdu_sink):** `pdu_sink` now calls `upsert_membership` and
+  updates `LocalRoom.members` when an accepted inbound PDU is an `m.room.member` state event.
+  Previously, remote joins accepted via federation were stored in `persistent_store.events` and
+  `persistent_store.state` but not in `persistent_store.memberships` or `LocalRoom.members`. After
+  a server restart, `hydrate_local_database` would rebuild `LocalRoom.members` from memberships
+  only, losing all remote members — breaking `GET /rooms/{roomId}/members`, sync, and outbound
+  federation dispatch for those users.
+
 ## 0.5.37
 
 - **Fix (C1 — relayed PDU signature bypass):** `authorize_federation_pdu()` previously
@@ -16,6 +35,18 @@
   issuing a non-200 HTTP status (which would cause the remote to back off all federation).
   A `build_pdu_auth_event_map` helper mirrors the same pattern already used in
   `room_service.cpp` for locally-created events.
+
+- **Fix (C3 — v12 m.room.create stored with empty room_id after send_join):**
+  `ingest_send_join_state` and the auth_chain loop in `join_room` stored the
+  `m.room.create` state row with `room_id=""` for v12 rooms because the create
+  event carries no `room_id` field (MSC4291). `build_pdu_auth_event_map` filters
+  state by `room_id == envelope.room_id` and missed it, so `auth_events.create`
+  was always null. Every inbound PDU for a v12 federated room was then rejected
+  at event-auth step 2: "room has no create event". Fix: when
+  `policy.create_event_is_room_id` and `parsed.event.room_id` is empty, derive
+  `room_id = "!" + event_id.substr(1)` before persisting the state row. The
+  auth_chain loop also gains the correct JSON-field-presence check for state_key
+  (was `!state_key.empty()`, which silently dropped all empty-state-key events).
 
 ## 0.5.36
 
