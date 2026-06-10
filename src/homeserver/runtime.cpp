@@ -203,6 +203,17 @@ auto hydrate_local_database(LocalDatabase& database) -> void
             database.next_stream_ordering = event.stream_ordering + 1U;
         }
     }
+
+    // Repair state entries that older code failed to create for events with
+    // state_key="" (m.room.create, m.room.join_rules, m.room.power_levels, …).
+    // Without these entries build_pdu_auth_event_map cannot find the create event
+    // and auth step 2 rejects every inbound federated PDU for the affected rooms.
+    auto const repaired = database::repair_missing_state_entries(database.persistent_store);
+    if (repaired > 0U)
+    {
+        LOG_WARNING(observability::diagnostic_log_summary(
+            "runtime", "database.state.repaired", {{"count", std::to_string(repaired), false}}));
+    }
 }
 
 auto bootstrap_local_database(config::Config const& config, database::SchemaState existing_state) -> LocalDatabase

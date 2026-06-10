@@ -1994,20 +1994,29 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                 // defaults to "" both for state events with state_key="" AND for
                 // non-state events (where the field is absent), so .empty() cannot
                 // distinguish the two. Check the raw JSON field instead.
+                // v12 (MSC4291): m.room.create carries no room_id field — the room ID
+                // IS the create event's reference hash. Derive it from event_id so the
+                // PersistentStateEvent is stored with the correct room_id and can be
+                // found later by build_pdu_auth_event_map.
+                auto const effective_room_id = [&]() -> std::string {
+                    if (!parsed.event.room_id.empty()) { return parsed.event.room_id; }
+                    if (policy.create_event_is_room_id && !event_id.empty()) { return "!" + event_id.substr(1); }
+                    return {};
+                }();
                 auto state = std::optional<database::PersistentStateEvent>{};
                 if (entry_obj != nullptr)
                 {
                     if (auto const* raw_sk = json_string_member(*entry_obj, "state_key");
                         raw_sk != nullptr)
                     {
-                        state = database::PersistentStateEvent{parsed.event.room_id,
+                        state = database::PersistentStateEvent{effective_room_id,
                                                                parsed.event.event_type, *raw_sk,
                                                                event_id};
                     }
                 }
                 auto pe = database::PersistentEvent{};
                 pe.event_id = event_id;
-                pe.room_id = parsed.event.room_id;
+                pe.room_id = effective_room_id;
                 pe.sender_user_id = parsed.event.sender;
                 pe.json = serialized.output;
                 pe.depth = depth;
@@ -2391,15 +2400,29 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                                 }
                             }
                             auto const stream_ordering = runtime.database.next_stream_ordering++;
+                            // Detect state events by JSON field presence, not .empty(): the
+                            // state_key field exists even when "" (e.g. m.room.create).
+                            // v12 (MSC4291): m.room.create has no room_id field; derive it.
+                            auto const auth_effective_room_id = [&]() -> std::string {
+                                if (!parsed.event.room_id.empty()) { return parsed.event.room_id; }
+                                if (policy != nullptr && policy->create_event_is_room_id && !event_id.empty())
+                                {
+                                    return "!" + event_id.substr(1);
+                                }
+                                return {};
+                            }();
                             auto state = std::optional<database::PersistentStateEvent>{};
-                            if (!parsed.event.state_key.empty())
+                            if (entry_obj != nullptr)
                             {
-                                state = database::PersistentStateEvent{parsed.event.room_id, parsed.event.event_type,
-                                                                       parsed.event.state_key, event_id};
+                                if (auto const* raw_sk = json_string_member(*entry_obj, "state_key"); raw_sk != nullptr)
+                                {
+                                    state = database::PersistentStateEvent{auth_effective_room_id,
+                                                                           parsed.event.event_type, *raw_sk, event_id};
+                                }
                             }
                             auto pe = database::PersistentEvent{};
                             pe.event_id = event_id;
-                            pe.room_id = parsed.event.room_id;
+                            pe.room_id = auth_effective_room_id;
                             pe.sender_user_id = parsed.event.sender;
                             pe.json = serialized.output;
                             pe.depth = depth;
