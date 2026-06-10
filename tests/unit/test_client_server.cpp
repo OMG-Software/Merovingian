@@ -5287,3 +5287,457 @@ SCENARIO("Key API 404 response carries Access-Control-Allow-Origin",
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Bug 5: DELETE /devices/{deviceId} must require UIA (spec §10.7.1)
+// ---------------------------------------------------------------------------
+
+SCENARIO("DELETE /devices/{deviceId} requires UIA re-authentication before deleting",
+         "[homeserver][client-server][devices][security][uia]")
+{
+    GIVEN("a registered and logged-in user with device DEVICE1")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("DELETE is called with no auth block in the body")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"DELETE", "/_matrix/client/v3/devices/DEVICE1", token, "{}"});
+
+            THEN("the response is 401 with the UIA challenge listing m.login.password")
+            {
+                REQUIRE(resp.response.status == 401U);
+                REQUIRE(resp.response.body.find("m.login.password") != std::string::npos);
+                REQUIRE(resp.response.body.find("flows") != std::string::npos);
+            }
+        }
+
+        WHEN("DELETE is called with an incorrect password in the auth block")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"DELETE", "/_matrix/client/v3/devices/DEVICE1", token,
+                 R"({"auth":{"type":"m.login.password","password":"WrongPassword"}})"});
+
+            THEN("the response is 401 with the UIA challenge")
+            {
+                REQUIRE(resp.response.status == 401U);
+                REQUIRE(resp.response.body.find("m.login.password") != std::string::npos);
+            }
+        }
+
+        WHEN("DELETE is called with the correct password in the auth block")
+        {
+            // Create a second device/session so we still have a valid token
+            // after the first device is deleted.
+            auto const login2 = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/login", {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE2"})"});
+            REQUIRE(login2.response.status == 200U);
+            auto const token2 = login_token(login2.response.body);
+
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"DELETE", "/_matrix/client/v3/devices/DEVICE1", token,
+                 R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+
+            THEN("the device is deleted and the response is 200")
+            {
+                REQUIRE(resp.response.status == 200U);
+                // Confirm the device is gone (query with the second session token)
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"GET", "/_matrix/client/v3/devices/DEVICE1", token2, {}});
+                REQUIRE(get.response.status == 404U);
+            }
+        }
+
+        WHEN("DELETE is called with a non-existent device and the correct password")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"DELETE", "/_matrix/client/v3/devices/NONEXISTENT", token,
+                 R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+
+            THEN("the response is 404 M_NOT_FOUND")
+            {
+                REQUIRE(resp.response.status == 404U);
+                REQUIRE(resp.response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bug 6: key backup create must assign a unique version per call
+// ---------------------------------------------------------------------------
+
+[[nodiscard]] auto version_field(std::string const& body) -> std::string
+{
+    return json_value(body, R"("version":")");
+}
+
+SCENARIO("POST /room_keys/version assigns a distinct version ID for each new backup",
+         "[homeserver][client-server][key-backup]")
+{
+    GIVEN("a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("two key backups are created sequentially")
+        {
+            auto const backup_body = R"({"algorithm":"m.megolm_backup.v1","auth_data":{}})";
+            auto const r1 = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/room_keys/version", token, backup_body});
+            auto const r2 = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/room_keys/version", token, backup_body});
+
+            THEN("each response has a non-empty version and the two versions differ")
+            {
+                REQUIRE(r1.response.status == 200U);
+                REQUIRE(r2.response.status == 200U);
+                auto const v1 = version_field(r1.response.body);
+                auto const v2 = version_field(r2.response.body);
+                REQUIRE(!v1.empty());
+                REQUIRE(!v2.empty());
+                REQUIRE(v1 != v2);
+            }
+        }
+
+        WHEN("a backup is created and then a session is written with ?version= pointing to it")
+        {
+            auto const backup_body = R"({"algorithm":"m.megolm_backup.v1","auth_data":{}})";
+            auto const create = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/room_keys/version", token, backup_body});
+            REQUIRE(create.response.status == 200U);
+            auto const ver = version_field(create.response.body);
+            REQUIRE(!ver.empty());
+
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT",
+                 "/_matrix/client/v3/room_keys/keys/!room%3Aexample.org/sessionA?version=" + ver,
+                 token,
+                 R"({"first_message_index":0,"forwarded_count":0,"is_verified":false,"session_data":{}})"});
+
+            THEN("the session write returns 200 with the correct version")
+            {
+                REQUIRE(put.response.status == 200U);
+                REQUIRE(put.response.body.find(ver) != std::string::npos);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bug 8: PUT /typing must validate room existence and membership
+// ---------------------------------------------------------------------------
+
+SCENARIO("PUT /rooms/{roomId}/typing enforces room existence and membership before updating state",
+         "[homeserver][client-server][typing]")
+{
+    GIVEN("alice who owns a room and bob who is not a member")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVALI"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVBOB"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        WHEN("alice sends typing=true in a room she is a member of")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org",
+                 alice_token, R"({"typing":true,"timeout":30000})"});
+
+            THEN("the response is 200")
+            {
+                REQUIRE(resp.response.status == 200U);
+            }
+        }
+
+        WHEN("alice sends typing=false to stop typing in her room")
+        {
+            // First set typing=true
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime,
+                        {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org",
+                         alice_token, R"({"typing":true,"timeout":30000})"})
+                        .response.status == 200U);
+
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org",
+                 alice_token, R"({"typing":false})"});
+
+            THEN("the response is 200")
+            {
+                REQUIRE(resp.response.status == 200U);
+            }
+        }
+
+        WHEN("bob sends typing=true for a room he is not a member of")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@bob:example.org",
+                 bob_token, R"({"typing":true,"timeout":30000})"});
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                REQUIRE(resp.response.status == 403U);
+                REQUIRE(resp.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("alice sends typing for a room that does not exist")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/rooms/!nonexistent:example.org/typing/@alice:example.org",
+                 alice_token, R"({"typing":true,"timeout":30000})"});
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                REQUIRE(resp.response.status == 403U);
+                REQUIRE(resp.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Bug 9 + 10: POST /read_markers and POST /receipt require room membership
+// ---------------------------------------------------------------------------
+
+SCENARIO("POST /read_markers enforces room membership and processes all receipt fields",
+         "[homeserver][client-server][read_markers]")
+{
+    GIVEN("alice who owns a room and bob who is not a member")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVALI"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVBOB"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        WHEN("alice sends read_markers for her room with m.read and m.read.private")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + id + "/read_markers", alice_token,
+                 R"({"m.fully_read":"$event1","m.read":"$event1","m.read.private":"$event1"})"});
+
+            THEN("the response is 200")
+            {
+                REQUIRE(resp.response.status == 200U);
+            }
+        }
+
+        WHEN("alice sends read_markers with only m.read (no m.fully_read)")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + id + "/read_markers", alice_token,
+                 R"({"m.read":"$event2"})"});
+
+            THEN("the response is 200 — m.read alone is a valid marker")
+            {
+                REQUIRE(resp.response.status == 200U);
+            }
+        }
+
+        WHEN("bob sends read_markers for a room he is not a member of")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + id + "/read_markers", bob_token,
+                 R"({"m.read":"$event1"})"});
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                REQUIRE(resp.response.status == 403U);
+                REQUIRE(resp.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("alice sends read_markers for a non-existent room")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/rooms/!nonexistent:example.org/read_markers", alice_token,
+                 R"({"m.read":"$event1"})"});
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                REQUIRE(resp.response.status == 403U);
+                REQUIRE(resp.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /receipt/{type}/{eventId} enforces room membership before storing the receipt",
+         "[homeserver][client-server][receipt]")
+{
+    GIVEN("alice who owns a room and bob who is not a member")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVALI"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const room = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
+        REQUIRE(room.response.status == 200U);
+        auto const id = room_id(room.response.body);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVBOB"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        WHEN("alice posts a receipt for an event in her own room")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + id + "/receipt/m.read/%24event1",
+                 alice_token, "{}"});
+
+            THEN("the response is 200")
+            {
+                REQUIRE(resp.response.status == 200U);
+            }
+        }
+
+        WHEN("bob posts a receipt for a room he is not a member of")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + id + "/receipt/m.read/%24event1",
+                 bob_token, "{}"});
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                REQUIRE(resp.response.status == 403U);
+                REQUIRE(resp.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("alice posts a receipt for a non-existent room")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/rooms/!nonexistent:example.org/receipt/m.read/%24event1",
+                 alice_token, "{}"});
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                REQUIRE(resp.response.status == 403U);
+                REQUIRE(resp.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}

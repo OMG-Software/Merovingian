@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.33
+Version:        0.5.34
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,12 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Tue Jun 10 2026 James Chapman <claude@ping.me.uk> - 0.5.34-1
+- fix: DELETE /devices/{deviceId} requires UIA re-authentication (spec §10.7.1)
+- fix: key backup version no longer hardcoded to "1" — each POST assigns a unique ID
+- fix: PUT /typing validates room existence and membership; EDU uses boolean not string
+- fix: POST /read_markers processes m.read and m.read.private alongside m.fully_read
+- fix: receipt and read_markers handlers enforce room existence and membership
 * Mon Jun 09 2026 James Chapman <claude@ping.me.uk> - 0.5.33-1
 - fix: GET /rooms/{roomId}/members returns 403 for non-members (spec §11.1)
 - fix: POST /account/password requires UIA before changing password (spec §5.7)
