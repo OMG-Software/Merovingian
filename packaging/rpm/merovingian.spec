@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.34
+Version:        0.5.35
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,7 +89,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Tue Jun 10 2026 James Chapman <claude@ping.me.uk> - 0.5.34-1
+* Tue Jun 10 2026 James Chapman <claude@ping.me.uk> - 0.5.35-1
 - fix: DELETE /devices/{deviceId} requires UIA re-authentication (spec §10.7.1)
 - fix: key backup version no longer hardcoded to "1" — each POST assigns a unique ID
 - fix: PUT /typing validates room existence and membership; EDU uses boolean not string

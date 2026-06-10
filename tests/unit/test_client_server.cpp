@@ -5741,3 +5741,99 @@ SCENARIO("POST /receipt/{type}/{eventId} enforces room membership before storing
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Bug: typing state is not cleared when a message is successfully sent
+// ---------------------------------------------------------------------------
+
+SCENARIO("sending a message clears the sender's in-room typing state",
+         "[homeserver][client-server][typing][messages]")
+{
+    GIVEN("alice in a room with typing=true set")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/login", {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVALI"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const room_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
+        REQUIRE(room_resp.response.status == 200U);
+        auto const id = room_id(room_resp.response.body);
+
+        // Set alice typing=true so we can verify it is cleared on send
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org",
+                     alice_token, R"({"typing":true,"timeout":30000})"})
+                    .response.status == 200U);
+
+        // Confirm the typing entry is present and live before the send
+        auto const typing_before =
+            std::ranges::find_if(runtime.homeserver.typing_users, [&id](auto const& t) {
+                return t.room_id == id && t.user_id == "@alice:example.org";
+            });
+        REQUIRE(typing_before != runtime.homeserver.typing_users.end());
+        REQUIRE(typing_before->typing);
+
+        WHEN("alice successfully sends a message in the room")
+        {
+            auto const send_resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/rooms/" + id + "/send/m.room.message/txn-typing-clear",
+                 alice_token, R"({"msgtype":"m.text","body":"Hello"})"});
+
+            THEN("the send returns 200 and alice's typing flag is set to false")
+            {
+                REQUIRE(send_resp.response.status == 200U);
+                auto const typing_after =
+                    std::ranges::find_if(runtime.homeserver.typing_users, [&id](auto const& t) {
+                        return t.room_id == id && t.user_id == "@alice:example.org";
+                    });
+                // Entry must still exist but with typing=false
+                REQUIRE(typing_after != runtime.homeserver.typing_users.end());
+                REQUIRE_FALSE(typing_after->typing);
+            }
+        }
+
+        WHEN("alice sends a message after she already cleared her typing state")
+        {
+            // Explicitly stop typing before sending
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime,
+                        {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org",
+                         alice_token, R"({"typing":false})"})
+                        .response.status == 200U);
+
+            auto const send_resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/rooms/" + id + "/send/m.room.message/txn-typing-noop",
+                 alice_token, R"({"msgtype":"m.text","body":"Hi"})"});
+
+            THEN("the send returns 200 and any existing typing entry remains false")
+            {
+                REQUIRE(send_resp.response.status == 200U);
+                // The server must not crash or duplicate entries when typing was already false
+                auto const typing_after =
+                    std::ranges::find_if(runtime.homeserver.typing_users, [&id](auto const& t) {
+                        return t.room_id == id && t.user_id == "@alice:example.org";
+                    });
+                if (typing_after != runtime.homeserver.typing_users.end())
+                {
+                    REQUIRE_FALSE(typing_after->typing);
+                }
+            }
+        }
+    }
+}

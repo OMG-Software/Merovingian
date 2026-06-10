@@ -1,3 +1,14 @@
+## 0.5.35
+
+- **Fix (typing state not cleared on message send):** When a user successfully
+  sends a message, the server now clears their `typing=true` state for that
+  room (CS API §11.12: the server MUST send a stop-typing event when a user
+  sends a message). Local `typing_users` state is set to `false`, a
+  `typing:false` EDU is federated to all remote servers in the room, and the
+  sync notifier is woken so local clients receive the stop-typing event
+  immediately. Stale typing indicators (e.g. "X is typing…" persisting after
+  X sends a message) are no longer shown to remote users.
+
 ## 0.5.34
 
 - **Fix (`DELETE /devices/{deviceId}` — bypasses UIA):** The endpoint deleted

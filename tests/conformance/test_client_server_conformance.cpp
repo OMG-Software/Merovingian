@@ -11701,3 +11701,80 @@ SCENARIO("POST /receipt/{type}/{eventId} MUST reject non-members with 403",
         }
     }
 }
+
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: Typing Notifications
+// URL: https://spec.matrix.org/v1.18/client-server-api/#typing-notifications
+//
+// "The server MUST send stop typing events to remove typing notifications if a
+// user sends a message."  Sending a message while typing=true MUST result in
+// the server clearing (typing=false) the in-room typing state for that user so
+// that remote and local clients no longer show a stale typing indicator.
+SCENARIO("sending a message implicitly clears the sender's typing state per spec",
+         "[homeserver][client-server][typing][conformance]")
+{
+    GIVEN("alice registered in a room with an active typing indicator")
+    {
+        auto cfg   = conformance_config();
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& rt           = started.runtime;
+        auto const alice_token = logged_in_token(rt);
+
+        auto const room_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
+        REQUIRE(room_resp.response.status == 200U);
+        auto const room_body = parse_object(room_resp.response.body);
+        auto const* rid      = string_member(room_body, "room_id");
+        REQUIRE(rid != nullptr);
+        auto const id = *rid;
+
+        // Establish typing=true so the indicator is live
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    rt,
+                    {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org",
+                     alice_token, R"({"typing":true,"timeout":30000})"})
+                    .response.status == 200U);
+
+        // Spec MUST: typing entry exists and is true before the message send
+        {
+            auto const* found = [&]() -> merovingian::homeserver::InboundTypingUser const* {
+                for (auto const& t : rt.homeserver.typing_users)
+                {
+                    if (t.room_id == id && t.user_id == "@alice:example.org")
+                        return &t;
+                }
+                return nullptr;
+            }();
+            REQUIRE(found != nullptr);
+            REQUIRE(found->typing); // Spec MUST: typing=true is active before send
+        }
+
+        WHEN("alice sends a message in the room")
+        {
+            auto const send_resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"PUT",
+                 "/_matrix/client/v3/rooms/" + id + "/send/m.room.message/txn-conformance-typing",
+                 alice_token, R"({"msgtype":"m.text","body":"Hello"})"});
+
+            THEN("the send returns 200 and alice's typing state is cleared to false")
+            {
+                // Spec MUST: successful message send → 200
+                REQUIRE(send_resp.response.status == 200U);
+
+                auto const* after = [&]() -> merovingian::homeserver::InboundTypingUser const* {
+                    for (auto const& t : rt.homeserver.typing_users)
+                    {
+                        if (t.room_id == id && t.user_id == "@alice:example.org")
+                            return &t;
+                    }
+                    return nullptr;
+                }();
+                // Spec MUST: server clears typing indicator when user sends a message
+                REQUIRE(after != nullptr);
+                REQUIRE_FALSE(after->typing); // typing=false after send
+            }
+        }
+    }
+}
