@@ -198,6 +198,41 @@ private:
     return signed_event.event_json;
 }
 
+// Produces a v10 PDU with "origin" as a top-level field, signed with v10
+// redaction rules.  v10 preserves "origin" in the signing payload; v11+ strips
+// it.  A PDU signed here will only verify correctly when the authorising side
+// uses a v10 (or earlier) room-version policy.
+[[nodiscard]] auto signed_v10_pdu(std::string const& origin, std::string const& key_id, std::string const& token)
+    -> std::string
+{
+    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+    REQUIRE(derive_test_keypair(token, public_key, secret_key));
+    // "origin" sits between "hashes" and "origin_server_ts" in canonical order.
+    auto const event_json =
+        std::string{"{\"auth_events\":[],\"content\":{\"body\":\"hi\",\"msgtype\":\"m.text\"},"
+                    "\"depth\":1,\"hashes\":{\"sha256\":\"hash\"},\"origin\":\""} +
+        origin +
+        "\",\"origin_server_ts\":1,\"prev_events\":[],"
+        "\"room_id\":\"!room:example.org\",\"sender\":\"@alice:" +
+        origin + "\",\"type\":\"m.room.message\"}";
+    auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
+    auto const* policy = merovingian::rooms::find_room_version_policy("10");
+    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    REQUIRE(policy != nullptr);
+    auto store = FederationTestSigningStore{
+        merovingian::crypto::SigningKeyRecord{
+                                              origin, key_id,
+                                              merovingian::crypto::Ed25519PublicKey{
+                std::string{reinterpret_cast<char const*>(public_key.data()), public_key.size()}},
+                                              true, }
+    };
+    auto provider = FederationTestEd25519Provider{token};
+    auto signed_event = merovingian::events::sign_event_for_server(parsed.value, *policy, store, provider, origin);
+    REQUIRE(signed_event.error.empty());
+    return signed_event.event_json;
+}
+
 // ---- auth-event builder helpers (reusable for full-auth scenarios) -----------
 
 [[nodiscard]] auto auth_create_event(std::string_view creator) -> std::string
@@ -701,6 +736,55 @@ SCENARIO("Federation transaction handler uses room_version_resolver for PDU auth
             THEN("the transaction is accepted using the default room version '12' fallback")
             {
                 REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18 — Room Version 10 redactions
+// URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+//
+// Room v1–v10 preserves "origin" as an allowed top-level key in the signing
+// payload.  Room v11+ removes it.  When a homeserver uses the wrong (later)
+// room-version policy to verify an inbound PDU from an old room, it strips
+// "origin" from the canonical signing payload, producing a different hash and
+// causing a false-negative signature rejection.  The room_version_resolver MUST
+// return the room's actual version so that verification uses matching rules.
+SCENARIO("Inbound v10 room PDU with 'origin' field fails verification when room version resolver defaults to v12",
+         "[federation][inbound][pdu][room-version]")
+{
+    GIVEN("a v10 room PDU carrying 'origin', signed with v10 redaction rules")
+    {
+        auto const origin   = std::string{"synapse.example.org"};
+        auto const key_id   = std::string{"ed25519:a_RXGa"};
+        auto const token    = std::string{"v10-test-token"};
+        auto const pdu_json = signed_v10_pdu(origin, key_id, token);
+        auto key = merovingian::federation::FederationKeyRecord{};
+        key.server_name      = origin;
+        key.key_id           = key_id;
+        key.valid_until_ts   = 2000U;
+        key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
+
+        WHEN("the PDU is parsed with a resolver returning '10' and then authorized")
+        {
+            auto const pdu = merovingian::federation::parse_federation_pdu(
+                pdu_json, [](std::string_view) -> std::string { return "10"; });
+            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key);
+
+            THEN("the PDU is accepted because v10 redaction keeps 'origin' in the signing payload")
+            {
+                REQUIRE(decision.accepted);
+            }
+        }
+
+        WHEN("the PDU is parsed without a resolver (falls back to '12') and then authorized")
+        {
+            auto const pdu      = merovingian::federation::parse_federation_pdu(pdu_json);
+            auto const decision = merovingian::federation::authorize_federation_pdu(pdu, origin, key);
+
+            THEN("the PDU is rejected because v12 redaction strips 'origin', changing the signing hash")
+            {
+                REQUIRE_FALSE(decision.accepted);
             }
         }
     }
