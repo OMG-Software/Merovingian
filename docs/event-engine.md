@@ -33,6 +33,11 @@ Implemented now:
   authorized against current room state before persistence; auth is
   conditional on the presence of a create event in room state to allow
   the simplified room-creation bootstrap flow
+- auth checking wired into the inbound federation PDU path: `pdu_sink` in
+  `local_http_router.cpp` runs `authorize_event_against_auth_events` against the
+  room's current resolved state before calling `store_event_with_state`; events
+  that fail auth return `rejected_auth` without a non-200 HTTP status (per Matrix
+  /send spec — non-200 causes the remote to back off all federation)
 - room creator is implicitly treated as joined with power level 100 when
   no sender_member or power_levels event exists, enabling correct
   authorization of initial state events during room bootstrapping

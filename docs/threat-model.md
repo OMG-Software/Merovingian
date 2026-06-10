@@ -24,6 +24,19 @@
 - Config parsing
 - Database migrations
 
+## Mitigations applied (v0.5.37)
+
+- **Relayed PDU signature bypass (C1):** `authorize_federation_pdu` previously skipped
+  Ed25519 verification for PDUs whose sender domain differed from the transport origin
+  (i.e., relayed PDUs). A malicious relay could persist events attributed to any user on
+  any server. Fixed by resolving the sender domain's signing key via `remote_key_resolver`
+  before authorizing; fail-closed when the resolver is wired but cannot produce a key.
+
+- **Missing event-auth before persist (C2):** The production `pdu_sink` persisted inbound
+  PDUs without calling `authorize_event_against_auth_events`. A federated peer could
+  persist events that violate the room's power-level and membership rules. Fixed by running
+  full event-authorization against the room's current resolved state before persistence.
+
 ## Security principles
 
 - Fail closed.

@@ -309,15 +309,47 @@ SCENARIO("Inbound PDU sink assigns stream ordering and notifies sync", "[homeser
 
         auto const ordering_before = homeserver.database.next_stream_ordering;
 
+        // Pre-populate the room state so the pdu_sink's auth check (SS API
+        // §authorization-rules) finds the create and sender-member events it
+        // needs. The pdu_sink persists state from store.state on every ingest,
+        // and the auth map is built from the same source — both must agree.
+        auto const room_id_str = std::string{"!inbound_test:remote.example.org"};
+        auto const bob_sender = std::string{"@bob:remote.example.org"};
+        homeserver.database.persistent_store.events.push_back(
+            {.event_id = "$inbound_create",
+             .room_id = room_id_str,
+             .sender_user_id = bob_sender,
+             .json = R"({"type":"m.room.create","sender":"@bob:remote.example.org",)"
+                     R"("content":{"room_version":"12","creator":"@bob:remote.example.org"}})",
+             .depth = 0U});
+        homeserver.database.persistent_store.events.push_back(
+            {.event_id = "$inbound_bob_member",
+             .room_id = room_id_str,
+             .sender_user_id = bob_sender,
+             .json = R"({"type":"m.room.member","sender":"@bob:remote.example.org",)"
+                     R"("state_key":"@bob:remote.example.org",)"
+                     R"("content":{"membership":"join"}})",
+             .depth = 1U});
+        homeserver.database.persistent_store.state.push_back(
+            {.room_id = room_id_str, .event_type = "m.room.create", .state_key = "", .event_id = "$inbound_create"});
+        homeserver.database.persistent_store.state.push_back(
+            {.room_id = room_id_str, .event_type = "m.room.member", .state_key = bob_sender,
+             .event_id = "$inbound_bob_member"});
+
         WHEN("an inbound PDU is ingested through the pdu_sink")
         {
             auto envelope = merovingian::federation::InboundPduEnvelope{};
             envelope.event_id = "$test_inbound_event";
-            envelope.room_id = "!inbound_test:remote.example.org";
-            envelope.sender = "@bob:remote.example.org";
+            envelope.room_id = room_id_str;
+            envelope.sender = bob_sender;
             envelope.event_type = "m.room.message";
-            envelope.depth = 1U;
-            envelope.json = R"({"type":"m.room.message","content":{"body":"hello","msgtype":"m.text"}})";
+            envelope.depth = 2U;
+            // The auth check parses this JSON to read the event's sender/type,
+            // so it must carry the same fields the envelope advertises.
+            envelope.json = R"({"type":"m.room.message",)"
+                            R"("sender":"@bob:remote.example.org",)"
+                            R"("room_id":"!inbound_test:remote.example.org",)"
+                            R"("content":{"body":"hello","msgtype":"m.text"}})";
 
             auto const result = homeserver.federation.pdu_sink(envelope);
 

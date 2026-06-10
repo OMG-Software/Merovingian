@@ -9,6 +9,7 @@
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/database/persistent_store.hpp"
+#include "merovingian/events/authorization.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/event_query.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -46,6 +47,61 @@ namespace
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
     {
         LOG_DEBUG(observability::diagnostic_log_summary("local_router", event, std::move(fields)));
+    }
+
+    // Builds the auth-event map for an inbound federated PDU from the room's
+    // currently resolved state. Mirrors the same logic used in room_service.cpp
+    // for locally-created events so both paths apply identical auth rules.
+    // Spec: SS API §authorization-rules — receivers MUST check auth before persisting.
+    [[nodiscard]] auto build_pdu_auth_event_map(database::PersistentStore const& store, std::string_view room_id,
+                                                std::string_view sender, std::string_view target_state_key,
+                                                std::string_view event_type) -> events::AuthEventMap
+    {
+        auto load = [&](std::string_view event_id) -> canonicaljson::Value {
+            for (auto const& evt : store.events)
+            {
+                if (evt.event_id == event_id)
+                {
+                    auto const parsed = canonicaljson::parse_lossless(evt.json);
+                    if (parsed.error == canonicaljson::ParseError::none)
+                    {
+                        return parsed.value;
+                    }
+                }
+            }
+            return {};
+        };
+
+        auto result = events::AuthEventMap{};
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id)
+            {
+                continue;
+            }
+            if (state.event_type == "m.room.create" && state.state_key.empty())
+            {
+                result.create = load(state.event_id);
+            }
+            else if (state.event_type == "m.room.power_levels" && state.state_key.empty())
+            {
+                result.power_levels = load(state.event_id);
+            }
+            else if (state.event_type == "m.room.join_rules" && state.state_key.empty())
+            {
+                result.join_rules = load(state.event_id);
+            }
+            else if (state.event_type == "m.room.member" && state.state_key == sender)
+            {
+                result.sender_member = load(state.event_id);
+            }
+            else if (state.event_type == "m.room.member" && event_type == "m.room.member" &&
+                     state.state_key == target_state_key)
+            {
+                result.target_member = load(state.event_id);
+            }
+        }
+        return result;
     }
 
     [[nodiscard]] auto response(std::uint16_t status, std::string body) -> LocalHttpResponse
@@ -567,6 +623,34 @@ namespace
 
         runtime.federation.pdu_sink =
             [rt](federation::InboundPduEnvelope const& envelope) -> federation::PduIngestionResult {
+            // Spec: SS API §authorization-rules — MUST check event-auth before persisting.
+            // Build the auth-event map from the room's current resolved state and run
+            // authorize_event_against_auth_events. Rejection returns rejected_auth so the
+            // federation handler audits the event without issuing a non-200 HTTP status
+            // (a non-200 causes the remote to back off all federation to this server).
+            {
+                auto const* room_policy = rooms::find_room_version_policy(
+                    envelope.room_version.empty() ? "12" : envelope.room_version);
+                if (room_policy != nullptr)
+                {
+                    auto const pdu_parsed = canonicaljson::parse_lossless(envelope.json);
+                    if (pdu_parsed.error == canonicaljson::ParseError::none)
+                    {
+                        auto const auth_map = build_pdu_auth_event_map(
+                            rt->database.persistent_store, envelope.room_id,
+                            envelope.sender,
+                            envelope.state_key.value_or(std::string{}),
+                            envelope.event_type);
+                        auto const auth_decision = events::authorize_event_against_auth_events(
+                            pdu_parsed.value, *room_policy, auth_map);
+                        if (!auth_decision.allowed)
+                        {
+                            return {federation::PduIngestionStatus::rejected_auth,
+                                    "event auth denied: " + auth_decision.reason};
+                        }
+                    }
+                }
+            }
             auto event = database::PersistentEvent{};
             event.event_id = envelope.event_id;
             event.room_id = envelope.room_id;

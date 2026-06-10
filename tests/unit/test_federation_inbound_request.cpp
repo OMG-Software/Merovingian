@@ -972,3 +972,204 @@ SCENARIO("Full Matrix event auth rejects PDUs that pass transport checks but vio
         }
     }
 }
+
+// Spec: Matrix Server-Server API v1.18 — Signing Events (per-PDU signing)
+// URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
+//
+// For relayed PDUs (TLS peer is a relay forwarding on behalf of the true author)
+// the verifying server MUST resolve the sender domain's signing key and verify the
+// PDU signature against it — not the relay's key, which does not cover the sender's
+// signature. If the resolver is wired but fails to produce a key the PDU MUST be
+// rejected (fail-closed). If no resolver is wired the behaviour is unchanged
+// (structural presence-check only — a known TODO).
+SCENARIO("Relayed PDU signature is verified against the sender domain key via the resolver",
+         "[federation][inbound][pdu][relay][conformance]")
+{
+    GIVEN("a PDU authored by alice.example.org but delivered by relay.example.org")
+    {
+        auto runtime          = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const relay_origin = std::string{"relay.example.org"};
+        auto const relay_key_id = std::string{"ed25519:relay"};
+        auto const relay_token  = std::string{"relay-server-key"};
+        auto const event_server = std::string{"alice.example.org"};
+        auto const event_key_id = std::string{"ed25519:auto"};
+        auto const event_token  = std::string{"alice-server-key"};
+        // relay.example.org is a known trusted remote (provides X-Matrix auth).
+        merovingian::federation::upsert_remote(runtime, remote_for(relay_origin, relay_key_id, relay_token));
+
+        auto const alice_pdu_json = signed_json_pdu(event_server, event_key_id, event_token);
+        // Transaction is signed by relay.example.org; the PDU within was authored
+        // and cryptographically signed by alice.example.org.
+        auto const request = signed_request(relay_origin, relay_key_id, relay_token,
+                                            transaction_body(relay_origin, alice_pdu_json));
+
+        WHEN("a resolver that successfully resolves alice.example.org's key is wired")
+        {
+            auto accepted_event_id = std::string{};
+            runtime.pdu_sink =
+                [&accepted_event_id](merovingian::federation::InboundPduEnvelope const& env)
+                -> merovingian::federation::PduIngestionResult {
+                accepted_event_id = env.event_id;
+                return {merovingian::federation::PduIngestionStatus::accepted, {}};
+            };
+            runtime.remote_key_resolver =
+                [event_server, event_key_id, event_token](
+                    std::string_view server_name,
+                    std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != event_server || key_id != event_key_id)
+                {
+                    return std::nullopt;
+                }
+                return remote_for(event_server, event_key_id, event_token);
+            };
+
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the relay's transaction is accepted and the PDU passes sender signature verification")
+            {
+                // Spec MUST: signature from sender_domain(pdu.sender) MUST be verified.
+                // The resolver is called for alice.example.org and the returned key is
+                // used to verify alice's PDU signature — not the relay's key.
+                REQUIRE(response.status == 200U);
+                REQUIRE_FALSE(accepted_event_id.empty());
+            }
+        }
+
+        WHEN("a resolver that returns the wrong public key for alice.example.org is wired")
+        {
+            auto sink_called = bool{false};
+            runtime.pdu_sink =
+                [&sink_called](merovingian::federation::InboundPduEnvelope const&)
+                -> merovingian::federation::PduIngestionResult {
+                sink_called = true;
+                return {merovingian::federation::PduIngestionStatus::accepted, {}};
+            };
+            runtime.remote_key_resolver =
+                [event_server, event_key_id](
+                    std::string_view server_name,
+                    std::string_view key_id) -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                if (server_name != event_server || key_id != event_key_id)
+                {
+                    return std::nullopt;
+                }
+                // Return a remote with different key material — wrong public key.
+                return remote_for(event_server, event_key_id, "wrong-key-material");
+            };
+
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the PDU is rejected with a per-PDU error and the sink is never reached")
+            {
+                // Spec MUST: a PDU whose signature fails Ed25519 verification MUST be rejected.
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("\"error\"") != std::string::npos);
+                REQUIRE_FALSE(sink_called);
+            }
+        }
+
+        WHEN("a resolver that cannot resolve alice.example.org's key is wired")
+        {
+            auto sink_called = bool{false};
+            runtime.pdu_sink =
+                [&sink_called](merovingian::federation::InboundPduEnvelope const&)
+                -> merovingian::federation::PduIngestionResult {
+                sink_called = true;
+                return {merovingian::federation::PduIngestionStatus::accepted, {}};
+            };
+            runtime.remote_key_resolver =
+                [](std::string_view, std::string_view)
+                -> std::optional<merovingian::federation::FederationRemoteRuntime> {
+                return std::nullopt; // resolution always fails
+            };
+
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the PDU is rejected fail-closed and the sink is never reached")
+            {
+                // Fail-closed: resolver is wired but returned no key → cannot verify
+                // sender signature → PDU MUST be rejected, not persisted unverified.
+                REQUIRE(response.status == 200U);
+                REQUIRE(response.body.find("\"error\"") != std::string::npos);
+                REQUIRE_FALSE(sink_called);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18 — Authorization Rules
+// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+//
+// The server MUST run event-authorization rules before persisting any inbound PDU.
+// A PDU that fails auth MUST NOT be persisted; the pdu_sink MUST return rejected_auth
+// so the federation handler audits the rejection without producing a non-200 HTTP
+// status that would cause the remote to back off all federation.
+SCENARIO("Inbound pdu_sink enforces Matrix event-authorization rules before persisting",
+         "[federation][inbound][pdu][auth][conformance]")
+{
+    GIVEN("a runtime with an auth-enforcing pdu_sink and @alice:remote.org banned in the room")
+    {
+        auto runtime       = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin  = std::string{"remote.org"};
+        auto const key_id  = std::string{"ed25519:auto"};
+        auto const token   = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        // Auth state: @admin:example.org created the room; @alice:remote.org is banned.
+        auto auth_map                = merovingian::events::AuthEventMap{};
+        auth_map.create              = parse_auth_json(auth_create_event("@admin:example.org"));
+        auth_map.power_levels        = parse_auth_json(
+            auth_power_levels_event("@admin:example.org", 0, 50, "@admin:example.org", 100));
+        auth_map.sender_member       = parse_auth_json(
+            auth_member_event("@admin:example.org", "@alice:remote.org", "ban"));
+
+        // Mimics the production pdu_sink contract: MUST run authorize_event_against_auth_events
+        // before persisting. Banned members MUST be rejected with rejected_auth.
+        auto rejection_count  = std::size_t{0U};
+        auto acceptance_count = std::size_t{0U};
+        runtime.pdu_sink =
+            [policy, auth_map, &rejection_count, &acceptance_count](
+                merovingian::federation::InboundPduEnvelope const& env)
+            -> merovingian::federation::PduIngestionResult
+        {
+            auto const pdu_val = merovingian::canonicaljson::parse_lossless(env.json);
+            if (pdu_val.error != merovingian::canonicaljson::ParseError::none)
+            {
+                return {merovingian::federation::PduIngestionStatus::rejected_invalid, "unparseable pdu"};
+            }
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(pdu_val.value, *policy, auth_map);
+            if (!decision.allowed)
+            {
+                ++rejection_count;
+                return {merovingian::federation::PduIngestionStatus::rejected_auth,
+                        "event auth denied: " + decision.reason};
+            }
+            ++acceptance_count;
+            return {merovingian::federation::PduIngestionStatus::accepted, {}};
+        };
+
+        WHEN("a message PDU from banned @alice:remote.org passes transport-level signature checks")
+        {
+            // signed_json_pdu("remote.org", ...) creates sender=@alice:remote.org whose
+            // transport signature is valid — the PDU passes authorize_federation_pdu.
+            auto const pdu_json = signed_json_pdu(origin, key_id, token);
+            auto const request  = signed_request(origin, key_id, token,
+                                                 transaction_body(origin, pdu_json));
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the transaction returns 200 but the pdu_sink rejects the event as auth-denied")
+            {
+                // Spec MUST: banned members MUST NOT be permitted to send any room event.
+                // The pdu_sink MUST return rejected_auth — this causes the federation handler
+                // to audit the rejection without changing the HTTP 200 status, per Matrix /send
+                // spec (non-200 causes the remote to back off all federation for that server).
+                REQUIRE(response.status == 200U);
+                REQUIRE(rejection_count == 1U);
+                REQUIRE(acceptance_count == 0U);
+            }
+        }
+    }
+}

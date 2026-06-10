@@ -1,3 +1,22 @@
+## 0.5.37
+
+- **Fix (C1 — relayed PDU signature bypass):** `authorize_federation_pdu()` previously
+  skipped Ed25519 verification for relayed PDUs (where `sender_domain(pdu.sender)` differs
+  from the transport origin). The condition now checks `key->server_name == pdu_sender_domain`
+  instead of `pdu_sender_domain == expected_origin`, and the transaction loop resolves the
+  sender domain's signing key via `remote_key_resolver` before calling the authorizer. When
+  the resolver is wired but cannot produce a key the PDU is rejected fail-closed; when no
+  resolver is wired the structural presence-check is unchanged (known limitation for partial
+  deployments).
+
+- **Fix (C2 — missing event-auth before PDU persistence):** The production `pdu_sink` in
+  `wire_federation_callbacks_impl` now calls `authorize_event_against_auth_events` against
+  the room's current resolved state before calling `store_event_with_state`. Events that
+  fail auth return `rejected_auth` so the federation handler audits the rejection without
+  issuing a non-200 HTTP status (which would cause the remote to back off all federation).
+  A `build_pdu_auth_event_map` helper mirrors the same pattern already used in
+  `room_service.cpp` for locally-created events.
+
 ## 0.5.36
 
 - **Fix (inbound PDU signature rejection for v10 rooms):** The
