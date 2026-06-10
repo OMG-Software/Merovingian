@@ -5955,6 +5955,53 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                    {"status",     std::to_string(result.status),                           false},
                                    {"reason",     result.status == 200U ? std::string{"ok"} : result.body, false}
                 });
+                // CS API §11.12: the server MUST send a stop-typing event when a
+                // user sends a message.  Clear local typing state and federate a
+                // typing:false EDU so remote servers remove the stale indicator.
+                if (result.status == 200U)
+                {
+                    auto const typing_it = std::ranges::find_if(
+                        rt.homeserver.typing_users, [&path, user](auto const& t) {
+                            return t.room_id == path->room_id && t.user_id == *user && t.typing;
+                        });
+                    if (typing_it != rt.homeserver.typing_users.end())
+                    {
+                        rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+                        auto const stream_id =
+                            rt.homeserver.database.persistent_store.next_sync_stream_id;
+                        typing_it->typing    = false;
+                        typing_it->stream_id = stream_id;
+                        // Federate typing:false only if the room has remote members
+                        auto const room_it = std::ranges::find_if(
+                            rt.homeserver.database.rooms,
+                            [&path](auto const& r) { return r.room_id == path->room_id; });
+                        if (room_it != rt.homeserver.database.rooms.end())
+                        {
+                            auto const edu_content = json_serialize(json_obj({
+                                json_member("room_id", json_str(path->room_id)),
+                                json_member("user_id", json_str(*user)),
+                                json_member("typing",  canonicaljson::Value{false}),
+                            }));
+                            auto const enqueued =
+                                dispatch_outbound_edu(rt.homeserver, *room_it, "m.typing", edu_content);
+                            if (enqueued > 0U)
+                            {
+                                log_diagnostic("room.typing.cleared_on_send",
+                                               {
+                                                   {"actor",        *user,                    false},
+                                                   {"room_id",      path->room_id,            false},
+                                                   {"destinations", std::to_string(enqueued), false}
+                                });
+                            }
+                        }
+                        if (rt.sync_notifier != nullptr)
+                        {
+                            rt.sync_notifier->publish(
+                                rt.homeserver.database.next_stream_ordering - 1U,
+                                rt.homeserver.database.persistent_store.next_sync_stream_id);
+                        }
+                    }
+                }
                 return complete(result);
             }
             if (auto const path = room_state_path_parts(req.target); path.has_value())
