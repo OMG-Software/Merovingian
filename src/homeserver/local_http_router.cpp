@@ -1320,6 +1320,15 @@ namespace
             return federation::build_get_missing_events_response(rt->database.persistent_store, room_id, body);
         };
 
+        // Resolve the room version from the stored m.room.create state event so
+        // that authorize_federation_pdu uses the correct redaction rules when
+        // verifying inbound PDU signatures.  Rooms created before v11 include
+        // "origin" in the signing payload; using the wrong (later) version strips
+        // it and produces a false signature failure for every inbound event.
+        runtime.federation.room_version_resolver = [rt](std::string_view room_id) -> std::string {
+            return room_version_from_store(rt->database.persistent_store, room_id);
+        };
+
         if (outbound && discovery)
         {
             runtime.federation.remote_key_resolver = federation::make_persistent_remote_key_resolver(

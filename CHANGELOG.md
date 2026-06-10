@@ -1,3 +1,17 @@
+## 0.5.36
+
+- **Fix (inbound PDU signature rejection for v10 rooms):** The
+  `room_version_resolver` callback in `FederationRuntimeState` was never wired,
+  causing every inbound PDU to be parsed and verified as room version 12.
+  Rooms at version 10 (the Synapse default for existing rooms) include `"origin"`
+  as a top-level field in the signing payload; the v12 redaction algorithm strips
+  it, producing a different canonical hash and a false signature failure.  Every
+  inbound event for the old room was rejected with a per-PDU error buried in the
+  200 OK transaction response body, so remote servers never backed off — they
+  kept delivering events that Merovingian silently discarded.  The resolver is
+  now wired to `room_version_from_store`, which reads the room version from the
+  stored `m.room.create` state event and falls back to `"10"` for legacy rooms.
+
 ## 0.5.35
 
 - **Fix (typing state not cleared on message send):** When a user successfully
