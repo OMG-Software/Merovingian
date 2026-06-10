@@ -236,7 +236,12 @@
       "method": "DELETE",
       "path": "/_matrix/client/v3/devices/DEVICE2",
       "auth_from": "refreshed_token",
-      "body": {},
+      "body": {
+        "auth": {
+          "type": "m.login.password",
+          "password": "CorrectHorse7!"
+        }
+      },
       "expect_status": 200
     },
     {
@@ -249,7 +254,12 @@
       "method": "DELETE",
       "path": "/_matrix/client/v3/devices/DEVICE2",
       "auth_from": "refreshed_token",
-      "body": {},
+      "body": {
+        "auth": {
+          "type": "m.login.password",
+          "password": "CorrectHorse7!"
+        }
+      },
       "expect_status": 404,
       "expect_keys_present": ["errcode", "error"]
     },

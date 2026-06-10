@@ -1,3 +1,37 @@
+## 0.5.34
+
+- **Fix (`DELETE /devices/{deviceId}` — bypasses UIA):** The endpoint deleted
+  devices after bearer-token auth alone, with no re-authentication step. The
+  spec (§10.7.1) requires User-Interactive Authentication with
+  `m.login.password` before any device can be deleted. A bare request now
+  returns 401 with the UIA challenge; only a valid `auth.password` proceeds to
+  deletion.
+- **Fix (key backup version hardcoded to `"1"`):** `POST /room_keys/version`
+  now generates a unique, monotonically-increasing version string per user (e.g.
+  `"1"`, `"2"`, …) instead of always returning `"1"`. `PUT /room_keys/version/{ver}`
+  uses the path version for updates. Session operations (`PUT`/`DELETE`
+  `/room_keys/keys/…`) require and honour the `?version=` query parameter as
+  the spec mandates. The update response now also includes the `"version"` field
+  in the `RoomKeysUpdateResponse` body.
+- **Fix (`PUT /typing` — invalid room/user state accepted; EDU type wrong):**
+  The handler now validates room existence and membership before storing typing
+  state, returning 403 M_FORBIDDEN for non-members and unknown rooms. It also
+  parses `typing` (bool) and `timeout` from the request body. The federation
+  EDU now encodes `typing` as a JSON boolean (`true`/`false`) instead of the
+  string `"true"`, matching the Matrix federation spec.
+- **Fix (`POST /read_markers` — `m.read` and `m.read.private` ignored):** The
+  handler previously only processed `m.fully_read`. It now processes all three
+  marker types: `m.read` (federated as a receipt EDU), `m.fully_read` (local
+  account-data marker), and `m.read.private` (local-only receipt, not
+  federated).
+- **Fix (receipts and read markers — no room/membership validation):** Both
+  `POST /rooms/{roomId}/receipt/{type}/{eventId}` and
+  `POST /rooms/{roomId}/read_markers` now reject requests from users who are
+  not current members of the room with 403 M_FORBIDDEN, instead of silently
+  storing ephemeral state for rooms the caller does not belong to.
+  `m.read.private` receipt type is also now correctly excluded from outbound
+  federation EDUs.
+
 ## 0.5.33
 
 - **Fix (`GET /rooms/{roomId}/members` — missing access check):** The endpoint

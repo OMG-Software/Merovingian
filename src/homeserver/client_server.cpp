@@ -2772,7 +2772,62 @@ namespace
         return json_serialize(json_obj({
             json_member("count", json_int(key_backup_session_count(store, user_id, version))),
             json_member("etag", json_str(key_backup_etag(store, user_id, version))),
+            json_member("version", json_str(version)),
         }));
+    }
+
+    // Compute the next unique version string for a user's key backup.
+    // Finds the highest existing numeric version for this user and returns
+    // (max + 1) as a decimal string.  Starts at "1" when none exist.
+    [[nodiscard]] auto key_backup_next_version(database::PersistentStore const& store,
+                                               std::string_view user_id) -> std::string
+    {
+        std::uint64_t max_ver = 0U;
+        for (auto const& v : store.key_backup_versions)
+        {
+            if (v.user_id != user_id)
+            {
+                continue;
+            }
+            try
+            {
+                auto const n = static_cast<std::uint64_t>(std::stoull(v.version));
+                if (n > max_ver)
+                {
+                    max_ver = n;
+                }
+            }
+            catch (...) { /* non-numeric version — skip */ }
+        }
+        return std::to_string(max_ver + 1U);
+    }
+
+    // Extract the value of the `version` query parameter from a request target.
+    // Returns an empty string_view if the parameter is absent.
+    [[nodiscard]] auto extract_key_backup_version_param(std::string_view target) noexcept -> std::string_view
+    {
+        auto const query_start = target.find('?');
+        if (query_start == std::string_view::npos)
+        {
+            return {};
+        }
+        auto query = target.substr(query_start + 1U);
+        while (!query.empty())
+        {
+            auto const amp   = query.find('&');
+            auto const pair  = amp == std::string_view::npos ? query : query.substr(0U, amp);
+            auto const eq    = pair.find('=');
+            if (eq != std::string_view::npos && pair.substr(0U, eq) == "version")
+            {
+                return pair.substr(eq + 1U);
+            }
+            if (amp == std::string_view::npos)
+            {
+                break;
+            }
+            query = query.substr(amp + 1U);
+        }
+        return {};
     }
 
     [[nodiscard]] auto key_backup_metadata_response(database::PersistentStore const& store,
@@ -4081,7 +4136,8 @@ namespace
 
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
                                              std::string_view user, std::string_view /*device_id*/,
-                                             LocalHttpRequest const& req) -> bool
+                                             LocalHttpRequest const& req,
+                                             std::string_view version) -> bool
     {
         auto& store = rt.homeserver.database.persistent_store;
         switch (endpoint)
@@ -4157,7 +4213,7 @@ namespace
         }
         case auth::KeyApiEndpoint::create_key_backup_version:
         case auth::KeyApiEndpoint::update_key_backup_version:
-            return database::store_key_backup_version(store, {std::string{user}, "1", req.body});
+            return database::store_key_backup_version(store, {std::string{user}, std::string{version}, req.body});
         case auth::KeyApiEndpoint::put_room_key_backup: {
             auto const path = room_key_backup_path_parts(req.target);
             if (!path.has_value() || !path->session_id.has_value())
@@ -4165,7 +4221,7 @@ namespace
                 return false;
             }
             return database::store_key_backup_session(
-                store, {std::string{user}, "1", path->room_id, *path->session_id, req.body});
+                store, {std::string{user}, std::string{version}, path->room_id, *path->session_id, req.body});
         }
         case auth::KeyApiEndpoint::put_room_key_backup_room: {
             auto const path = room_key_backup_path_parts(req.target);
@@ -4193,7 +4249,7 @@ namespace
                     continue;
                 }
                 if (!database::store_key_backup_session(
-                        store, {std::string{user}, "1", path->room_id, session.key, serialized.output}))
+                        store, {std::string{user}, std::string{version}, path->room_id, session.key, serialized.output}))
                 {
                     stored = false;
                 }
@@ -4240,7 +4296,7 @@ namespace
                         continue;
                     }
                     std::ignore = database::store_key_backup_session(
-                        store, {std::string{user}, "1", room.key, session.key, session_json.output});
+                        store, {std::string{user}, std::string{version}, room.key, session.key, session_json.output});
                 }
             }
             return true;
@@ -4258,7 +4314,7 @@ namespace
             {
                 return false;
             }
-            return database::delete_key_backup_session(store, user, "1", path->room_id, *path->session_id);
+            return database::delete_key_backup_session(store, user, version, path->room_id, *path->session_id);
         }
         case auth::KeyApiEndpoint::delete_room_key_backup_room: {
             auto const path = room_key_backup_path_parts(req.target);
@@ -4266,7 +4322,7 @@ namespace
             {
                 return false;
             }
-            return database::delete_key_backup_room_sessions(store, user, "1", path->room_id);
+            return database::delete_key_backup_room_sessions(store, user, version, path->room_id);
         }
         case auth::KeyApiEndpoint::delete_room_key_backup_batch:
             return database::delete_all_key_backup_sessions(store, user);
@@ -4400,15 +4456,39 @@ namespace
         }
         case auth::KeyApiEndpoint::upload_cross_signing_keys:
         case auth::KeyApiEndpoint::upload_signatures:
-        case auth::KeyApiEndpoint::create_key_backup_version:
-        case auth::KeyApiEndpoint::update_key_backup_version:
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req))
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
             }
             return resp(200U, key_api_success_body(route.endpoint));
+        case auth::KeyApiEndpoint::create_key_backup_version: {
+            // Generate a unique version for this new backup.
+            auto const new_ver =
+                key_backup_next_version(rt.homeserver.database.persistent_store, user);
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, new_ver))
+            {
+                return err(500U, "M_UNKNOWN", "key API persistence failed");
+            }
+            return resp(200U, json_serialize(json_obj({json_member("version", json_str(new_ver))})));
+        }
+        case auth::KeyApiEndpoint::update_key_backup_version: {
+            // Version comes from the path: PUT /room_keys/version/{version}
+            auto constexpr upd_prefix = std::string_view{"/_matrix/client/v3/room_keys/version/"};
+            auto const path_ver       = route_suffix(req.target, upd_prefix);
+            // Strip any query string
+            auto const clean_ver = path_ver.substr(0U, path_ver.find('?'));
+            if (clean_ver.empty())
+            {
+                return err(400U, "M_UNRECOGNIZED", "missing version in path");
+            }
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, clean_ver))
+            {
+                return err(500U, "M_UNKNOWN", "key API persistence failed");
+            }
+            return resp(200U, "{}");
+        }
         case auth::KeyApiEndpoint::delete_key_backup_version:
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req))
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
             }
@@ -4418,12 +4498,20 @@ namespace
         case auth::KeyApiEndpoint::put_room_key_backup_batch:
         case auth::KeyApiEndpoint::delete_room_key_backup_room:
         case auth::KeyApiEndpoint::delete_room_key_backup:
-        case auth::KeyApiEndpoint::delete_room_key_backup_batch:
-            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req))
+        case auth::KeyApiEndpoint::delete_room_key_backup_batch: {
+            // Session operations require ?version= query parameter.
+            auto const session_ver = extract_key_backup_version_param(req.target);
+            if (session_ver.empty())
+            {
+                return err(400U, "M_MISSING_PARAM", "version query parameter is required");
+            }
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, session_ver))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
             }
-            return resp(200U, room_keys_update_response(rt.homeserver.database.persistent_store, user, "1"));
+            return resp(200U,
+                        room_keys_update_response(rt.homeserver.database.persistent_store, user, session_ver));
+        }
         case auth::KeyApiEndpoint::device_list_update: {
             // PUT /_matrix/client/v3/devices/{deviceId} — update a device's
             // display name and notify all local users who share a room with
@@ -5554,6 +5642,38 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
     if (req.method == "DELETE" && starts_with(req.target, dev_prefix))
     {
+        // Spec §10.7.1: DELETE /devices/{deviceId} requires UIA with
+        // m.login.password to prove account ownership before deletion.
+        auto const uia_challenge = json_obj({
+            json_member("flows",
+                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
+            json_member("params", json_obj({})),
+            json_member("session", json_str("delete_device")),
+        });
+        auto const body_obj = parsed_json_object(req.body);
+        if (!body_obj.has_value())
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        auto const* auth = object_member_object(*body_obj, "auth");
+        if (auth == nullptr)
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        auto const* auth_type = string_member(*auth, "type");
+        if (auth_type == nullptr || *auth_type != "m.login.password")
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        auto const* current_password = string_member(*auth, "password");
+        if (current_password == nullptr || current_password->empty())
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        if (!verify_local_user_password(rt.homeserver, req.access_token, *current_password))
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
         auto const device_id = std::string_view{req.target}.substr(dev_prefix.size());
         auto const result = delete_local_device(rt.homeserver, *user, device_id);
         if (!result.ok)
@@ -6152,21 +6272,49 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     });
                     return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "cannot set typing state for another user");
                 }
+                // Spec §11.12: validate room existence and membership before
+                // accepting a typing notification.
+                auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms, [&typing](auto const& r) {
+                    return r.room_id == typing->room_id;
+                });
+                if (room_it == rt.homeserver.database.rooms.end() || !joined(*room_it, *user))
+                {
+                    log_diagnostic("room.typing.rejected",
+                                   {
+                                       {"actor",   *user,           false},
+                                       {"room_id", typing->room_id, false},
+                                       {"reason",  "not a member",  false}
+                    });
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
+                }
+                // Parse the request body for the typing bool (spec-required) and
+                // optional timeout.  Default to true when body is absent so legacy
+                // clients that omit it remain compatible, but honour the parsed
+                // value when present.
+                auto is_typing = true;
+                {
+                    auto const body_obj = parsed_json_object(req.body);
+                    if (body_obj.has_value())
+                    {
+                        auto const* typing_val = boolean_member(*body_obj, "typing");
+                        if (typing_val != nullptr)
+                        {
+                            is_typing = *typing_val;
+                        }
+                    }
+                }
                 log_diagnostic("room.typing.accepted",
                                {
                                    {"actor",   *user,           false},
                                    {"room_id", typing->room_id, false}
                 });
-                // Federate the typing EDU to remote servers in the room.
-                auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms, [&typing](auto const& r) {
-                    return r.room_id == typing->room_id;
-                });
-                if (room_it != rt.homeserver.database.rooms.end())
+                // Federate the typing EDU. Spec §11.12: `typing` MUST be a JSON
+                // boolean, not a string.
                 {
                     auto const edu_content = json_serialize(json_obj({
                         json_member("room_id", json_str(typing->room_id)),
                         json_member("user_id", json_str(*user)),
-                        json_member("typing", json_str("true")),
+                        json_member("typing",  canonicaljson::Value{is_typing}),
                     }));
                     auto const enqueued = dispatch_outbound_edu(rt.homeserver, *room_it, "m.typing", edu_content);
                     if (enqueued > 0U)
@@ -6189,12 +6337,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     auto const stream_id = rt.homeserver.database.persistent_store.next_sync_stream_id;
                     if (existing != rt.homeserver.typing_users.end())
                     {
-                        existing->typing = true;
+                        existing->typing    = is_typing;
                         existing->stream_id = stream_id;
                     }
                     else
                     {
-                        rt.homeserver.typing_users.push_back({typing->room_id, std::string{*user}, true, stream_id});
+                        rt.homeserver.typing_users.push_back(
+                            {typing->room_id, std::string{*user}, is_typing, stream_id});
                     }
                 }
                 if (rt.sync_notifier != nullptr)
@@ -6347,80 +6496,103 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
         // POST /_matrix/client/v3/rooms/{roomId}/read_markers
-        // Read receipts are transient client-side state; accept without persisting.
-        // Federate m.receipt EDU to remote servers in the room.
+        // Spec §13.7: the body may contain m.fully_read, m.read, and
+        // m.read.private.  m.read is federated as a receipt EDU; m.read.private
+        // is local-only and MUST NOT be federated.
+        // Spec: non-members receive 403 M_FORBIDDEN.
         if (req.method == "POST" && suffix.size() > read_markers_s.size() &&
             suffix.substr(suffix.size() - read_markers_s.size()) == read_markers_s)
         {
             auto const room_id =
                 core::percent_decode_path_component(suffix.substr(0U, suffix.size() - read_markers_s.size()));
+
+            // Bug 10: validate room existence and membership.
+            auto const markers_room_it =
+                std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](auto const& r) {
+                    return r.room_id == room_id;
+                });
+            if (markers_room_it == rt.homeserver.database.rooms.end() || !joined(*markers_room_it, *user))
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
+            }
+
+            auto const receipt_body = canonicaljson::parse_lossless(req.body);
+            auto const* body_obj    = std::get_if<canonicaljson::Object>(&receipt_body.value.storage());
+
+            auto const now_ts = static_cast<std::int64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+
+            // Helper: upsert a local receipt entry and notify sync.
+            auto upsert_receipt = [&](std::string const& receipt_type, std::string const& event_id) {
+                auto existing = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
+                    return r.room_id == room_id && r.user_id == *user && r.receipt_type == receipt_type;
+                });
+                rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
+                auto const stream_id = rt.homeserver.database.persistent_store.next_sync_stream_id;
+                if (existing != rt.homeserver.receipts.end())
+                {
+                    existing->event_id   = event_id;
+                    existing->ts         = static_cast<std::uint64_t>(now_ts);
+                    existing->stream_id  = stream_id;
+                }
+                else
+                {
+                    rt.homeserver.receipts.push_back({std::string{room_id}, receipt_type, std::string{*user},
+                                                      event_id, static_cast<std::uint64_t>(now_ts), stream_id});
+                }
+                if (rt.sync_notifier != nullptr)
+                {
+                    rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
+                                              rt.homeserver.database.persistent_store.next_sync_stream_id);
+                }
+            };
+
+            if (body_obj != nullptr)
+            {
+                // m.read — federated read receipt.
+                auto const* m_read = string_member(*body_obj, "m.read");
+                if (m_read != nullptr && !m_read->empty())
+                {
+                    auto const edu_content_opt =
+                        federation::build_receipt_edu_content(room_id, "m.read", *user, *m_read, now_ts);
+                    if (edu_content_opt.has_value())
+                    {
+                        auto const enqueued =
+                            dispatch_outbound_edu(rt.homeserver, *markers_room_it, "m.receipt", *edu_content_opt);
+                        if (enqueued > 0U)
+                        {
+                            log_diagnostic("room.read_markers.dispatched",
+                                           {
+                                               {"actor",        *user,                    false},
+                                               {"room_id",      room_id,                  false},
+                                               {"destinations", std::to_string(enqueued), false}
+                            });
+                        }
+                    }
+                    upsert_receipt("m.read", std::string{*m_read});
+                }
+
+                // m.fully_read — local-only account data marker, not a receipt EDU.
+                auto const* m_fully_read = string_member(*body_obj, "m.fully_read");
+                if (m_fully_read != nullptr && !m_fully_read->empty())
+                {
+                    upsert_receipt("m.fully_read", std::string{*m_fully_read});
+                }
+
+                // m.read.private — local-only receipt, MUST NOT be federated.
+                auto const* m_read_private = string_member(*body_obj, "m.read.private");
+                if (m_read_private != nullptr && !m_read_private->empty())
+                {
+                    upsert_receipt("m.read.private", std::string{*m_read_private});
+                }
+            }
+
             log_diagnostic("room.read_markers.accepted", {
                                                              {"actor",   *user,   false},
                                                              {"room_id", room_id, false}
             });
-            // Extract the m.read event_id from the body to federate as a
-            // receipt EDU. The receipt content follows the Matrix spec shape:
-            // { "$roomId": { "m.read": { "$userId": { "event_ids": ["$eventId"],
-            //   "data": { ... } } } } }
-            auto const receipt_body = canonicaljson::parse_lossless(req.body);
-            auto const* body_obj = std::get_if<canonicaljson::Object>(&receipt_body.value.storage());
-            if (body_obj != nullptr)
-            {
-                auto const* fully_read = string_member(*body_obj, "m.fully_read");
-                auto const event_id = fully_read != nullptr ? std::string{*fully_read} : std::string{};
-                if (!event_id.empty())
-                {
-                    auto const now_ts =
-                        static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
-                                                      std::chrono::system_clock::now().time_since_epoch())
-                                                      .count());
-                    auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](auto const& r) {
-                        return r.room_id == room_id;
-                    });
-                    if (room_it != rt.homeserver.database.rooms.end())
-                    {
-                        auto const edu_content_opt =
-                            federation::build_receipt_edu_content(room_id, "m.read", *user, event_id, now_ts);
-                        if (edu_content_opt.has_value())
-                        {
-                            auto const enqueued =
-                                dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt", *edu_content_opt);
-                            if (enqueued > 0U)
-                            {
-                                log_diagnostic("room.read_markers.dispatched",
-                                               {
-                                                   {"actor",        *user,                    false},
-                                                   {"room_id",      room_id,                  false},
-                                                   {"destinations", std::to_string(enqueued), false}
-                                });
-                            }
-                        }
-                    }
-                    // Update local in-memory receipt state so /sync returns the
-                    // change for other local users in the room.
-                    auto existing_receipt = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
-                        return r.room_id == room_id && r.user_id == *user;
-                    });
-                    rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
-                    auto const stream_id = rt.homeserver.database.persistent_store.next_sync_stream_id;
-                    if (existing_receipt != rt.homeserver.receipts.end())
-                    {
-                        existing_receipt->event_id = event_id;
-                        existing_receipt->ts = static_cast<std::uint64_t>(now_ts);
-                        existing_receipt->stream_id = stream_id;
-                    }
-                    else
-                    {
-                        rt.homeserver.receipts.push_back({std::string{room_id}, "m.read", std::string{*user}, event_id,
-                                                          static_cast<std::uint64_t>(now_ts), stream_id});
-                    }
-                    if (rt.sync_notifier != nullptr)
-                    {
-                        rt.sync_notifier->publish(rt.homeserver.database.next_stream_ordering - 1U,
-                                                  rt.homeserver.database.persistent_store.next_sync_stream_id);
-                    }
-                }
-            }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }
 
@@ -6440,6 +6612,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     auto const event_id = core::percent_decode_path_component(after_receipt.substr(slash_pos + 1U));
                     if (!event_id.empty())
                     {
+                        // Bug 10: validate room existence and membership before
+                        // storing or federating any receipt state.
+                        auto const receipt_room_it =
+                            std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](auto const& r) {
+                                return r.room_id == room_id;
+                            });
+                        if (receipt_room_it == rt.homeserver.database.rooms.end() ||
+                            !joined(*receipt_room_it, *user))
+                        {
+                            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
+                        }
                         log_diagnostic("room.receipt.accepted", {
                                                                     {"actor",        *user,        false},
                                                                     {"room_id",      room_id,      false},
@@ -6450,18 +6633,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
                                                           std::chrono::system_clock::now().time_since_epoch())
                                                           .count());
-                        auto const room_it =
-                            std::ranges::find_if(rt.homeserver.database.rooms, [&room_id](auto const& r) {
-                                return r.room_id == room_id;
-                            });
-                        if (room_it != rt.homeserver.database.rooms.end())
+                        // m.read.private MUST NOT be federated (local-only receipt).
+                        if (receipt_type != "m.read.private")
                         {
                             auto const edu_content_opt =
                                 federation::build_receipt_edu_content(room_id, receipt_type, *user, event_id, now_ts);
                             if (edu_content_opt.has_value())
                             {
                                 auto const enqueued =
-                                    dispatch_outbound_edu(rt.homeserver, *room_it, "m.receipt", *edu_content_opt);
+                                    dispatch_outbound_edu(rt.homeserver, *receipt_room_it, "m.receipt", *edu_content_opt);
                                 if (enqueued > 0U)
                                 {
                                     log_diagnostic("room.receipt.dispatched",
@@ -6474,16 +6654,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                             }
                         }
                         auto existing_receipt = std::ranges::find_if(rt.homeserver.receipts, [&](auto const& r) {
-                            return r.room_id == room_id && r.user_id == *user;
+                            return r.room_id == room_id && r.user_id == *user && r.receipt_type == receipt_type;
                         });
                         rt.homeserver.database.persistent_store.next_sync_stream_id += 1U;
                         auto const stream_id = rt.homeserver.database.persistent_store.next_sync_stream_id;
                         if (existing_receipt != rt.homeserver.receipts.end())
                         {
-                            existing_receipt->receipt_type = receipt_type;
-                            existing_receipt->event_id = std::string{event_id};
-                            existing_receipt->ts = static_cast<std::uint64_t>(now_ts);
-                            existing_receipt->stream_id = stream_id;
+                            existing_receipt->event_id   = std::string{event_id};
+                            existing_receipt->ts         = static_cast<std::uint64_t>(now_ts);
+                            existing_receipt->stream_id  = stream_id;
                         }
                         else
                         {
