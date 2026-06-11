@@ -9,6 +9,12 @@ jobs:
     name: Debian package
     runs-on: ubuntu-latest
     container: ubuntu:latest
+    permissions:
+      contents: read
+      # Required by actions/attest-build-provenance to publish SLSA
+      # provenance attestations to the repository's attestations store.
+      attestations: write
+      id-token: write
     env:
       CC: clang
       CXX: clang++
@@ -32,6 +38,10 @@ jobs:
           restore-keys: ccache-deb-
       - name: Build .deb
         run: sh scripts/build-deb.sh
+      - name: Attest Debian package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian_*.deb
       - uses: actions/upload-artifact@v4
         with:
           name: deb-package
@@ -42,6 +52,10 @@ jobs:
     name: Static Linux fallback binary
     runs-on: ubuntu-latest
     container: alpine:latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
     env:
       CC: clang
       CXX: clang++
@@ -78,6 +92,10 @@ jobs:
           restore-keys: ccache-alpine-
       - name: Build static Linux fallback tarball
         run: sh scripts/build-static-linux.sh
+      - name: Attest static Linux tarball
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*-linux-static-x86_64.tar.gz
       - uses: actions/upload-artifact@v4
         with:
           name: static-linux-fallback-package
@@ -90,6 +108,10 @@ jobs:
     name: Fedora RPM package
     runs-on: ubuntu-latest
     container: fedora:latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
     steps:
       - name: Install build dependencies
         run: |
@@ -111,6 +133,10 @@ jobs:
           restore-keys: ccache-rpm-
       - name: Build .rpm
         run: sh scripts/build-rpm.sh
+      - name: Attest RPM package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.rpm
       - uses: actions/upload-artifact@v4
         with:
           name: rpm-package
@@ -120,6 +146,10 @@ jobs:
   freebsd-pkg:
     name: FreeBSD package
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - name: Build FreeBSD .pkg
@@ -130,6 +160,10 @@ jobs:
             pkg install -y meson ninja pkgconf llvm git perl5 bison flex \
               gmake openssl libsodium postgresql17-client curl sqlite3 catch2
           run: sh scripts/build-freebsd-pkg.sh
+      - name: Attest FreeBSD package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.pkg
       - uses: actions/upload-artifact@v4
         with:
           name: freebsd-package

@@ -90,6 +90,8 @@ fi
 
 %changelog
 * Wed Jun 11 2026 James Chapman <claude@ping.me.uk> - 0.6.1-1
+- fix: add SLSA provenance attestations to rolling package builds (packages.yml)
+- fix: attach SPDX and CycloneDX SBOM files to GitHub releases (sbom.yml)
 - fix: resolve room version from state in send_join/send_leave/send_knock handlers
 - fix: add regression test for OTK Ed25519 signature crypto verification
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.6.0-1
