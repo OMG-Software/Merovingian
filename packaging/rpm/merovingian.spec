@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.6.2
+Version:        0.6.3
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 11 2026 James Chapman <claude@ping.me.uk> - 0.6.3-1
+- fix: require UIA (m.login.password) for POST /keys/device_signing/upload
 * Wed Jun 11 2026 James Chapman <claude@ping.me.uk> - 0.6.2-1
 - fix: enforce OTK/fallback key signatures even on first upload (B11)
 - fix: strip query strings from rate-limit bucket keys (B12)

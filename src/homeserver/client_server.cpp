@@ -3357,7 +3357,8 @@ namespace
                     })));
     }
 
-    [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view body) -> LocalHttpResponse
+    [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view requesting_user,
+                                        std::string_view body) -> LocalHttpResponse
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -3481,7 +3482,8 @@ namespace
                     }
                     self_signing_keys.push_back(json_member(user_request.key, json_obj(std::move(key_object))));
                 }
-                else if (cskey.key_type == "user_signing")
+                // Spec §11.11.3: user_signing_key MUST only be returned to the user themselves.
+                else if (cskey.key_type == "user_signing" && user_request.key == requesting_user)
                 {
                     auto value = parsed_json_object(cskey.json);
                     if (!value.has_value())
@@ -3796,9 +3798,25 @@ namespace
                 }
                 if (is_local)
                 {
-                    // Enqueue directly; /sync drains it into to_device.events.
-                    std::ignore = push_to_device_message(rt, {0U, std::string{sender}, user_entry.key, device_entry.key,
-                                                              std::string{event_type}, *content});
+                    if (device_entry.key == "*")
+                    {
+                        // Spec §10.5: "*" delivers to all devices of the target user.
+                        for (auto const& dev : rt.homeserver.database.persistent_store.devices)
+                        {
+                            if (dev.user_id == user_entry.key)
+                            {
+                                std::ignore = push_to_device_message(
+                                    rt, {0U, std::string{sender}, user_entry.key, dev.device_id,
+                                         std::string{event_type}, *content});
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Enqueue directly; /sync drains it into to_device.events.
+                        std::ignore = push_to_device_message(rt, {0U, std::string{sender}, user_entry.key,
+                                                                  device_entry.key, std::string{event_type}, *content});
+                    }
                 }
                 else
                 {
@@ -4434,7 +4452,7 @@ namespace
         case auth::KeyApiEndpoint::upload_keys:
             return handle_key_upload(rt, user, device_id, req.body);
         case auth::KeyApiEndpoint::query_keys:
-            return handle_key_query(rt, req.body);
+            return handle_key_query(rt, user, req.body);
         case auth::KeyApiEndpoint::claim_keys:
             return handle_key_claim(rt, req.body);
         case auth::KeyApiEndpoint::get_key_backup_version: {
@@ -4539,7 +4557,40 @@ namespace
             }
             return resp(200U, it->json);
         }
-        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+        case auth::KeyApiEndpoint::upload_cross_signing_keys: {
+            // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
+            auto const cs_uia = json_obj({
+                json_member("flows",
+                            json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
+                json_member("params", json_obj({})),
+                json_member("session", json_str("cross_signing_upload")),
+            });
+            auto const cs_body = parsed_json_object(req.body);
+            auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
+            if (cs_auth == nullptr)
+            {
+                return resp(401U, json_serialize(cs_uia));
+            }
+            auto const* cs_auth_type = string_member(*cs_auth, "type");
+            if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
+            {
+                return resp(401U, json_serialize(cs_uia));
+            }
+            auto const* cs_password = string_member(*cs_auth, "password");
+            if (cs_password == nullptr || cs_password->empty())
+            {
+                return resp(401U, json_serialize(cs_uia));
+            }
+            if (!verify_local_user_password(rt.homeserver, req.access_token, *cs_password))
+            {
+                return resp(401U, json_serialize(cs_uia));
+            }
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
+            {
+                return err(500U, "M_UNKNOWN", "key API persistence failed");
+            }
+            return resp(200U, key_api_success_body(route.endpoint));
+        }
         case auth::KeyApiEndpoint::upload_signatures:
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
