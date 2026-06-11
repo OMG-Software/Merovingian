@@ -4589,12 +4589,54 @@ namespace
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
             }
+            // Spec §11.11.1: cross-signing key change MUST appear in device_lists.changed.
+            // Self-notify so the user's own other devices re-query the new keys (required
+            // for verification to complete). Also fan out to room-sharing local users and
+            // remote servers.
+            {
+                std::ignore = record_device_list_change(
+                    rt, {0U, std::string{user}, std::string{user}, "changed"});
+                for (auto const& room : rt.homeserver.database.rooms)
+                {
+                    if (!std::ranges::any_of(room.members, [user](auto const& m) { return m == user; }))
+                    {
+                        continue;
+                    }
+                    for (auto const& member : room.members)
+                    {
+                        if (member == user) { continue; }
+                        std::ignore = record_device_list_change(
+                            rt, {0U, member, std::string{user}, "changed"});
+                    }
+                }
+                broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
+            }
             return resp(200U, key_api_success_body(route.endpoint));
         }
         case auth::KeyApiEndpoint::upload_signatures:
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {
                 return err(500U, "M_UNKNOWN", "key API persistence failed");
+            }
+            // Spec §11.11.1: signature upload changes the verified key graph; MUST propagate
+            // device_lists.changed so other devices discover the self-signed state.
+            {
+                std::ignore = record_device_list_change(
+                    rt, {0U, std::string{user}, std::string{user}, "changed"});
+                for (auto const& room : rt.homeserver.database.rooms)
+                {
+                    if (!std::ranges::any_of(room.members, [user](auto const& m) { return m == user; }))
+                    {
+                        continue;
+                    }
+                    for (auto const& member : room.members)
+                    {
+                        if (member == user) { continue; }
+                        std::ignore = record_device_list_change(
+                            rt, {0U, member, std::string{user}, "changed"});
+                    }
+                }
+                broadcast_device_list_updates(rt, user, remote_servers_for_user(rt.homeserver, user));
             }
             return resp(200U, key_api_success_body(route.endpoint));
         case auth::KeyApiEndpoint::create_key_backup_version: {

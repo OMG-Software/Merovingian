@@ -6,6 +6,8 @@
 
 - **Fix (client verification — `sendToDevice "*"` not expanded):** `PUT /sendToDevice` with device_id `"*"` now correctly delivers the to-device event to every device registered to the target user, per spec §10.5. Previously `"*"` was treated as a literal device ID and sent to no real device. The fix iterates `persistent_store.devices` filtering by `user_id` and enqueues one message per device.
 
+- **Fix (client verification — `device_lists.changed` missing after key/signature upload):** `POST /keys/device_signing/upload` and `POST /keys/signatures/upload` now emit `device_lists.changed` in `/sync` per spec §11.11.1. Previously neither endpoint called `record_device_list_change`, so the user's other devices never learned about the new cross-signing identity and could not complete the self-signature query needed to finish verification. The fix adds a self-notification (`observer = subject = user`) so all of the user's devices see the change, plus the room-member fan-out and federation broadcast.
+
 ## 0.6.2
 
 - **Fix (Bug 11 — OTK upload without device identity):** `key_object_is_signed_by` in
