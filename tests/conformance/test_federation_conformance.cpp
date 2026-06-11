@@ -331,6 +331,72 @@ SCENARIO("send_join persists membership and returns auth chain and state", "[fed
     }
 }
 
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: PUT /_matrix/federation/v2/send_join/{roomId}/{eventId}
+// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventiid
+//
+// The send_join handler MUST resolve the room version via room_version_resolver
+// and pass it to parse_inbound_pdu_envelope so event-ID computation uses the
+// correct redaction rules, not the hardcoded fallback "12".
+SCENARIO("send_join passes the resolved room version to the membership acceptor envelope",
+         "[federation][conformance][send_join][room-version]")
+{
+    GIVEN("a runtime whose room_version_resolver returns version 10 for the room")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        // Wire a resolver that returns "10" for any room — simulating a v10 room.
+        runtime.room_version_resolver = [](std::string_view /*room_id*/) -> std::string {
+            return "10";
+        };
+
+        auto const join_event_body = std::string{"{\"type\":\"m.room.member\","
+                                                 "\"room_id\":\"!conformance:local.example.org\","
+                                                 "\"sender\":\"@remote:remote.example.org\","
+                                                 "\"state_key\":\"@remote:remote.example.org\","
+                                                 "\"content\":{\"membership\":\"join\"},"
+                                                 "\"depth\":1,\"hashes\":{\"sha256\":\"x\"},"
+                                                 "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
+
+        auto captured_room_version = std::make_shared<std::string>();
+        runtime.membership_acceptor = [captured_room_version, join_event_body](
+                                          merovingian::federation::FederationEndpoint /*endpoint*/,
+                                          [[maybe_unused]] std::string_view /*room_id*/,
+                                          [[maybe_unused]] std::string_view /*event_id*/,
+                                          merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::MembershipAcceptResult {
+            *captured_room_version = envelope.room_version;
+            auto result            = merovingian::federation::MembershipAcceptResult{};
+            result.accepted        = true;
+            result.status          = 200U;
+            result.room_version    = "10";
+            result.signed_event_json = join_event_body;
+            return result;
+        };
+
+        WHEN("a signed send_join request is dispatched for the room")
+        {
+            auto const event_id = std::string{"$join_event:"} + origin;
+            auto const target   = "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/" + event_id;
+            auto const request  = signed_put_request(origin, key_id, key_seed, target, join_event_body);
+            auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the membership acceptor receives an envelope with room_version 10, not hardcoded 12")
+            {
+                // Spec MUST: event-ID computation and auth rules depend on room version.
+                // A resident server that computes event IDs with v12 rules for a v10
+                // room will produce a wrong event ID, causing the joining server to
+                // reject the event (mismatched reference hash).
+                REQUIRE(response.status == 200U);
+                // Spec MUST: the resolved room version must propagate into the envelope
+                // so auth and ID computation use the correct algorithm for that version.
+                REQUIRE(*captured_room_version == "10");
+            }
+        }
+    }
+}
+
 // --- make_leave --------------------------------------------------------------
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: GET /_matrix/federation/v1/make_leave/{roomId}/{userId}
