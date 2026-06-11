@@ -122,6 +122,10 @@ namespace
                               "DEFAULT '0', currently_active TEXT NOT NULL DEFAULT 'false'"                                                                    },
         SchemaTableDefinition{"profiles",                "user_id TEXT PRIMARY KEY, displayname TEXT NOT NULL DEFAULT '', "
                                           "avatar_url TEXT NOT NULL DEFAULT ''"                                       },
+        SchemaTableDefinition{"client_txn_ids",
+                              "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, "
+                              "txn_id TEXT NOT NULL, event_id TEXT NOT NULL, "
+                              "PRIMARY KEY (user_id, room_id, event_type, txn_id)"                                   },
     };
 
 } // namespace

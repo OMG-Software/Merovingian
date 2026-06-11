@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.6.1
+Version:        0.6.2
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 11 2026 James Chapman <claude@ping.me.uk> - 0.6.2-1
+- fix: enforce OTK/fallback key signatures even on first upload (B11)
+- fix: strip query strings from rate-limit bucket keys (B12)
+- fix: reject invalid JSON events instead of silently converting to m.room.message (B13)
+- fix: persist client txnId→event_id mapping to deduplicate room send and to-device retries (B14)
 * Wed Jun 11 2026 James Chapman <claude@ping.me.uk> - 0.6.1-1
 - fix: add SLSA provenance attestations to rolling package builds (packages.yml)
 - fix: attach SPDX and CycloneDX SBOM files to GitHub releases (sbom.yml)

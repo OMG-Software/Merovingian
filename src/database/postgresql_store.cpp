@@ -891,6 +891,20 @@ namespace
                 store.room_aliases.push_back({row[0], row[1]});
             }
         }
+
+        auto client_txns = query_rows(connection, "postgresql_load_client_txn_ids",
+                                      "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids");
+        if (!client_txns.ok)
+        {
+            return false;
+        }
+        for (auto const& row : client_txns.rows)
+        {
+            if (row.size() >= 5U)
+            {
+                store.client_txn_ids.push_back({row[0], row[1], row[2], row[3], row[4]});
+            }
+        }
         return true;
     }
 

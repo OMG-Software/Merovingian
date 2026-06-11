@@ -872,6 +872,7 @@ namespace
     {
         std::string room_id{};
         std::string event_type{};
+        std::string txn_id{};
     };
 
     struct RoomStatePathParts final
@@ -1626,7 +1627,9 @@ namespace
     // the per-endpoint caps are the unit the operator reasons about.
     [[nodiscard]] static auto normalized_target(std::string_view target) -> std::string
     {
-        auto out = std::string{target};
+        // Strip the query string so /sync?x=1 and /sync?x=2 land in the same bucket.
+        auto const q = target.find('?');
+        auto out = std::string{q == std::string_view::npos ? target : target.substr(0U, q)};
         auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};
         if (starts_with(out, room_prefix))
         {
@@ -3062,17 +3065,15 @@ namespace
     // unpadded base64). The signed payload is the canonical JSON of the key
     // object with the `signatures` field removed.
     //
-    // When `signing_key_id` is empty (no device identity known yet), the check
-    // is skipped and the key is accepted; this allows a device's first
-    // /keys/upload to succeed before any identity has been published.
+    // An empty `signing_key_id` means no device identity is available; the spec
+    // requires all signed_curve25519 keys to be signed, so we reject them.
     [[nodiscard]] auto key_object_is_signed_by(canonicaljson::Value const& key_value,
                                                std::string_view signing_key_id,
                                                std::string_view ed25519_public_key_b64) -> bool
     {
         if (signing_key_id.empty())
         {
-            // No device identity known — skip the check (first upload path).
-            return true;
+            return false;
         }
         auto const* key_obj = std::get_if<canonicaljson::Object>(&key_value.storage());
         if (key_obj == nullptr)
@@ -3174,7 +3175,10 @@ namespace
             {
                 return std::string{member.key} + ": null value";
             }
-            if (!key_object_is_signed_by(*member.value, signing_key_id, ed25519_public_key_b64))
+            // Only signed_* key types (e.g. signed_curve25519) carry a device signature.
+            // Plain curve25519 keys are unsigned and require no verification.
+            if (member.key.starts_with("signed_") &&
+                !key_object_is_signed_by(*member.value, signing_key_id, ed25519_public_key_b64))
             {
                 return std::string{member.key} + ": not signed by device identity";
             }
@@ -3744,6 +3748,14 @@ namespace
                                              std::string_view txn_id, std::string_view sender, std::string_view body)
         -> LocalHttpResponse
     {
+        // CS API §10.5.1: idempotent send — replay {} for a seen txn_id.
+        // room_id is empty ("") as sentinel for to-device entries.
+        if (database::find_client_txn_event_id(rt.homeserver.database.persistent_store,
+                                               sender, "", event_type, txn_id)
+                .has_value())
+        {
+            return resp(200U, "{}");
+        }
         auto const object = parsed_json_object(body);
         if (!object.has_value())
         {
@@ -3823,6 +3835,10 @@ namespace
             }
         }
 
+        // Record this txn_id so retries receive the same empty response.
+        std::ignore = database::store_client_txn(rt.homeserver.database.persistent_store,
+                                                 {std::string{sender}, "", std::string{event_type},
+                                                  std::string{txn_id}, ""});
         return resp(200U, "{}");
     }
 
@@ -3901,7 +3917,8 @@ namespace
             return std::nullopt;
         }
         return RoomSendPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
-                                 core::percent_decode_path_component(event_and_txn.substr(0U, separator))};
+                                 core::percent_decode_path_component(event_and_txn.substr(0U, separator)),
+                                 core::percent_decode_path_component(event_and_txn.substr(separator + 1U))};
     }
 
     [[nodiscard]] auto room_state_path_parts(std::string_view target) -> std::optional<RoomStatePathParts>
@@ -6028,6 +6045,15 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             if (auto const path = room_send_path_parts(req.target); path.has_value())
             {
+                // CS API §10.5.1: idempotent send — replay the original response.
+                if (auto const cached = database::find_client_txn_event_id(
+                        rt.homeserver.database.persistent_store, *user,
+                        path->room_id, path->event_type, path->txn_id);
+                    cached.has_value())
+                {
+                    return complete(
+                        {200U, json_serialize(json_obj({json_member("event_id", json_str(*cached))}))});
+                }
                 auto rewritten = req;
                 auto event_body = event_body_from_content(path->event_type, req.body);
                 if (!event_body.has_value())
@@ -6063,6 +6089,22 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // typing:false EDU so remote servers remove the stale indicator.
                 if (result.status == 200U)
                 {
+                    // Store txn_id → event_id for idempotency replay.
+                    auto const parsed = canonicaljson::parse_lossless(result.body);
+                    if (auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage()))
+                    {
+                        auto const eid_it = std::ranges::find_if(
+                            *obj, [](canonicaljson::ObjectMember const& m) { return m.key == "event_id"; });
+                        if (eid_it != obj->end() && eid_it->value != nullptr)
+                        {
+                            if (auto const* s = std::get_if<std::string>(&eid_it->value->storage()))
+                            {
+                                std::ignore = database::store_client_txn(
+                                    rt.homeserver.database.persistent_store,
+                                    {*user, path->room_id, path->event_type, path->txn_id, *s});
+                            }
+                        }
+                    }
                     auto const typing_it = std::ranges::find_if(
                         rt.homeserver.typing_users, [&path, user](auto const& t) {
                             return t.room_id == path->room_id && t.user_id == *user && t.typing;

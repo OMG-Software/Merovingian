@@ -338,6 +338,19 @@ struct PersistentRoomAlias final
     std::string room_id{};
 };
 
+// Idempotency record for a client-issued room send or send-to-device PUT.
+// Keyed by (user_id, room_id, event_type, txn_id); room_id is empty for
+// send-to-device entries. event_id holds the stored event ID for room sends
+// and is empty for send-to-device (whose response is always {}).
+struct PersistentClientTxnRecord final
+{
+    std::string user_id{};
+    std::string room_id{};
+    std::string event_type{};
+    std::string txn_id{};
+    std::string event_id{};
+};
+
 struct PersistentStore final
 {
     bool open{false};
@@ -380,6 +393,7 @@ struct PersistentStore final
     std::vector<PersistentFilter> filters{};
     std::vector<PersistentProfile> profiles{};
     std::vector<PersistentRoomAlias> room_aliases{};
+    std::vector<PersistentClientTxnRecord> client_txn_ids{};
     std::vector<PreparedStatement> prepared_statements{};
     // Monotonic stream id used by /sync surfaces (to_device, device_list
     // changes, presence). Incremented before each new row is persisted so
@@ -511,6 +525,16 @@ enum class MembershipStoreResult
 // Update only avatar_url for an existing profile row.
 [[nodiscard]] auto update_profile_avatar_url(PersistentStore& store, std::string_view user_id,
                                              std::string_view avatar_url) -> bool;
+// Look up a previous idempotent send result. Returns the stored event_id
+// (or empty string for to-device sends) if the (user_id, room_id,
+// event_type, txn_id) tuple was already committed; nullopt otherwise.
+[[nodiscard]] auto find_client_txn_event_id(PersistentStore const& store, std::string_view user_id,
+                                             std::string_view room_id, std::string_view event_type,
+                                             std::string_view txn_id) -> std::optional<std::string>;
+// Record an idempotent send result. Silently succeeds if the key already
+// exists (the original store wins — the client may retry while still in-flight).
+[[nodiscard]] auto store_client_txn(PersistentStore& store, PersistentClientTxnRecord record) -> bool;
+
 // Sets `store.next_sync_stream_id` to the maximum stream_id observed
 // across every sync-surface row already loaded into memory (account_data,
 // room account_data, to_device_messages, device_list_changes,

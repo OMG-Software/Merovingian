@@ -414,13 +414,11 @@ SCENARIO("E2EE /keys/upload rejects fallback keys signed by a different ed25519 
 // Spec: Matrix Client-Server API v1.18
 // URL:  https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysupload
 //
-// A device MAY upload OTKs as part of its first /keys/upload before uploading
-// any device_keys. When no device_keys exist for the (user, device), the
-// server has no reference signing key to verify the OTK against, and the
-// only sane behaviour is to accept the OTK (the device's first call must
-// succeed). This scenario is the regression guard for the no-device-yet
-// first-boot path so the validator does not over-reject.
-SCENARIO("E2EE /keys/upload accepts a first-time OTK upload before device_keys is known",
+// Bug 11 fix: signed_curve25519 OTKs must be verifiable against the device's
+// own ed25519 identity key. When no device_keys have been uploaded, the server
+// has no reference key and MUST reject the upload (M_INVALID_SIGNATURE).
+// Plain curve25519 (unsigned) OTKs do not require a signature and are accepted.
+SCENARIO("E2EE /keys/upload rejects signed_curve25519 OTKs when no device identity is known",
          "[homeserver][client-server][e2ee][otk-signature][regression]")
 {
     GIVEN("a logged-in inviter that has never uploaded device_keys")
@@ -440,27 +438,27 @@ SCENARIO("E2EE /keys/upload accepts a first-time OTK upload before device_keys i
         REQUIRE(inviter_login.response.status == 200U);
         auto const inviter_token = login_token(inviter_login.response.body);
 
-        WHEN("the inviter uploads a one_time_key with no device_keys in the body or store")
+        WHEN("the inviter uploads a signed_curve25519 one_time_key with no device_keys in the body or store")
         {
             auto const otk_upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
                  R"({"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_1"}}}}})"});
 
-            THEN("the upload succeeds because there is no device identity to verify against")
+            THEN("the upload is rejected because the signature cannot be verified without a device identity")
             {
-                // The validator must be lenient on a device's first upload:
-                // there is no device_keys row to compare against, so the
-                // OTK is accepted and stored as before.
-                REQUIRE(otk_upload.response.status == 200U);
+                // Spec MUST: signed_curve25519 keys must be signed by the device's
+                // own ed25519 key. No device identity → no reference key → reject.
+                REQUIRE(otk_upload.response.status == 400U);
 
+                // Rejected keys must not be persisted.
                 auto const& store = runtime.homeserver.database.persistent_store;
                 auto const stored = std::ranges::find_if(
                     store.one_time_keys,
                     [](merovingian::database::PersistentOneTimeKey const& k) {
                         return k.device_id == "INVITER_DEV";
                     });
-                REQUIRE(stored != store.one_time_keys.end());
+                REQUIRE(stored == store.one_time_keys.end());
             }
         }
     }

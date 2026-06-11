@@ -911,19 +911,15 @@ namespace
     {
         auto const parsed = canonicaljson::parse_lossless(client_event_json);
         auto const* input = std::get_if<canonicaljson::Object>(&parsed.value.storage());
-        auto fallback = canonicaljson::Object{};
         if (parsed.error != canonicaljson::ParseError::none || input == nullptr)
         {
-            log_diagnostic("event.compose.body_fallback",
+            log_diagnostic("event.compose.body_rejected",
                            {
                                {"room_id",    std::string{room_id},                     false},
                                {"sender",     std::string{sender},                      false},
                                {"body_bytes", std::to_string(client_event_json.size()), false}
             });
-            fallback.push_back(canonicaljson::make_member("type", canonicaljson::Value{std::string{"m.room.message"}}));
-            fallback.push_back(
-                canonicaljson::make_member("content", canonicaljson::Value{std::string{client_event_json}}));
-            input = &fallback;
+            return std::nullopt;
         }
 
         auto const* type = string_member(*input, "type");
