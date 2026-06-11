@@ -1,3 +1,7 @@
+## 0.6.4
+
+- **Fix (client verification — `device_lists.changed` missing after key/signature upload):** `POST /keys/device_signing/upload` and `POST /keys/signatures/upload` now emit `device_lists.changed` in `/sync` per spec §11.11.1. Previously neither endpoint called `record_device_list_change`, so the user's other devices never learned about the new cross-signing identity and could not complete the self-signature query needed to finish verification. The fix adds a self-notification (`observer = subject = user`) so all of the user's devices see the change, plus the room-member fan-out and federation broadcast.
+
 ## 0.6.3
 
 - **Fix (client verification — `POST /keys/device_signing/upload` UIA):** Cross-signing key upload now requires User-Interactive Authentication (UIA) per Matrix spec §11.12.1. A request without an `auth` object returns `401` with the `m.login.password` flow challenge; only requests with a verified password proceed to key storage. This prevents a malicious actor from silently replacing a user's cross-signing keys and blocking verification.
@@ -5,8 +9,6 @@
 - **Fix (client verification — `user_signing_key` leaked to non-owners):** `POST /keys/query` now guards `user_signing_key` with an owner check per spec §11.11.3. Previously the key was returned to any querying user; it is now only included when the requesting user matches the queried user. `handle_key_query` receives the authenticated `requesting_user` identity via a new parameter, and the call site at `handle_key_api_route` passes it through.
 
 - **Fix (client verification — `sendToDevice "*"` not expanded):** `PUT /sendToDevice` with device_id `"*"` now correctly delivers the to-device event to every device registered to the target user, per spec §10.5. Previously `"*"` was treated as a literal device ID and sent to no real device. The fix iterates `persistent_store.devices` filtering by `user_id` and enqueues one message per device.
-
-- **Fix (client verification — `device_lists.changed` missing after key/signature upload):** `POST /keys/device_signing/upload` and `POST /keys/signatures/upload` now emit `device_lists.changed` in `/sync` per spec §11.11.1. Previously neither endpoint called `record_device_list_change`, so the user's other devices never learned about the new cross-signing identity and could not complete the self-signature query needed to finish verification. The fix adds a self-notification (`observer = subject = user`) so all of the user's devices see the change, plus the room-member fan-out and federation broadcast.
 
 ## 0.6.2
 
