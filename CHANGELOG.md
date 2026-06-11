@@ -1,3 +1,20 @@
+## 0.6.1
+
+- **Fix (supply chain — SLSA provenance for rolling builds):** `packages.yml` now runs
+  `actions/attest-build-provenance@v2` on each package artifact (`.deb`, `.rpm`, FreeBSD `.pkg`,
+  static Linux tarball) before uploading. Previously only tagged alpha releases in `release.yml`
+  carried SLSA provenance attestations; rolling `latest` builds had none. All attestations are
+  verifiable with `gh attestation verify <file> --repo OMG-Software/Merovingian`.
+
+- **Fix (supply chain — SBOM release attachment):** `sbom.yml` now uploads the generated SPDX and
+  CycloneDX SBOM files directly to the triggering GitHub release when the workflow runs on a
+  `release` event (`gh release upload`). Previously SBOMs were only stored as ephemeral workflow
+  artifacts and were not attached to the published release.
+
+- **Docs (release-process.md):** Updated to reflect that SLSA provenance attestations are
+  implemented for both tagged and rolling releases, SBOMs are now attached to tagged releases,
+  and corrected the "Production work that remains open" section to remove items that are now done.
+
 ## 0.6.0
 
 - **Fix (federation invite dispatch):** `POST /rooms/{roomId}/invite` now dispatches

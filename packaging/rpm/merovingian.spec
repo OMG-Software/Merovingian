@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.6.0
+Version:        0.6.1
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 11 2026 James Chapman <claude@ping.me.uk> - 0.6.1-1
+- fix: add SLSA provenance attestations to rolling package builds (packages.yml)
+- fix: attach SPDX and CycloneDX SBOM files to GitHub releases (sbom.yml)
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.6.0-1
 - feat: implement POST /publicRooms with filter.generic_search_term, limit, and since pagination
 - fix: member visibility — startup state repair via repair_missing_state_entries
