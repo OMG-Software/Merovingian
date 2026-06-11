@@ -4539,7 +4539,40 @@ namespace
             }
             return resp(200U, it->json);
         }
-        case auth::KeyApiEndpoint::upload_cross_signing_keys:
+        case auth::KeyApiEndpoint::upload_cross_signing_keys: {
+            // Spec §11.12.1: MUST require UIA (m.login.password) to prevent key takeover.
+            auto const cs_uia = json_obj({
+                json_member("flows",
+                            json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
+                json_member("params", json_obj({})),
+                json_member("session", json_str("cross_signing_upload")),
+            });
+            auto const cs_body = parsed_json_object(req.body);
+            auto const* cs_auth = cs_body.has_value() ? object_member_object(*cs_body, "auth") : nullptr;
+            if (cs_auth == nullptr)
+            {
+                return resp(401U, json_serialize(cs_uia));
+            }
+            auto const* cs_auth_type = string_member(*cs_auth, "type");
+            if (cs_auth_type == nullptr || *cs_auth_type != "m.login.password")
+            {
+                return resp(401U, json_serialize(cs_uia));
+            }
+            auto const* cs_password = string_member(*cs_auth, "password");
+            if (cs_password == nullptr || cs_password->empty())
+            {
+                return resp(401U, json_serialize(cs_uia));
+            }
+            if (!verify_local_user_password(rt.homeserver, req.access_token, *cs_password))
+            {
+                return resp(401U, json_serialize(cs_uia));
+            }
+            if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
+            {
+                return err(500U, "M_UNKNOWN", "key API persistence failed");
+            }
+            return resp(200U, key_api_success_body(route.endpoint));
+        }
         case auth::KeyApiEndpoint::upload_signatures:
             if (!store_key_api_payload(rt, route.endpoint, user, device_id, req, {}))
             {

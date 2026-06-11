@@ -1,3 +1,7 @@
+## 0.6.3
+
+- **Fix (client verification — `POST /keys/device_signing/upload` UIA):** Cross-signing key upload now requires User-Interactive Authentication (UIA) per Matrix spec §11.12.1. A request without an `auth` object returns `401` with the `m.login.password` flow challenge; only requests with a verified password proceed to key storage. This prevents a malicious actor from silently replacing a user's cross-signing keys and blocking verification.
+
 ## 0.6.2
 
 - **Fix (Bug 11 — OTK upload without device identity):** `key_object_is_signed_by` in

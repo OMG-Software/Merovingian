@@ -1313,7 +1313,39 @@ SCENARIO("POST /keys/upload with OTKs then POST /keys/claim returns and consumes
 // --- POST /_matrix/client/v3/keys/device_signing/upload ----------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysdevice_signingupload
 //
+// This endpoint uses the User-Interactive Authentication API (UIA).
+// A request without auth MUST return 401 with the UIA flows challenge.
 // Success MUST return HTTP 200 with an empty JSON object {}.
+SCENARIO("POST /keys/device_signing/upload without auth returns 401 UIA challenge",
+         "[conformance][client-server][e2ee][keys]")
+{
+    GIVEN("a logged-in device")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("the device uploads cross-signing keys without providing auth")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                 R"({"master_key":{"keys":{"ed25519:master":"base64key"},"usage":["master"]}})"});
+
+            THEN("the server issues a UIA challenge with m.login.password flow")
+            {
+                // Spec MUST: cross-signing upload uses UIA to prevent key takeover.
+                REQUIRE(response.response.status == 401U);
+                auto const body = parse_object(response.response.body);
+                // Spec MUST: UIA challenge body contains flows, params, and session.
+                REQUIRE(object_member(body, "flows") != nullptr);
+                REQUIRE(object_member_as_object(body, "params") != nullptr);
+                REQUIRE(object_member(body, "session") != nullptr);
+            }
+        }
+    }
+}
+
 SCENARIO("POST /keys/device_signing/upload returns 200 with a valid JSON object",
          "[conformance][client-server][e2ee][keys]")
 {
@@ -1323,12 +1355,12 @@ SCENARIO("POST /keys/device_signing/upload returns 200 with a valid JSON object"
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("the device uploads cross-signing keys")
+        WHEN("the device uploads cross-signing keys with valid UIA password auth")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                 R"({"master_key":{"keys":{"ed25519:master":"base64key"},"usage":["master"]},"self_signing_key":{"keys":{"ed25519:self":"base64key"},"usage":["self_signing"]},"user_signing_key":{"keys":{"ed25519:user":"base64key"},"usage":["user_signing"]}})"});
+                 R"({"master_key":{"keys":{"ed25519:master":"base64key"},"usage":["master"]},"self_signing_key":{"keys":{"ed25519:self":"base64key"},"usage":["self_signing"]},"user_signing_key":{"keys":{"ed25519:user":"base64key"},"usage":["user_signing"]},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
 
             THEN("the response is 200 and the body is an empty JSON object")
             {
@@ -1357,7 +1389,7 @@ SCENARIO("POST /keys/device_signing/upload then POST /keys/query returns publish
             merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"base64master"},"signatures":{}},"self_signing_key":{"user_id":"@alice:example.org","usage":["self_signing"],"keys":{"ed25519:SELF":"base64self"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USER":"base64user"},"signatures":{}}})"})
+                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"base64master"},"signatures":{}},"self_signing_key":{"user_id":"@alice:example.org","usage":["self_signing"],"keys":{"ed25519:SELF":"base64self"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USER":"base64user"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
                 .response.status == 200U);
 
         WHEN("the device queries its own keys")
@@ -1441,7 +1473,7 @@ SCENARIO("POST /keys/signatures/upload then POST /keys/query returns the uploade
             merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"base64master"},"signatures":{}}})"})
+                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MASTER":"base64master"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
                 .response.status == 200U);
         REQUIRE(
             merovingian::homeserver::handle_client_server_request(

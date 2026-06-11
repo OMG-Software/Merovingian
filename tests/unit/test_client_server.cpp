@@ -3975,7 +3975,7 @@ SCENARIO("End-to-end E2EE bootstrap: full Element Rust crypto order round-trips"
             auto const inviter_cs_upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/keys/device_signing/upload", inviter_token,
-                 R"({"master_key":{"user_id":"@inviter:example.org","usage":["user"],"keys":{"ed25519:MASTER":"MASTER_VALUE"}},"self_signing_key":{"user_id":"@inviter:example.org","usage":["self_signing"],"keys":{"ed25519:SSK":"SSK_VALUE"}}})"});
+                 R"({"master_key":{"user_id":"@inviter:example.org","usage":["user"],"keys":{"ed25519:MASTER":"MASTER_VALUE"}},"self_signing_key":{"user_id":"@inviter:example.org","usage":["self_signing"],"keys":{"ed25519:SSK":"SSK_VALUE"}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
             REQUIRE(inviter_cs_upload.response.status == 200U);
 
             // 3. cross-signing signatures for inviter (self-signing)
