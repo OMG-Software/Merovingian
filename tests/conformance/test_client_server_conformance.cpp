@@ -1523,6 +1523,119 @@ SCENARIO("POST /keys/signatures/upload then POST /keys/query returns the uploade
     }
 }
 
+// --- POST /_matrix/client/v3/keys/query — user_signing_key visibility --------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysquery
+//
+// §11.11.3: The user_signing_key MUST only be returned to the user themselves;
+// it MUST NOT be disclosed to other users querying that user's keys.
+SCENARIO("POST /keys/query does not expose user_signing_key to non-owners",
+         "[conformance][client-server][e2ee][keys][security]")
+{
+    GIVEN("alice has uploaded cross-signing keys including a user_signing_key")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice_token = logged_in_token(started.runtime);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", alice_token,
+                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MKEY":"mval"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USIGN":"uval"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
+                .response.status == 200U);
+
+        WHEN("bob queries alice's keys")
+        {
+            auto const bob_token = register_and_login(started.runtime, "bob");
+            auto const response  = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/query", bob_token,
+                 R"({"device_keys":{"@alice:example.org":[]}})"});
+
+            THEN("alice's user_signing_key is not included in the response")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body               = parse_object(response.response.body);
+                auto const* user_signing_keys = object_member_as_object(body, "user_signing_keys");
+                // Spec MUST: user_signing_key is only visible to the owner, not to other users.
+                bool const alice_key_exposed =
+                    user_signing_keys != nullptr &&
+                    object_member_as_object(*user_signing_keys, "@alice:example.org") != nullptr;
+                REQUIRE_FALSE(alice_key_exposed);
+            }
+        }
+
+        WHEN("alice queries her own keys")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/keys/query", alice_token,
+                 R"({"device_keys":{"@alice:example.org":[]}})"});
+
+            THEN("alice's user_signing_key is included in the response")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body               = parse_object(response.response.body);
+                auto const* user_signing_keys = object_member_as_object(body, "user_signing_keys");
+                // Spec MUST: the owner always receives their own user_signing_key.
+                REQUIRE(user_signing_keys != nullptr);
+                REQUIRE(object_member_as_object(*user_signing_keys, "@alice:example.org") != nullptr);
+            }
+        }
+    }
+}
+
+// --- PUT /_matrix/client/v3/sendToDevice — wildcard device delivery ----------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3sendtoeventtypetxnid
+//
+// A device_id of "*" MUST deliver the to-device event to every device belonging
+// to the target user, not just the first or a literal device named "*".
+SCENARIO("PUT /sendToDevice with \"*\" delivers to all target user devices",
+         "[conformance][client-server][e2ee][to-device]")
+{
+    GIVEN("alice has two registered devices")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt             = started.runtime;
+        auto const token_a   = logged_in_token(rt);                        // alice / DEVICE1
+        auto const token_b   = login_existing_user(rt, "alice", "DEV_B"); // alice / DEV_B
+        auto const bob_token = register_and_login(rt, "bob");
+
+        WHEN("bob sends a to-device event to alice with device_id \"*\"")
+        {
+            auto const send = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"PUT", "/_matrix/client/v3/sendToDevice/m.key.verification.cancel/txn_wildcard", bob_token,
+                 R"({"messages":{"@alice:example.org":{"*":{"reason":"test"}}}})"});
+
+            THEN("both alice devices receive the event via /sync")
+            {
+                REQUIRE(send.response.status == 200U);
+
+                auto const sync_a    = merovingian::homeserver::handle_client_server_request(
+                    rt, {"GET", "/_matrix/client/v3/sync", token_a, {}});
+                REQUIRE(sync_a.response.status == 200U);
+                auto const body_a    = parse_object(sync_a.response.body);
+                auto const* td_a     = object_member_as_object(body_a, "to_device");
+                auto const* events_a = td_a != nullptr ? object_member_as_array(*td_a, "events") : nullptr;
+                // Spec MUST: "*" delivers to every device — DEVICE1 must receive the event.
+                REQUIRE(events_a != nullptr);
+                REQUIRE(!events_a->empty());
+
+                auto const sync_b    = merovingian::homeserver::handle_client_server_request(
+                    rt, {"GET", "/_matrix/client/v3/sync", token_b, {}});
+                REQUIRE(sync_b.response.status == 200U);
+                auto const body_b    = parse_object(sync_b.response.body);
+                auto const* td_b     = object_member_as_object(body_b, "to_device");
+                auto const* events_b = td_b != nullptr ? object_member_as_array(*td_b, "events") : nullptr;
+                // Spec MUST: "*" delivers to every device — DEV_B must receive the event.
+                REQUIRE(events_b != nullptr);
+                REQUIRE(!events_b->empty());
+            }
+        }
+    }
+}
+
 // --- GET /_matrix/client/v3/room_keys/version (no backup) --------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keysversion
 //

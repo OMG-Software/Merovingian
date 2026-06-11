@@ -3357,7 +3357,8 @@ namespace
                     })));
     }
 
-    [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view body) -> LocalHttpResponse
+    [[nodiscard]] auto handle_key_query(ClientServerRuntime& rt, std::string_view requesting_user,
+                                        std::string_view body) -> LocalHttpResponse
     {
         auto const object = parsed_json_object(body);
         if (!object.has_value())
@@ -3481,7 +3482,8 @@ namespace
                     }
                     self_signing_keys.push_back(json_member(user_request.key, json_obj(std::move(key_object))));
                 }
-                else if (cskey.key_type == "user_signing")
+                // Spec §11.11.3: user_signing_key MUST only be returned to the user themselves.
+                else if (cskey.key_type == "user_signing" && user_request.key == requesting_user)
                 {
                     auto value = parsed_json_object(cskey.json);
                     if (!value.has_value())
@@ -3796,9 +3798,25 @@ namespace
                 }
                 if (is_local)
                 {
-                    // Enqueue directly; /sync drains it into to_device.events.
-                    std::ignore = push_to_device_message(rt, {0U, std::string{sender}, user_entry.key, device_entry.key,
-                                                              std::string{event_type}, *content});
+                    if (device_entry.key == "*")
+                    {
+                        // Spec §10.5: "*" delivers to all devices of the target user.
+                        for (auto const& dev : rt.homeserver.database.persistent_store.devices)
+                        {
+                            if (dev.user_id == user_entry.key)
+                            {
+                                std::ignore = push_to_device_message(
+                                    rt, {0U, std::string{sender}, user_entry.key, dev.device_id,
+                                         std::string{event_type}, *content});
+                            }
+                        }
+                    }
+                    else
+                    {
+                        // Enqueue directly; /sync drains it into to_device.events.
+                        std::ignore = push_to_device_message(rt, {0U, std::string{sender}, user_entry.key,
+                                                                  device_entry.key, std::string{event_type}, *content});
+                    }
                 }
                 else
                 {
@@ -4434,7 +4452,7 @@ namespace
         case auth::KeyApiEndpoint::upload_keys:
             return handle_key_upload(rt, user, device_id, req.body);
         case auth::KeyApiEndpoint::query_keys:
-            return handle_key_query(rt, req.body);
+            return handle_key_query(rt, user, req.body);
         case auth::KeyApiEndpoint::claim_keys:
             return handle_key_claim(rt, req.body);
         case auth::KeyApiEndpoint::get_key_backup_version: {
