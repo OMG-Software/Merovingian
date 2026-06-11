@@ -1871,64 +1871,93 @@ namespace
             }));
     }
 
-    [[nodiscard]] auto public_rooms_json(ClientServerRuntime const& rt) -> std::string
+    // Spec: GET/POST /_matrix/client/v3/publicRooms
+    // https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3publicrooms
+    [[nodiscard]] auto public_rooms_filtered_json(ClientServerRuntime const& rt, std::string const& filter_term,
+                                                  std::optional<std::size_t> limit,
+                                                  std::size_t since_offset) -> std::string
     {
-        auto chunk = canonicaljson::Array{};
+        auto const icase_contains = [](std::string_view haystack, std::string_view needle) noexcept -> bool {
+            return std::search(haystack.begin(), haystack.end(), needle.begin(), needle.end(),
+                               [](unsigned char a, unsigned char b) noexcept -> bool {
+                                   return std::tolower(a) == std::tolower(b);
+                               }) != haystack.end();
+        };
+
         auto const& store = rt.homeserver.database.persistent_store;
-        // Build the index once for the whole response — all per-room state lookups below are O(log n).
         auto const index = build_state_index(store);
+
+        auto all_rooms = std::vector<canonicaljson::Object>{};
         for (auto const& room : rt.homeserver.database.rooms)
         {
             auto const join_rule = room_state_string(store, index, room.room_id, "m.room.join_rules", "join_rule");
             if (!join_rule.has_value() || *join_rule != "public")
-            {
                 continue;
+
+            auto const name  = room_state_string(store, index, room.room_id, "m.room.name", "name");
+            auto const topic = room_state_string(store, index, room.room_id, "m.room.topic", "topic");
+            auto const alias = room_state_string(store, index, room.room_id, "m.room.canonical_alias", "alias");
+
+            if (!filter_term.empty())
+            {
+                auto const matches = icase_contains(room.room_id, filter_term) ||
+                                     (name.has_value() && icase_contains(*name, filter_term)) ||
+                                     (topic.has_value() && icase_contains(*topic, filter_term)) ||
+                                     (alias.has_value() && icase_contains(*alias, filter_term));
+                if (!matches)
+                    continue;
             }
 
             auto room_entry = canonicaljson::Object{};
             room_entry.push_back(json_member("room_id", json_str(room.room_id)));
-            room_entry.push_back(json_member(
-                "num_joined_members", json_int(static_cast<std::int64_t>(joined_member_count(rt, room.room_id)))));
+            room_entry.push_back(json_member("num_joined_members",
+                                             json_int(static_cast<std::int64_t>(joined_member_count(rt, room.room_id)))));
             room_entry.push_back(json_member("join_rule", json_str(*join_rule)));
 
             auto const history_visibility =
                 room_state_string(store, index, room.room_id, "m.room.history_visibility", "history_visibility");
-            room_entry.push_back(json_member("world_readable", json_bool(history_visibility.has_value() &&
-                                                                         *history_visibility == "world_readable")));
+            room_entry.push_back(json_member("world_readable",
+                                             json_bool(history_visibility.has_value() &&
+                                                       *history_visibility == "world_readable")));
 
             auto const guest_access =
                 room_state_string(store, index, room.room_id, "m.room.guest_access", "guest_access");
             room_entry.push_back(
                 json_member("guest_can_join", json_bool(guest_access.has_value() && *guest_access == "can_join")));
 
-            if (auto const name = room_state_string(store, index, room.room_id, "m.room.name", "name");
-                name.has_value())
-            {
+            if (name.has_value())
                 room_entry.push_back(json_member("name", json_str(*name)));
-            }
-            if (auto const topic = room_state_string(store, index, room.room_id, "m.room.topic", "topic");
-                topic.has_value())
-            {
+            if (topic.has_value())
                 room_entry.push_back(json_member("topic", json_str(*topic)));
-            }
-            if (auto const alias = room_state_string(store, index, room.room_id, "m.room.canonical_alias", "alias");
-                alias.has_value())
-            {
+            if (alias.has_value())
                 room_entry.push_back(json_member("canonical_alias", json_str(*alias)));
-            }
             if (auto const avatar = room_state_string(store, index, room.room_id, "m.room.avatar", "url");
                 avatar.has_value())
-            {
                 room_entry.push_back(json_member("avatar_url", json_str(*avatar)));
-            }
-            chunk.push_back(json_obj(std::move(room_entry)));
-        }
-        auto const total_room_count = static_cast<std::int64_t>(chunk.size());
 
-        return json_serialize(json_obj({
-            json_member("chunk", json_arr(std::move(chunk))),
-            json_member("total_room_count_estimate", json_int(total_room_count)),
-        }));
+            all_rooms.push_back(std::move(room_entry));
+        }
+
+        auto const total = static_cast<std::int64_t>(all_rooms.size());
+        auto const start = std::min(since_offset, all_rooms.size());
+        auto const end   = limit.has_value() ? std::min(start + *limit, all_rooms.size()) : all_rooms.size();
+
+        auto chunk = canonicaljson::Array{};
+        for (auto i = start; i < end; ++i)
+            chunk.push_back(json_obj(std::move(all_rooms[i])));
+
+        auto response = canonicaljson::Object{};
+        response.push_back(json_member("chunk", json_arr(std::move(chunk))));
+        response.push_back(json_member("total_room_count_estimate", json_int(total)));
+        if (end < all_rooms.size())
+            response.push_back(json_member("next_batch", json_str(std::to_string(end))));
+
+        return json_serialize(json_obj(std::move(response)));
+    }
+
+    [[nodiscard]] auto public_rooms_json(ClientServerRuntime const& rt) -> std::string
+    {
+        return public_rooms_filtered_json(rt, {}, std::nullopt, 0U);
     }
 
     [[nodiscard]] auto joined_rooms_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
@@ -4938,6 +4967,41 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" && request_path == "/_matrix/client/v3/publicRooms")
     {
         return dispatch_resp(req, rt, 200U, public_rooms_json(rt));
+    }
+    // Spec: POST /_matrix/client/v3/publicRooms
+    // https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms
+    if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
+    {
+        auto filter_term  = std::string{};
+        auto limit        = std::optional<std::size_t>{};
+        auto since_offset = std::size_t{0U};
+
+        if (auto const body = parsed_json_object(req.body); body.has_value())
+        {
+            if (auto const* filter_val = object_member(*body, "filter"); filter_val != nullptr)
+            {
+                if (auto const* filter_obj = std::get_if<canonicaljson::Object>(&filter_val->storage());
+                    filter_obj != nullptr)
+                {
+                    if (auto const* term = string_member(*filter_obj, "generic_search_term"); term != nullptr)
+                        filter_term = *term;
+                }
+            }
+            if (auto const* lv = object_member(*body, "limit"); lv != nullptr)
+            {
+                if (auto const* li = std::get_if<std::int64_t>(&lv->storage()); li != nullptr && *li > 0)
+                    limit = static_cast<std::size_t>(*li);
+            }
+            if (auto const* sv = string_member(*body, "since"); sv != nullptr && !sv->empty())
+            {
+                auto result = std::size_t{0U};
+                auto const [ptr, ec] = std::from_chars(sv->data(), sv->data() + sv->size(), result);
+                if (ec == std::errc{})
+                    since_offset = result;
+            }
+        }
+        return dispatch_resp(req, rt, 200U,
+                             public_rooms_filtered_json(rt, filter_term, limit, since_offset));
     }
     auto constexpr directory_room_prefix = std::string_view{"/_matrix/client/v3/directory/room/"};
     if (req.method == "GET" && starts_with(request_path, directory_room_prefix))

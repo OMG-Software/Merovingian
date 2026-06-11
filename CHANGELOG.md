@@ -1,5 +1,13 @@
 ## Unreleased
 
+- **Feature (POST /publicRooms):** Implemented `POST /_matrix/client/v3/publicRooms` per
+  [spec §post_matrixclientv3publicrooms](https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms).
+  Accepts `filter.generic_search_term` (case-insensitive substring match on room name, topic,
+  canonical alias, and room_id), `limit` (max results per page), and `since` (integer-offset
+  pagination token); returns `next_batch` when more results follow. Refactored the existing
+  `public_rooms_json` helper into `public_rooms_filtered_json` shared by both GET and POST.
+  Two conformance gap-placeholder tests replaced with real spec assertions.
+
 - **Fix (member visibility — startup state repair):** Added `repair_missing_state_entries` called
   at the end of `hydrate_local_database`. This scans all events in `persistent_store.events`,
   identifies state events (JSON contains a `"state_key"` field) that have no corresponding entry
