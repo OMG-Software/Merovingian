@@ -785,10 +785,12 @@ SCENARIO("Persisted local event ids are unique across rooms", "[homeserver][room
 
         WHEN("one event is sent to each room")
         {
-            auto const first_event =
-                merovingian::homeserver::send_event(runtime, login.value, first_room.value, "event-one");
-            auto const second_event =
-                merovingian::homeserver::send_event(runtime, login.value, second_room.value, "event-two");
+            auto const first_event = merovingian::homeserver::send_event(
+                runtime, login.value, first_room.value,
+                R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"event-one"}})");
+            auto const second_event = merovingian::homeserver::send_event(
+                runtime, login.value, second_room.value,
+                R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"event-two"}})");
 
             THEN("event ids do not collide in persistent storage")
             {

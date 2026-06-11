@@ -68,7 +68,8 @@ auto run_local_smoke_flow(config::Config const& config) -> OperationResult
         return joined;
     }
 
-    auto event = send_event(runtime, logged_in.value, room.value, "message-event");
+    auto event = send_event(runtime, logged_in.value, room.value,
+                            R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"message-event"}})");
     if (!event.ok)
     {
         return event;
