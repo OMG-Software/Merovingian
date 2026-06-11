@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.5.37
+Version:        0.6.0
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.6.0-1
+- feat: implement POST /publicRooms with filter.generic_search_term, limit, and since pagination
+- fix: member visibility — startup state repair via repair_missing_state_entries
+- fix: pdu_sink tracks remote membership in persistent_store.memberships and LocalRoom.members
+- fix: v12 m.room.create room_id derived from event_id in ingest_send_join_state
 * Tue Jun 10 2026 James Chapman <claude@ping.me.uk> - 0.5.37-1
 - fix(federation): verify relayed PDU signatures against sender domain key, not transport origin
 - fix(federation): run authorize_event_against_auth_events before persisting any inbound PDU

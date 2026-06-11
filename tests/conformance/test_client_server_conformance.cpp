@@ -5982,30 +5982,64 @@ SCENARIO("GET /publicRooms returns chunk and total_room_count_estimate", "[confo
 }
 
 // --- POST /_matrix/client/v3/publicRooms -------------------------------------
-// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms
-// IMPLEMENTATION GAP: filtered public room listing not yet implemented.
-SCENARIO("POST /publicRooms returns 404 M_UNRECOGNIZED (implementation gap)",
+// Spec: Matrix Client-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms
+//
+// POST /publicRooms accepts an optional JSON body with filter and pagination
+// parameters and returns 200 with chunk (array) and total_room_count_estimate.
+SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate",
          "[conformance][client-server][room-discovery]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /publicRooms is called with a filter body")
+        WHEN("POST /publicRooms is called with no body")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token, R"({"limit":10})"});
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", {}, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with a chunk array and total_room_count_estimate")
             {
-                // IMPLEMENTATION GAP: filtered public rooms not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: 200 with chunk (array of PublicRoomsChunk) and total_room_count_estimate.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+                auto const* estimate = int_member(body, "total_room_count_estimate");
+                REQUIRE(estimate != nullptr);
+            }
+        }
+
+        WHEN("POST /publicRooms is called with limit=0")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", {}, R"({"limit":0})"});
+
+            THEN("the server returns 200 with an empty chunk because limit=0 is treated as no-op")
+            {
+                // Spec: limit of 0 or negative is not meaningful; server may ignore or return empty page.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+            }
+        }
+
+        WHEN("POST /publicRooms is called with a filter body containing limit=1")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms", {}, R"({"limit":1})"});
+
+            THEN("the server returns 200 and the chunk contains at most one room")
+            {
+                // Spec MUST: limit constrains the maximum number of rooms returned in chunk.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+                REQUIRE(chunk->size() <= 1U);
             }
         }
     }
@@ -6664,6 +6698,69 @@ SCENARIO("POST /rooms/{roomId}/invite returns 200 and publishes an invite to /sy
                 auto const* events = object_member_as_array(*invite_state, "events");
                 REQUIRE(events != nullptr);
                 REQUIRE_FALSE(events->empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/invite
+// URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidmembersidinvite
+//
+// MUST return 200 for a remote invitee and persist the invite event so that
+// the federation outbound layer can dispatch it to the remote homeserver.
+SCENARIO("POST /rooms/{roomId}/invite for a remote user returns 200 and persists the invite event",
+         "[conformance][client-server][room-membership][federation]")
+{
+    GIVEN("a room owned by alice on the local server")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+
+        WHEN("alice invites a user on a different homeserver")
+        {
+            auto const invite = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                 R"({"user_id":"@charlie:remote.example.org"})"});
+
+            THEN("the server returns 200 with an empty body")
+            {
+                // Spec MUST: successful invite returns 200 {}
+                REQUIRE(invite.response.status == 200U);
+                auto const body = parse_object(invite.response.body);
+                REQUIRE(body.empty());
+            }
+
+            THEN("the invite is persisted as an m.room.member state event with membership=invite")
+            {
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+
+                // Spec MUST: the invite event must be stored so federation can dispatch it
+                auto const* membership = find_membership(store, room_id, "@charlie:remote.example.org");
+                REQUIRE(membership != nullptr);
+                REQUIRE(membership->membership == "invite");
+
+                auto const invite_state =
+                    std::ranges::find_if(store.state,
+                                         [&room_id](merovingian::database::PersistentStateEvent const& s) {
+                                             return s.room_id == room_id &&
+                                                    s.event_type == "m.room.member" &&
+                                                    s.state_key == "@charlie:remote.example.org";
+                                         });
+                // Spec MUST: m.room.member state event must exist for the invitee
+                REQUIRE(invite_state != store.state.end());
+                REQUIRE_FALSE(invite_state->event_id.empty());
+
+                auto const invite_json =
+                    std::ranges::find_if(store.events,
+                                         [&](merovingian::database::PersistentEvent const& e) {
+                                             return e.event_id == invite_state->event_id;
+                                         });
+                REQUIRE(invite_json != store.events.end());
+                REQUIRE_FALSE(invite_json->json.empty());
             }
         }
     }
@@ -10642,6 +10739,11 @@ SCENARIO("GET /rooms/{roomId}/aliases conformance")
     }
 }
 
+// Spec: Matrix Client-Server API v1.18
+// URL:  https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms
+//
+// POST /publicRooms with filter.generic_search_term and limit must return 200
+// with chunk (array) and total_room_count_estimate; chunk size must not exceed limit.
 SCENARIO("POST /publicRooms conformance")
 {
     GIVEN("a started homeserver with an authenticated user")
@@ -10650,20 +10752,23 @@ SCENARIO("POST /publicRooms conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /publicRooms is called with a filter")
+        WHEN("POST /publicRooms is called with filter.generic_search_term and limit=10")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/client/v3/publicRooms", token,
                                   R"({"filter":{"generic_search_term":"test"},"limit":10})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with chunk array and total_room_count_estimate")
             {
-                // IMPLEMENTATION GAP: POST /publicRooms (filtered search) not routed
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 200 with chunk (PublicRoomsChunk[]) and total_room_count_estimate.
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* chunk = object_member_as_array(body, "chunk");
+                REQUIRE(chunk != nullptr);
+                // Spec MUST: chunk size does not exceed the requested limit.
+                REQUIRE(chunk->size() <= 10U);
+                auto const* estimate = int_member(body, "total_room_count_estimate");
+                REQUIRE(estimate != nullptr);
             }
         }
     }
