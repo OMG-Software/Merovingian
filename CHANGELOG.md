@@ -1,4 +1,4 @@
-## Unreleased
+## 0.6.0
 
 - **Feature (POST /publicRooms):** Implemented `POST /_matrix/client/v3/publicRooms` per
   [spec §post_matrixclientv3publicrooms](https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms).
