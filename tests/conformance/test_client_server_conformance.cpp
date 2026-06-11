@@ -1058,6 +1058,65 @@ SCENARIO("POST /keys/upload response contains one_time_key_counts object", "[con
     }
 }
 
+// Spec: Matrix Client-Server API v1.18
+// Endpoint: POST /_matrix/client/v3/keys/upload
+// URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysupload
+//
+// MUST reject a one-time key that carries the correct key_id in its
+// signatures object but whose signature bytes do not cryptographically
+// verify under that device's ed25519 public key.  Presence of the key_id
+// entry alone is not sufficient — the server MUST run Ed25519 verification.
+SCENARIO("POST /keys/upload rejects a one-time key whose signature bytes fail Ed25519 verification",
+         "[conformance][client-server][e2ee][keys][security]")
+{
+    GIVEN("a logged-in device whose ed25519 identity key is known from the same request's device_keys")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        // 32 zero bytes in unpadded standard base64 — valid ed25519 key length.
+        auto constexpr zero_pubkey_b64  = std::string_view{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"};
+        // 64 zero bytes — correct length for Ed25519 but NOT a valid signature.
+        auto constexpr bogus_sig_b64    = std::string_view{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                                            "AAAAAA"};
+
+        // Build the upload body: device_keys with a real-length ed25519 key,
+        // plus a signed_curve25519 OTK whose signature has the right key ID
+        // (ed25519:DEVICE1) but contains zero bytes that cannot pass verification.
+        auto body = std::string{};
+        body += "{\"device_keys\":{\"user_id\":\"@alice:example.org\",\"device_id\":\"DEVICE1\","
+                "\"algorithms\":[\"m.olm.v1.curve25519-aes-sha2\",\"m.megolm.v1.aes-sha2\"],"
+                "\"keys\":{\"curve25519:DEVICE1\":\"curvekey\",\"ed25519:DEVICE1\":\"";
+        body += zero_pubkey_b64;
+        body += "\"},\"signatures\":{}},"
+                "\"one_time_keys\":{\"signed_curve25519:AAAAAQ\":{\"key\":\"otkkey\","
+                "\"signatures\":{\"@alice:example.org\":{\"ed25519:DEVICE1\":\"";
+        body += bogus_sig_b64;
+        body += "\"}}}}}";
+
+        WHEN("the device uploads the OTK with the bogus signature")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/keys/upload", token, body});
+
+            THEN("the server rejects the upload with 400 M_INVALID_SIGNATURE")
+            {
+                // Spec MUST: the server MUST verify the signature — presence of the
+                // correct key_id is not sufficient.  A key with a wrong signature
+                // cannot be stored because peers will fail NoSignatureFound when they
+                // try to claim it, breaking E2EE session setup.
+                REQUIRE(response.response.status == 400U);
+                auto const resp_body = parse_object(response.response.body);
+                auto const* errcode = string_member(resp_body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_SIGNATURE");
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/keys/query --------------------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysquery
 //

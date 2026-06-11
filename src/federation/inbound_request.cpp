@@ -451,7 +451,12 @@ namespace
         {
             return {400U, "membership path is malformed"};
         }
-        auto envelope = parse_inbound_pdu_envelope(request.body);
+        // Resolve the room version from local state so the event ID is computed
+        // with the correct redaction rules for that version, not hardcoded "12".
+        auto const send_room_ver = runtime.room_version_resolver
+            ? runtime.room_version_resolver(params->room_id)
+            : std::string{};
+        auto envelope = parse_inbound_pdu_envelope(request.body, send_room_ver);
         if (!envelope.has_value())
         {
             return {400U, "membership event body is not a valid PDU envelope"};

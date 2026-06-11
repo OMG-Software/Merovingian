@@ -1,4 +1,4 @@
-﻿#!/bin/sh
+#!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build a FreeBSD pkg(8) package for merovingian 0.6.1.
 set -e

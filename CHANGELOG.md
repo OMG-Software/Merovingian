@@ -15,6 +15,25 @@
   implemented for both tagged and rolling releases, SBOMs are now attached to tagged releases,
   and corrected the "Production work that remains open" section to remove items that are now done.
 
+- **Fix (C2 — hardcoded room version in send_join/leave/knock):** `handle_send_membership` in
+  `inbound_request.cpp` was calling `parse_inbound_pdu_envelope(body)` (the zero-arg overload)
+  which silently defaulted to room version "12" for all send_join, send_leave, and send_knock PDUs.
+  It now queries `runtime.room_version_resolver(room_id)` first and passes the resolved version to
+  the two-arg overload, matching the behaviour already present in the transaction processing path
+  (fixed in v0.5.36). PDUs from rooms using earlier room versions (v10, v11) are now correctly
+  parsed and verified against their actual version rules.
+
+- **Tests (C2):** New conformance scenario `send_join passes the resolved room version to the
+  membership acceptor envelope` in `test_federation_conformance.cpp` — wires a resolver returning
+  "10", calls send_join, and asserts `envelope.room_version == "10"`.
+
+- **Tests (E2EE OTK signature):** New conformance scenario `POST /keys/upload rejects a one-time
+  key whose signature bytes fail Ed25519 verification` in `test_client_server_conformance.cpp` —
+  uploads a device key with a 32-zero-byte ed25519 public key and an OTK with a 64-zero-byte
+  (cryptographically invalid) signature under the correct key ID; asserts the server returns
+  `400 M_INVALID_SIGNATURE`. Confirms that the fix from v0.5.25 (real Ed25519 verification
+  via `key_object_is_signed_by`) is covered by a regression test.
+
 ## 0.6.0
 
 - **Fix (federation invite dispatch):** `POST /rooms/{roomId}/invite` now dispatches

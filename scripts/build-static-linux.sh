@@ -1,4 +1,4 @@
-﻿#!/bin/sh
+#!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build a portable Linux fallback tarball with musl-linked static PIE binaries.
 set -eu
