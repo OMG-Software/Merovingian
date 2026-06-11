@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration_files.hpp"
@@ -13,7 +13,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.6.0"};
+constexpr auto version = std::string_view{"0.6.1"};
 
 auto print_help() -> void
 {

@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/bootstrap/exit_code.hpp"
 #include "merovingian/config/config.hpp"
@@ -37,7 +37,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.6.0"};
+constexpr auto version = std::string_view{"0.6.1"};
 
 struct BootstrapConfigResult final
 {

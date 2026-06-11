@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.6.0
+Version:        0.6.1
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,23 +89,26 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 11 2026 James Chapman <claude@ping.me.uk> - 0.6.1-1
+- fix: resolve room version from state in send_join/send_leave/send_knock handlers
+- fix: add regression test for OTK Ed25519 signature crypto verification
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.6.0-1
 - feat: implement POST /publicRooms with filter.generic_search_term, limit, and since pagination
-- fix: member visibility — startup state repair via repair_missing_state_entries
+- fix: member visibility â€” startup state repair via repair_missing_state_entries
 - fix: pdu_sink tracks remote membership in persistent_store.memberships and LocalRoom.members
 - fix: v12 m.room.create room_id derived from event_id in ingest_send_join_state
 * Tue Jun 10 2026 James Chapman <claude@ping.me.uk> - 0.5.37-1
 - fix(federation): verify relayed PDU signatures against sender domain key, not transport origin
 - fix(federation): run authorize_event_against_auth_events before persisting any inbound PDU
 * Tue Jun 10 2026 James Chapman <claude@ping.me.uk> - 0.5.36-1
-- fix: DELETE /devices/{deviceId} requires UIA re-authentication (spec §10.7.1)
-- fix: key backup version no longer hardcoded to "1" — each POST assigns a unique ID
+- fix: DELETE /devices/{deviceId} requires UIA re-authentication (spec Â§10.7.1)
+- fix: key backup version no longer hardcoded to "1" â€” each POST assigns a unique ID
 - fix: PUT /typing validates room existence and membership; EDU uses boolean not string
 - fix: POST /read_markers processes m.read and m.read.private alongside m.fully_read
 - fix: receipt and read_markers handlers enforce room existence and membership
 * Mon Jun 09 2026 James Chapman <claude@ping.me.uk> - 0.5.33-1
-- fix: GET /rooms/{roomId}/members returns 403 for non-members (spec §11.1)
-- fix: POST /account/password requires UIA before changing password (spec §5.7)
+- fix: GET /rooms/{roomId}/members returns 403 for non-members (spec Â§11.1)
+- fix: POST /account/password requires UIA before changing password (spec Â§5.7)
 - fix: registration honours device_id, initial_device_display_name, inhibit_login
 - fix: registration UIA token challenge is now conditional on require_token config
 - fix: POST /login stores initial_device_display_name on the created device
