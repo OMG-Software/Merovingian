@@ -1,3 +1,45 @@
+## 0.6.2
+
+- **Fix (Bug 11 — OTK upload without device identity):** `key_object_is_signed_by` in
+  `client_server.cpp` previously returned `true` when `signing_key_id` was empty, allowing
+  `signed_curve25519` one-time and fallback keys to be accepted on a first-ever upload where
+  no device identity was available. It now returns `false`, rejecting the OTK with
+  `400 M_INVALID_SIGNATURE`. The signing key is always resolved from the in-body `device_keys`
+  or the persistent store before verification; no key means no acceptance.
+
+- **Fix (Bug 12 — rate limit bucket bypassed by query parameters):** `normalized_target` now
+  strips the query string before computing the rate-limit bucket key, so
+  `/_matrix/client/v3/sync?timeout=0` and `/_matrix/client/v3/sync?timeout=30000` share the
+  same per-IP counter. Previously each unique query string created a fresh bucket, allowing
+  unlimited requests by varying `?timeout` or any other query parameter.
+
+- **Fix (Bug 13 — `compose_signed_event` silently created fallback events):** `compose_signed_event`
+  in `room_service.cpp` now parses `client_event_json` as canonical JSON and returns
+  `std::nullopt` when the body is not a valid JSON object. The caller propagates this as
+  `400 M_BAD_JSON`. Previously it wrapped the raw invalid body into a fabricated
+  `m.room.message` and persisted it, potentially silently corrupting the room timeline.
+
+- **Fix (Bug 14 — transaction ID idempotency incomplete):** Room-send `PUT` requests and
+  send-to-device `PUT` requests now implement full txn-ID deduplication. A new
+  `client_txn_ids` table (migration 006) stores `(user_id, room_id, event_type, txn_id,
+  event_id)`. Handlers check for a prior record before processing; on a hit they replay
+  the original response immediately. After a successful send the record is stored.
+  `room_id` is the empty string sentinel for to-device entries. Both SQLite and PostgreSQL
+  backends hydrate the table on startup.
+
+- **Tests (Bug 11):** Conformance scenario `keys/upload rejects signed_curve25519 OTKs when
+  no device identity has been established` in `test_client_server_conformance.cpp`.
+
+- **Tests (Bug 12):** Conformance scenario `rate limiting uses the path without query
+  parameters as the bucket key` in `test_client_server_conformance.cpp`.
+
+- **Tests (Bug 13):** Conformance scenario `room send rejects non-object bodies and does not
+  create a fallback event` in `test_client_server_conformance.cpp`.
+
+- **Tests (Bug 14):** Conformance scenarios `room send PUT replays the original event_id when
+  the same transaction ID is reused` and `send-to-device PUT is idempotent: retrying the same
+  txn_id does not re-queue the message` in `test_client_server_conformance.cpp`.
+
 ## 0.6.1
 
 - **Fix (C2 — hardcoded room version in send_join/leave/knock):** `handle_send_membership` in

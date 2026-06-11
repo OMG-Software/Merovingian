@@ -875,12 +875,12 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
 
             THEN("required Matrix storage areas have table-specific definitions")
             {
-                // 44 = the 37 baseline tables plus four sync-surface tables,
+                // 45 = the 37 baseline tables plus four sync-surface tables,
                 // plus durable media blob storage plus the user profiles table
-                // plus the durable room-alias registry
+                // plus the durable room-alias registry plus client_txn_ids
                 // (room_account_data, to_device_messages, device_list_changes,
                 // presence_state) folded into the initial schema.
-                REQUIRE(tables.size() == 44U);
+                REQUIRE(tables.size() == 45U);
                 REQUIRE(merovingian::database::current_schema_version() == 1U);
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());

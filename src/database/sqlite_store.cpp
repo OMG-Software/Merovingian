@@ -580,6 +580,13 @@ namespace
                load_rows(connection, "SELECT room_alias, room_id FROM room_aliases ORDER BY room_alias",
                          [&store](sqlite3_stmt& row) {
                              store.room_aliases.push_back({column_text(row, 0), column_text(row, 1)});
+                         }) &&
+               load_rows(connection,
+                         "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids",
+                         [&store](sqlite3_stmt& row) {
+                             store.client_txn_ids.push_back({column_text(row, 0), column_text(row, 1),
+                                                             column_text(row, 2), column_text(row, 3),
+                                                             column_text(row, 4)});
                          });
     }
 

@@ -2114,6 +2114,45 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     return true;
 }
 
+[[nodiscard]] auto find_client_txn_event_id(PersistentStore const& store, std::string_view user_id,
+                                             std::string_view room_id, std::string_view event_type,
+                                             std::string_view txn_id) -> std::optional<std::string>
+{
+    auto const it = std::ranges::find_if(store.client_txn_ids, [&](PersistentClientTxnRecord const& r) {
+        return r.user_id == user_id && r.room_id == room_id && r.event_type == event_type && r.txn_id == txn_id;
+    });
+    if (it == store.client_txn_ids.end())
+    {
+        return std::nullopt;
+    }
+    return it->event_id;
+}
+
+[[nodiscard]] auto store_client_txn(PersistentStore& store, PersistentClientTxnRecord record) -> bool
+{
+    if (record.user_id.empty() || record.event_type.empty() || record.txn_id.empty())
+    {
+        return false;
+    }
+    // If already recorded (concurrent retry), the original wins — do not overwrite.
+    if (find_client_txn_event_id(store, record.user_id, record.room_id, record.event_type, record.txn_id).has_value())
+    {
+        return true;
+    }
+    auto const statement = record_statement(
+        "insert_client_txn_id",
+        "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id) "
+        "VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+        {public_value(record.user_id), public_value(record.room_id), public_value(record.event_type),
+         public_value(record.txn_id), public_value(record.event_id)});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    store.client_txn_ids.push_back(std::move(record));
+    return true;
+}
+
 [[nodiscard]] auto sensitive_values_are_redacted(PersistentStore const& store) noexcept -> bool
 {
     for (auto const& statement : store.prepared_statements)

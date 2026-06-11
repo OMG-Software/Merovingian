@@ -81,6 +81,14 @@ remaining work before PostgreSQL-backed production operation.
   `SET ROLE` statement, so the API is safe to call with operator-supplied
   role names.
 
+- Client transaction-idempotency dedup via `client_txn_ids` table (migration 006).
+  Keyed on `(user_id, room_id, event_type, txn_id)`; `room_id` is empty string
+  for to-device sends. `event_id` stores the assigned event ID for room sends and
+  is empty for to-device entries. Both SQLite and PostgreSQL hydrate rows on
+  startup. Handlers check the table before processing and store the result after
+  a successful send, allowing clients to safely retry `PUT /rooms/{roomId}/send`
+  and `PUT /sendToDevice` requests.
+
 ## Security posture
 
 The homeserver runtime can now use SQLite for local persisted state when

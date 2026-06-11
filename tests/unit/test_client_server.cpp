@@ -3814,14 +3814,16 @@ SCENARIO("E2EE one_time_keys are returned to a peer after upload", "[homeserver]
 
         WHEN("the device uploads a one_time_key")
         {
+            // Use curve25519 (unsigned) type — no device_keys uploaded yet,
+            // so signed_curve25519 would be correctly rejected (Bug 11 fix).
             auto const upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", token,
-                 R"({"one_time_keys":{"signed_curve25519:OTK1":{"key":"OTK_DATA_AAA","signatures":{"@inviter:example.org":{"ed25519:DEV1":"SIG_AAA"}}}}})"});
+                 R"({"one_time_keys":{"curve25519:OTK1":"OTK_DATA_AAA"}})"});
             REQUIRE(upload.response.status == 200U);
             REQUIRE(upload.response.body.find("one_time_key_counts") != std::string::npos);
 
-            THEN("the one_time_key_counts reports a non-zero signed_curve25519 count")
+            THEN("the one_time_key_counts reports a non-zero count")
             {
                 REQUIRE(upload.response.body.find("signed_curve25519") != std::string::npos);
                 // json_int emits a bare numeric token (not a quoted string), so

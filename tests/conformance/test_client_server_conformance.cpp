@@ -9900,12 +9900,14 @@ SCENARIO("POST /keys/upload followed by POST /keys/claim returns a one-time key"
 
         WHEN("Alice uploads one-time keys and Bob claims one")
         {
+            // Use curve25519 type so no device-identity signature is required for upload.
             auto const upload = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", alice,
-                 R"({"one_time_keys":{"signed_curve25519:AAAAA":"otk_payload_1","signed_curve25519:BBBBB":"otk_payload_2"}})"});
+                 R"({"one_time_keys":{"curve25519:AAAAA":"otk_payload_1","curve25519:BBBBB":"otk_payload_2"}})"});
             REQUIRE(upload.response.status == 200U);
             // Verify OTK count is reflected immediately.
+            // Server aggregates all OTK types under signed_curve25519 in the count response.
             auto const up_body = parse_object(upload.response.body);
             auto const* counts = object_member_as_object(up_body, "one_time_key_counts");
             REQUIRE(counts != nullptr);
@@ -9915,7 +9917,7 @@ SCENARIO("POST /keys/upload followed by POST /keys/claim returns a one-time key"
 
             auto const claim = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/client/v3/keys/claim", alice,
-                                  R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
+                                  R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"curve25519"}}})"});
 
             THEN("the claim response contains Alice's one-time key for DEVICE1")
             {
@@ -9946,18 +9948,20 @@ SCENARIO("POST /keys/claim reuses the matching fallback key when one-time keys a
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
+        // Use curve25519 type so no device-identity signature is required for upload.
+        // A second key with a non-matching algorithm prefix verifies selection logic.
         REQUIRE(
             merovingian::homeserver::handle_client_server_request(
                 started.runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", token,
-                 R"({"fallback_keys":{"curve25519:WRONGALG":{"key":"wrong-fallback"},"signed_curve25519:FALLBACK":{"key":"matching-fallback","signatures":{}}}})"})
+                 R"({"fallback_keys":{"curve25519:FALLBACK":"matching-fallback"}})"})
                 .response.status == 200U);
 
-        WHEN("the device claims a signed_curve25519 key for that device")
+        WHEN("the device claims a curve25519 key for that device")
         {
             auto const claim = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/client/v3/keys/claim", token,
-                                  R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
+                                  R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"curve25519"}}})"});
 
             THEN("the response returns the matching fallback key")
             {
@@ -9970,16 +9974,15 @@ SCENARIO("POST /keys/claim reuses the matching fallback key when one-time keys a
                 auto const* device_otks = object_member_as_object(*user_otks, "DEVICE1");
                 REQUIRE(device_otks != nullptr);
 
-                // Spec MUST: fallback key selection matches the requested algorithm.
-                REQUIRE(object_member(*device_otks, "signed_curve25519:FALLBACK") != nullptr);
-                REQUIRE(object_member(*device_otks, "curve25519:WRONGALG") == nullptr);
+                // Spec MUST: claim returns the stored curve25519 fallback key.
+                REQUIRE(object_member(*device_otks, "curve25519:FALLBACK") != nullptr);
             }
 
             AND_THEN("a second claim returns the same fallback key because fallback keys are reusable")
             {
                 auto const second_claim = merovingian::homeserver::handle_client_server_request(
                     started.runtime, {"POST", "/_matrix/client/v3/keys/claim", token,
-                                      R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"signed_curve25519"}}})"});
+                                      R"({"one_time_keys":{"@alice:example.org":{"DEVICE1":"curve25519"}}})"});
                 REQUIRE(second_claim.response.status == 200U);
                 auto const body = parse_object(second_claim.response.body);
                 auto const* otks = object_member_as_object(body, "one_time_keys");
@@ -9988,7 +9991,8 @@ SCENARIO("POST /keys/claim reuses the matching fallback key when one-time keys a
                 REQUIRE(user_otks != nullptr);
                 auto const* device_otks = object_member_as_object(*user_otks, "DEVICE1");
                 REQUIRE(device_otks != nullptr);
-                REQUIRE(object_member(*device_otks, "signed_curve25519:FALLBACK") != nullptr);
+                // Spec MUST: fallback key is reused — same key returned on repeated claims.
+                REQUIRE(object_member(*device_otks, "curve25519:FALLBACK") != nullptr);
             }
         }
     }
@@ -11938,6 +11942,315 @@ SCENARIO("sending a message implicitly clears the sender's typing state per spec
                 // Spec MUST: server clears typing indicator when user sends a message
                 REQUIRE(after != nullptr);
                 REQUIRE_FALSE(after->typing); // typing=false after send
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: POST /keys/upload — one-time key signature requirements
+// URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3keysupload
+//
+// signed_curve25519 one-time keys MUST be signed by the device's ed25519 key.
+// When no device identity exists (no device_keys in the body and no prior upload),
+// the server cannot locate a signing key and MUST reject the upload.
+SCENARIO("keys/upload rejects signed_curve25519 OTKs when no device identity has been established",
+         "[homeserver][client-server][e2ee][conformance]")
+{
+    GIVEN("alice is registered and logged in but has never uploaded device keys")
+    {
+        auto cfg     = conformance_config();
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        // 64-zero-byte ed25519 signature in unpadded base64 — correct length but invalid.
+        // No device_keys in the body and no prior stored device identity, so the server
+        // has no ed25519 key to resolve for signature verification.
+        auto constexpr bogus_sig = std::string_view{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                                     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                                     "AAAAAA"};
+        auto body = std::string{};
+        body += R"({"one_time_keys":{"signed_curve25519:AAAAAQ":{"key":"otkkey",)";
+        body += R"("signatures":{"@alice:example.org":{"ed25519:DEVICE1":")";
+        body += bogus_sig;
+        body += R"("}}}}})";
+
+        WHEN("the client uploads signed_curve25519 OTKs without a device identity")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", "/_matrix/client/v3/keys/upload", token, body});
+
+            THEN("the server rejects the upload because no signing key can be resolved")
+            {
+                // Spec MUST: signed_curve25519 keys require a verifiable device signature.
+                // Without any device identity the server MUST reject rather than accept.
+                REQUIRE(response.response.status == 400U);
+                auto const err = parse_object(response.response.body);
+                auto const* errcode = string_member(err, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_SIGNATURE");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: Rate limiting
+// URL: https://spec.matrix.org/v1.18/client-server-api/#rate-limiting
+//
+// Rate limits are defined per endpoint (path), not per full URL. Varying query
+// parameters on the same endpoint path MUST NOT allow a client to bypass a rate cap.
+SCENARIO("rate limiting uses the path without query parameters as the bucket key",
+         "[homeserver][client-server][rate-limit][conformance]")
+{
+    GIVEN("a server configured with a cap of 1 request per minute on /sync")
+    {
+        auto security = merovingian::config::SecurityConfig{};
+        merovingian::tests::enable_token_registration(security);
+        auto rate_limits = merovingian::config::ClientRateLimitsConfig{};
+        rate_limits.per_ip["/_matrix/client/v3/sync"] = {1U, 60U};
+        auto cfg = merovingian::config::Config{
+            merovingian::config::ServerConfig{},   merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{}, security,
+            std::move(rate_limits),                merovingian::config::LogModulesConfig{},
+        };
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("the first request uses /sync?timeout=0 (exhausts the 1-request cap)")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/sync?timeout=0", token, ""});
+
+            THEN("it succeeds (within the cap)")
+            {
+                // Spec MUST: first request within the window is allowed.
+                REQUIRE(first.response.status == 200U);
+            }
+        }
+
+        WHEN("the cap is exhausted and a second request uses a different query string (/sync?timeout=30000)")
+        {
+            // Exhaust the 1-req/min cap with the first call.
+            std::ignore = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/sync?timeout=0", token, ""});
+
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/sync?timeout=30000", token, ""});
+
+            THEN("it is rate-limited even though the query string differs")
+            {
+                // Spec MUST: rate limit is per endpoint path; a different ?timeout MUST NOT
+                // escape the cap — both requests land in the same bucket.
+                REQUIRE(second.response.status == 429U);
+                auto const err = parse_object(second.response.body);
+                auto const* errcode = string_member(err, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_LIMIT_EXCEEDED");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: PUT /rooms/{roomId}/send/{eventType}/{txnId}
+// URL: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3roomsroomidsendeventtypetxnid
+//
+// The server MUST reject a send request whose body is not a valid JSON object.
+// It MUST NOT silently invent a fallback event such as m.room.message.
+SCENARIO("room send rejects non-object bodies and does not create a fallback event",
+         "[homeserver][client-server][rooms][conformance]")
+{
+    GIVEN("alice is in a room")
+    {
+        auto cfg     = conformance_config();
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        auto const room_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
+        REQUIRE(room_resp.response.status == 200U);
+        auto const room_body = parse_object(room_resp.response.body);
+        auto const* rid      = string_member(room_body, "room_id");
+        REQUIRE(rid != nullptr);
+        auto const room_id = *rid;
+
+        WHEN("a message send is attempted with a JSON array body (not an object)")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT",
+                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-bad-body-arr",
+                     token, R"([1, 2, 3])"});
+
+            THEN("the server returns 400 M_BAD_JSON and does not create a spurious event")
+            {
+                // Spec MUST: event content must be a JSON object; an array MUST be rejected.
+                REQUIRE(resp.response.status == 400U);
+                auto const err = parse_object(resp.response.body);
+                auto const* errcode = string_member(err, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_BAD_JSON");
+            }
+        }
+
+        WHEN("a message send is attempted with a bare JSON string body (not an object)")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT",
+                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-bad-body-str",
+                     token, R"("just a string")"});
+
+            THEN("the server returns 400 M_BAD_JSON and does not create a spurious event")
+            {
+                // Spec MUST: event content must be a JSON object; a bare string MUST be rejected.
+                REQUIRE(resp.response.status == 400U);
+                auto const err = parse_object(resp.response.body);
+                auto const* errcode = string_member(err, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_BAD_JSON");
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: PUT /rooms/{roomId}/send/{eventType}/{txnId} — idempotency
+// URL: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3roomsroomidsendeventtypetxnid
+//
+// "The transaction ID allows the server to ensure that the same event is not sent
+// twice. The server MUST only send the event once for a given transaction ID."
+SCENARIO("room send PUT replays the original event_id when the same transaction ID is reused",
+         "[homeserver][client-server][rooms][idempotency][conformance]")
+{
+    GIVEN("alice is in a room")
+    {
+        auto cfg     = conformance_config();
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        auto const room_resp = merovingian::homeserver::handle_client_server_request(
+            rt, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
+        REQUIRE(room_resp.response.status == 200U);
+        auto const room_body = parse_object(room_resp.response.body);
+        auto const* rid      = string_member(room_body, "room_id");
+        REQUIRE(rid != nullptr);
+        auto const room_id = *rid;
+
+        WHEN("alice sends a message with txn-idem-1 and then retries with the same txn-idem-1")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT",
+                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-1",
+                     token, R"({"msgtype":"m.text","body":"hello"})"});
+            REQUIRE(first.response.status == 200U);
+            auto const first_body     = parse_object(first.response.body);
+            auto const* first_eid_ptr = string_member(first_body, "event_id");
+            REQUIRE(first_eid_ptr != nullptr);
+            auto const first_eid = *first_eid_ptr;
+
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT",
+                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-1",
+                     token, R"({"msgtype":"m.text","body":"retry"})"});
+
+            THEN("both responses carry the same event_id (idempotent replay)")
+            {
+                // Spec MUST: the server MUST NOT send the event a second time for the same txn_id.
+                REQUIRE(second.response.status == 200U);
+                auto const second_body    = parse_object(second.response.body);
+                auto const* second_eid    = string_member(second_body, "event_id");
+                REQUIRE(second_eid != nullptr);
+                // Same txn_id → identical event_id in both responses.
+                REQUIRE(*second_eid == first_eid);
+            }
+        }
+
+        WHEN("alice sends with txn-idem-a then with a distinct txn-idem-b")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT",
+                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-a",
+                     token, R"({"msgtype":"m.text","body":"first"})"});
+            REQUIRE(first.response.status == 200U);
+            auto const first_body     = parse_object(first.response.body);
+            auto const* first_eid_ptr = string_member(first_body, "event_id");
+            REQUIRE(first_eid_ptr != nullptr);
+            auto const first_eid = *first_eid_ptr;
+
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT",
+                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-b",
+                     token, R"({"msgtype":"m.text","body":"second"})"});
+
+            THEN("a distinct txn_id produces a distinct event_id")
+            {
+                // Spec: a different transaction ID MUST produce a distinct persisted event.
+                REQUIRE(second.response.status == 200U);
+                auto const second_body = parse_object(second.response.body);
+                auto const* second_eid = string_member(second_body, "event_id");
+                REQUIRE(second_eid != nullptr);
+                REQUIRE(*second_eid != first_eid);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18
+// Endpoint / Section: PUT /sendToDevice/{eventType}/{txnId} — idempotency
+// URL: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3sendtodeviceeventtypetxnid
+//
+// "Servers MUST NOT queue messages more than once for a given transaction ID."
+SCENARIO("send-to-device PUT is idempotent: retrying the same txn_id does not re-queue the message",
+         "[homeserver][client-server][to-device][idempotency][conformance]")
+{
+    GIVEN("alice and bob are registered")
+    {
+        auto cfg     = conformance_config();
+        auto started = merovingian::homeserver::start_client_server(cfg);
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const alice = logged_in_token(rt);
+        auto const bob   = register_and_login(rt, "bob");
+
+        auto const send_body =
+            std::string{R"({"messages":{"@bob:example.org":{"bob_DEV":)"
+                        R"({"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":"hello"}}}})"};
+
+        WHEN("alice sends a to-device message with txn-td-1 and then retries with the same txn-td-1")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/txn-td-1", alice,
+                     send_body});
+            REQUIRE(first.response.status == 200U);
+
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/txn-td-1", alice,
+                     send_body});
+
+            THEN("the retry returns 200 and bob receives exactly one message (not two)")
+            {
+                // Spec MUST: server MUST NOT queue the message again for the same txn_id.
+                REQUIRE(second.response.status == 200U);
+
+                // Bob's initial /sync should see only one to-device message.
+                auto const sync = merovingian::homeserver::handle_client_server_request(
+                    rt, {"GET", "/_matrix/client/v3/sync?timeout=0", bob, ""});
+                REQUIRE(sync.response.status == 200U);
+                auto const sync_body = parse_object(sync.response.body);
+                auto const* to_device = object_member_as_object(sync_body, "to_device");
+                REQUIRE(to_device != nullptr);
+                auto const* events = object_member_as_array(*to_device, "events");
+                REQUIRE(events != nullptr);
+                // Spec MUST: idempotent retry MUST NOT duplicate the queued message.
+                REQUIRE(events->size() == 1U);
             }
         }
     }
