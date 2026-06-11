@@ -1116,6 +1116,45 @@ namespace
         return std::get_if<canonicaljson::Object>(&value->storage());
     }
 
+    // Returns the room_version string from the room's m.room.create state event.
+    // Falls back to "10" for rooms created before version tracking was added.
+    [[nodiscard]] auto room_version_from_store(database::PersistentStore const& store, std::string_view room_id)
+        -> std::string
+    {
+        for (auto const& state : store.state)
+        {
+            if (state.room_id != room_id || state.event_type != "m.room.create" || !state.state_key.empty())
+            {
+                continue;
+            }
+            for (auto const& evt : store.events)
+            {
+                if (evt.event_id != state.event_id)
+                {
+                    continue;
+                }
+                auto const parsed = canonicaljson::parse_lossless(evt.json);
+                auto const* obj  = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                if (obj == nullptr)
+                {
+                    break;
+                }
+                auto const* content = object_member_as_object(*obj, "content");
+                if (content == nullptr)
+                {
+                    break;
+                }
+                auto const* version = string_member(*content, "room_version");
+                if (version != nullptr && !version->empty())
+                {
+                    return *version;
+                }
+                break;
+            }
+        }
+        return "10";
+    }
+
     [[nodiscard]] auto parsed_json_object(std::string_view body) -> std::optional<canonicaljson::Object>
     {
         auto parsed = canonicaljson::parse_lossless(body);
@@ -6515,6 +6554,36 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             if (!result.ok)
             {
                 return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.reason);
+            }
+            // For remote invitees dispatch the federation invite so the remote server
+            // learns about the event and can deliver it to the invitee's client.
+            auto const invitee_server = server_name_from_user_id(body->user_id);
+            if (!invitee_server.empty() && invitee_server != rt.homeserver.config.server().server_name)
+            {
+                auto const& store = rt.homeserver.database.persistent_store;
+                auto const invite_state =
+                    std::ranges::find_if(store.state,
+                                         [&room_id, &body](database::PersistentStateEvent const& s) {
+                                             return s.room_id == room_id &&
+                                                    s.event_type == "m.room.member" &&
+                                                    s.state_key == body->user_id;
+                                         });
+                auto const invite_json = invite_state != store.state.end()
+                    ? event_json_for_id(store, invite_state->event_id)
+                    : std::nullopt;
+                if (invite_json.has_value())
+                {
+                    auto const room_version = room_version_from_store(store, room_id);
+                    merovingian::homeserver::wire_federation_callbacks(rt.homeserver);
+                    if (rt.homeserver.dispatch_worker != nullptr)
+                    {
+                        auto transaction = federation::make_outbound_invite(
+                            invitee_server, rt.homeserver.config.server().server_name,
+                            room_id, invite_state->event_id, room_version, *invite_json, {});
+                        transaction.transaction_id = federation::make_federation_transaction_id();
+                        std::ignore = rt.homeserver.dispatch_worker->enqueue(std::move(transaction));
+                    }
+                }
             }
             return dispatch_resp(req, rt, 200U, json_serialize(json_obj({})));
         }

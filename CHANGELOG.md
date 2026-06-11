@@ -1,5 +1,13 @@
 ## 0.6.0
 
+- **Fix (federation invite dispatch):** `POST /rooms/{roomId}/invite` now dispatches
+  `PUT /_matrix/federation/v1/invite/{roomId}/{eventId}` to the remote homeserver when the
+  invitee is on a different server. Previously the invite event was persisted locally but never
+  sent to the remote server, so the invitee's client never received it. The dispatch is
+  asynchronous via the outbound transaction queue, mirroring the pattern already used in
+  `createRoom`. A new `room_version_from_store` helper reads the room's version from its
+  `m.room.create` state event to select the correct v1/v2 invite wire format.
+
 - **Feature (POST /publicRooms):** Implemented `POST /_matrix/client/v3/publicRooms` per
   [spec §post_matrixclientv3publicrooms](https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms).
   Accepts `filter.generic_search_term` (case-insensitive substring match on room name, topic,

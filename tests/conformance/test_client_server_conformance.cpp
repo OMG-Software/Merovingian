@@ -6703,6 +6703,69 @@ SCENARIO("POST /rooms/{roomId}/invite returns 200 and publishes an invite to /sy
     }
 }
 
+// Spec: Matrix Client-Server API v1.18
+// Endpoint: POST /_matrix/client/v3/rooms/{roomId}/invite
+// URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidmembersidinvite
+//
+// MUST return 200 for a remote invitee and persist the invite event so that
+// the federation outbound layer can dispatch it to the remote homeserver.
+SCENARIO("POST /rooms/{roomId}/invite for a remote user returns 200 and persists the invite event",
+         "[conformance][client-server][room-membership][federation]")
+{
+    GIVEN("a room owned by alice on the local server")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const alice = logged_in_token(started.runtime);
+        auto const room_id = create_room(started.runtime, alice);
+
+        WHEN("alice invites a user on a different homeserver")
+        {
+            auto const invite = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                 R"({"user_id":"@charlie:remote.example.org"})"});
+
+            THEN("the server returns 200 with an empty body")
+            {
+                // Spec MUST: successful invite returns 200 {}
+                REQUIRE(invite.response.status == 200U);
+                auto const body = parse_object(invite.response.body);
+                REQUIRE(body.empty());
+            }
+
+            THEN("the invite is persisted as an m.room.member state event with membership=invite")
+            {
+                auto const& store = started.runtime.homeserver.database.persistent_store;
+
+                // Spec MUST: the invite event must be stored so federation can dispatch it
+                auto const* membership = find_membership(store, room_id, "@charlie:remote.example.org");
+                REQUIRE(membership != nullptr);
+                REQUIRE(membership->membership == "invite");
+
+                auto const invite_state =
+                    std::ranges::find_if(store.state,
+                                         [&room_id](merovingian::database::PersistentStateEvent const& s) {
+                                             return s.room_id == room_id &&
+                                                    s.event_type == "m.room.member" &&
+                                                    s.state_key == "@charlie:remote.example.org";
+                                         });
+                // Spec MUST: m.room.member state event must exist for the invitee
+                REQUIRE(invite_state != store.state.end());
+                REQUIRE_FALSE(invite_state->event_id.empty());
+
+                auto const invite_json =
+                    std::ranges::find_if(store.events,
+                                         [&](merovingian::database::PersistentEvent const& e) {
+                                             return e.event_id == invite_state->event_id;
+                                         });
+                REQUIRE(invite_json != store.events.end());
+                REQUIRE_FALSE(invite_json->json.empty());
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/rooms/{roomId}/forget ---------------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidforget
 SCENARIO("POST /rooms/{roomId}/forget returns 200 after leave and removes the room from rooms.leave",
