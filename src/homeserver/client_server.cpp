@@ -5153,6 +5153,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              public_rooms_filtered_json(rt, filter_term, limit, since_offset));
     }
     auto constexpr directory_room_prefix = std::string_view{"/_matrix/client/v3/directory/room/"};
+    auto constexpr directory_list_room_prefix = std::string_view{"/_matrix/client/v3/directory/list/room/"};
     if (req.method == "GET" && starts_with(request_path, directory_room_prefix))
     {
         auto const encoded_alias = request_path.substr(directory_room_prefix.size());
@@ -5169,6 +5170,23 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                  json_member("room_id", json_str(found->room_id)),
                                  json_member("servers", json_arr(std::move(servers))),
                              })));
+    }
+    // GET /_matrix/client/v3/directory/list/room/{roomId}
+    // Returns whether the room is listed in the public room directory.
+    // Spec: unauthenticated; 404 M_NOT_FOUND if room is unknown.
+    if (req.method == "GET" && starts_with(request_path, directory_list_room_prefix))
+    {
+        auto const room_id = core::percent_decode_path_component(
+            request_path.substr(directory_list_room_prefix.size()));
+        auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms,
+                                                  [&room_id](LocalRoom const& r) { return r.room_id == room_id; });
+        if (room_it == rt.homeserver.database.rooms.end())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
+        }
+        auto const vis = std::string_view{room_it->directory_public ? "public" : "private"};
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({json_member("visibility", json_str(vis))})));
     }
 
     if (req.method == "GET" && request_path == "/_matrix/client/v3/register/available")
@@ -5589,6 +5607,36 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to persist room alias");
         }
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+    // PUT /_matrix/client/v3/directory/list/room/{roomId}
+    // Sets whether the room appears in the public room directory.
+    // Spec: caller must be joined to the room; 400 if visibility is missing/invalid.
+    if (req.method == "PUT" && starts_with(request_path, directory_list_room_prefix))
+    {
+        auto const body = parsed_json_object(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "body must be a JSON object");
+        }
+        auto const* vis_str = string_member(*body, "visibility");
+        if (vis_str == nullptr || (*vis_str != "public" && *vis_str != "private"))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "visibility must be 'public' or 'private'");
+        }
+        auto const room_id = core::percent_decode_path_component(
+            request_path.substr(directory_list_room_prefix.size()));
+        auto const room_it = std::ranges::find_if(rt.homeserver.database.rooms,
+                                                  [&room_id](LocalRoom const& r) { return r.room_id == room_id; });
+        if (room_it == rt.homeserver.database.rooms.end())
+        {
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
+        }
+        if (!joined(*room_it, *user))
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
+        }
+        room_it->directory_public = (*vis_str == "public");
         return dispatch_resp(req, rt, 200U, "{}");
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/account/password")
@@ -6147,6 +6195,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto constexpr leave_s = std::string_view{"/leave"};
         auto constexpr read_markers_s = std::string_view{"/read_markers"};
         auto constexpr receipt_s = std::string_view{"/receipt/"};
+        auto constexpr upgrade_s = std::string_view{"/upgrade"};
         auto const suffix = std::string_view{req.target}.substr(room_prefix.size());
         if (req.method == "PUT")
         {
@@ -7015,6 +7064,83 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     }
                 }
             }
+        }
+        // POST /_matrix/client/v3/rooms/{roomId}/upgrade
+        // Spec §10.7: creates a new room at the requested version, sends m.room.tombstone
+        // to the old room, and returns {"replacement_room": "!newroomid:server"}.
+        if (req.method == "POST" && suffix.size() > upgrade_s.size() &&
+            suffix.substr(suffix.size() - upgrade_s.size()) == upgrade_s)
+        {
+            auto const room_id =
+                core::percent_decode_path_component(suffix.substr(0U, suffix.size() - upgrade_s.size()));
+            auto const upgrade_body = parsed_json_object(req.body);
+            if (!upgrade_body.has_value())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "body must be a JSON object");
+            }
+            auto const* new_version_str = string_member(*upgrade_body, "new_version");
+            if (new_version_str == nullptr || new_version_str->empty())
+            {
+                return dispatch_err(req, rt, 400U, "M_BAD_JSON", "new_version is required");
+            }
+            if (rooms::find_room_version_policy(*new_version_str) == nullptr)
+            {
+                return dispatch_err(req, rt, 400U, "M_UNSUPPORTED_ROOM_VERSION", "unsupported room version");
+            }
+            auto const old_room_it =
+                std::ranges::find_if(rt.homeserver.database.rooms,
+                                     [&room_id](LocalRoom const& r) { return r.room_id == room_id; });
+            if (old_room_it == rt.homeserver.database.rooms.end())
+            {
+                return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room not found");
+            }
+            if (!joined(*old_room_it, *user))
+            {
+                return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of the room");
+            }
+            auto const last_event_id =
+                old_room_it->events.empty() ? std::string{} : old_room_it->events.back();
+            auto predecessor = canonicaljson::Object{};
+            predecessor.push_back(json_member("room_id", json_str(room_id)));
+            if (!last_event_id.empty())
+            {
+                predecessor.push_back(json_member("event_id", json_str(last_event_id)));
+            }
+            auto upgrade_options = CreateRoomOptions{};
+            upgrade_options.room_version = *new_version_str;
+            upgrade_options.creation_content.push_back(
+                json_member("predecessor", json_obj(std::move(predecessor))));
+            auto const create_result = create_room(rt.homeserver, req.access_token, upgrade_options);
+            if (!create_result.ok)
+            {
+                return dispatch_err(req, rt, create_result.status,
+                                    error_code_for_status(create_result.status), create_result.reason);
+            }
+            auto const& new_room_id = create_result.value;
+            auto const tombstone_content = json_serialize(json_obj({
+                json_member("body",             json_str("This room has been replaced")),
+                json_member("replacement_room", json_str(new_room_id)),
+            }));
+            auto const tombstone_body = event_body_from_content("m.room.tombstone", tombstone_content,
+                                                                 std::string{""});
+            if (tombstone_body.has_value())
+            {
+                auto tombstone_req = req;
+                tombstone_req.method = "POST";
+                tombstone_req.target = "/_matrix/client/v3/rooms/" + room_id + "/send";
+                tombstone_req.body = *tombstone_body;
+                call_local(tombstone_req);
+            }
+            log_diagnostic("room.upgrade.accepted",
+                           {
+                               {"actor",       *user,           false},
+                               {"old_room_id", room_id,         false},
+                               {"new_room_id", new_room_id,     false},
+                               {"new_version", *new_version_str, false}
+            });
+            return dispatch_resp(
+                req, rt, 200U,
+                json_serialize(json_obj({json_member("replacement_room", json_str(new_room_id))})));
         }
     }
 

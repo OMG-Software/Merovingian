@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.2
+Version:        0.8.3
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.3-1
+- feat: implement GET/PUT /directory/list/room/{roomId} (room directory visibility)
+- feat: implement POST /rooms/{roomId}/upgrade (room upgrade with tombstone)
+- feat: promote directory list and upgrade endpoints to spec-covered
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.2-1
 - feat: add outbound federation delivery conformance fixtures (PUT /send/{txnId} builder, X-Matrix auth, retry/backoff)
 - feat: promote outbound delivery and queues from partial to spec-covered
