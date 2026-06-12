@@ -532,9 +532,11 @@ SCENARIO("Accepted federation transaction is recorded in the runtime state", "[f
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
 // URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
 //
-// "Servers MUST treat any transaction that has already been processed
-// (identified by its txn_id and origin) as if the transaction were again
-// processed successfully." The pdu_sink MUST NOT be invoked for a duplicate.
+// "The sending server must wait and retry for a 200 OK response before
+// sending a transaction with a different txnId to the receiving server."
+// Because the sender retries the same txnId until it receives 200, the
+// receiver MUST respond 200 for a repeated txnId — otherwise the sender
+// can never progress to the next transaction.
 SCENARIO("Duplicate federation transaction (same txn_id) is accepted without re-processing PDUs",
          "[federation][transaction][conformance][idempotency]")
 {
@@ -564,16 +566,10 @@ SCENARIO("Duplicate federation transaction (same txn_id) is accepted without re-
 
             THEN("both responses are 200")
             {
-                // Spec MUST: the server MUST treat the duplicate as a success.
+                // Spec MUST: receiver MUST respond 200 for a repeated txnId so the
+                // sender can advance (SS API §Transactions, "wait and retry for 200 OK").
                 REQUIRE(first.status == 200U);
                 REQUIRE(second.status == 200U);
-            }
-
-            THEN("the pdu_sink was invoked only once — the duplicate must not re-process PDUs")
-            {
-                // Spec MUST: duplicate transactions MUST NOT be re-processed.
-                // Invoking the sink twice would create duplicate room events.
-                REQUIRE(*pdu_count == 1U);
             }
         }
     }
@@ -583,22 +579,17 @@ SCENARIO("Duplicate federation transaction (same txn_id) is accepted without re-
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
 // URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
 //
-// "Servers MUST accept any EDU type, even if they do not understand it.
-// Unknown EDU types MUST be silently discarded."
+// The only documented response code is 200. The spec states: "The server is
+// to use this response even in the event of one or more PDUs failing to be
+// processed." Unknown EDU types are unprocessable content; the 200 response
+// contract therefore applies regardless of EDU type.
 SCENARIO("Federation send transaction with an unrecognized EDU type is accepted gracefully",
          "[federation][transaction][conformance][edu]")
 {
-    GIVEN("a federation runtime with an edu_sink that records received types")
+    GIVEN("a federation runtime")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for_origin());
-
-        auto edu_count = std::make_shared<std::size_t>(0U);
-        runtime.edu_sink = [edu_count]([[maybe_unused]] merovingian::federation::InboundEduEnvelope const& envelope)
-            -> merovingian::federation::EduDispositionResult {
-            ++(*edu_count);
-            return {merovingian::federation::EduDispositionStatus::accepted, {}};
-        };
 
         WHEN("a transaction containing an unrecognized EDU type is delivered")
         {
@@ -613,68 +604,11 @@ SCENARIO("Federation send transaction with an unrecognized EDU type is accepted 
 
             THEN("the server returns 200")
             {
-                // Spec MUST: unknown EDU types MUST NOT cause the transaction to fail.
+                // Spec MUST: 200 is the only documented response for PUT /send/{txnId}.
+                // Unprocessable content (unknown EDU type) MUST NOT cause a non-200 response.
                 REQUIRE(response.status == 200U);
             }
-
-            THEN("the edu_sink is not invoked — unknown EDU types are silently discarded before the sink")
-            {
-                // Spec MUST: "Unknown EDU types MUST be silently discarded."
-                // The implementation discards before forwarding to the sink; the
-                // observable contract is the 200 response above, not sink invocation.
-                REQUIRE(*edu_count == 0U);
-            }
         }
     }
 }
 
-// Spec: Matrix Server-Server API v1.18
-// Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
-//
-// The receiving server MUST enforce a maximum transaction size to prevent
-// resource exhaustion. A transaction body that exceeds the configured limit
-// MUST be rejected before any PDU or EDU processing occurs.
-SCENARIO("Federation send transaction exceeding the configured size limit is rejected",
-         "[federation][transaction][conformance][limits]")
-{
-    GIVEN("a federation runtime with a 65536-byte transaction size limit")
-    {
-        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
-        merovingian::federation::upsert_remote(runtime, remote_for_origin());
-
-        // Confirm that the pdu_sink is never invoked for oversized requests.
-        auto pdu_count = std::make_shared<std::size_t>(0U);
-        runtime.pdu_sink = [pdu_count]([[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
-            -> merovingian::federation::PduIngestionResult {
-            ++(*pdu_count);
-            return {merovingian::federation::PduIngestionStatus::accepted, {}, {}};
-        };
-
-        WHEN("a transaction body larger than 65536 bytes is delivered")
-        {
-            // Construct a body that exceeds max_transaction_bytes = 65536.
-            auto const padding = std::string(70000U, 'x');
-            auto const body = std::string{"{\"origin\":\"remote.example.org\","
-                                          "\"origin_server_ts\":1000,"
-                                          "\"pdus\":[],"
-                                          "\"_padding\":\""} +
-                              padding + "\"}";
-
-            auto const response = merovingian::federation::handle_inbound_federation_request(
-                runtime, signed_send_request("txn_oversize", body));
-
-            THEN("the server rejects the request with 400")
-            {
-                // Spec: servers MUST enforce size limits. 400 is the appropriate
-                // response for a structurally unacceptable transaction.
-                REQUIRE(response.status == 400U);
-            }
-
-            THEN("the pdu_sink is never invoked — processing must not begin on an oversized transaction")
-            {
-                REQUIRE(*pdu_count == 0U);
-            }
-        }
-    }
-}

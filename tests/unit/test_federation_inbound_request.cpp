@@ -1173,3 +1173,43 @@ SCENARIO("Inbound pdu_sink enforces Matrix event-authorization rules before pers
         }
     }
 }
+
+SCENARIO("Inbound transaction with an unknown EDU type does not invoke the edu_sink",
+         "[federation][inbound][edu]")
+{
+    GIVEN("a runtime with a known remote and an edu_sink that counts invocations")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto edu_count = std::make_shared<std::size_t>(0U);
+        runtime.edu_sink = [edu_count]([[maybe_unused]] merovingian::federation::InboundEduEnvelope const& env)
+            -> merovingian::federation::EduDispositionResult {
+            ++(*edu_count);
+            return {merovingian::federation::EduDispositionStatus::accepted, {}};
+        };
+
+        WHEN("a transaction containing an unrecognized EDU type is delivered")
+        {
+            // "org.example.unknown" is not a registered Matrix EDU type; the
+            // implementation discards it before forwarding to the sink.
+            auto const body = std::string{
+                "{\"origin\":\"matrix.example.org\","
+                "\"origin_server_ts\":1000,"
+                "\"pdus\":[],"
+                "\"edus\":[{\"edu_type\":\"org.example.unknown\","
+                "\"content\":{\"k\":\"v\"}}]}"};
+            auto const request = signed_request(origin, key_id, token, body);
+            [[maybe_unused]] auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the edu_sink is never invoked — unknown EDU types are filtered before dispatch")
+            {
+                REQUIRE(*edu_count == 0U);
+            }
+        }
+    }
+}
