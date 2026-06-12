@@ -91,16 +91,16 @@ SCENARIO("seccomp probe reads /proc/self/status successfully on Linux", "[platfo
         {
             auto const result = merovingian::platform::probe_seccomp_status();
 
-            THEN("the probe succeeds")
+            THEN("the probe succeeds and returns a definitive seccomp_active value")
             {
+                // probed == true means /proc/self/status was read successfully and
+                // the Seccomp: field was parsed. seccomp_active reflects the actual
+                // runtime environment — true in Docker containers (Docker's default
+                // seccomp profile is active), false on bare hosts without a filter.
+                // We do not apply apply_seccomp_filter() here because that would
+                // permanently alter the test process's syscall table.
                 REQUIRE(result.probed);
-            }
-
-            AND_THEN("seccomp is not active because no filter was applied in this test binary")
-            {
-                // Unit tests do not call apply_seccomp_filter() — applying the
-                // filter would permanently alter the test process's syscall table.
-                REQUIRE_FALSE(result.seccomp_active);
+                // seccomp_active is environment-dependent; no assertion on its value.
             }
         }
     }
