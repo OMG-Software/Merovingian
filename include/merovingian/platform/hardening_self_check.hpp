@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/platform/elf_probe.hpp"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -42,5 +44,14 @@ private:
 
 [[nodiscard]] auto run_startup_hardening_self_check() -> HardeningSelfCheck;
 [[nodiscard]] auto hardening_status_name(HardeningStatus status) noexcept -> char const*;
+
+// Map ELF probe results to individual hardening checks. Exposed for testing.
+// Returns `enabled` when the probe confirmed the flag; `unknown` otherwise
+// (probe could not run, binary is statically linked, or flag is absent).
+// Never returns `disabled` — ELF flags are baked in at link time and cannot
+// be changed at runtime, so absence is indistinguishable from an intentional
+// static-binary build.
+[[nodiscard]] auto linker_hardening_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck;
+[[nodiscard]] auto relro_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck;
 
 } // namespace merovingian::platform

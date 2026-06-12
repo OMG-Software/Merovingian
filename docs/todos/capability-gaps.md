@@ -21,7 +21,7 @@ Open work per capability area. Status column reflects the current level in the
 | Database persistence | `runtime-wired` | Add more live PostgreSQL integration tests and enforce runtime/migration grants through separate PostgreSQL users in deployment packaging. |
 | Observability and audit | `runtime-wired` | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
 | Trust and safety | `runtime-wired` | Add Matrix v1.18 conformance fixtures, policy server transport integration, durable policy-rule management, and richer moderation workflows. |
-| Runtime hardening | `integrated` | Implement in-process probes retiring each alpha exception: ELF program-header probe (linker/RELRO), Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
+| Runtime hardening | `integrated` | ELF program-header probe (linker/RELRO) retired in v0.7.2. Remaining: Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `integrated` | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
 | Supply chain and release | `integrated` | Add dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
