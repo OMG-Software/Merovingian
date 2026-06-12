@@ -6924,6 +6924,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 if (slash_pos != std::string_view::npos && slash_pos > 0U)
                 {
                     auto const receipt_type = std::string{after_receipt.substr(0U, slash_pos)};
+                    // Spec: valid receipt types are m.read, m.read.private, and m.fully_read.
+                    if (receipt_type != "m.read" && receipt_type != "m.read.private" &&
+                        receipt_type != "m.fully_read")
+                    {
+                        return dispatch_err(req, rt, 400U, "M_INVALID_PARAM",
+                                            "receiptType must be one of: m.read, m.read.private, m.fully_read");
+                    }
                     auto const event_id = core::percent_decode_path_component(after_receipt.substr(slash_pos + 1U));
                     if (!event_id.empty())
                     {
