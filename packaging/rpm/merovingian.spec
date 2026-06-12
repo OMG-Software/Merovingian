@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.3
+Version:        0.8.4
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.4-1
+- fix: implement POST /_matrix/client/v3/delete_devices with UIA and idempotent bulk deletion
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.3-1
 - feat: implement GET/PUT /directory/list/room/{roomId} (room directory visibility)
 - feat: implement POST /rooms/{roomId}/upgrade (room upgrade with tombstone)
