@@ -1,5 +1,7 @@
 ## 0.8.2
 
+- **fix(federation): saturate outbound retry backoff before overflow:** `compute_backoff` now doubles with an explicit cap instead of using floating-point exponentiation and a narrowing cast. This keeps the retry interval monotonic while avoiding UBSan-triggering overflow on large retry counts in sanitizer builds.
+
 - **feat(conformance): outbound federation delivery spec-covered:** Added `tests/conformance/test_outbound_delivery_conformance.cpp` with 16 new SCENARIO blocks covering the outbound PUT /_matrix/federation/v1/send/{txnId} pipeline per Matrix v1.18 SS API. Tests cover: EDU transaction body shape (origin/origin_server_ts/pdus/edus), `edu_type` key requirement (not `type`), m.receipt EDU nested content structure, transaction-ID uniqueness, outbound request URL (https + correct path), X-Matrix Authorization header presence and field structure, exponential-backoff growth and cap, circuit-breaker open/closed state, success-clears and failure-sets retry state. Promotes `PUT /send/{txnId} outbound` and `Outbound federation queues` from `partial` to `spec-covered`.
 
 ## 0.8.0

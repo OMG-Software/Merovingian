@@ -11,7 +11,6 @@
 
 #include <array>
 #include <chrono>
-#include <cmath>
 #include <optional>
 #include <string>
 #include <utility>
@@ -187,13 +186,24 @@ auto build_receipt_edu_content(std::string_view room_id, std::string_view receip
 
 auto compute_backoff(std::uint32_t retry_count) noexcept -> std::uint64_t
 {
+    auto interval = base_retry_interval_ms;
     if (retry_count == 0U)
     {
-        return base_retry_interval_ms;
+        return interval;
     }
-    auto const exponential = static_cast<std::uint64_t>(static_cast<double>(base_retry_interval_ms) *
-                                                        std::pow(2.0, static_cast<double>(retry_count)));
-    return exponential > max_retry_interval_ms ? max_retry_interval_ms : exponential;
+    for (auto attempt = std::uint32_t{0U}; attempt < retry_count; ++attempt)
+    {
+        if (interval >= max_retry_interval_ms)
+        {
+            return max_retry_interval_ms;
+        }
+        if (interval > max_retry_interval_ms / 2U)
+        {
+            return max_retry_interval_ms;
+        }
+        interval *= 2U;
+    }
+    return interval;
 }
 
 auto destination_should_retry(FederationDestination const& destination, std::uint64_t now_ts) noexcept -> bool
