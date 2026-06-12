@@ -37,6 +37,20 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("libpq-dev", workflow)
         self.assertIn("libsodium postgresql17-client", workflow)
 
+    def test_conformance_and_packaging_capability_gates_are_present(self) -> None:
+        # GIVEN the repository CI workflow.
+        self.assertTrue(CI_WORKFLOW.is_file(), "CI workflow is missing")
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN Matrix conformance and packaging consistency must pass before merge.
+        # THEN both are represented as explicitly named gate steps in CI so
+        # failures surface as distinct job steps rather than being buried inside
+        # the generic build-and-test step.
+        self.assertIn("Conformance gate", workflow)
+        self.assertIn("check-conformance-gate.sh", workflow)
+        self.assertIn("Packaging sanity gate", workflow)
+        self.assertIn("packages-workflow-tooling", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

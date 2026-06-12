@@ -1492,3 +1492,195 @@ SCENARIO("PUT /send_knock processes the knock and returns 200 when the acceptor 
         }
     }
 }
+
+// =============================================================================
+// GET /_matrix/federation/v1/query/directory
+// =============================================================================
+// Spec: Matrix Server-Server API v1.18
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1querydirectory
+//
+// Resolves a room alias to a room ID + list of resident homeservers.
+// Spec MUST: 200 with room_id (string) and servers (array of strings) when alias is known.
+// Spec MUST: 404 when the alias is unknown to this server.
+// Spec: Requires authentication (X-Matrix signed request).
+
+// --- query/directory: alias found --------------------------------------------
+SCENARIO("GET /query/directory returns room_id and servers when the alias is known",
+         "[federation][conformance][query_directory]")
+{
+    GIVEN("a runtime with directory_query_provider wired for a known alias")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        runtime.directory_query_provider =
+            [](std::string_view alias) -> merovingian::federation::FederationDirectory {
+            if (alias == "#general:local.example.org")
+            {
+                return {true, "!room123:local.example.org",
+                        {"local.example.org", "remote.example.org"}};
+            }
+            return {false, {}, {}};
+        };
+
+        WHEN("a signed GET /query/directory?room_alias=%23general%3Alocal.example.org is dispatched")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/directory"
+                            "?room_alias=%23general%3Alocal.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the server returns 200 with room_id and servers")
+            {
+                // Spec MUST: 200 for a recognised alias.
+                REQUIRE(response.status == 200U);
+
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                // Spec MUST: room_id is a string in the 200 response.
+                auto const* rid = json_get(*root, std::string{"room_id"});
+                REQUIRE(rid != nullptr);
+                REQUIRE(std::get_if<std::string>(&rid->storage()) != nullptr);
+
+                // Spec MUST: servers is an array in the 200 response.
+                auto const* srv = json_get(*root, std::string{"servers"});
+                REQUIRE(srv != nullptr);
+                REQUIRE(std::get_if<merovingian::canonicaljson::Array>(&srv->storage()) != nullptr);
+            }
+        }
+    }
+}
+
+// --- query/directory: alias not found ----------------------------------------
+// Spec: Matrix Server-Server API v1.18
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1querydirectory
+//
+// Spec MUST: 404 when the alias is unknown to this server.
+SCENARIO("GET /query/directory returns 404 when the alias is unknown",
+         "[federation][conformance][query_directory]")
+{
+    GIVEN("a runtime with directory_query_provider that does not know the alias")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        runtime.directory_query_provider =
+            []([[maybe_unused]] std::string_view alias) -> merovingian::federation::FederationDirectory {
+            return {false, {}, {}};
+        };
+
+        WHEN("a signed GET /query/directory?room_alias=%23unknown%3Alocal.example.org is dispatched")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/directory"
+                            "?room_alias=%23unknown%3Alocal.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the server returns 404")
+            {
+                // Spec MUST: 404 for an unrecognised alias.
+                REQUIRE(response.status == 404U);
+            }
+        }
+    }
+}
+
+// --- query/directory: provider not installed (501) ----------------------------
+// Spec: Matrix Server-Server API v1.18
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1querydirectory
+SCENARIO("GET /query/directory returns 501 when no directory_query_provider is installed",
+         "[federation][conformance][query_directory]")
+{
+    GIVEN("a runtime with no directory_query_provider")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        WHEN("a signed GET /query/directory request is dispatched")
+        {
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/directory"
+                            "?room_alias=%23general%3Alocal.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the server returns 501 Not Implemented")
+            {
+                // Architectural invariant: no provider installed → 501.
+                REQUIRE(response.status == 501U);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// make_join — M_INCOMPATIBLE_ROOM_VERSION
+// =============================================================================
+// Spec: Matrix Server-Server API v1.18
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
+//
+// Spec: 400 with errcode M_INCOMPATIBLE_ROOM_VERSION when the room's actual
+// version is not listed in the joining server's `ver` query parameter.
+// Spec: the 400 response body MUST include `room_version` so the joining
+// server knows which version the room actually uses.
+SCENARIO("make_join returns 400 M_INCOMPATIBLE_ROOM_VERSION when room version is not in the ver list",
+         "[federation][conformance][make_join][room-version]")
+{
+    GIVEN("a runtime whose room is version 12")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        runtime.membership_template_provider =
+            [](merovingian::federation::FederationEndpoint /*endpoint*/,
+               std::string_view target_room_id, std::string_view user_id,
+               std::vector<std::string> const& /*supported*/)
+            -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            auto tmpl         = merovingian::federation::MembershipEventTemplate{};
+            tmpl.room_id      = std::string{target_room_id};
+            tmpl.user_id      = std::string{user_id};
+            tmpl.membership   = "join";
+            tmpl.room_version = "12";
+            return tmpl;
+        };
+
+        WHEN("the joining server advertises only ver=1 (incompatible with room v12)")
+        {
+            auto const target =
+                "/_matrix/federation/v1/make_join/" + std::string{room_id} +
+                "/@remote:" + origin + "?ver=1";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the server returns 400 with M_INCOMPATIBLE_ROOM_VERSION and room_version")
+            {
+                // Spec MUST: 400 when the room version is absent from ver list.
+                REQUIRE(response.status == 400U);
+
+                auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root =
+                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                // Spec MUST: errcode is M_INCOMPATIBLE_ROOM_VERSION.
+                auto const* errcode = json_get(*root, std::string{"errcode"});
+                REQUIRE(errcode != nullptr);
+                auto const* errcode_str = std::get_if<std::string>(&errcode->storage());
+                REQUIRE(errcode_str != nullptr);
+                REQUIRE(*errcode_str == std::string{"M_INCOMPATIBLE_ROOM_VERSION"});
+
+                // Spec MUST: room_version present so the joining server can retry with the right ver.
+                auto const* rv = json_get(*root, std::string{"room_version"});
+                REQUIRE(rv != nullptr);
+                REQUIRE(std::get_if<std::string>(&rv->storage()) != nullptr);
+            }
+        }
+    }
+}

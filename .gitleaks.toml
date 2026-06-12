@@ -9,3 +9,9 @@ paths = [
   '''(^|/)tests/''',
   '''^\.github/workflows/postgres-integration\.yml$''',
 ]
+
+[[allowlists]]
+description = "Local Matrix v1.18 spec copy — example tokens and keys are spec test vectors, not real credentials"
+paths = [
+  '''^docs/matrix-v1\.18-spec/''',
+]

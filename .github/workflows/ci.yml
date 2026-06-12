@@ -57,6 +57,12 @@ jobs:
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build
 
+      - name: Conformance gate
+        run: sh scripts/check-conformance-gate.sh build
+
+      - name: Packaging sanity gate
+        run: meson test -C build packages-workflow-tooling --print-errorlogs
+
       - name: Validate Phase 1 configuration gates
         run: bash scripts/validate-phase1-config.sh build
 
@@ -125,6 +131,12 @@ jobs:
 
       - name: Build and test
         run: sh scripts/build-linux.sh --builddir build-fedora
+
+      - name: Conformance gate
+        run: sh scripts/check-conformance-gate.sh build-fedora
+
+      - name: Packaging sanity gate
+        run: meson test -C build-fedora packages-workflow-tooling --print-errorlogs
 
       - name: Validate Phase 1 configuration gates
         run: bash scripts/validate-phase1-config.sh build-fedora

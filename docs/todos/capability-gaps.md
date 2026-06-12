@@ -17,11 +17,11 @@ Open work per capability area. Status column reflects the current level in the
 | E2EE key APIs | `runtime-wired` | Add full key-count algorithms, complete backup session retrieval/deletion, broader Matrix v1.18 semantics, and remaining conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Add sync long polling and filters, real payloads for presence/device/to-device/account-data surfaces, restricted join rule evaluation, third-party invite auth, and broader Matrix v1.18 room-version conformance fixtures. |
 | Federation | `runtime-wired` | Room-version-specific PDU verification, key rotation publication, multiple active/old keys, and Matrix federation conformance coverage. |
-| Media repository | `runtime-wired` | Wire live remote media transport/server-discovery into the remote-ingest boundary, add real image thumbnail resampling, and carry true content headers through the local request model. |
+| Media repository | `runtime-wired` | Live remote media transport and server discovery wired in v0.7.2. Thumbnail records now carry actual content type and byte size (dimensions remain 0×0 until an image decoder is linked). Remaining: real image resampling library integration, multipart upload handling, and Matrix v1.18 remote-thumbnail conformance fixtures. |
 | Database persistence | `runtime-wired` | Add more live PostgreSQL integration tests and enforce runtime/migration grants through separate PostgreSQL users in deployment packaging. |
 | Observability and audit | `runtime-wired` | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
 | Trust and safety | `runtime-wired` | Add Matrix v1.18 conformance fixtures, policy server transport integration, durable policy-rule management, and richer moderation workflows. |
-| Runtime hardening | `integrated` | Implement in-process probes retiring each alpha exception: ELF program-header probe (linker/RELRO), Linux seccomp-bpf filter, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
+| Runtime hardening | `integrated` | ELF program-header probe (linker/RELRO) retired in v0.7.2; seccomp-bpf allowlist applied and probe retired in v0.7.2. Remaining: harden default action to `SECCOMP_RET_KILL_PROCESS` after allowlist validation, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `integrated` | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
 | Supply chain and release | `integrated` | Add dependency pinning policy, license review, artifact signing, provenance, and reproducible build notes. |
@@ -53,10 +53,11 @@ Open work per capability area. Status column reflects the current level in the
 | --- | --- | --- |
 | `PUT /_matrix/federation/v1/send/{txnId}` inbound | `runtime-wired` | Room-version-specific PDU verification, richer EDU side-effects. Idempotency, unknown-EDU discard, and oversize rejection now conformance-covered. |
 | `PUT /_matrix/federation/v1/send/{txnId}` outbound | `partial` | Matrix conformance coverage. |
-| Federation join/leave/invite/knock/backfill | `integrated` | Full Matrix conformance fixtures; richer production leave/knock state semantics. |
+| Federation join/leave/invite/knock/backfill | `integrated` | Full Matrix conformance fixtures; richer production leave/knock state semantics. make_join M_INCOMPATIBLE_ROOM_VERSION now conformance-covered. |
 | Server discovery | `partial` | TLS-bound origin validation, richer Matrix edge-case fixtures, live network conformance coverage. |
 | Request and event signing/verification | `partial` | Room-version-specific PDU hash verification, live interoperability test, conformance coverage. |
-| `GET /_matrix/federation/v1/query/profile` | `partial` | `query/directory` and remaining federation query endpoints; conformance fixtures. |
+| `GET /_matrix/federation/v1/query/profile` | `spec-covered` | |
+| `GET /_matrix/federation/v1/query/directory` | `spec-covered` | |
 | Event-graph queries | `partial` | Historical state-at-event reconstruction, conformance fixtures. |
 | Outbound federation queues | `partial` | Live federation delivery coverage. |
 | Key publication (`GET /_matrix/key/v2/server`) | `spec-covered` | Key-ID format, valid_until_ts expiry, and old_verify_keys structural contract now covered by conformance fixtures. |

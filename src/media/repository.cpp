@@ -181,8 +181,11 @@ namespace
         {
             return;
         }
-        repository.thumbnails.push_back({record.media_id, record.storage_id, 64U, 64U, "image/png",
-                                         std::min<std::uint64_t>(record.size_bytes, 4096U)});
+        // Dimensions are not decoded from the image at ingest time (no image library).
+        // Store 0×0 so clients know the dimensions are unknown; the original blob bytes
+        // are served as the thumbnail until a resampling library is integrated.
+        repository.thumbnails.push_back({record.media_id, record.storage_id, 0U, 0U,
+                                         record.content_type, record.size_bytes});
         ++repository.metrics.thumbnails_generated;
     }
 

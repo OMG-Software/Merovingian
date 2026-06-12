@@ -226,24 +226,26 @@ SCENARIO("Integrated media upload rejects oversized and unknown MIME uploads", "
     }
 }
 
-SCENARIO("Remote media download route fails closed until a later milestone enables fetching",
+SCENARIO("Remote media download falls back to 502 when server discovery fails",
          "[media][repository][integration]")
 {
-    GIVEN("a running homeserver with remote media disabled")
+    GIVEN("a running homeserver and an unresolvable remote origin")
     {
         auto started = merovingian::homeserver::start_runtime(media_test_config());
         REQUIRE(started.started);
         auto runtime = std::move(started.runtime);
 
-        WHEN("a remote media download is requested")
+        WHEN("a remote media download is requested for an unresolvable server")
         {
+            // remote.example.org resolves to a blocked/non-Matrix IP; live server
+            // discovery via the system network will fail and return !discovery_allowed.
             auto const remote = merovingian::homeserver::handle_local_http_request(
                 runtime, {"GET", "/_matrix/media/v3/download/remote.example.org/media123", {}, {}});
 
-            THEN("the request is explicitly rejected and audited")
+            THEN("the request fails closed with 502 and is audited")
             {
                 REQUIRE(remote.status == 502U);
-                REQUIRE(remote.body == "remote media fetch disabled");
+                REQUIRE(remote.body == "server discovery failed");
                 REQUIRE(runtime.media_repository.metrics.remote_fetch_rejections == 1U);
                 REQUIRE(runtime.database.audit_events.back().event_type == "media.remote_fetch_rejected");
             }

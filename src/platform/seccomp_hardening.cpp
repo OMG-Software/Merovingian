@@ -1,0 +1,330 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include "merovingian/platform/seccomp_hardening.hpp"
+
+#include <string_view>
+
+#ifdef __linux__
+#include <fcntl.h>
+#include <linux/audit.h>
+#include <linux/filter.h>
+#include <linux/seccomp.h>
+#include <sys/prctl.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+#include <cstddef>
+#include <cstdint>
+#endif
+
+namespace merovingian::platform
+{
+
+#ifdef __linux__
+namespace
+{
+
+    struct FdGuard final
+    {
+        int fd{-1};
+        explicit FdGuard(int f) noexcept : fd{f} {}
+        ~FdGuard() noexcept
+        {
+            if (fd >= 0)
+            {
+                ::close(fd);
+            }
+        }
+        FdGuard(FdGuard const&) = delete;
+        auto operator=(FdGuard const&) -> FdGuard& = delete;
+        FdGuard(FdGuard&&) = delete;
+        auto operator=(FdGuard&&) -> FdGuard& = delete;
+    };
+
+    // SECCOMP_RET_LOG: log the syscall to the kernel audit trail and allow it.
+    // Added in kernel 4.14. The numeric value is used directly so this file
+    // compiles against older kernel headers where the macro is absent.
+#ifndef SECCOMP_RET_LOG
+    static constexpr auto k_seccomp_ret_log = std::uint32_t{0x7ffc0000U};
+#else
+    static constexpr auto k_seccomp_ret_log = std::uint32_t{SECCOMP_RET_LOG};
+#endif
+
+    // Unconditionally allow the syscall with the given number.
+    // Expands to two sock_filter entries: a JEQ test (falls through to ALLOW on
+    // match, jumps past it on mismatch) and a SECCOMP_RET_ALLOW.
+#define ALLOW_SYSCALL(nr)                                                 \
+    BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, static_cast<uint32_t>(nr), 0, 1), \
+    BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ALLOW)
+
+    [[nodiscard]] auto install_seccomp_filter() noexcept -> bool
+    {
+        // clang-format off
+        struct ::sock_filter filter[] = {  // NOLINT(*-avoid-c-arrays)
+            // ── Architecture guard ──────────────────────────────────────────────
+            // Reject non-x86_64 calls to block 32-bit compat (IA-32) syscall spoofing.
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                     static_cast<uint32_t>(offsetof(struct ::seccomp_data, arch))),
+            BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
+            BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+            // Load the syscall number for all remaining comparisons.
+            BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                     static_cast<uint32_t>(offsetof(struct ::seccomp_data, nr))),
+
+            // ── I/O ────────────────────────────────────────────────────────────
+            ALLOW_SYSCALL(__NR_read),
+            ALLOW_SYSCALL(__NR_write),
+            ALLOW_SYSCALL(__NR_readv),
+            ALLOW_SYSCALL(__NR_writev),
+            ALLOW_SYSCALL(__NR_pread64),
+            ALLOW_SYSCALL(__NR_pwrite64),
+            ALLOW_SYSCALL(__NR_preadv),
+            ALLOW_SYSCALL(__NR_pwritev),
+            ALLOW_SYSCALL(__NR_sendfile),
+
+            // ── File system ────────────────────────────────────────────────────
+            ALLOW_SYSCALL(__NR_open),
+            ALLOW_SYSCALL(__NR_openat),
+            ALLOW_SYSCALL(__NR_close),
+            ALLOW_SYSCALL(__NR_stat),
+            ALLOW_SYSCALL(__NR_fstat),
+            ALLOW_SYSCALL(__NR_lstat),
+            ALLOW_SYSCALL(__NR_access),
+            ALLOW_SYSCALL(__NR_faccessat),
+            ALLOW_SYSCALL(__NR_lseek),
+            ALLOW_SYSCALL(__NR_fcntl),
+            ALLOW_SYSCALL(__NR_ioctl),
+            ALLOW_SYSCALL(__NR_flock),
+            ALLOW_SYSCALL(__NR_fsync),
+            ALLOW_SYSCALL(__NR_fdatasync),
+            ALLOW_SYSCALL(__NR_getcwd),
+            ALLOW_SYSCALL(__NR_chdir),
+            ALLOW_SYSCALL(__NR_mkdir),
+            ALLOW_SYSCALL(__NR_mkdirat),
+            ALLOW_SYSCALL(__NR_unlink),
+            ALLOW_SYSCALL(__NR_unlinkat),
+            ALLOW_SYSCALL(__NR_rename),
+            ALLOW_SYSCALL(__NR_renameat),
+            ALLOW_SYSCALL(__NR_readlink),
+            ALLOW_SYSCALL(__NR_readlinkat),
+            ALLOW_SYSCALL(__NR_getdents64),
+            ALLOW_SYSCALL(__NR_dup),
+            ALLOW_SYSCALL(__NR_dup2),
+            ALLOW_SYSCALL(__NR_dup3),
+            ALLOW_SYSCALL(__NR_pipe),
+            ALLOW_SYSCALL(__NR_pipe2),
+            ALLOW_SYSCALL(__NR_ftruncate),
+            ALLOW_SYSCALL(__NR_truncate),
+            ALLOW_SYSCALL(__NR_chmod),
+            ALLOW_SYSCALL(__NR_fchmod),
+            ALLOW_SYSCALL(__NR_fchmodat),
+            ALLOW_SYSCALL(__NR_umask),
+            ALLOW_SYSCALL(__NR_memfd_create),
+#ifdef __NR_statx
+            ALLOW_SYSCALL(__NR_statx),
+#endif
+#ifdef __NR_newfstatat
+            ALLOW_SYSCALL(__NR_newfstatat),
+#endif
+#ifdef __NR_renameat2
+            ALLOW_SYSCALL(__NR_renameat2),
+#endif
+#ifdef __NR_openat2
+            ALLOW_SYSCALL(__NR_openat2),
+#endif
+
+            // ── Memory ─────────────────────────────────────────────────────────
+            ALLOW_SYSCALL(__NR_mmap),
+            ALLOW_SYSCALL(__NR_munmap),
+            ALLOW_SYSCALL(__NR_mprotect),
+            ALLOW_SYSCALL(__NR_madvise),
+            ALLOW_SYSCALL(__NR_brk),
+            ALLOW_SYSCALL(__NR_mremap),
+            ALLOW_SYSCALL(__NR_mlock),
+            ALLOW_SYSCALL(__NR_munlock),
+            ALLOW_SYSCALL(__NR_mlockall),
+            ALLOW_SYSCALL(__NR_munlockall),
+            ALLOW_SYSCALL(__NR_mincore),
+
+            // ── Network ────────────────────────────────────────────────────────
+            ALLOW_SYSCALL(__NR_socket),
+            ALLOW_SYSCALL(__NR_bind),
+            ALLOW_SYSCALL(__NR_listen),
+            ALLOW_SYSCALL(__NR_accept),
+            ALLOW_SYSCALL(__NR_accept4),
+            ALLOW_SYSCALL(__NR_connect),
+            ALLOW_SYSCALL(__NR_getsockname),
+            ALLOW_SYSCALL(__NR_getpeername),
+            ALLOW_SYSCALL(__NR_sendto),
+            ALLOW_SYSCALL(__NR_recvfrom),
+            ALLOW_SYSCALL(__NR_sendmsg),
+            ALLOW_SYSCALL(__NR_recvmsg),
+            ALLOW_SYSCALL(__NR_sendmmsg),
+            ALLOW_SYSCALL(__NR_recvmmsg),
+            ALLOW_SYSCALL(__NR_setsockopt),
+            ALLOW_SYSCALL(__NR_getsockopt),
+            ALLOW_SYSCALL(__NR_shutdown),
+            ALLOW_SYSCALL(__NR_socketpair),
+
+            // ── Poll and event notification ─────────────────────────────────────
+            ALLOW_SYSCALL(__NR_select),
+            ALLOW_SYSCALL(__NR_pselect6),
+            ALLOW_SYSCALL(__NR_poll),
+            ALLOW_SYSCALL(__NR_ppoll),
+            ALLOW_SYSCALL(__NR_epoll_create),
+            ALLOW_SYSCALL(__NR_epoll_create1),
+            ALLOW_SYSCALL(__NR_epoll_ctl),
+            ALLOW_SYSCALL(__NR_epoll_wait),
+            ALLOW_SYSCALL(__NR_epoll_pwait),
+            ALLOW_SYSCALL(__NR_eventfd),
+            ALLOW_SYSCALL(__NR_eventfd2),
+            ALLOW_SYSCALL(__NR_timerfd_create),
+            ALLOW_SYSCALL(__NR_timerfd_gettime),
+            ALLOW_SYSCALL(__NR_timerfd_settime),
+            ALLOW_SYSCALL(__NR_signalfd),
+            ALLOW_SYSCALL(__NR_signalfd4),
+            ALLOW_SYSCALL(__NR_inotify_init1),
+            ALLOW_SYSCALL(__NR_inotify_add_watch),
+#ifdef __NR_epoll_pwait2
+            ALLOW_SYSCALL(__NR_epoll_pwait2),
+#endif
+
+            // ── Threads and synchronisation ─────────────────────────────────────
+            ALLOW_SYSCALL(__NR_futex),
+            ALLOW_SYSCALL(__NR_set_robust_list),
+            ALLOW_SYSCALL(__NR_get_robust_list),
+            ALLOW_SYSCALL(__NR_sched_yield),
+            ALLOW_SYSCALL(__NR_clone),
+            ALLOW_SYSCALL(__NR_nanosleep),
+            ALLOW_SYSCALL(__NR_clock_nanosleep),
+            ALLOW_SYSCALL(__NR_restart_syscall),
+            ALLOW_SYSCALL(__NR_wait4),
+            ALLOW_SYSCALL(__NR_waitid),
+            ALLOW_SYSCALL(__NR_exit),
+            ALLOW_SYSCALL(__NR_exit_group),
+            ALLOW_SYSCALL(__NR_set_tid_address),
+#ifdef __NR_clone3
+            ALLOW_SYSCALL(__NR_clone3),
+#endif
+#ifdef __NR_futex_waitv
+            ALLOW_SYSCALL(__NR_futex_waitv),
+#endif
+
+            // ── Signals ────────────────────────────────────────────────────────
+            ALLOW_SYSCALL(__NR_rt_sigaction),
+            ALLOW_SYSCALL(__NR_rt_sigprocmask),
+            ALLOW_SYSCALL(__NR_rt_sigreturn),
+            ALLOW_SYSCALL(__NR_rt_sigsuspend),
+            ALLOW_SYSCALL(__NR_sigaltstack),
+            ALLOW_SYSCALL(__NR_kill),
+            ALLOW_SYSCALL(__NR_tgkill),
+            ALLOW_SYSCALL(__NR_tkill),
+
+            // ── Security and privilege ──────────────────────────────────────────
+            ALLOW_SYSCALL(__NR_prctl),
+            ALLOW_SYSCALL(__NR_arch_prctl),
+            ALLOW_SYSCALL(__NR_seccomp),
+            ALLOW_SYSCALL(__NR_getrandom),
+            ALLOW_SYSCALL(__NR_capget),
+            ALLOW_SYSCALL(__NR_capset),
+
+            // ── Process identity ────────────────────────────────────────────────
+            ALLOW_SYSCALL(__NR_getpid),
+            ALLOW_SYSCALL(__NR_getppid),
+            ALLOW_SYSCALL(__NR_gettid),
+            ALLOW_SYSCALL(__NR_getuid),
+            ALLOW_SYSCALL(__NR_geteuid),
+            ALLOW_SYSCALL(__NR_getgid),
+            ALLOW_SYSCALL(__NR_getegid),
+            ALLOW_SYSCALL(__NR_getgroups),
+
+            // ── Resource limits and scheduling ──────────────────────────────────
+            ALLOW_SYSCALL(__NR_getrlimit),
+            ALLOW_SYSCALL(__NR_setrlimit),
+            ALLOW_SYSCALL(__NR_prlimit64),
+            ALLOW_SYSCALL(__NR_sched_getaffinity),
+            ALLOW_SYSCALL(__NR_getrusage),
+
+            // ── Time ───────────────────────────────────────────────────────────
+            ALLOW_SYSCALL(__NR_clock_gettime),
+            ALLOW_SYSCALL(__NR_clock_getres),
+            ALLOW_SYSCALL(__NR_gettimeofday),
+            ALLOW_SYSCALL(__NR_time),
+
+            // ── System information ──────────────────────────────────────────────
+            ALLOW_SYSCALL(__NR_uname),
+            ALLOW_SYSCALL(__NR_sysinfo),
+
+            // ── Default: log unrecognised syscalls and allow them (beta phase) ───
+            // Replace with SECCOMP_RET_KILL_PROCESS once the allowlist is
+            // validated against the full production workload.
+            BPF_STMT(BPF_RET | BPF_K, k_seccomp_ret_log),
+        };
+        // clang-format on
+#undef ALLOW_SYSCALL
+
+        auto const prog = ::sock_fprog{
+            .len    = static_cast<unsigned short>(sizeof(filter) / sizeof(filter[0])),
+            .filter = filter,
+        };
+
+        if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
+        {
+            return false;
+        }
+        return ::syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) == 0;
+    }
+
+    [[nodiscard]] auto read_seccomp_status() -> SeccompProbeResult
+    {
+        auto result = SeccompProbeResult{};
+        auto const guard = FdGuard{::open("/proc/self/status", O_RDONLY | O_CLOEXEC)};
+        if (guard.fd < 0)
+        {
+            return result;
+        }
+        char buf[4096] = {};
+        auto const n = ::read(guard.fd, buf, sizeof(buf) - 1U);
+        if (n <= 0)
+        {
+            return result;
+        }
+        result.probed = true;
+        auto const sv = std::string_view{buf, static_cast<std::size_t>(n)};
+        auto const pos = sv.find("Seccomp:");
+        if (pos == std::string_view::npos)
+        {
+            return result;
+        }
+        auto value_start = pos + 8U;
+        while (value_start < sv.size() && (sv[value_start] == ' ' || sv[value_start] == '\t'))
+        {
+            ++value_start;
+        }
+        // Mode 2 = SECCOMP_MODE_FILTER: a bpf filter is active.
+        result.seccomp_active = value_start < sv.size() && sv[value_start] == '2';
+        return result;
+    }
+
+} // namespace
+#endif // __linux__
+
+auto apply_seccomp_filter() noexcept -> bool
+{
+#ifdef __linux__
+    return install_seccomp_filter();
+#else
+    return false;
+#endif
+}
+
+auto probe_seccomp_status() -> SeccompProbeResult
+{
+#ifdef __linux__
+    return read_seccomp_status();
+#else
+    return {};
+#endif
+}
+
+} // namespace merovingian::platform

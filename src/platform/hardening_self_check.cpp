@@ -4,6 +4,8 @@
 
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/platform/elf_probe.hpp"
+#include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <string>
 #include <utility>
@@ -147,19 +149,16 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
     add("compiler hardening",
         enabled_or_alpha_exception(compile_time_compiler_hardening_enabled(),
                                    "Toolchain did not advertise stack protector + FORTIFY + PIE at compile time."));
-    // The linker flag set (`-Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack`) is
-    // applied in meson.build but cannot be re-introspected from inside the
-    // binary without parsing PT_GNU_RELRO/PT_GNU_STACK at runtime, which is
-    // out of scope for alpha.
-    add("linker hardening", enabled_or_alpha_exception(false, "Runtime ELF program-header probe is deferred."));
+    auto const elf = probe_elf_hardening();
+    add("linker hardening", linker_hardening_check_from_probe(elf));
     add("PIE", enabled_or_alpha_exception(compile_time_pie_enabled(),
                                           "Compile did not advertise __PIE__; PIE may still be linked via -pie."));
-    add("RELRO", enabled_or_alpha_exception(false, "Runtime PT_GNU_RELRO probe is deferred."));
+    add("RELRO", relro_check_from_probe(elf));
     add("stack protector", enabled_or_alpha_exception(compile_time_stack_protector_enabled(),
                                                       "Compile did not advertise __SSP__/__SSP_STRONG__/__SSP_ALL__."));
     add("FORTIFY_SOURCE",
         enabled_or_alpha_exception(compile_time_fortify_enabled(), "Compile did not advertise _FORTIFY_SOURCE > 0."));
-    add("seccomp", enabled_or_alpha_exception(false, "Linux seccomp-bpf profile is not yet enforced at startup."));
+    add("seccomp", seccomp_check_from_probe(probe_seccomp_status()));
     add("pledge/unveil",
         enabled_or_alpha_exception(false, "OpenBSD pledge/unveil invocations are not yet wired into startup."));
     add("capsicum",
@@ -212,6 +211,49 @@ auto hardening_status_name(HardeningStatus status) noexcept -> char const*
     }
 
     return "unknown";
+}
+
+auto linker_hardening_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck
+{
+    // `enabled` only when the probe ran and confirmed RELRO + bind-now + noexecstack.
+    // Everything else is `unknown`: statically-linked binaries have no PT_DYNAMIC for
+    // bind-now, and dev builds omit -z,relro intentionally; the server cannot
+    // distinguish these cases at runtime.
+    if (result.probed && result.has_relro && result.has_bind_now && result.has_noexec_stack)
+        return HardeningCheck{{}, HardeningStatus::enabled, {}};
+    return HardeningCheck{
+        {},
+        HardeningStatus::unknown,
+        "ELF probe: PT_GNU_RELRO, DT_BIND_NOW, or PT_GNU_STACK(noexec) not confirmed; "
+        "binary may be statically linked or built without -Wl,-z,relro -Wl,-z,now.",
+    };
+}
+
+auto relro_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck
+{
+    if (result.probed && result.has_relro)
+        return HardeningCheck{{}, HardeningStatus::enabled, {}};
+    return HardeningCheck{
+        {},
+        HardeningStatus::unknown,
+        "ELF probe: PT_GNU_RELRO segment not found; "
+        "binary may be statically linked or built without -Wl,-z,relro.",
+    };
+}
+
+auto seccomp_check_from_probe(SeccompProbeResult const& result) -> HardeningCheck
+{
+    // `enabled` only when the probe ran and confirmed a bpf filter is active.
+    // `unknown` in all other cases: filter may not have been applied (dev/dry-run),
+    // the kernel may lack CONFIG_SECCOMP_FILTER, or the platform is non-Linux.
+    if (result.probed && result.seccomp_active)
+        return HardeningCheck{{}, HardeningStatus::enabled, {}};
+    return HardeningCheck{
+        {},
+        HardeningStatus::unknown,
+        "/proc/self/status Seccomp field is not 2 (SECCOMP_MODE_FILTER); "
+        "filter may not have been applied or the platform does not support seccomp-bpf.",
+    };
 }
 
 } // namespace merovingian::platform

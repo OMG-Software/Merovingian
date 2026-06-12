@@ -8951,6 +8951,37 @@ SCENARIO("GET /voip/turnServer returns a JSON object", "[conformance][client-ser
     }
 }
 
+// --- GET /voip/turnServer: authentication required ----------------------------
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3voipturnserver
+//
+// Spec: "Requires authentication: Yes"
+// A request without a valid access token MUST be rejected with 401 M_MISSING_TOKEN.
+SCENARIO("GET /voip/turnServer rejects unauthenticated requests",
+         "[conformance][client-server][voip][auth]")
+{
+    GIVEN("a running client-server with no access token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("GET /voip/turnServer is called without an access token")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/voip/turnServer", {}, {}});
+
+            THEN("the server returns 401 M_MISSING_TOKEN")
+            {
+                // Spec MUST: endpoint requires authentication; no token → 401.
+                REQUIRE(response.response.status == 401U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == std::string{"M_MISSING_TOKEN"});
+            }
+        }
+    }
+}
+
 // ============================================================================
 // 13.20  Presence — GET /presence/{userId}/status
 // ============================================================================

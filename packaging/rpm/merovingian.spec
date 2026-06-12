@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.7.1
+Version:        0.7.2
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.7.2-1
+- feat: add GET /query/directory federation conformance with full provider callback
+- feat: add make_join M_INCOMPATIBLE_ROOM_VERSION error conformance
+- feat: add voip/turnServer authentication conformance test
+- feat: promote federation query/directory from partial to spec-covered
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.7.1-1
 - feat: add inbound federation transaction idempotency, unknown-EDU, and oversize conformance tests
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.7.0-1
