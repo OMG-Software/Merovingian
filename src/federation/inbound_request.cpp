@@ -413,7 +413,26 @@ namespace
             runtime.membership_template_provider(route.endpoint, params->room_id, params->subject, supported);
         if (!tmpl.has_value())
         {
-            return {404U, "membership template unavailable"};
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room not found or user not permitted")};
+        }
+        // Spec §GET /make_join: when `ver` is explicitly provided and the room's
+        // version is not listed, respond 400 M_INCOMPATIBLE_ROOM_VERSION. The body
+        // MUST include `room_version` so the joining server can retry with the right ver.
+        if (!supported.empty() && !tmpl->room_version.empty() && route.endpoint == FederationEndpoint::make_join)
+        {
+            auto const version_ok = std::ranges::any_of(supported, [&](std::string const& v) {
+                return v == tmpl->room_version;
+            });
+            if (!version_ok)
+            {
+                auto err = canonicaljson::Object{};
+                err.push_back(canonicaljson::make_member(
+                    "errcode", canonicaljson::Value{std::string{"M_INCOMPATIBLE_ROOM_VERSION"}}));
+                err.push_back(canonicaljson::make_member("room_version", canonicaljson::Value{tmpl->room_version}));
+                err.push_back(
+                    canonicaljson::make_member("error", canonicaljson::Value{std::string{"Room version not supported"}}));
+                return {400U, serialize_response_object(std::move(err))};
+            }
         }
         auto populated = *tmpl;
         if (populated.origin.empty())
@@ -609,6 +628,45 @@ namespace
             remaining = remaining.substr(amp + 1U);
         }
         return {};
+    }
+
+    // Spec: GET /_matrix/federation/v1/query/directory
+    // ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1querydirectory
+    //
+    // Resolves a room alias to a room_id + list of resident servers.
+    // The room_alias query parameter is percent-decoded before dispatch.
+    [[nodiscard]] auto handle_query_directory(FederationRuntimeState& runtime,
+                                              SignedFederationRequest const& request) -> FederationResponse
+    {
+        if (!runtime.directory_query_provider)
+        {
+            return {501U, "query_directory not implemented"};
+        }
+        auto const alias = query_param_value(request.target, "room_alias");
+        if (alias.empty())
+        {
+            return {400U, homeserver::matrix_error("M_MISSING_PARAM", "room_alias is required")};
+        }
+        auto const result = runtime.directory_query_provider(alias);
+        if (!result.found)
+        {
+            return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room alias not found")};
+        }
+        auto servers_array = canonicaljson::Array{};
+        for (auto const& s : result.servers)
+        {
+            servers_array.push_back(canonicaljson::Value{s});
+        }
+        auto response = canonicaljson::Object{};
+        response.push_back(canonicaljson::make_member("room_id", canonicaljson::Value{result.room_id}));
+        response.push_back(
+            canonicaljson::make_member("servers", canonicaljson::Value{std::move(servers_array)}));
+        auto body = serialize_response_object(std::move(response));
+        if (body.empty())
+        {
+            return {500U, "failed to serialize directory response"};
+        }
+        return {200U, std::move(body)};
     }
 
     [[nodiscard]] auto handle_query_profile(FederationRuntimeState& runtime, SignedFederationRequest const& request)
@@ -815,6 +873,8 @@ namespace
             return handle_invite(runtime, request, route);
         case FederationEndpoint::backfill:
             return handle_backfill(runtime, request);
+        case FederationEndpoint::query_directory:
+            return handle_query_directory(runtime, request);
         case FederationEndpoint::query_profile:
             return handle_query_profile(runtime, request);
         case FederationEndpoint::query_keys:

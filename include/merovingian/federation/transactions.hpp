@@ -20,6 +20,7 @@ enum class FederationEndpoint
     invite,
     backfill,
     edu,
+    query_directory,
     query_profile,
     query_keys,
     claim_keys,

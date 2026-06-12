@@ -84,6 +84,8 @@ auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char cons
         return "backfill";
     case FederationEndpoint::edu:
         return "edu";
+    case FederationEndpoint::query_directory:
+        return "query_directory";
     case FederationEndpoint::query_profile:
         return "query_profile";
     case FederationEndpoint::query_keys:
@@ -121,6 +123,7 @@ auto federation_routes() -> std::vector<FederationRoute>
         route("PUT", "/_matrix/federation/v1/invite/{roomId}/{eventId}", FederationEndpoint::invite),
         route("GET", "/_matrix/federation/v1/backfill/{roomId}", FederationEndpoint::backfill),
         route("PUT", "/_matrix/federation/v1/send_edu/{eduType}/{txnId}", FederationEndpoint::edu),
+        route("GET", "/_matrix/federation/v1/query/directory", FederationEndpoint::query_directory),
         route("GET", "/_matrix/federation/v1/query/profile", FederationEndpoint::query_profile),
         route("POST", "/_matrix/federation/v1/user/keys/query", FederationEndpoint::query_keys),
         route("POST", "/_matrix/federation/v1/user/keys/claim", FederationEndpoint::claim_keys),

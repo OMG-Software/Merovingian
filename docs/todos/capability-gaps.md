@@ -53,10 +53,11 @@ Open work per capability area. Status column reflects the current level in the
 | --- | --- | --- |
 | `PUT /_matrix/federation/v1/send/{txnId}` inbound | `runtime-wired` | Room-version-specific PDU verification, richer EDU side-effects. Idempotency, unknown-EDU discard, and oversize rejection now conformance-covered. |
 | `PUT /_matrix/federation/v1/send/{txnId}` outbound | `partial` | Matrix conformance coverage. |
-| Federation join/leave/invite/knock/backfill | `integrated` | Full Matrix conformance fixtures; richer production leave/knock state semantics. |
+| Federation join/leave/invite/knock/backfill | `integrated` | Full Matrix conformance fixtures; richer production leave/knock state semantics. make_join M_INCOMPATIBLE_ROOM_VERSION now conformance-covered. |
 | Server discovery | `partial` | TLS-bound origin validation, richer Matrix edge-case fixtures, live network conformance coverage. |
 | Request and event signing/verification | `partial` | Room-version-specific PDU hash verification, live interoperability test, conformance coverage. |
-| `GET /_matrix/federation/v1/query/profile` | `partial` | `query/directory` and remaining federation query endpoints; conformance fixtures. |
+| `GET /_matrix/federation/v1/query/profile` | `spec-covered` | |
+| `GET /_matrix/federation/v1/query/directory` | `spec-covered` | |
 | Event-graph queries | `partial` | Historical state-at-event reconstruction, conformance fixtures. |
 | Outbound federation queues | `partial` | Live federation delivery coverage. |
 | Key publication (`GET /_matrix/key/v2/server`) | `spec-covered` | Key-ID format, valid_until_ts expiry, and old_verify_keys structural contract now covered by conformance fixtures. |

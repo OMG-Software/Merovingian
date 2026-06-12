@@ -110,6 +110,21 @@ struct FederationRemoteRuntime final
 using RemoteKeyResolver =
     std::function<std::optional<FederationRemoteRuntime>(std::string_view server_name, std::string_view key_id)>;
 
+// Result of a federation `query/directory` lookup. found=false means the alias
+// is unknown to this server and the handler responds 404 M_NOT_FOUND.
+struct FederationDirectory final
+{
+    bool found{false};
+    std::string room_id{};
+    std::vector<std::string> servers{};
+};
+
+// Resolves a room alias for an inbound federation
+// `GET /_matrix/federation/v1/query/directory`. Optional: when unset the
+// handler responds 501 Not Implemented. The alias is percent-decoded before
+// being passed to the provider.
+using DirectoryQueryProvider = std::function<FederationDirectory(std::string_view room_alias)>;
+
 // Result of a federation `query/profile` lookup. found=false means the user
 // is unknown to this server and the handler responds 404 M_NOT_FOUND.
 struct FederationProfile final
@@ -179,6 +194,9 @@ struct FederationRuntimeState final
     MembershipAcceptor membership_acceptor{};
     InviteHandler invite_handler{};
     BackfillProvider backfill_provider{};
+    // Optional resolver for inbound `query/directory`. When unset the handler
+    // responds 501 Not Implemented.
+    DirectoryQueryProvider directory_query_provider{};
     // Optional resolver for inbound `query/profile`. When unset the handler
     // responds 501 Not Implemented.
     ProfileQueryProvider profile_query_provider{};

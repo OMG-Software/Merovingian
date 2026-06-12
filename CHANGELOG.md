@@ -1,3 +1,9 @@
+## 0.8.0
+
+- **feat(conformance): `GET /query/directory` promoted to spec-covered:** Implemented `GET /_matrix/federation/v1/query/directory` end-to-end: added `query_directory` to `FederationEndpoint`, added `FederationDirectory` result struct and `DirectoryQueryProvider` callback to `FederationRuntimeState`, wired routing in `transactions.cpp`, and added handler in `inbound_request.cpp`. Three conformance scenarios cover: 200 with `room_id` + `servers` when alias is known, 404 when alias is unknown, and 501 when no provider is installed.
+- **feat(conformance): `make_join` 400 M_INCOMPATIBLE_ROOM_VERSION:** Extended `handle_make_membership` to return 400 with `errcode: M_INCOMPATIBLE_ROOM_VERSION` and a `room_version` field when the joining server's `ver` list does not include the room's actual version. The spec requires this error so the joining server can retry with the correct version. Conformance scenario added.
+- **feat(conformance): `GET /voip/turnServer` authentication requirement:** Added a conformance scenario asserting that unauthenticated requests to `GET /_matrix/client/v3/voip/turnServer` are rejected with 401 M_MISSING_TOKEN. The endpoint is gated by the existing client-server auth guard.
+
 ## 0.7.1
 
 - **feat(conformance): inbound transaction idempotency — 200 for duplicate txnId:** Added a conformance fixture for `PUT /_matrix/federation/v1/send/{txnId}`. The spec states the sending server must retry the same `txnId` until it receives 200 before advancing; the receiver must therefore respond 200 for a repeated `txnId`. Both requests assert 200. The `pdu_sink` deduplication invariant (sink invoked once, not twice) is separately covered by the existing unit test `Inbound federation transaction accepts signed public trusted remotes`.
