@@ -1,3 +1,7 @@
+## 0.8.4
+
+- **fix(client-server): implement `POST /_matrix/client/v3/delete_devices`:** Bulk device deletion is now wired for Matrix clients logging out other sessions. The route now requires the same `m.login.password` UIA flow as single-device deletion, returns `200 {}` on success, revokes access and refresh tokens for the deleted devices, removes them from the runtime device view, and treats already-removed devices as successful retries per Matrix v1.18.
+
 ## 0.8.3
 
 - **feat: implement `GET/PUT /_matrix/client/v3/directory/list/room/{roomId}`:** Room directory visibility is now wired. `GET` returns `{"visibility":"public"|"private"}` for known rooms (unauthenticated, 404 `M_NOT_FOUND` for unknown rooms). `PUT` lets a joined member publish or unpublish the room from the public directory, returning `{}` on success (400 `M_BAD_JSON` for invalid or missing visibility, 404 for unknown rooms, 403 `M_FORBIDDEN` for non-members). Added `directory_public` to `LocalRoom`. Matrix v1.18 conformance scenarios cover the full success and error surface for both endpoints.

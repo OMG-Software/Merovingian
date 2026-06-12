@@ -159,10 +159,10 @@ auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, 
                          std::string_view user_id, std::string_view device_id, std::string_view key_id,
                          std::string_view key_value, std::string const& device_secret_key) -> void
 {
-    auto const otk_json = merovingian::federation::test::make_signed_otk_json(
-        user_id, device_id, key_value, device_secret_key);
-    auto const body = std::string{R"({"one_time_keys":{"signed_curve25519:)"} + std::string{key_id} +
-                      "\":" + otk_json + "}}";
+    auto const otk_json =
+        merovingian::federation::test::make_signed_otk_json(user_id, device_id, key_value, device_secret_key);
+    auto const body =
+        std::string{R"({"one_time_keys":{"signed_curve25519:)"} + std::string{key_id} + "\":" + otk_json + "}}";
     REQUIRE(merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/keys/upload", token, body})
                 .response.status == 200U);
@@ -309,8 +309,7 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
 // Sends a text message with a caller-supplied transaction id, so repeated calls
 // create distinct timeline events (send_message reuses one txn id and dedupes).
 [[nodiscard]] auto send_text(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
-                             std::string const& room_id, std::string const& txn, std::string const& text)
-    -> std::string
+                             std::string const& room_id, std::string const& txn, std::string const& text) -> std::string
 {
     auto const r = merovingian::homeserver::handle_client_server_request(
         runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn, token,
@@ -575,7 +574,9 @@ SCENARIO("POST /register with device_id in request returns matching device_id in
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/register", {},
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
                  R"({"username":"devid","password":"CorrectHorse7!","device_id":"CLIENT_DEVICE_1","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
 
             THEN("the response device_id equals the requested device_id")
@@ -595,8 +596,7 @@ SCENARIO("POST /register with device_id in request returns matching device_id in
 //
 // §5.5.1: If inhibit_login is true the server MUST NOT return an access_token
 // or device_id in the response body; only user_id is present.
-SCENARIO("POST /register with inhibit_login:true returns only user_id",
-         "[conformance][client-server][register]")
+SCENARIO("POST /register with inhibit_login:true returns only user_id", "[conformance][client-server][register]")
 {
     GIVEN("a running client-server with token-gated registration enabled")
     {
@@ -607,7 +607,9 @@ SCENARIO("POST /register with inhibit_login:true returns only user_id",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/register", {},
+                {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
                  R"({"username":"nologin","password":"CorrectHorse7!","inhibit_login":true,"auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
 
             THEN("the response has user_id but no access_token or device_id")
@@ -631,8 +633,7 @@ SCENARIO("POST /register with inhibit_login:true returns only user_id",
 //
 // The device created by registration is a real session and MUST appear in
 // GET /devices so the client can manage it.
-SCENARIO("POST /register device is visible via GET /devices",
-         "[conformance][client-server][register][devices]")
+SCENARIO("POST /register device is visible via GET /devices", "[conformance][client-server][register][devices]")
 {
     GIVEN("a successful registration that returns an access token")
     {
@@ -640,9 +641,10 @@ SCENARIO("POST /register device is visible via GET /devices",
         REQUIRE(started.started);
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
-            started.runtime,
-            {"POST", "/_matrix/client/v3/register", {},
-             merovingian::tests::registration_json("regdeviceuser", "CorrectHorse7!")});
+            started.runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("regdeviceuser", "CorrectHorse7!")});
         REQUIRE(reg.response.status == 200U);
         auto const token = response_string_field(reg.response.body, "access_token");
         auto const reg_device_id = response_string_field(reg.response.body, "device_id");
@@ -694,7 +696,9 @@ SCENARIO("POST /register with initial_device_display_name stores it as the devic
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
             started.runtime,
-            {"POST", "/_matrix/client/v3/register", {},
+            {"POST",
+             "/_matrix/client/v3/register",
+             {},
              R"({"username":"dispreguser","password":"CorrectHorse7!","initial_device_display_name":"Registration Phone","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})"});
         REQUIRE(reg.response.status == 200U);
         auto const token = response_string_field(reg.response.body, "access_token");
@@ -852,16 +856,19 @@ SCENARIO("POST /login with initial_device_display_name stores it as the device d
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("displayuser", "CorrectHorse7!")})
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("displayuser", "CorrectHorse7!")})
                     .response.status == 200U);
 
         WHEN("the user logs in with initial_device_display_name set")
         {
             auto const login = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/login", {},
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
                  R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@displayuser:example.org"},"password":"CorrectHorse7!","device_id":"DISP_DEV","initial_device_display_name":"My Test Phone"})"});
             REQUIRE(login.response.status == 200U);
             auto const token = response_string_field(login.response.body, "access_token");
@@ -1076,11 +1083,11 @@ SCENARIO("POST /keys/upload rejects a one-time key whose signature bytes fail Ed
         auto const token = logged_in_token(started.runtime);
 
         // 32 zero bytes in unpadded standard base64 — valid ed25519 key length.
-        auto constexpr zero_pubkey_b64  = std::string_view{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"};
+        auto constexpr zero_pubkey_b64 = std::string_view{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"};
         // 64 zero bytes — correct length for Ed25519 but NOT a valid signature.
-        auto constexpr bogus_sig_b64    = std::string_view{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-                                                            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-                                                            "AAAAAA"};
+        auto constexpr bogus_sig_b64 = std::string_view{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                                        "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                                        "AAAAAA"};
 
         // Build the upload body: device_keys with a real-length ed25519 key,
         // plus a signed_curve25519 OTK whose signature has the right key ID
@@ -1260,15 +1267,13 @@ SCENARIO("POST /keys/upload with OTKs then POST /keys/claim returns and consumes
         auto const otk_json = merovingian::federation::test::make_signed_otk_json(
             "@alice:example.org", "DEVICE1", "otk+base64+key", alice_kp.secret_key);
         auto const upload_body =
-            std::string{R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"pubkey1","ed25519:DEVICE1":")"} +
-            alice_ed25519 +
-            R"("},"signatures":{}},"one_time_keys":{"signed_curve25519:AAAAAAAA":)" +
-            otk_json + R"(}})";
-        REQUIRE(
-            merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/upload", token, upload_body})
-                .response.status == 200U);
+            std::string{
+                R"({"device_keys":{"user_id":"@alice:example.org","device_id":"DEVICE1","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:DEVICE1":"pubkey1","ed25519:DEVICE1":")"} +
+            alice_ed25519 + R"("},"signatures":{}},"one_time_keys":{"signed_curve25519:AAAAAAAA":)" + otk_json +
+            R"(}})";
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/keys/upload", token, upload_body})
+                    .response.status == 200U);
 
         WHEN("another device claims a one-time key for DEVICE1")
         {
@@ -1328,9 +1333,8 @@ SCENARIO("POST /keys/device_signing/upload without auth returns 401 UIA challeng
         WHEN("the device uploads cross-signing keys without providing auth")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
-                 R"({"master_key":{"keys":{"ed25519:master":"base64key"},"usage":["master"]}})"});
+                started.runtime, {"POST", "/_matrix/client/v3/keys/device_signing/upload", token,
+                                  R"({"master_key":{"keys":{"ed25519:master":"base64key"},"usage":["master"]}})"});
 
             THEN("the server issues a UIA challenge with m.login.password flow")
             {
@@ -1546,15 +1550,14 @@ SCENARIO("POST /keys/query does not expose user_signing_key to non-owners",
         WHEN("bob queries alice's keys")
         {
             auto const bob_token = register_and_login(started.runtime, "bob");
-            auto const response  = merovingian::homeserver::handle_client_server_request(
+            auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/keys/query", bob_token,
-                 R"({"device_keys":{"@alice:example.org":[]}})"});
+                {"POST", "/_matrix/client/v3/keys/query", bob_token, R"({"device_keys":{"@alice:example.org":[]}})"});
 
             THEN("alice's user_signing_key is not included in the response")
             {
                 REQUIRE(response.response.status == 200U);
-                auto const body               = parse_object(response.response.body);
+                auto const body = parse_object(response.response.body);
                 auto const* user_signing_keys = object_member_as_object(body, "user_signing_keys");
                 // Spec MUST: user_signing_key is only visible to the owner, not to other users.
                 bool const alice_key_exposed =
@@ -1568,13 +1571,12 @@ SCENARIO("POST /keys/query does not expose user_signing_key to non-owners",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/keys/query", alice_token,
-                 R"({"device_keys":{"@alice:example.org":[]}})"});
+                {"POST", "/_matrix/client/v3/keys/query", alice_token, R"({"device_keys":{"@alice:example.org":[]}})"});
 
             THEN("alice's user_signing_key is included in the response")
             {
                 REQUIRE(response.response.status == 200U);
-                auto const body               = parse_object(response.response.body);
+                auto const body = parse_object(response.response.body);
                 auto const* user_signing_keys = object_member_as_object(body, "user_signing_keys");
                 // Spec MUST: the owner always receives their own user_signing_key.
                 REQUIRE(user_signing_keys != nullptr);
@@ -1596,37 +1598,36 @@ SCENARIO("PUT /sendToDevice with \"*\" delivers to all target user devices",
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt             = started.runtime;
-        auto const token_a   = logged_in_token(rt);                        // alice / DEVICE1
-        auto const token_b   = login_existing_user(rt, "alice", "DEV_B"); // alice / DEV_B
+        auto& rt = started.runtime;
+        auto const token_a = logged_in_token(rt);                       // alice / DEVICE1
+        auto const token_b = login_existing_user(rt, "alice", "DEV_B"); // alice / DEV_B
         auto const bob_token = register_and_login(rt, "bob");
 
         WHEN("bob sends a to-device event to alice with device_id \"*\"")
         {
             auto const send = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"PUT", "/_matrix/client/v3/sendToDevice/m.key.verification.cancel/txn_wildcard", bob_token,
-                 R"({"messages":{"@alice:example.org":{"*":{"reason":"test"}}}})"});
+                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.key.verification.cancel/txn_wildcard", bob_token,
+                     R"({"messages":{"@alice:example.org":{"*":{"reason":"test"}}}})"});
 
             THEN("both alice devices receive the event via /sync")
             {
                 REQUIRE(send.response.status == 200U);
 
-                auto const sync_a    = merovingian::homeserver::handle_client_server_request(
+                auto const sync_a = merovingian::homeserver::handle_client_server_request(
                     rt, {"GET", "/_matrix/client/v3/sync", token_a, {}});
                 REQUIRE(sync_a.response.status == 200U);
-                auto const body_a    = parse_object(sync_a.response.body);
-                auto const* td_a     = object_member_as_object(body_a, "to_device");
+                auto const body_a = parse_object(sync_a.response.body);
+                auto const* td_a = object_member_as_object(body_a, "to_device");
                 auto const* events_a = td_a != nullptr ? object_member_as_array(*td_a, "events") : nullptr;
                 // Spec MUST: "*" delivers to every device — DEVICE1 must receive the event.
                 REQUIRE(events_a != nullptr);
                 REQUIRE(!events_a->empty());
 
-                auto const sync_b    = merovingian::homeserver::handle_client_server_request(
+                auto const sync_b = merovingian::homeserver::handle_client_server_request(
                     rt, {"GET", "/_matrix/client/v3/sync", token_b, {}});
                 REQUIRE(sync_b.response.status == 200U);
-                auto const body_b    = parse_object(sync_b.response.body);
-                auto const* td_b     = object_member_as_object(body_b, "to_device");
+                auto const body_b = parse_object(sync_b.response.body);
+                auto const* td_b = object_member_as_object(body_b, "to_device");
                 auto const* events_b = td_b != nullptr ? object_member_as_array(*td_b, "events") : nullptr;
                 // Spec MUST: "*" delivers to every device — DEV_B must receive the event.
                 REQUIRE(events_b != nullptr);
@@ -1649,12 +1650,12 @@ SCENARIO("POST /keys/device_signing/upload emits device_lists.changed in /sync",
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt           = started.runtime;
-        auto const token_a = logged_in_token(rt);                        // alice / DEVICE1
+        auto& rt = started.runtime;
+        auto const token_a = logged_in_token(rt);                       // alice / DEVICE1
         auto const token_b = login_existing_user(rt, "alice", "DEV_B"); // alice / DEV_B
 
-        auto const initial_sync = merovingian::homeserver::handle_client_server_request(
-            rt, {"GET", "/_matrix/client/v3/sync", token_b, {}});
+        auto const initial_sync =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token_b, {}});
         REQUIRE(initial_sync.response.status == 200U);
         auto const since = sync_next_batch(initial_sync.response.body);
 
@@ -1671,7 +1672,7 @@ SCENARIO("POST /keys/device_signing/upload emits device_lists.changed in /sync",
                 auto const follow_sync = merovingian::homeserver::handle_client_server_request(
                     rt, {"GET", "/_matrix/client/v3/sync?since=" + since, token_b, {}});
                 REQUIRE(follow_sync.response.status == 200U);
-                auto const body          = parse_object(follow_sync.response.body);
+                auto const body = parse_object(follow_sync.response.body);
                 auto const* device_lists = object_member_as_object(body, "device_lists");
                 auto const* changed =
                     device_lists != nullptr ? object_member_as_array(*device_lists, "changed") : nullptr;
@@ -1683,7 +1684,10 @@ SCENARIO("POST /keys/device_signing/upload emits device_lists.changed in /sync",
                 {
                     if (auto const* s = std::get_if<std::string>(&v.storage()))
                     {
-                        if (*s == "@alice:example.org") { alice_listed = true; }
+                        if (*s == "@alice:example.org")
+                        {
+                            alice_listed = true;
+                        }
                     }
                 }
                 REQUIRE(alice_listed);
@@ -1705,8 +1709,8 @@ SCENARIO("POST /keys/signatures/upload emits device_lists.changed in /sync",
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt           = started.runtime;
-        auto const token_a = logged_in_token(rt);                        // alice / DEVICE1
+        auto& rt = started.runtime;
+        auto const token_a = logged_in_token(rt);                       // alice / DEVICE1
         auto const token_b = login_existing_user(rt, "alice", "DEV_B"); // alice / DEV_B
 
         // Upload cross-signing keys first (precondition for signature upload).
@@ -1718,8 +1722,8 @@ SCENARIO("POST /keys/signatures/upload emits device_lists.changed in /sync",
                 .response.status == 200U);
 
         // Advance DEV_B's since token past the cross-signing key-upload notification.
-        auto const sync_after_upload = merovingian::homeserver::handle_client_server_request(
-            rt, {"GET", "/_matrix/client/v3/sync", token_b, {}});
+        auto const sync_after_upload =
+            merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/v3/sync", token_b, {}});
         REQUIRE(sync_after_upload.response.status == 200U);
         auto const since = sync_next_batch(sync_after_upload.response.body);
 
@@ -1736,7 +1740,7 @@ SCENARIO("POST /keys/signatures/upload emits device_lists.changed in /sync",
                 auto const follow_sync = merovingian::homeserver::handle_client_server_request(
                     rt, {"GET", "/_matrix/client/v3/sync?since=" + since, token_b, {}});
                 REQUIRE(follow_sync.response.status == 200U);
-                auto const body          = parse_object(follow_sync.response.body);
+                auto const body = parse_object(follow_sync.response.body);
                 auto const* device_lists = object_member_as_object(body, "device_lists");
                 auto const* changed =
                     device_lists != nullptr ? object_member_as_array(*device_lists, "changed") : nullptr;
@@ -1748,7 +1752,10 @@ SCENARIO("POST /keys/signatures/upload emits device_lists.changed in /sync",
                 {
                     if (auto const* s = std::get_if<std::string>(&v.storage()))
                     {
-                        if (*s == "@alice:example.org") { alice_listed = true; }
+                        if (*s == "@alice:example.org")
+                        {
+                            alice_listed = true;
+                        }
                     }
                 }
                 REQUIRE(alice_listed);
@@ -2021,8 +2028,10 @@ SCENARIO("GET /sync incremental timeline reports limited=false when no events ar
 
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET", R"(/_matrix/client/v3/sync?since=)" + since + R"(&filter={"room":{"timeline":{"limit":2}}})",
-                 token, {}});
+                {"GET",
+                 R"(/_matrix/client/v3/sync?since=)" + since + R"(&filter={"room":{"timeline":{"limit":2}}})",
+                 token,
+                 {}});
 
             THEN("the room timeline reports limited=false and carries a prev_batch token")
             {
@@ -2083,8 +2092,10 @@ SCENARIO("GET /sync truncated timeline returns the most recent events with a bac
 
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"GET", R"(/_matrix/client/v3/sync?since=)" + since + R"(&filter={"room":{"timeline":{"limit":2}}})",
-                 token, {}});
+                {"GET",
+                 R"(/_matrix/client/v3/sync?since=)" + since + R"(&filter={"room":{"timeline":{"limit":2}}})",
+                 token,
+                 {}});
             REQUIRE(response.response.status == 200U);
             auto const body = parse_object(response.response.body);
             auto const* rooms = object_member_as_object(body, "rooms");
@@ -2124,8 +2135,7 @@ SCENARIO("GET /sync truncated timeline returns the most recent events with a bac
 
                 auto const messages = merovingian::homeserver::handle_client_server_request(
                     started.runtime,
-                    {"GET",
-                     "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b&from=" + *prev_batch, token, {}});
+                    {"GET", "/_matrix/client/v3/rooms/" + room_id + "/messages?dir=b&from=" + *prev_batch, token, {}});
                 REQUIRE(messages.response.status == 200U);
                 auto const messages_body = parse_object(messages.response.body);
                 auto const* chunk = object_member_as_array(messages_body, "chunk");
@@ -2153,8 +2163,7 @@ SCENARIO("GET /sync truncated timeline returns the most recent events with a bac
 // and the real request fails with net::ERR_FAILED. This test pins the
 // server-side behaviour so such a failure can be attributed to deployment
 // infrastructure (e.g. a reverse proxy) rather than Merovingian.
-SCENARIO("OPTIONS preflight on a media endpoint returns 200 with CORS headers",
-         "[conformance][client-server][cors]")
+SCENARIO("OPTIONS preflight on a media endpoint returns 200 with CORS headers", "[conformance][client-server][cors]")
 {
     GIVEN("a running server with the default CORS policy")
     {
@@ -2164,11 +2173,8 @@ SCENARIO("OPTIONS preflight on a media endpoint returns 200 with CORS headers",
         WHEN("a browser sends a CORS preflight to the media config endpoint")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"OPTIONS",
-                                  "/_matrix/media/v3/config",
-                                  {},
-                                  {},
-                                  {{"Origin", "https://app.element.io"}}});
+                started.runtime,
+                {"OPTIONS", "/_matrix/media/v3/config", {}, {}, {{"Origin", "https://app.element.io"}}});
 
             THEN("the preflight is answered with HTTP 200 and Access-Control-Allow-Origin")
             {
@@ -3218,8 +3224,7 @@ SCENARIO("PUT /v1/admin/suspend/{userId} returns 404 M_UNRECOGNIZED (implementat
 // Uses User-Interactive Authentication (UIA). The only mandatory stage is
 // m.login.password. A request without an auth field MUST receive 401 with
 // a flows/params/session body (not 403 or 400).
-SCENARIO("POST /account/password without auth returns 401 UIA challenge",
-         "[conformance][client-server][account]")
+SCENARIO("POST /account/password without auth returns 401 UIA challenge", "[conformance][client-server][account]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -3251,8 +3256,7 @@ SCENARIO("POST /account/password without auth returns 401 UIA challenge",
 //
 // When auth.type is m.login.password but the supplied password is wrong,
 // the server MUST return 401 (re-issue the UIA challenge).
-SCENARIO("POST /account/password with wrong current password returns 401",
-         "[conformance][client-server][account]")
+SCENARIO("POST /account/password with wrong current password returns 401", "[conformance][client-server][account]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -4034,9 +4038,8 @@ SCENARIO("DELETE /devices/{deviceId} returns 200 with empty JSON object", "[conf
         {
             // Spec MUST: UIA is required — supply m.login.password auth block.
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"DELETE", "/_matrix/client/v3/devices/DEV_B", *tok1,
-                 R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+                started.runtime, {"DELETE", "/_matrix/client/v3/devices/DEV_B", *tok1,
+                                  R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
 
             THEN("the response is 200 with a valid JSON object body")
             {
@@ -4051,29 +4054,135 @@ SCENARIO("DELETE /devices/{deviceId} returns 200 with empty JSON object", "[conf
 
 // --- POST /_matrix/client/v3/delete_devices -----------------------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3delete_devices
-// IMPLEMENTATION GAP: bulk device deletion not yet implemented.
-SCENARIO("POST /delete_devices returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][devices]")
+//
+// The server MUST require UIA before deleting devices in bulk and MUST return
+// 200 {} once the requested devices have been removed. Devices already removed
+// previously MUST still yield 200.
+SCENARIO("POST /delete_devices requires UIA and deletes listed devices", "[conformance][client-server][devices]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server and a user with three devices")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /delete_devices is called")
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("bulkdev", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login_a = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bulkdev:example.org"},"password":"CorrectHorse7!","device_id":"DEV_A"})"});
+        REQUIRE(login_a.response.status == 200U);
+        auto const login_a_body = parse_object(login_a.response.body);
+        auto const* token_a = string_member(login_a_body, "access_token");
+        REQUIRE(token_a != nullptr);
+
+        auto const login_b = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bulkdev:example.org"},"password":"CorrectHorse7!","device_id":"DEV_B"})"});
+        REQUIRE(login_b.response.status == 200U);
+        auto const login_b_body = parse_object(login_b.response.body);
+        auto const* token_b = string_member(login_b_body, "access_token");
+        REQUIRE(token_b != nullptr);
+
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bulkdev:example.org"},"password":"CorrectHorse7!","device_id":"DEV_C"})"})
+                .response.status == 200U);
+
+        WHEN("POST /delete_devices is sent without an auth block")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/delete_devices", token, R"({"devices":["DEVICE1"]})"});
+                started.runtime,
+                {"POST", "/_matrix/client/v3/delete_devices", *token_a, R"({"devices":["DEV_B","DEV_C"]})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 401 with the UIA challenge")
             {
-                // IMPLEMENTATION GAP: bulk device deletion not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: missing auth block => 401 with UIA challenge.
+                REQUIRE(response.response.status == 401U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* flows = object_member(body, "flows");
+                REQUIRE(flows != nullptr);
+            }
+        }
+
+        WHEN("POST /delete_devices is sent with the wrong password")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/delete_devices", *token_a,
+                 R"({"devices":["DEV_B","DEV_C"],"auth":{"type":"m.login.password","password":"WrongPassword"}})"});
+
+            THEN("the server returns 401")
+            {
+                // Spec MUST: wrong credential => 401.
+                REQUIRE(response.response.status == 401U);
+            }
+        }
+
+        WHEN("POST /delete_devices is sent with valid UIA")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/delete_devices", *token_a,
+                 R"({"devices":["DEV_B","DEV_C"],"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+
+            THEN("the server returns 200 and the deleted devices are gone")
+            {
+                // Spec MUST: valid UIA => 200 {} and devices removed.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                std::ignore = body;
+
+                auto const get_b = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/devices/DEV_B", *token_a, {}});
+                REQUIRE(get_b.response.status == 404U);
+
+                auto const get_c = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/devices/DEV_C", *token_a, {}});
+                REQUIRE(get_c.response.status == 404U);
+
+                auto const still_a = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/devices/DEV_A", *token_a, {}});
+                REQUIRE(still_a.response.status == 200U);
+
+                auto const deleted_device_token = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/devices", *token_b, {}});
+                REQUIRE(deleted_device_token.response.status == 401U);
+            }
+        }
+
+        WHEN("POST /delete_devices repeats a previously completed deletion")
+        {
+            auto const first = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/delete_devices", *token_a,
+                 R"({"devices":["DEV_B"],"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+            REQUIRE(first.response.status == 200U);
+
+            auto const second = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/delete_devices", *token_a,
+                 R"({"devices":["DEV_B"],"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+
+            THEN("the server still returns 200")
+            {
+                // Spec MUST: already-removed devices still succeed.
+                REQUIRE(second.response.status == 200U);
+                auto const body = parse_object(second.response.body);
+                std::ignore = body;
             }
         }
     }
@@ -4350,8 +4459,8 @@ SCENARIO("Encrypted invite join completes the local query claim sendToDevice boo
         auto const bob_kp = merovingian::federation::test::keypair_from_seed("conformance-bob-seed");
         upload_device_keys(started.runtime, bob, "@bob:example.org", "bob_DEV", "BOB_CURVE",
                            merovingian::federation::test::pubkey_b64(bob_kp));
-        upload_one_time_key(started.runtime, bob, "@bob:example.org", "bob_DEV", "BOB_OTK_AAAA",
-                            "BOB_OTK_VALUE", bob_kp.secret_key);
+        upload_one_time_key(started.runtime, bob, "@bob:example.org", "bob_DEV", "BOB_OTK_AAAA", "BOB_OTK_VALUE",
+                            bob_kp.secret_key);
 
         auto const create = merovingian::homeserver::handle_client_server_request(
             started.runtime, {"POST", "/_matrix/client/v3/createRoom", alice,
@@ -4407,8 +4516,8 @@ SCENARIO("Encrypted invite join completes the local query claim sendToDevice boo
                 REQUIRE(query.response.status == 200U);
                 REQUIRE(query.response.body.find("BOB_CURVE") != std::string::npos);
                 // bob_kp.public_key was registered in GIVEN; check the real base64 key round-trips.
-                REQUIRE(query.response.body.find(
-                            merovingian::federation::test::pubkey_b64(bob_kp)) != std::string::npos);
+                REQUIRE(query.response.body.find(merovingian::federation::test::pubkey_b64(bob_kp)) !=
+                        std::string::npos);
 
                 REQUIRE(claim.response.status == 200U);
                 REQUIRE(claim.response.body.find("BOB_OTK_VALUE") != std::string::npos);
@@ -6374,8 +6483,7 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3directorylistroomroomid
 // The server MUST return {"visibility":"public"|"private"} for a known room.
 // Rooms default to private (not listed in the public directory).
-SCENARIO("GET /directory/list/room/{roomId} returns room visibility",
-         "[conformance][client-server][room-discovery]")
+SCENARIO("GET /directory/list/room/{roomId} returns room visibility", "[conformance][client-server][room-discovery]")
 {
     GIVEN("a running homeserver and a newly created room")
     {
@@ -6404,8 +6512,7 @@ SCENARIO("GET /directory/list/room/{roomId} returns room visibility",
         WHEN("GET /directory/list/room/!nonexistent:server is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/directory/list/room/!nonexistent:server", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/directory/list/room/!nonexistent:server", token, {}});
 
             THEN("the server returns 404 M_NOT_FOUND")
             {
@@ -6424,8 +6531,7 @@ SCENARIO("GET /directory/list/room/{roomId} returns room visibility",
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3directorylistroomroomid
 // The server MUST update the room's public-directory visibility for a joined
 // member, returning {} on success. Missing or invalid visibility MUST be 400.
-SCENARIO("PUT /directory/list/room/{roomId} sets room visibility",
-         "[conformance][client-server][room-discovery]")
+SCENARIO("PUT /directory/list/room/{roomId} sets room visibility", "[conformance][client-server][room-discovery]")
 {
     GIVEN("a running homeserver and a room the authenticated user is a member of")
     {
@@ -6438,16 +6544,14 @@ SCENARIO("PUT /directory/list/room/{roomId} sets room visibility",
         {
             auto const put_resp = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/directory/list/room/" + room_id, token,
-                 R"({"visibility":"public"})"});
+                {"PUT", "/_matrix/client/v3/directory/list/room/" + room_id, token, R"({"visibility":"public"})"});
 
             THEN("the server returns 200 and a subsequent GET reflects public")
             {
                 // Spec MUST: 200 {} on success.
                 REQUIRE(put_resp.response.status == 200U);
                 auto const get_resp = merovingian::homeserver::handle_client_server_request(
-                    started.runtime,
-                    {"GET", "/_matrix/client/v3/directory/list/room/" + room_id, token, {}});
+                    started.runtime, {"GET", "/_matrix/client/v3/directory/list/room/" + room_id, token, {}});
                 REQUIRE(get_resp.response.status == 200U);
                 auto const body = parse_object(get_resp.response.body);
                 auto const* vis = string_member(body, "visibility");
@@ -6460,8 +6564,7 @@ SCENARIO("PUT /directory/list/room/{roomId} sets room visibility",
         WHEN("PUT /directory/list/room/{roomId} is called with missing visibility")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/directory/list/room/" + room_id, token, "{}"});
+                started.runtime, {"PUT", "/_matrix/client/v3/directory/list/room/" + room_id, token, "{}"});
 
             THEN("the server returns 400 M_BAD_JSON")
             {
@@ -6477,9 +6580,8 @@ SCENARIO("PUT /directory/list/room/{roomId} sets room visibility",
         WHEN("PUT /directory/list/room/!nonexistent:server is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v3/directory/list/room/!nonexistent:server", token,
-                 R"({"visibility":"public"})"});
+                started.runtime, {"PUT", "/_matrix/client/v3/directory/list/room/!nonexistent:server", token,
+                                  R"({"visibility":"public"})"});
 
             THEN("the server returns 404 M_NOT_FOUND")
             {
@@ -7108,9 +7210,8 @@ SCENARIO("POST /rooms/{roomId}/invite for a remote user returns 200 and persists
         WHEN("alice invites a user on a different homeserver")
         {
             auto const invite = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
-                 R"({"user_id":"@charlie:remote.example.org"})"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/invite", alice,
+                                  R"({"user_id":"@charlie:remote.example.org"})"});
 
             THEN("the server returns 200 with an empty body")
             {
@@ -7130,21 +7231,18 @@ SCENARIO("POST /rooms/{roomId}/invite for a remote user returns 200 and persists
                 REQUIRE(membership->membership == "invite");
 
                 auto const invite_state =
-                    std::ranges::find_if(store.state,
-                                         [&room_id](merovingian::database::PersistentStateEvent const& s) {
-                                             return s.room_id == room_id &&
-                                                    s.event_type == "m.room.member" &&
-                                                    s.state_key == "@charlie:remote.example.org";
-                                         });
+                    std::ranges::find_if(store.state, [&room_id](merovingian::database::PersistentStateEvent const& s) {
+                        return s.room_id == room_id && s.event_type == "m.room.member" &&
+                               s.state_key == "@charlie:remote.example.org";
+                    });
                 // Spec MUST: m.room.member state event must exist for the invitee
                 REQUIRE(invite_state != store.state.end());
                 REQUIRE_FALSE(invite_state->event_id.empty());
 
                 auto const invite_json =
-                    std::ranges::find_if(store.events,
-                                         [&](merovingian::database::PersistentEvent const& e) {
-                                             return e.event_id == invite_state->event_id;
-                                         });
+                    std::ranges::find_if(store.events, [&](merovingian::database::PersistentEvent const& e) {
+                        return e.event_id == invite_state->event_id;
+                    });
                 REQUIRE(invite_json != store.events.end());
                 REQUIRE_FALSE(invite_json->json.empty());
             }
@@ -7851,8 +7949,7 @@ SCENARIO("GET /initialSync returns 404 M_UNRECOGNIZED (implementation gap)",
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidupgrade
 // The server MUST create a replacement room, send m.room.tombstone to the old
 // room, and return {"replacement_room":"!newid:server"} on success.
-SCENARIO("POST /rooms/{roomId}/upgrade creates a replacement room",
-         "[conformance][client-server][room-participation]")
+SCENARIO("POST /rooms/{roomId}/upgrade creates a replacement room", "[conformance][client-server][room-participation]")
 {
     GIVEN("a running homeserver and a created room")
     {
@@ -7883,8 +7980,7 @@ SCENARIO("POST /rooms/{roomId}/upgrade creates a replacement room",
         WHEN("POST /rooms/{roomId}/upgrade is called with missing new_version")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token, "{}"});
+                started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token, "{}"});
 
             THEN("the server returns 400 M_BAD_JSON")
             {
@@ -7901,8 +7997,7 @@ SCENARIO("POST /rooms/{roomId}/upgrade creates a replacement room",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token,
-                 R"({"new_version":"99"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token, R"({"new_version":"99"})"});
 
             THEN("the server returns 400 M_UNSUPPORTED_ROOM_VERSION")
             {
@@ -7926,8 +8021,7 @@ SCENARIO("POST /rooms/{roomId}/upgrade creates a replacement room",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/!nonexistent:server/upgrade", token,
-                 R"({"new_version":"11"})"});
+                {"POST", "/_matrix/client/v3/rooms/!nonexistent:server/upgrade", token, R"({"new_version":"11"})"});
 
             THEN("the server returns 404 M_NOT_FOUND")
             {
@@ -9079,8 +9173,7 @@ SCENARIO("GET /voip/turnServer returns a JSON object", "[conformance][client-ser
 //
 // Spec: "Requires authentication: Yes"
 // A request without a valid access token MUST be rejected with 401 M_MISSING_TOKEN.
-SCENARIO("GET /voip/turnServer rejects unauthenticated requests",
-         "[conformance][client-server][voip][auth]")
+SCENARIO("GET /voip/turnServer rejects unauthenticated requests", "[conformance][client-server][voip][auth]")
 {
     GIVEN("a running client-server with no access token")
     {
@@ -10370,12 +10463,10 @@ SCENARIO("POST /keys/claim reuses the matching fallback key when one-time keys a
 
         // Use curve25519 type so no device-identity signature is required for upload.
         // A second key with a non-matching algorithm prefix verifies selection logic.
-        REQUIRE(
-            merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/keys/upload", token,
-                 R"({"fallback_keys":{"curve25519:FALLBACK":"matching-fallback"}})"})
-                .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/keys/upload", token,
+                                      R"({"fallback_keys":{"curve25519:FALLBACK":"matching-fallback"}})"})
+                    .response.status == 200U);
 
         WHEN("the device claims a curve25519 key for that device")
         {
@@ -11315,7 +11406,6 @@ SCENARIO("PUT /directory/list/room/{roomId} returns 404 for unknown room",
     }
 }
 
-
 // =============================================================================
 // Client-Server API — Coverage gap set 2: Devices, Profile, Account Data,
 // Capabilities, Public Rooms, Room Directory, Register Available,
@@ -11349,8 +11439,7 @@ SCENARIO("GET /devices returns a devices array containing the authenticated devi
                 auto const body = parse_object(resp.response.body);
                 auto const* devs_val = object_member(body, "devices");
                 REQUIRE(devs_val != nullptr);
-                auto const* devs =
-                    std::get_if<merovingian::canonicaljson::Array>(&devs_val->storage());
+                auto const* devs = std::get_if<merovingian::canonicaljson::Array>(&devs_val->storage());
                 REQUIRE(devs != nullptr);
                 REQUIRE(!devs->empty());
 
@@ -11361,11 +11450,17 @@ SCENARIO("GET /devices returns a devices array containing the authenticated devi
                 auto found_device1 = false;
                 for (auto const& dev_val : *devs)
                 {
-                    auto const* obj =
-                        std::get_if<merovingian::canonicaljson::Object>(&dev_val.storage());
-                    if (obj == nullptr) { continue; }
+                    auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&dev_val.storage());
+                    if (obj == nullptr)
+                    {
+                        continue;
+                    }
                     auto const* did = string_member(*obj, "device_id");
-                    if (did != nullptr && *did == "DEVICE1") { found_device1 = true; break; }
+                    if (did != nullptr && *did == "DEVICE1")
+                    {
+                        found_device1 = true;
+                        break;
+                    }
                 }
                 REQUIRE(found_device1);
             }
@@ -11378,8 +11473,7 @@ SCENARIO("GET /devices returns a devices array containing the authenticated devi
 // URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3devicesdeviceid
 //
 // Known device_id MUST return 200 with device object. Unknown MUST return 404 M_NOT_FOUND.
-SCENARIO("GET /devices/{deviceId} returns the device or 404 for unknown",
-         "[conformance][client-server][devices]")
+SCENARIO("GET /devices/{deviceId} returns the device or 404 for unknown", "[conformance][client-server][devices]")
 {
     GIVEN("a registered and logged-in user")
     {
@@ -11481,8 +11575,7 @@ SCENARIO("GET /joined_rooms lists all rooms the authenticated user is joined to"
         auto const token = logged_in_token(rt);
 
         auto const create = merovingian::homeserver::handle_client_server_request(
-            rt, {"POST", "/_matrix/client/v3/createRoom", token,
-                 R"({"preset":"private_chat"})"});
+            rt, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})"});
         REQUIRE(create.response.status == 200U);
         auto const create_body = parse_object(create.response.body);
         auto const* created_rid = string_member(create_body, "room_id");
@@ -11500,16 +11593,14 @@ SCENARIO("GET /joined_rooms lists all rooms the authenticated user is joined to"
                 auto const body = parse_object(resp.response.body);
                 auto const* rooms_val = object_member(body, "joined_rooms");
                 REQUIRE(rooms_val != nullptr);
-                auto const* rooms =
-                    std::get_if<merovingian::canonicaljson::Array>(&rooms_val->storage());
+                auto const* rooms = std::get_if<merovingian::canonicaljson::Array>(&rooms_val->storage());
                 REQUIRE(rooms != nullptr);
 
                 // Spec MUST: newly created room appears in joined_rooms
-                auto const found =
-                    std::ranges::any_of(*rooms, [&](merovingian::canonicaljson::Value const& v) {
-                        auto const* s = std::get_if<std::string>(&v.storage());
-                        return s != nullptr && *s == *created_rid;
-                    });
+                auto const found = std::ranges::any_of(*rooms, [&](merovingian::canonicaljson::Value const& v) {
+                    auto const* s = std::get_if<std::string>(&v.storage());
+                    return s != nullptr && *s == *created_rid;
+                });
                 REQUIRE(found);
             }
         }
@@ -11550,8 +11641,7 @@ SCENARIO("GET /publicRooms returns chunk array and total_room_count_estimate",
 
                 auto const* chunk_val = object_member(body, "chunk");
                 REQUIRE(chunk_val != nullptr);
-                auto const* chunk =
-                    std::get_if<merovingian::canonicaljson::Array>(&chunk_val->storage());
+                auto const* chunk = std::get_if<merovingian::canonicaljson::Array>(&chunk_val->storage());
                 REQUIRE(chunk != nullptr);
                 REQUIRE(!chunk->empty());
 
@@ -11562,8 +11652,7 @@ SCENARIO("GET /publicRooms returns chunk array and total_room_count_estimate",
                 REQUIRE(*est >= 1);
 
                 // Spec MUST: each chunk entry carries "room_id"
-                auto const* first =
-                    std::get_if<merovingian::canonicaljson::Object>(&(*chunk)[0].storage());
+                auto const* first = std::get_if<merovingian::canonicaljson::Object>(&(*chunk)[0].storage());
                 REQUIRE(first != nullptr);
                 REQUIRE(string_member(*first, "room_id") != nullptr);
             }
@@ -11576,8 +11665,7 @@ SCENARIO("GET /publicRooms returns chunk array and total_room_count_estimate",
 // URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3directoryroomroomalias
 //
 // Known alias MUST return {"room_id": "...", "servers": [...]}. Unknown MUST return 404.
-SCENARIO("GET /directory/room resolves a known alias and 404s for unknown",
-         "[conformance][client-server][directory]")
+SCENARIO("GET /directory/room resolves a known alias and 404s for unknown", "[conformance][client-server][directory]")
 {
     GIVEN("a room created with room_alias_name testroom")
     {
@@ -11587,17 +11675,13 @@ SCENARIO("GET /directory/room resolves a known alias and 404s for unknown",
         auto const token = logged_in_token(rt);
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    rt, {"POST", "/_matrix/client/v3/createRoom", token,
-                         R"({"room_alias_name":"testroom"})"})
+                    rt, {"POST", "/_matrix/client/v3/createRoom", token, R"({"room_alias_name":"testroom"})"})
                     .response.status == 200U);
 
         WHEN("the alias %23testroom%3Aexample.org is resolved")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"GET",
-                 "/_matrix/client/v3/directory/room/%23testroom%3Aexample.org",
-                 token, {}});
+                rt, {"GET", "/_matrix/client/v3/directory/room/%23testroom%3Aexample.org", token, {}});
 
             THEN("response is 200 with room_id and servers array")
             {
@@ -11609,8 +11693,7 @@ SCENARIO("GET /directory/room resolves a known alias and 404s for unknown",
                 REQUIRE(!rid->empty());
                 auto const* srvs_val = object_member(body, "servers");
                 REQUIRE(srvs_val != nullptr);
-                auto const* srvs =
-                    std::get_if<merovingian::canonicaljson::Array>(&srvs_val->storage());
+                auto const* srvs = std::get_if<merovingian::canonicaljson::Array>(&srvs_val->storage());
                 REQUIRE(srvs != nullptr);
                 REQUIRE(!srvs->empty());
             }
@@ -11619,10 +11702,7 @@ SCENARIO("GET /directory/room resolves a known alias and 404s for unknown",
         WHEN("an unknown alias is resolved")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"GET",
-                 "/_matrix/client/v3/directory/room/%23nosuchroom%3Aexample.org",
-                 token, {}});
+                rt, {"GET", "/_matrix/client/v3/directory/room/%23nosuchroom%3Aexample.org", token, {}});
 
             THEN("response is 404 M_NOT_FOUND")
             {
@@ -11643,8 +11723,7 @@ SCENARIO("GET /directory/room resolves a known alias and 404s for unknown",
 //
 // Free username MUST return {"available": true}. Taken MUST return 400 M_USER_IN_USE.
 // Invalid localpart MUST return 400 M_INVALID_USERNAME.
-SCENARIO("GET /register/available reports username availability correctly",
-         "[conformance][client-server][register]")
+SCENARIO("GET /register/available reports username availability correctly", "[conformance][client-server][register]")
 {
     GIVEN("a server where alice is already registered")
     {
@@ -11691,8 +11770,7 @@ SCENARIO("GET /register/available reports username availability correctly",
         {
             // Spec §Identifier Grammar: localparts for new accounts MUST be lowercase-only
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"GET", "/_matrix/client/v3/register/available?username=Alice", {}, {}});
+                rt, {"GET", "/_matrix/client/v3/register/available?username=Alice", {}, {}});
 
             THEN("response is 400 M_INVALID_USERNAME")
             {
@@ -11725,8 +11803,7 @@ SCENARIO("PUT/GET /user/{userId}/account_data/{type} stores and retrieves user a
         auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
 
-        auto const url = std::string{
-            "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.custom.type"};
+        auto const url = std::string{"/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.custom.type"};
 
         WHEN("PUT stores JSON content")
         {
@@ -11738,8 +11815,7 @@ SCENARIO("PUT/GET /user/{userId}/account_data/{type} stores and retrieves user a
                 // Spec MUST: PUT returns 200
                 REQUIRE(put.response.status == 200U);
 
-                auto const get = merovingian::homeserver::handle_client_server_request(
-                    rt, {"GET", url, token, {}});
+                auto const get = merovingian::homeserver::handle_client_server_request(rt, {"GET", url, token, {}});
 
                 // Spec MUST: GET returns the stored content verbatim
                 REQUIRE(get.response.status == 200U);
@@ -11751,10 +11827,7 @@ SCENARIO("PUT/GET /user/{userId}/account_data/{type} stores and retrieves user a
         WHEN("GET is called for a type that was never stored")
         {
             auto const get = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"GET",
-                 "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.never.set",
-                 token, {}});
+                rt, {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/account_data/m.never.set", token, {}});
 
             THEN("response is 404 M_NOT_FOUND")
             {
@@ -11776,8 +11849,7 @@ SCENARIO("PUT/GET /user/{userId}/account_data/{type} stores and retrieves user a
 // URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3profileuseriddisplayname
 //
 // PUT MUST update the displayname and return 200. GET MUST return the current value.
-SCENARIO("PUT /profile/{userId}/displayname updates and GET retrieves it",
-         "[conformance][client-server][profile]")
+SCENARIO("PUT /profile/{userId}/displayname updates and GET retrieves it", "[conformance][client-server][profile]")
 {
     GIVEN("a registered and logged-in user")
     {
@@ -11789,11 +11861,8 @@ SCENARIO("PUT /profile/{userId}/displayname updates and GET retrieves it",
         WHEN("PUT sets the displayname to Alice Wonderland")
         {
             auto const put = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"PUT",
-                 "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
-                 token,
-                 R"({"displayname":"Alice Wonderland"})"});
+                rt, {"PUT", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", token,
+                     R"({"displayname":"Alice Wonderland"})"});
 
             THEN("PUT returns 200 and GET reflects the new displayname")
             {
@@ -11801,10 +11870,7 @@ SCENARIO("PUT /profile/{userId}/displayname updates and GET retrieves it",
                 REQUIRE(put.response.status == 200U);
 
                 auto const get = merovingian::homeserver::handle_client_server_request(
-                    rt,
-                    {"GET",
-                     "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname",
-                     token, {}});
+                    rt, {"GET", "/_matrix/client/v3/profile/%40alice%3Aexample.org/displayname", token, {}});
                 REQUIRE(get.response.status == 200U);
 
                 // Spec MUST: response contains the updated "displayname"
@@ -11914,8 +11980,7 @@ SCENARIO("GET /pushrules/ returns a global ruleset with all five push rule categ
 // Every error response MUST be a JSON object with "errcode" (string) and "error"
 // (human-readable string). HTTP status code MUST reflect the error class.
 // Tested: invalid token (401), cross-user write (403 M_FORBIDDEN).
-SCENARIO("Matrix error responses always carry errcode and error fields",
-         "[conformance][client-server][error]")
+SCENARIO("Matrix error responses always carry errcode and error fields", "[conformance][client-server][error]")
 {
     GIVEN("a started server with a registered user")
     {
@@ -11946,11 +12011,7 @@ SCENARIO("Matrix error responses always carry errcode and error fields",
         WHEN("alice tries to write account data for bob (a different user)")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"PUT",
-                 "/_matrix/client/v3/user/%40bob%3Aexample.org/account_data/m.test",
-                 token,
-                 R"({"x":1})"});
+                rt, {"PUT", "/_matrix/client/v3/user/%40bob%3Aexample.org/account_data/m.test", token, R"({"x":1})"});
 
             THEN("response is 403 M_FORBIDDEN")
             {
@@ -11986,8 +12047,8 @@ SCENARIO("DELETE /devices/{deviceId} MUST require UIA before deleting a device",
 
         WHEN("DELETE /devices/DEVICE1 is sent without an auth block")
         {
-            auto const resp =
-                merovingian::homeserver::handle_client_server_request(rt, {"DELETE", "/_matrix/client/v3/devices/DEVICE1", token, "{}"});
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt, {"DELETE", "/_matrix/client/v3/devices/DEVICE1", token, "{}"});
 
             THEN("status is 401 and body contains the UIA flows")
             {
@@ -12002,9 +12063,8 @@ SCENARIO("DELETE /devices/{deviceId} MUST require UIA before deleting a device",
         WHEN("DELETE /devices/DEVICE1 is sent with a wrong password")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"DELETE", "/_matrix/client/v3/devices/DEVICE1", token,
-                 R"({"auth":{"type":"m.login.password","password":"BadPassword"}})"});
+                rt, {"DELETE", "/_matrix/client/v3/devices/DEVICE1", token,
+                     R"({"auth":{"type":"m.login.password","password":"BadPassword"}})"});
 
             THEN("status is 401 — wrong credential must not succeed")
             {
@@ -12016,9 +12076,8 @@ SCENARIO("DELETE /devices/{deviceId} MUST require UIA before deleting a device",
         WHEN("DELETE /devices/DEVICE1 is sent with a correct password")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"DELETE", "/_matrix/client/v3/devices/DEVICE1", token,
-                 R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+                rt, {"DELETE", "/_matrix/client/v3/devices/DEVICE1", token,
+                     R"({"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
 
             THEN("status is 200 — valid UIA succeeds")
             {
@@ -12102,13 +12161,16 @@ SCENARIO("PUT /typing MUST reject non-members with 403 and use a boolean typing 
         auto const id = *rid;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    rt,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                    rt, {"POST",
+                         "/_matrix/client/v3/register",
+                         {},
+                         merovingian::tests::registration_json("bob", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const bob_login = merovingian::homeserver::handle_client_server_request(
             rt,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVBOB"})"});
         REQUIRE(bob_login.response.status == 200U);
         auto const bob_body = parse_object(bob_login.response.body);
@@ -12119,9 +12181,8 @@ SCENARIO("PUT /typing MUST reject non-members with 403 and use a boolean typing 
         WHEN("a non-member tries to set their typing state in the room")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@bob:example.org",
-                 bob_token, R"({"typing":true,"timeout":30000})"});
+                rt, {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@bob:example.org", bob_token,
+                     R"({"typing":true,"timeout":30000})"});
 
             THEN("status is 403 M_FORBIDDEN")
             {
@@ -12137,9 +12198,8 @@ SCENARIO("PUT /typing MUST reject non-members with 403 and use a boolean typing 
         WHEN("a member sets typing=true")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org",
-                 alice_token, R"({"typing":true,"timeout":30000})"});
+                rt, {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org", alice_token,
+                     R"({"typing":true,"timeout":30000})"});
 
             THEN("status is 200")
             {
@@ -12176,13 +12236,16 @@ SCENARIO("POST /read_markers MUST reject non-members with 403",
         auto const id = *rid;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    rt,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                    rt, {"POST",
+                         "/_matrix/client/v3/register",
+                         {},
+                         merovingian::tests::registration_json("bob", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const bob_login = merovingian::homeserver::handle_client_server_request(
             rt,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVBOB"})"});
         REQUIRE(bob_login.response.status == 200U);
         auto const bob_body = parse_object(bob_login.response.body);
@@ -12193,9 +12256,8 @@ SCENARIO("POST /read_markers MUST reject non-members with 403",
         WHEN("alice posts read_markers with m.read for her room")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST", "/_matrix/client/v3/rooms/" + id + "/read_markers", alice_token,
-                 R"({"m.fully_read":"$ev1","m.read":"$ev1","m.read.private":"$ev1"})"});
+                rt, {"POST", "/_matrix/client/v3/rooms/" + id + "/read_markers", alice_token,
+                     R"({"m.fully_read":"$ev1","m.read":"$ev1","m.read.private":"$ev1"})"});
 
             THEN("status is 200")
             {
@@ -12207,9 +12269,7 @@ SCENARIO("POST /read_markers MUST reject non-members with 403",
         WHEN("bob posts read_markers for a room he never joined")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST", "/_matrix/client/v3/rooms/" + id + "/read_markers", bob_token,
-                 R"({"m.read":"$ev1"})"});
+                rt, {"POST", "/_matrix/client/v3/rooms/" + id + "/read_markers", bob_token, R"({"m.read":"$ev1"})"});
 
             THEN("status is 403 M_FORBIDDEN")
             {
@@ -12249,13 +12309,16 @@ SCENARIO("POST /receipt/{type}/{eventId} MUST reject non-members with 403",
         auto const id = *rid;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    rt,
-                    {"POST", "/_matrix/client/v3/register", {},
-                     merovingian::tests::registration_json("bob", "CorrectHorse7!")})
+                    rt, {"POST",
+                         "/_matrix/client/v3/register",
+                         {},
+                         merovingian::tests::registration_json("bob", "CorrectHorse7!")})
                     .response.status == 200U);
         auto const bob_login = merovingian::homeserver::handle_client_server_request(
             rt,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse7!","device_id":"DEVBOB"})"});
         REQUIRE(bob_login.response.status == 200U);
         auto const bob_body = parse_object(bob_login.response.body);
@@ -12266,9 +12329,7 @@ SCENARIO("POST /receipt/{type}/{eventId} MUST reject non-members with 403",
         WHEN("alice posts a receipt for an event in her room")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST", "/_matrix/client/v3/rooms/" + id + "/receipt/m.read/%24ev1",
-                 alice_token, "{}"});
+                rt, {"POST", "/_matrix/client/v3/rooms/" + id + "/receipt/m.read/%24ev1", alice_token, "{}"});
 
             THEN("status is 200")
             {
@@ -12280,9 +12341,7 @@ SCENARIO("POST /receipt/{type}/{eventId} MUST reject non-members with 403",
         WHEN("bob posts a receipt for a room he never joined")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST", "/_matrix/client/v3/rooms/" + id + "/receipt/m.read/%24ev1",
-                 bob_token, "{}"});
+                rt, {"POST", "/_matrix/client/v3/rooms/" + id + "/receipt/m.read/%24ev1", bob_token, "{}"});
 
             THEN("status is 403 M_FORBIDDEN")
             {
@@ -12310,25 +12369,24 @@ SCENARIO("sending a message implicitly clears the sender's typing state per spec
 {
     GIVEN("alice registered in a room with an active typing indicator")
     {
-        auto cfg   = conformance_config();
+        auto cfg = conformance_config();
         auto started = merovingian::homeserver::start_client_server(cfg);
         REQUIRE(started.started);
-        auto& rt           = started.runtime;
+        auto& rt = started.runtime;
         auto const alice_token = logged_in_token(rt);
 
         auto const room_resp = merovingian::homeserver::handle_client_server_request(
             rt, {"POST", "/_matrix/client/v3/createRoom", alice_token, "{}"});
         REQUIRE(room_resp.response.status == 200U);
         auto const room_body = parse_object(room_resp.response.body);
-        auto const* rid      = string_member(room_body, "room_id");
+        auto const* rid = string_member(room_body, "room_id");
         REQUIRE(rid != nullptr);
         auto const id = *rid;
 
         // Establish typing=true so the indicator is live
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    rt,
-                    {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org",
-                     alice_token, R"({"typing":true,"timeout":30000})"})
+                    rt, {"PUT", "/_matrix/client/v3/rooms/" + id + "/typing/@alice:example.org", alice_token,
+                         R"({"typing":true,"timeout":30000})"})
                     .response.status == 200U);
 
         // Spec MUST: typing entry exists and is true before the message send
@@ -12348,10 +12406,8 @@ SCENARIO("sending a message implicitly clears the sender's typing state per spec
         WHEN("alice sends a message in the room")
         {
             auto const send_resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"PUT",
-                 "/_matrix/client/v3/rooms/" + id + "/send/m.room.message/txn-conformance-typing",
-                 alice_token, R"({"msgtype":"m.text","body":"Hello"})"});
+                rt, {"PUT", "/_matrix/client/v3/rooms/" + id + "/send/m.room.message/txn-conformance-typing",
+                     alice_token, R"({"msgtype":"m.text","body":"Hello"})"});
 
             THEN("the send returns 200 and alice's typing state is cleared to false")
             {
@@ -12386,18 +12442,18 @@ SCENARIO("keys/upload rejects signed_curve25519 OTKs when no device identity has
 {
     GIVEN("alice is registered and logged in but has never uploaded device keys")
     {
-        auto cfg     = conformance_config();
+        auto cfg = conformance_config();
         auto started = merovingian::homeserver::start_client_server(cfg);
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
 
         // 64-zero-byte ed25519 signature in unpadded base64 — correct length but invalid.
         // No device_keys in the body and no prior stored device identity, so the server
         // has no ed25519 key to resolve for signature verification.
         auto constexpr bogus_sig = std::string_view{"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-                                                     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-                                                     "AAAAAA"};
+                                                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+                                                    "AAAAAA"};
         auto body = std::string{};
         body += R"({"one_time_keys":{"signed_curve25519:AAAAAQ":{"key":"otkkey",)";
         body += R"("signatures":{"@alice:example.org":{"ed25519:DEVICE1":")";
@@ -12439,13 +12495,16 @@ SCENARIO("rate limiting uses the path without query parameters as the bucket key
         auto rate_limits = merovingian::config::ClientRateLimitsConfig{};
         rate_limits.per_ip["/_matrix/client/v3/sync"] = {1U, 60U};
         auto cfg = merovingian::config::Config{
-            merovingian::config::ServerConfig{},   merovingian::config::ListenersConfig{},
-            merovingian::config::DatabaseConfig{}, security,
-            std::move(rate_limits),                merovingian::config::LogModulesConfig{},
+            merovingian::config::ServerConfig{},
+            merovingian::config::ListenersConfig{},
+            merovingian::config::DatabaseConfig{},
+            security,
+            std::move(rate_limits),
+            merovingian::config::LogModulesConfig{},
         };
         auto started = merovingian::homeserver::start_client_server(cfg);
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
 
         WHEN("the first request uses /sync?timeout=0 (exhausts the 1-request cap)")
@@ -12494,26 +12553,25 @@ SCENARIO("room send rejects non-object bodies and does not create a fallback eve
 {
     GIVEN("alice is in a room")
     {
-        auto cfg     = conformance_config();
+        auto cfg = conformance_config();
         auto started = merovingian::homeserver::start_client_server(cfg);
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
 
         auto const room_resp = merovingian::homeserver::handle_client_server_request(
             rt, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
         REQUIRE(room_resp.response.status == 200U);
         auto const room_body = parse_object(room_resp.response.body);
-        auto const* rid      = string_member(room_body, "room_id");
+        auto const* rid = string_member(room_body, "room_id");
         REQUIRE(rid != nullptr);
         auto const room_id = *rid;
 
         WHEN("a message send is attempted with a JSON array body (not an object)")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt, {"PUT",
-                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-bad-body-arr",
-                     token, R"([1, 2, 3])"});
+                rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-bad-body-arr", token,
+                     R"([1, 2, 3])"});
 
             THEN("the server returns 400 M_BAD_JSON and does not create a spurious event")
             {
@@ -12529,9 +12587,8 @@ SCENARIO("room send rejects non-object bodies and does not create a fallback eve
         WHEN("a message send is attempted with a bare JSON string body (not an object)")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt, {"PUT",
-                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-bad-body-str",
-                     token, R"("just a string")"});
+                rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-bad-body-str", token,
+                     R"("just a string")"});
 
             THEN("the server returns 400 M_BAD_JSON and does not create a spurious event")
             {
@@ -12557,43 +12614,41 @@ SCENARIO("room send PUT replays the original event_id when the same transaction 
 {
     GIVEN("alice is in a room")
     {
-        auto cfg     = conformance_config();
+        auto cfg = conformance_config();
         auto started = merovingian::homeserver::start_client_server(cfg);
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
 
         auto const room_resp = merovingian::homeserver::handle_client_server_request(
             rt, {"POST", "/_matrix/client/v3/createRoom", token, "{}"});
         REQUIRE(room_resp.response.status == 200U);
         auto const room_body = parse_object(room_resp.response.body);
-        auto const* rid      = string_member(room_body, "room_id");
+        auto const* rid = string_member(room_body, "room_id");
         REQUIRE(rid != nullptr);
         auto const room_id = *rid;
 
         WHEN("alice sends a message with txn-idem-1 and then retries with the same txn-idem-1")
         {
             auto const first = merovingian::homeserver::handle_client_server_request(
-                rt, {"PUT",
-                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-1",
-                     token, R"({"msgtype":"m.text","body":"hello"})"});
+                rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-1", token,
+                     R"({"msgtype":"m.text","body":"hello"})"});
             REQUIRE(first.response.status == 200U);
-            auto const first_body     = parse_object(first.response.body);
+            auto const first_body = parse_object(first.response.body);
             auto const* first_eid_ptr = string_member(first_body, "event_id");
             REQUIRE(first_eid_ptr != nullptr);
             auto const first_eid = *first_eid_ptr;
 
             auto const second = merovingian::homeserver::handle_client_server_request(
-                rt, {"PUT",
-                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-1",
-                     token, R"({"msgtype":"m.text","body":"retry"})"});
+                rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-1", token,
+                     R"({"msgtype":"m.text","body":"retry"})"});
 
             THEN("both responses carry the same event_id (idempotent replay)")
             {
                 // Spec MUST: the server MUST NOT send the event a second time for the same txn_id.
                 REQUIRE(second.response.status == 200U);
-                auto const second_body    = parse_object(second.response.body);
-                auto const* second_eid    = string_member(second_body, "event_id");
+                auto const second_body = parse_object(second.response.body);
+                auto const* second_eid = string_member(second_body, "event_id");
                 REQUIRE(second_eid != nullptr);
                 // Same txn_id → identical event_id in both responses.
                 REQUIRE(*second_eid == first_eid);
@@ -12603,19 +12658,17 @@ SCENARIO("room send PUT replays the original event_id when the same transaction 
         WHEN("alice sends with txn-idem-a then with a distinct txn-idem-b")
         {
             auto const first = merovingian::homeserver::handle_client_server_request(
-                rt, {"PUT",
-                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-a",
-                     token, R"({"msgtype":"m.text","body":"first"})"});
+                rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-a", token,
+                     R"({"msgtype":"m.text","body":"first"})"});
             REQUIRE(first.response.status == 200U);
-            auto const first_body     = parse_object(first.response.body);
+            auto const first_body = parse_object(first.response.body);
             auto const* first_eid_ptr = string_member(first_body, "event_id");
             REQUIRE(first_eid_ptr != nullptr);
             auto const first_eid = *first_eid_ptr;
 
             auto const second = merovingian::homeserver::handle_client_server_request(
-                rt, {"PUT",
-                     "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-b",
-                     token, R"({"msgtype":"m.text","body":"second"})"});
+                rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn-idem-b", token,
+                     R"({"msgtype":"m.text","body":"second"})"});
 
             THEN("a distinct txn_id produces a distinct event_id")
             {
@@ -12640,27 +12693,24 @@ SCENARIO("send-to-device PUT is idempotent: retrying the same txn_id does not re
 {
     GIVEN("alice and bob are registered")
     {
-        auto cfg     = conformance_config();
+        auto cfg = conformance_config();
         auto started = merovingian::homeserver::start_client_server(cfg);
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const alice = logged_in_token(rt);
-        auto const bob   = register_and_login(rt, "bob");
+        auto const bob = register_and_login(rt, "bob");
 
-        auto const send_body =
-            std::string{R"({"messages":{"@bob:example.org":{"bob_DEV":)"
-                        R"({"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":"hello"}}}})"};
+        auto const send_body = std::string{R"({"messages":{"@bob:example.org":{"bob_DEV":)"
+                                           R"({"algorithm":"m.olm.v1.curve25519-aes-sha2","ciphertext":"hello"}}}})"};
 
         WHEN("alice sends a to-device message with txn-td-1 and then retries with the same txn-td-1")
         {
             auto const first = merovingian::homeserver::handle_client_server_request(
-                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/txn-td-1", alice,
-                     send_body});
+                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/txn-td-1", alice, send_body});
             REQUIRE(first.response.status == 200U);
 
             auto const second = merovingian::homeserver::handle_client_server_request(
-                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/txn-td-1", alice,
-                     send_body});
+                rt, {"PUT", "/_matrix/client/v3/sendToDevice/m.room.encrypted/txn-td-1", alice, send_body});
 
             THEN("the retry returns 200 and bob receives exactly one message (not two)")
             {
@@ -12699,19 +12749,15 @@ SCENARIO("POST /receipt returns 200 with empty body for m.read in a joined room"
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
-        auto const room  = create_room(rt, token);
-        auto const eid   = send_message(rt, token, room);
+        auto const room = create_room(rt, token);
+        auto const eid = send_message(rt, token, room);
 
         WHEN("alice POSTs an m.read receipt for the message")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.read/" + eid,
-                 token,
-                 "{}"});
+                rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/receipt/m.read/" + eid, token, "{}"});
 
             THEN("the response is 200 with an empty JSON object body")
             {
@@ -12731,19 +12777,15 @@ SCENARIO("POST /receipt returns 200 with empty body for m.read.private in a join
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
-        auto const room  = create_room(rt, token);
-        auto const eid   = send_message(rt, token, room);
+        auto const room = create_room(rt, token);
+        auto const eid = send_message(rt, token, room);
 
         WHEN("alice POSTs an m.read.private receipt")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.read.private/" + eid,
-                 token,
-                 "{}"});
+                rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/receipt/m.read.private/" + eid, token, "{}"});
 
             THEN("the response is 200 with an empty JSON object body")
             {
@@ -12763,19 +12805,15 @@ SCENARIO("POST /receipt returns 200 with empty body for m.fully_read in a joined
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
-        auto const room  = create_room(rt, token);
-        auto const eid   = send_message(rt, token, room);
+        auto const room = create_room(rt, token);
+        auto const eid = send_message(rt, token, room);
 
         WHEN("alice POSTs an m.fully_read receipt")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.fully_read/" + eid,
-                 token,
-                 "{}"});
+                rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/receipt/m.fully_read/" + eid, token, "{}"});
 
             THEN("the response is 200 with an empty JSON object body")
             {
@@ -12795,26 +12833,22 @@ SCENARIO("POST /receipt returns 403 M_FORBIDDEN when the user is not a room memb
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const alice = logged_in_token(rt);
-        auto const bob   = register_and_login(rt, "bob");
-        auto const room  = create_room(rt, alice);
-        auto const eid   = send_message(rt, alice, room);
+        auto const bob = register_and_login(rt, "bob");
+        auto const room = create_room(rt, alice);
+        auto const eid = send_message(rt, alice, room);
 
         WHEN("bob POSTs a receipt for a message in the room he has not joined")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.read/" + eid,
-                 bob,
-                 "{}"});
+                rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/receipt/m.read/" + eid, bob, "{}"});
 
             THEN("the response is 403 M_FORBIDDEN")
             {
                 // Spec MUST: 403 M_FORBIDDEN if user is not a member of the room.
                 REQUIRE(resp.response.status == 403U);
-                auto const body     = parse_object(resp.response.body);
+                auto const body = parse_object(resp.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_FORBIDDEN");
@@ -12830,26 +12864,22 @@ SCENARIO("POST /receipt returns 400 M_INVALID_PARAM for an unrecognized receipt 
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
-        auto const room  = create_room(rt, token);
-        auto const eid   = send_message(rt, token, room);
+        auto const room = create_room(rt, token);
+        auto const eid = send_message(rt, token, room);
 
         WHEN("alice POSTs with an unrecognized receipt type")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST",
-                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.bad_type/" + eid,
-                 token,
-                 "{}"});
+                rt, {"POST", "/_matrix/client/v3/rooms/" + room + "/receipt/m.bad_type/" + eid, token, "{}"});
 
             THEN("the response is 400 M_INVALID_PARAM")
             {
                 // Spec MUST: 400 M_INVALID_PARAM for receiptType not in
                 // {m.read, m.read.private, m.fully_read}.
                 REQUIRE(resp.response.status == 400U);
-                auto const body     = parse_object(resp.response.body);
+                auto const body = parse_object(resp.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
                 REQUIRE(*errcode == "M_INVALID_PARAM");
@@ -12873,17 +12903,13 @@ SCENARIO("POST /user_directory/search response contains required results and lim
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
 
         WHEN("a search is performed")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST",
-                 "/_matrix/client/v3/user_directory/search",
-                 token,
-                 R"({"search_term":"alice"})"});
+                rt, {"POST", "/_matrix/client/v3/user_directory/search", token, R"({"search_term":"alice"})"});
 
             THEN("the response is 200 with required fields results and limited")
             {
@@ -12908,23 +12934,19 @@ SCENARIO("POST /user_directory/search finds users whose user_id matches the sear
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const alice = logged_in_token(rt);
         (void)register_and_login(rt, "bob");
 
         WHEN("alice searches for 'alice'")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST",
-                 "/_matrix/client/v3/user_directory/search",
-                 alice,
-                 R"({"search_term":"alice"})"});
+                rt, {"POST", "/_matrix/client/v3/user_directory/search", alice, R"({"search_term":"alice"})"});
 
             THEN("alice's user entry appears in the results")
             {
                 REQUIRE(resp.response.status == 200U);
-                auto const body     = parse_object(resp.response.body);
+                auto const body = parse_object(resp.response.body);
                 auto const* results = object_member_as_array(body, "results");
                 REQUIRE(results != nullptr);
                 // Spec MUST: results contain users whose user_id or display_name matches.
@@ -12950,22 +12972,19 @@ SCENARIO("POST /user_directory/search returns empty results for a non-matching s
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
 
         WHEN("alice searches for a term that matches no registered user")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST",
-                 "/_matrix/client/v3/user_directory/search",
-                 token,
-                 R"({"search_term":"zzz_no_such_user_zzz"})"});
+                rt, {"POST", "/_matrix/client/v3/user_directory/search", token,
+                     R"({"search_term":"zzz_no_such_user_zzz"})"});
 
             THEN("the response is 200 with an empty results array and limited false")
             {
                 REQUIRE(resp.response.status == 200U);
-                auto const body     = parse_object(resp.response.body);
+                auto const body = parse_object(resp.response.body);
                 auto const* results = object_member_as_array(body, "results");
                 REQUIRE(results != nullptr);
                 // Spec: no matching users → empty results.
@@ -12985,22 +13004,18 @@ SCENARIO("POST /user_directory/search result entries each contain a non-empty us
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto& rt         = started.runtime;
+        auto& rt = started.runtime;
         auto const token = logged_in_token(rt);
 
         WHEN("a search returns at least one result")
         {
             auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt,
-                {"POST",
-                 "/_matrix/client/v3/user_directory/search",
-                 token,
-                 R"({"search_term":"alice"})"});
+                rt, {"POST", "/_matrix/client/v3/user_directory/search", token, R"({"search_term":"alice"})"});
 
             THEN("each result entry contains a non-empty user_id string")
             {
                 REQUIRE(resp.response.status == 200U);
-                auto const body     = parse_object(resp.response.body);
+                auto const body = parse_object(resp.response.body);
                 auto const* results = object_member_as_array(body, "results");
                 REQUIRE(results != nullptr);
                 REQUIRE(!results->empty());
@@ -13071,8 +13086,7 @@ SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED for non-OIDC servers"
 //
 // When the client passes a stored filter_id as the ?filter= parameter, the
 // server MUST apply the corresponding stored filter to the sync response.
-SCENARIO("GET /sync with a stored filter_id applies the stored filter",
-         "[conformance][client-server][sync][filtering]")
+SCENARIO("GET /sync with a stored filter_id applies the stored filter", "[conformance][client-server][sync][filtering]")
 {
     GIVEN("a logged-in user who has uploaded a filter")
     {
@@ -13082,11 +13096,8 @@ SCENARIO("GET /sync with a stored filter_id applies the stored filter",
 
         // Upload a filter that limits the timeline to 1 event.
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime,
-            {"POST",
-             "/_matrix/client/v3/user/@alice:example.org/filter",
-             token,
-             R"({"room":{"timeline":{"limit":1}}})"});
+            started.runtime, {"POST", "/_matrix/client/v3/user/@alice:example.org/filter", token,
+                              R"({"room":{"timeline":{"limit":1}}})"});
         REQUIRE(upload.response.status == 200U);
         auto const filter_body = parse_object(upload.response.body);
         auto const* filter_id_ptr = string_member(filter_body, "filter_id");
@@ -13097,8 +13108,7 @@ SCENARIO("GET /sync with a stored filter_id applies the stored filter",
         WHEN("GET /sync is called with the stored filter_id as the ?filter= parameter")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/sync?filter=" + filter_id, token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/sync?filter=" + filter_id, token, {}});
 
             THEN("the server returns 200 with a valid sync envelope")
             {
@@ -13120,8 +13130,7 @@ SCENARIO("GET /sync with a stored filter_id applies the stored filter",
 // When the ?filter= parameter is a token that does not correspond to any stored
 // filter, the server MUST return 400 so that clients can detect the stale
 // filter reference and re-upload.
-SCENARIO("GET /sync with an unknown filter_id returns 400",
-         "[conformance][client-server][sync][filtering]")
+SCENARIO("GET /sync with an unknown filter_id returns 400", "[conformance][client-server][sync][filtering]")
 {
     GIVEN("a logged-in user")
     {
@@ -13132,8 +13141,7 @@ SCENARIO("GET /sync with an unknown filter_id returns 400",
         WHEN("GET /sync is called with a filter_id that was never stored")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"GET", "/_matrix/client/v3/sync?filter=nonexistentfilterid", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/sync?filter=nonexistentfilterid", token, {}});
 
             THEN("the server returns 400")
             {
