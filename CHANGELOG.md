@@ -1,3 +1,7 @@
+## 0.6.5
+
+- **feat(packaging): install service and create `merovingian` user/group on all package formats:** Debian, RPM, FreeBSD pkg, OpenBSD ports, and NetBSD pkgsrc now all create the `merovingian` system user and group on install, set up data/log directories with correct ownership, install the service file to the platform-canonical location, and enable the service so `service start` / `systemctl start` / `rcctl start` work without manual steps.
+
 ## 0.6.4
 
 - **Fix (client verification — `device_lists.changed` missing after key/signature upload):** `POST /keys/device_signing/upload` and `POST /keys/signatures/upload` now emit `device_lists.changed` in `/sync` per spec §11.11.1. Previously neither endpoint called `record_device_list_change`, so the user's other devices never learned about the new cross-signing identity and could not complete the self-signature query needed to finish verification. The fix adds a self-notification (`observer = subject = user`) so all of the user's devices see the change, plus the room-member fan-out and federation broadcast.

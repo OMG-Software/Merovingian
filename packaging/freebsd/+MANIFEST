@@ -1,5 +1,5 @@
 name: "merovingian"
-version: "0.6.4"
+version: "0.6.5"
 origin: net/merovingian
 comment: Secure Matrix Protocol homeserver
 desc: "Merovingian is an alpha Matrix Protocol homeserver."
@@ -10,8 +10,27 @@ licenselogic: single
 licenses: [GPL3]
 flatsize: 0
 scripts: {
+  pre-install: <<EOD
+#!/bin/sh
+# Create group and system user before files are laid down.
+if ! pw groupshow merovingian >/dev/null 2>&1; then
+    pw groupadd merovingian
+fi
+if ! pw usershow merovingian >/dev/null 2>&1; then
+    pw useradd merovingian \
+        -g merovingian \
+        -d /var/db/merovingian \
+        -s /usr/sbin/nologin \
+        -c "Merovingian homeserver" \
+        -w no
+fi
+EOD
   post-install: <<EOD
 #!/bin/sh
+# Create runtime directories owned by the service user.
+install -d -o merovingian -g merovingian -m 0750 /var/db/merovingian
+install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
+install -d -o merovingian -g merovingian -m 0750 /var/run/merovingian
 # Generate a registration token on first install. Never overwrite an existing token.
 TOKEN_FILE=/usr/local/etc/merovingian/registration-token
 if [ ! -f "${TOKEN_FILE}" ]; then
@@ -20,5 +39,18 @@ if [ ! -f "${TOKEN_FILE}" ]; then
     chmod 0640 "${TOKEN_FILE}"
     chown root:merovingian "${TOKEN_FILE}"
 fi
+echo ""
+echo "Merovingian installed. Edit /usr/local/etc/merovingian/merovingian.conf.sample,"
+echo "then enable and start the service:"
+echo "  sysrc merovingian_enable=YES"
+echo "  service merovingian start"
+EOD
+  pre-deinstall: <<EOD
+#!/bin/sh
+# Stop the service gracefully before files are removed.
+if service merovingian status >/dev/null 2>&1; then
+    service merovingian stop || true
+fi
+sysrc -x merovingian_enable >/dev/null 2>&1 || true
 EOD
 }

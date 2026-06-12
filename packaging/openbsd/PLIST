@@ -8,3 +8,4 @@
 share/doc/merovingian/README.md
 share/doc/merovingian/configuration.md
 share/doc/merovingian/release-process.md
+@rcscript ${RCDIR}/merovingian
