@@ -4,6 +4,16 @@
 
 - **feat(conformance): outbound federation delivery spec-covered:** Added `tests/conformance/test_outbound_delivery_conformance.cpp` with 16 new SCENARIO blocks covering the outbound PUT /_matrix/federation/v1/send/{txnId} pipeline per Matrix v1.18 SS API. Tests cover: EDU transaction body shape (origin/origin_server_ts/pdus/edus), `edu_type` key requirement (not `type`), m.receipt EDU nested content structure, transaction-ID uniqueness, outbound request URL (https + correct path), X-Matrix Authorization header presence and field structure, exponential-backoff growth and cap, circuit-breaker open/closed state, success-clears and failure-sets retry state. Promotes `PUT /send/{txnId} outbound` and `Outbound federation queues` from `partial` to `spec-covered`.
 
+## 0.8.1
+
+- **fix(packaging): strip UTF-8 BOMs from release metadata and helper scripts:** Removed accidental BOM prefixes from the FreeBSD package manifest, release shell helpers, and version-reporting sources. This restores FreeBSD `pkg create` parsing and prevents shebang/metadata consumers from seeing an invalid leading byte-order marker.
+
+- **fix(federation): apply M_INCOMPATIBLE_ROOM_VERSION check to make_knock:** The version-compatibility gate in `handle_make_membership` was gated only on `make_join`; `make_knock` now also returns 400 M_INCOMPATIBLE_ROOM_VERSION when the room's version is absent from the joining server's `ver` list, as required by Matrix v1.18 §GET /make_knock.
+
+- **fix(federation): send_knock response now includes `knock_room_state`:** The `MembershipAcceptResult` struct gains a `knock_room_state_json` field; `handle_send_membership` emits `knock_room_state` in the response when the endpoint is `send_knock`, replacing the generic join-shape fields with the correct knock-specific shape per Matrix v1.18 §PUT /send_knock.
+
+- **feat(conformance): full federation membership conformance fixtures (integrated → spec-covered):** Added 14 new SCENARIO blocks covering: make_join nullopt→404, event template type/membership fields, multi-ver parameter parsing; make_leave nullopt→404, response structure, 501 unwired; make_knock M_INCOMPATIBLE_ROOM_VERSION, nullopt→404; send_join v1 endpoint; send_leave response shape; send_knock knock_room_state; invite v2 "event" key; backfill response structure and query-parameter parsing.
+
 ## 0.8.0
 
 - **feat(conformance): promote client-server endpoints from partial to spec-covered:** Added Matrix v1.18 conformance fixtures for `GET /_matrix/client/v1/auth_metadata` (MSC2965 OIDC discovery stub — 404 M_UNRECOGNIZED), `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}` and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` (v1.18 media thumbnail endpoints — 400/404/200 shape), and `filter_id` query parameter on `GET /sync`.

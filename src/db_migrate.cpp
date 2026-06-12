@@ -80,3 +80,4 @@ auto main(int argc, char const* const* argv) -> int
     std::cout << merovingian::database::offline_migrator_summary(plan) << '\n';
     return plan.ok ? 0 : 78;
 }
+

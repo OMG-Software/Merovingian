@@ -92,6 +92,10 @@ fi
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.2-1
 - feat: add outbound federation delivery conformance fixtures (PUT /send/{txnId} builder, X-Matrix auth, retry/backoff)
 - feat: promote outbound delivery and queues from partial to spec-covered
+* Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.1-1
+- feat: full federation membership conformance coverage (make/send join/leave/knock, invite, backfill)
+- fix: make_knock M_INCOMPATIBLE_ROOM_VERSION check (was gated only on make_join)
+- fix: send_knock response now includes knock_room_state per Matrix v1.18 spec
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.0-1
 - feat: promote client-server and federation endpoints from partial to spec-covered
 - feat: implement filter_id query parameter on GET /sync

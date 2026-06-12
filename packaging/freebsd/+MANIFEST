@@ -54,3 +54,4 @@ fi
 sysrc -x merovingian_enable >/dev/null 2>&1 || true
 EOD
 }
+
