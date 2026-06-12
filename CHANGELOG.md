@@ -1,6 +1,7 @@
 ## 0.6.5
 
 - **feat(packaging): install service and create `merovingian` user/group on all package formats:** Debian, RPM, FreeBSD pkg, OpenBSD ports, and NetBSD pkgsrc now all create the `merovingian` system user and group on install, set up data/log directories with correct ownership, install the service file to the platform-canonical location, and enable the service so `service start` / `systemctl start` / `rcctl start` work without manual steps.
+- **fix(systemd): service failed to start due to missing `/run/merovingian`:** The unit listed `/run/merovingian` in `ReadWritePaths` but never created it, causing systemd namespace setup to fail with `status=226/NAMESPACE` on every start. Fixed by adding `RuntimeDirectory=merovingian` (systemd creates and owns the directory before each start) and removing the now-redundant `ReadWritePaths` entry.
 
 ## 0.6.4
 
