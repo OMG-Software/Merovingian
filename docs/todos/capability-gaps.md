@@ -35,8 +35,8 @@ Open work per capability area. Status column reflects the current level in the
 | `GET /_matrix/client/v1/auth_metadata`, MSC2965 OIDC | `partial` | Real OIDC support; currently returns 404 M_UNRECOGNIZED as unsupported signal. |
 | `GET /_matrix/client/v3/voip/turnServer` | `partial` | Real TURN credential issuance; currently returns empty 200. |
 | `GET /_matrix/media/v3/thumbnail/*`, `GET /_matrix/client/v1/media/thumbnail/*` | `runtime-wired` | Real image resampling, remote thumbnail fetch, and v1.18 conformance fixtures. |
-| `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` | `runtime-wired` | v1.18 conformance fixtures. |
-| `POST /_matrix/client/v3/user_directory/search` | `runtime-wired` | v1.18 conformance fixtures. |
+| `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` | `spec-covered` | |
+| `POST /_matrix/client/v3/user_directory/search` | `spec-covered` | |
 | `GET /_matrix/client/v3/sync` | `spec-covered` | Wire `filter_id` query parameter, unread-notification/summary semantics, durable stream tokens. |
 | `POST /_matrix/client/v3/account/password` | `spec-covered` | UI-auth re-authentication and `logout_devices` handling. |
 | `POST /_matrix/client/v3/createRoom` | `spec-covered` | Broader conformance fixtures. |
@@ -59,6 +59,7 @@ Open work per capability area. Status column reflects the current level in the
 | `GET /_matrix/federation/v1/query/profile` | `partial` | `query/directory` and remaining federation query endpoints; conformance fixtures. |
 | Event-graph queries | `partial` | Historical state-at-event reconstruction, conformance fixtures. |
 | Outbound federation queues | `partial` | Live federation delivery coverage. |
+| Key publication (`GET /_matrix/key/v2/server`) | `spec-covered` | Key-ID format, valid_until_ts expiry, and old_verify_keys structural contract now covered by conformance fixtures. |
 
 ### Server administration
 

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.6.5
+Version:        0.7.0
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.7.0-1
+- feat: add conformance fixtures for receipt and user_directory/search endpoints
+- feat: add federation key-rotation conformance tests
 * Wed Jun 11 2026 James Chapman <claude@ping.me.uk> - 0.6.5-1
 - fix: require UIA (m.login.password) for POST /keys/device_signing/upload
 * Wed Jun 11 2026 James Chapman <claude@ping.me.uk> - 0.6.2-1

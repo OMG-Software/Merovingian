@@ -12521,3 +12521,339 @@ SCENARIO("send-to-device PUT is idempotent: retrying the same txn_id does not re
         }
     }
 }
+
+// --- POST /rooms/{roomId}/receipt/{receiptType}/{eventId} --------------------
+// Spec: Matrix Client-Server API v1.18
+// Endpoint: POST /rooms/{roomId}/receipt/{receiptType}/{eventId}
+// URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3roomsroomidreceiptreceipttypeeventid
+//
+// MUST return 200 {} when a joined user submits a valid receipt type.
+// MUST return 400 M_INVALID_PARAM when receiptType is not one of m.read,
+//   m.read.private, or m.fully_read.
+// MUST return 403 M_FORBIDDEN when the requesting user is not in the room.
+SCENARIO("POST /receipt returns 200 with empty body for m.read in a joined room",
+         "[conformance][client-server][receipt]")
+{
+    GIVEN("alice is registered, has a room, and has sent a message")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+        auto const room  = create_room(rt, token);
+        auto const eid   = send_message(rt, token, room);
+
+        WHEN("alice POSTs an m.read receipt for the message")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.read/" + eid,
+                 token,
+                 "{}"});
+
+            THEN("the response is 200 with an empty JSON object body")
+            {
+                // Spec MUST: 200 {} on success.
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                REQUIRE(body.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("POST /receipt returns 200 with empty body for m.read.private in a joined room",
+         "[conformance][client-server][receipt]")
+{
+    GIVEN("alice is registered, has a room, and has sent a message")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+        auto const room  = create_room(rt, token);
+        auto const eid   = send_message(rt, token, room);
+
+        WHEN("alice POSTs an m.read.private receipt")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.read.private/" + eid,
+                 token,
+                 "{}"});
+
+            THEN("the response is 200 with an empty JSON object body")
+            {
+                // Spec MUST: m.read.private is a valid receipt type; 200 on success.
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                REQUIRE(body.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("POST /receipt returns 200 with empty body for m.fully_read in a joined room",
+         "[conformance][client-server][receipt]")
+{
+    GIVEN("alice is registered, has a room, and has sent a message")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+        auto const room  = create_room(rt, token);
+        auto const eid   = send_message(rt, token, room);
+
+        WHEN("alice POSTs an m.fully_read receipt")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.fully_read/" + eid,
+                 token,
+                 "{}"});
+
+            THEN("the response is 200 with an empty JSON object body")
+            {
+                // Spec MUST: m.fully_read is a valid receipt type; 200 on success.
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                REQUIRE(body.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("POST /receipt returns 403 M_FORBIDDEN when the user is not a room member",
+         "[conformance][client-server][receipt]")
+{
+    GIVEN("alice owns a room and bob is not in it")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const alice = logged_in_token(rt);
+        auto const bob   = register_and_login(rt, "bob");
+        auto const room  = create_room(rt, alice);
+        auto const eid   = send_message(rt, alice, room);
+
+        WHEN("bob POSTs a receipt for a message in the room he has not joined")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.read/" + eid,
+                 bob,
+                 "{}"});
+
+            THEN("the response is 403 M_FORBIDDEN")
+            {
+                // Spec MUST: 403 M_FORBIDDEN if user is not a member of the room.
+                REQUIRE(resp.response.status == 403U);
+                auto const body     = parse_object(resp.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+SCENARIO("POST /receipt returns 400 M_INVALID_PARAM for an unrecognized receipt type",
+         "[conformance][client-server][receipt]")
+{
+    GIVEN("alice is registered and has a room with a message")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+        auto const room  = create_room(rt, token);
+        auto const eid   = send_message(rt, token, room);
+
+        WHEN("alice POSTs with an unrecognized receipt type")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/rooms/" + room + "/receipt/m.bad_type/" + eid,
+                 token,
+                 "{}"});
+
+            THEN("the response is 400 M_INVALID_PARAM")
+            {
+                // Spec MUST: 400 M_INVALID_PARAM for receiptType not in
+                // {m.read, m.read.private, m.fully_read}.
+                REQUIRE(resp.response.status == 400U);
+                auto const body     = parse_object(resp.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_PARAM");
+            }
+        }
+    }
+}
+
+// --- POST /user_directory/search --------------------------------------------
+// Spec: Matrix Client-Server API v1.18
+// Endpoint: POST /user_directory/search
+// URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3user_directorysearch
+//
+// MUST return 200 with a "results" array and a "limited" boolean.
+// Each entry in "results" MUST contain a non-empty "user_id".
+// Searches users whose user_id or display_name contains the search_term.
+SCENARIO("POST /user_directory/search response contains required results and limited fields",
+         "[conformance][client-server][user-directory]")
+{
+    GIVEN("alice is registered")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("a search is performed")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/user_directory/search",
+                 token,
+                 R"({"search_term":"alice"})"});
+
+            THEN("the response is 200 with required fields results and limited")
+            {
+                // Spec MUST: 200 on success.
+                REQUIRE(resp.response.status == 200U);
+                auto const body = parse_object(resp.response.body);
+                // Spec MUST: "results" is a required array field.
+                auto const* results = object_member_as_array(body, "results");
+                REQUIRE(results != nullptr);
+                // Spec MUST: "limited" is a required boolean field.
+                auto const* limited = bool_member(body, "limited");
+                REQUIRE(limited != nullptr);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /user_directory/search finds users whose user_id matches the search term",
+         "[conformance][client-server][user-directory]")
+{
+    GIVEN("alice and bob are registered")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const alice = logged_in_token(rt);
+        (void)register_and_login(rt, "bob");
+
+        WHEN("alice searches for 'alice'")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/user_directory/search",
+                 alice,
+                 R"({"search_term":"alice"})"});
+
+            THEN("alice's user entry appears in the results")
+            {
+                REQUIRE(resp.response.status == 200U);
+                auto const body     = parse_object(resp.response.body);
+                auto const* results = object_member_as_array(body, "results");
+                REQUIRE(results != nullptr);
+                // Spec MUST: results contain users whose user_id or display_name matches.
+                auto const found = std::ranges::any_of(*results, [](auto const& v) {
+                    auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&v.storage());
+                    if (obj == nullptr)
+                    {
+                        return false;
+                    }
+                    auto const* uid = string_member(*obj, "user_id");
+                    return uid != nullptr && uid->find("alice") != std::string::npos;
+                });
+                REQUIRE(found);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /user_directory/search returns empty results for a non-matching search term",
+         "[conformance][client-server][user-directory]")
+{
+    GIVEN("alice is registered")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("alice searches for a term that matches no registered user")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/user_directory/search",
+                 token,
+                 R"({"search_term":"zzz_no_such_user_zzz"})"});
+
+            THEN("the response is 200 with an empty results array and limited false")
+            {
+                REQUIRE(resp.response.status == 200U);
+                auto const body     = parse_object(resp.response.body);
+                auto const* results = object_member_as_array(body, "results");
+                REQUIRE(results != nullptr);
+                // Spec: no matching users → empty results.
+                REQUIRE(results->empty());
+                auto const* limited = bool_member(body, "limited");
+                REQUIRE(limited != nullptr);
+                REQUIRE(*limited == false);
+            }
+        }
+    }
+}
+
+SCENARIO("POST /user_directory/search result entries each contain a non-empty user_id",
+         "[conformance][client-server][user-directory]")
+{
+    GIVEN("alice is registered")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt         = started.runtime;
+        auto const token = logged_in_token(rt);
+
+        WHEN("a search returns at least one result")
+        {
+            auto const resp = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST",
+                 "/_matrix/client/v3/user_directory/search",
+                 token,
+                 R"({"search_term":"alice"})"});
+
+            THEN("each result entry contains a non-empty user_id string")
+            {
+                REQUIRE(resp.response.status == 200U);
+                auto const body     = parse_object(resp.response.body);
+                auto const* results = object_member_as_array(body, "results");
+                REQUIRE(results != nullptr);
+                REQUIRE(!results->empty());
+                for (auto const& entry : *results)
+                {
+                    auto const* obj = std::get_if<merovingian::canonicaljson::Object>(&entry.storage());
+                    // Spec MUST: each result is a JSON object.
+                    REQUIRE(obj != nullptr);
+                    // Spec MUST: user_id is required in each result entry.
+                    auto const* uid = string_member(*obj, "user_id");
+                    REQUIRE(uid != nullptr);
+                    REQUIRE(!uid->empty());
+                }
+            }
+        }
+    }
+}

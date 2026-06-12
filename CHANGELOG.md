@@ -1,3 +1,9 @@
+## 0.7.0
+
+- **feat(conformance): receipt endpoint promoted to spec-covered:** Added Catch2 BDD conformance fixtures for `POST /rooms/{roomId}/receipt/{receiptType}/{eventId}` covering all three valid receipt types (`m.read`, `m.read.private`, `m.fully_read`), the 403 response for non-members, and a 400 `M_INVALID_PARAM` rejection for unrecognized receipt types. The handler now validates the receipt type against the spec-defined enum before storing or federating any receipt state.
+- **feat(conformance): user_directory/search promoted to spec-covered:** Added Catch2 BDD conformance fixtures for `POST /user_directory/search` covering the required response shape (`results` array, `limited` boolean), user_id match, display-name match, empty results for non-matching terms, and per-entry `user_id` presence requirement.
+- **feat(conformance): key rotation and publication conformance fixtures:** Added three new scenarios to `test_key_publication_conformance.cpp` covering the Matrix v1.18 key rotation contract: `verify_keys` key IDs must follow the `ed25519:version` naming convention, `valid_until_ts` must be strictly in the future (servers MUST NOT publish an already-expired key), and `old_verify_keys` entries must contain both `key` and `expired_ts` fields with `expired_ts` in the past.
+
 ## 0.6.5
 
 - **feat(packaging): install service and create `merovingian` user/group on all package formats:** Debian, RPM, FreeBSD pkg, OpenBSD ports, and NetBSD pkgsrc now all create the `merovingian` system user and group on install, set up data/log directories with correct ownership, install the service file to the platform-canonical location, and enable the service so `service start` / `systemctl start` / `rcctl start` work without manual steps.
