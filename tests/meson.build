@@ -168,6 +168,7 @@ if get_option ('build_tests')
       'conformance/test_events.cpp',
       'conformance/test_federation_conformance.cpp',
       'conformance/test_federation_transaction_conformance.cpp',
+      'conformance/test_outbound_delivery_conformance.cpp',
       'conformance/test_identifier_grammar.cpp',
       'conformance/test_key_publication_conformance.cpp',
       'conformance/test_pdu_format_conformance.cpp',

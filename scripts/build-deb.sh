@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build a Debian binary package (.deb) for merovingian 0.8.1.
+# Build a Debian binary package (.deb) for merovingian 0.8.2.
 set -e
 
-VERSION="0.8.1"
+VERSION="0.8.2"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 
@@ -71,4 +71,3 @@ dpkg-deb --root-owner-group --build "${STAGING}/" \
     "${PKG_NAME}_${VERSION}_${ARCH}.deb"
 
 echo "Built: ${PKG_NAME}_${VERSION}_${ARCH}.deb"
-
