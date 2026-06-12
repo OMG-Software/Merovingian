@@ -1,3 +1,7 @@
+## 0.8.2
+
+- **feat(conformance): outbound federation delivery spec-covered:** Added `tests/conformance/test_outbound_delivery_conformance.cpp` with 16 new SCENARIO blocks covering the outbound PUT /_matrix/federation/v1/send/{txnId} pipeline per Matrix v1.18 SS API. Tests cover: EDU transaction body shape (origin/origin_server_ts/pdus/edus), `edu_type` key requirement (not `type`), m.receipt EDU nested content structure, transaction-ID uniqueness, outbound request URL (https + correct path), X-Matrix Authorization header presence and field structure, exponential-backoff growth and cap, circuit-breaker open/closed state, success-clears and failure-sets retry state. Promotes `PUT /send/{txnId} outbound` and `Outbound federation queues` from `partial` to `spec-covered`.
+
 ## 0.8.0
 
 - **feat(conformance): promote client-server endpoints from partial to spec-covered:** Added Matrix v1.18 conformance fixtures for `GET /_matrix/client/v1/auth_metadata` (MSC2965 OIDC discovery stub — 404 M_UNRECOGNIZED), `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}` and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` (v1.18 media thumbnail endpoints — 400/404/200 shape), and `filter_id` query parameter on `GET /sync`.

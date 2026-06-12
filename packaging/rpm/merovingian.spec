@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.0
+Version:        0.8.2
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.2-1
+- feat: add outbound federation delivery conformance fixtures (PUT /send/{txnId} builder, X-Matrix auth, retry/backoff)
+- feat: promote outbound delivery and queues from partial to spec-covered
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.0-1
 - feat: promote client-server and federation endpoints from partial to spec-covered
 - feat: implement filter_id query parameter on GET /sync
