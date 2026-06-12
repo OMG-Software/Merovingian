@@ -19,6 +19,30 @@ def project_version() -> str:
 
 
 class PackagesWorkflowTests(unittest.TestCase):
+    def test_release_metadata_files_are_utf8_without_bom(self) -> None:
+        # GIVEN release packaging metadata and helper scripts are parsed by
+        # FreeBSD pkg(8), POSIX shells, and the C++ toolchain directly.
+        files = (
+            "packaging/freebsd/+MANIFEST",
+            "scripts/build-deb.sh",
+            "scripts/build-freebsd-pkg.sh",
+            "scripts/build-rpm.sh",
+            "scripts/build-static-linux.sh",
+            "src/db_migrate.cpp",
+            "src/main.cpp",
+        )
+
+        # WHEN packaging automation reads those files byte-for-byte.
+        # THEN they must start with plain UTF-8 text rather than a BOM prefix
+        # that breaks FreeBSD's UCL manifest parser and some Unix shebang consumers.
+        for relative_path in files:
+            with self.subTest(path=relative_path):
+                content = (REPO_ROOT / relative_path).read_bytes()
+                self.assertFalse(
+                    content.startswith(b"\xef\xbb\xbf"),
+                    f"{relative_path} must be UTF-8 without BOM",
+                )
+
     def test_static_linux_fallback_binary_is_packaged(self) -> None:
         # GIVEN the package publication workflow.
         self.assertTrue(PACKAGES_WORKFLOW.is_file(), "packages workflow is missing")

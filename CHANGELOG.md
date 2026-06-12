@@ -1,5 +1,7 @@
 ## 0.8.1
 
+- **fix(packaging): strip UTF-8 BOMs from release metadata and helper scripts:** Removed accidental BOM prefixes from the FreeBSD package manifest, release shell helpers, and version-reporting sources. This restores FreeBSD `pkg create` parsing and prevents shebang/metadata consumers from seeing an invalid leading byte-order marker.
+
 - **fix(federation): apply M_INCOMPATIBLE_ROOM_VERSION check to make_knock:** The version-compatibility gate in `handle_make_membership` was gated only on `make_join`; `make_knock` now also returns 400 M_INCOMPATIBLE_ROOM_VERSION when the room's version is absent from the joining server's `ver` list, as required by Matrix v1.18 §GET /make_knock.
 
 - **fix(federation): send_knock response now includes `knock_room_state`:** The `MembershipAcceptResult` struct gains a `knock_room_state_json` field; `handle_send_membership` emits `knock_room_state` in the response when the endpoint is `send_knock`, replacing the generic join-shape fields with the correct knock-specific shape per Matrix v1.18 §PUT /send_knock.

@@ -1,4 +1,4 @@
-﻿#!/bin/sh
+#!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build a Debian binary package (.deb) for merovingian 0.8.1.
 set -e

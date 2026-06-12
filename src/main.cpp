@@ -1,4 +1,4 @@
-﻿// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/bootstrap/exit_code.hpp"
 #include "merovingian/config/config.hpp"
