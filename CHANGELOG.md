@@ -1,3 +1,9 @@
+## 0.7.1
+
+- **feat(conformance): inbound federation transaction idempotency:** Added a conformance fixture verifying that re-delivering a transaction with the same `(origin, txn_id)` pair returns 200 without invoking the `pdu_sink` a second time. Encodes the spec MUST: "Servers MUST treat any transaction that has already been processed as if the transaction were again processed successfully."
+- **feat(conformance): unknown EDU type silently discarded:** Added a conformance fixture verifying that a transaction containing an unrecognized `edu_type` returns 200 and does not reach the `edu_sink`. The spec MUST states unknown EDU types are silently discarded; the implementation correctly drops them before the sink.
+- **feat(conformance): oversized transaction rejected before processing:** Added a conformance fixture verifying that a transaction body exceeding `max_transaction_bytes` (65536) returns 400 and never invokes the `pdu_sink`. Confirms resource-exhaustion protection is enforced at the transport layer.
+
 ## 0.7.0
 
 - **feat(conformance): receipt endpoint promoted to spec-covered:** Added Catch2 BDD conformance fixtures for `POST /rooms/{roomId}/receipt/{receiptType}/{eventId}` covering all three valid receipt types (`m.read`, `m.read.private`, `m.fully_read`), the 403 response for non-members, and a 400 `M_INVALID_PARAM` rejection for unrecognized receipt types. The handler now validates the receipt type against the spec-defined enum before storing or federating any receipt state.
