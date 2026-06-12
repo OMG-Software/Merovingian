@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
+﻿// SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/migration_files.hpp"
@@ -13,7 +13,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.8.0"};
+constexpr auto version = std::string_view{"0.8.1"};
 
 auto print_help() -> void
 {
@@ -80,3 +80,4 @@ auto main(int argc, char const* const* argv) -> int
     std::cout << merovingian::database::offline_migrator_summary(plan) << '\n';
     return plan.ok ? 0 : 78;
 }
+

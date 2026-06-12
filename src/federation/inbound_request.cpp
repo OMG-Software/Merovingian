@@ -415,10 +415,11 @@ namespace
         {
             return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room not found or user not permitted")};
         }
-        // Spec §GET /make_join: when `ver` is explicitly provided and the room's
-        // version is not listed, respond 400 M_INCOMPATIBLE_ROOM_VERSION. The body
-        // MUST include `room_version` so the joining server can retry with the right ver.
-        if (!supported.empty() && !tmpl->room_version.empty() && route.endpoint == FederationEndpoint::make_join)
+        // Spec §GET /make_join and §GET /make_knock: when `ver` is explicitly provided
+        // and the room's version is not listed, respond 400 M_INCOMPATIBLE_ROOM_VERSION.
+        // The body MUST include `room_version` so the requesting server can retry.
+        if (!supported.empty() && !tmpl->room_version.empty() &&
+            (route.endpoint == FederationEndpoint::make_join || route.endpoint == FederationEndpoint::make_knock))
         {
             auto const version_ok = std::ranges::any_of(supported, [&](std::string const& v) {
                 return v == tmpl->room_version;
@@ -520,6 +521,14 @@ namespace
             {
                 response.push_back(canonicaljson::make_member("event", std::move(parsed_event.value)));
             }
+        }
+        // Per Matrix federation spec §PUT /send_knock, the send_knock response
+        // MUST include knock_room_state — stripped state events shown to the
+        // knocking user while waiting for the knock answer.
+        if (route.endpoint == FederationEndpoint::send_knock)
+        {
+            response.push_back(canonicaljson::make_member(
+                "knock_room_state", build_array_value(acceptance.knock_room_state_json)));
         }
         auto body = serialize_response_object(std::move(response));
         if (body.empty())

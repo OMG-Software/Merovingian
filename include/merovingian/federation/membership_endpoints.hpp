@@ -74,6 +74,10 @@ struct MembershipAcceptResult final
     // Per Matrix federation spec §11.5.1 the resident server MUST return the
     // event exactly as it was accepted. Empty for send_leave and send_knock.
     std::string signed_event_json{};
+    // For send_knock: stripped room state events shown to the knocking user
+    // while waiting for the knock to be answered. Spec MUST be present in
+    // the send_knock response body under the "knock_room_state" key.
+    std::vector<std::string> knock_room_state_json{};
 };
 
 // Hook signature for accepting a signed membership event. The implementation
