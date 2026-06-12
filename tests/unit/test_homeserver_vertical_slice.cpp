@@ -5,8 +5,8 @@
 // |                                                                         |
 // |  Spec: Matrix Client-Server API v1.18                                   |
 // |        Matrix Server-Server API v1.18                                   |
-// |  CS URL: https://spec.matrix.org/v1.18/client-server-api/               |
-// |  SS URL: https://spec.matrix.org/v1.18/server-server-api/               |
+// |  CS URL: ../../docs/matrix-v1.18-spec/client-server-api.md               |
+// |  SS URL: ../../docs/matrix-v1.18-spec/server-server-api.md               |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -223,7 +223,7 @@ SCENARIO("Homeserver admin health requires an admin session", "[homeserver][vert
 
 // --- Registration policy enforcement -----------------------------------------
 // Spec: Matrix Client-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3register
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3register
 //
 // If registration is disabled by server configuration the homeserver MUST
 // reject POST /_matrix/client/v3/register requests. Open registration is an
@@ -256,7 +256,7 @@ SCENARIO("Homeserver registration follows runtime registration config", "[homese
 
 // --- Session creation and token revocation -----------------------------------
 // Spec: Matrix Client-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#login
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#login
 //
 // Each login MUST produce a unique access token. Logout MUST invalidate only
 // the token used in the logout request; other concurrent sessions MUST remain
@@ -454,7 +454,7 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
 
 // --- Credential and token collision resistance --------------------------------
 // Spec: Merovingian security policy
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#login
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#login
 //
 // Password verification MUST reject same-length incorrect passwords - defending
 // against length-based timing leaks. Token verification MUST reject single-bit
@@ -505,7 +505,7 @@ SCENARIO("Homeserver rejects same-length incorrect passwords and crafted token c
 
 // --- Local room create / join / send / state flow ----------------------------
 // Spec: Matrix Client-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3createroom
 //
 // Room creation MUST emit the four initial state events required by the spec:
 // m.room.create, m.room.power_levels, m.room.join_rules, and m.room.member
@@ -562,7 +562,7 @@ SCENARIO("Homeserver local room route flow creates joins sends and fetches state
                 // Do NOT remove - a non-200 prevents clients from reading room state.
                 REQUIRE(state.status == 200U);
                 // Spec MUST: m.room.create MUST be present in the initial room state.
-                // URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom
+                // URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3createroom
                 // Do NOT remove - missing create event makes the auth chain unverifiable by federation.
                 REQUIRE(state.body.find("\"m.room.create\"") != std::string::npos);
                 // Spec MUST: m.room.member for the creator MUST be present in initial state.
@@ -662,7 +662,7 @@ SCENARIO("Remote join fails closed when the runtime signing key is not initializ
 }
 
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // The joining server must reject a malformed make_join template rather than
 // repairing missing required fields locally before signing it.

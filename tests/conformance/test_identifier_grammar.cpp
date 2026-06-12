@@ -4,7 +4,7 @@
 // |              MATRIX IDENTIFIER GRAMMAR CONFORMANCE TESTS               |
 // |                                                                         |
 // |  Spec: Matrix v1.18 Appendices — Identifier Grammar                    |
-// |  URL:  https://spec.matrix.org/v1.18/appendices/#identifier-grammar    |
+// |  URL:  ../../docs/matrix-v1.18-spec/appendices.md#identifier-grammar    |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -31,7 +31,7 @@
 
 // ---------------------------------------------------------------------------
 // Spec: Matrix v1.18 Appendices — Server Name
-// URL:  https://spec.matrix.org/v1.18/appendices/#server-name
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#server-name
 //
 // server_name = hostname [ ":" port ]
 // hostname    = IPv4address / "[" IPv6address "]" / dns_name
@@ -177,7 +177,7 @@ SCENARIO("Server name grammar: invalid server names are rejected",
 
 // ---------------------------------------------------------------------------
 // Spec: Matrix v1.18 Appendices — User Identifiers
-// URL:  https://spec.matrix.org/v1.18/appendices/#user-identifiers
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
 //
 // user_id     = "@" localpart ":" server_name
 // localpart   = 1*user_id_char
@@ -286,7 +286,7 @@ SCENARIO("User ID grammar: user ID exceeding 255 bytes is rejected",
 
 // ---------------------------------------------------------------------------
 // Spec: Matrix CS API v1.18 Appendices § User Identifiers
-// URL: https://spec.matrix.org/v1.18/appendices/#user-identifiers
+// URL: ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
 //
 // NEW localpart (used at registration / local paths):
 //   MUST contain only: a-z, 0-9, ., _, =, -, /, +
@@ -386,7 +386,7 @@ SCENARIO("New user ID localpart: forbidden characters are rejected",
 
 // ---------------------------------------------------------------------------
 // Spec: Matrix CS API v1.18 Appendices § User Identifiers (historical)
-// URL: https://spec.matrix.org/v1.18/appendices/#user-identifiers
+// URL: ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
 //
 // HISTORICAL localpart (federation / inbound paths):
 //   Older servers issued user IDs with characters outside the normative set.
@@ -494,7 +494,7 @@ SCENARIO("Federated user ID localpart: structurally forbidden characters are rej
 
 // ---------------------------------------------------------------------------
 // Spec: Matrix v1.18 Appendices — User Identifiers (federated user_id)
-// URL:  https://spec.matrix.org/v1.18/appendices/#user-identifiers
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
 //
 // user_id_is_valid_federated() applies the same structural constraints as
 // user_id_is_valid() (255-byte limit, '@' sigil, ':' separator, valid
@@ -547,8 +547,8 @@ SCENARIO("Federated user ID: structural grammar is enforced with historical loca
 
 // ---------------------------------------------------------------------------
 // Spec: Matrix v1.18 Appendices — Event IDs (room version 4+)
-// URL:  https://spec.matrix.org/v1.18/appendices/#event-ids
-//       https://spec.matrix.org/v1.18/rooms/v4/
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#event-ids
+//       ../../docs/matrix-v1.18-spec/rooms/v4.md
 //
 // event_id  = "$" base64url
 // base64url = *( ALPHA / DIGIT / "-" / "_" )
@@ -634,8 +634,8 @@ SCENARIO("Event ID grammar: SHA-256 length event ID matches spec dimensions",
 }
 
 // Spec: Matrix Appendices v1.18 — Event IDs (room version 4+)
-// URL:  https://spec.matrix.org/v1.18/rooms/v4/
-//       https://spec.matrix.org/v1.18/appendices/#event-ids
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v4.md
+//       ../../docs/matrix-v1.18-spec/appendices.md#event-ids
 //
 // The grammar for event IDs is: '$' followed by one or more URL-safe base64
 // characters. This is a SYNTACTIC rule only.

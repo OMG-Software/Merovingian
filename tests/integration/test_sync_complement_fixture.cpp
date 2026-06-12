@@ -4,7 +4,7 @@
 // |       MATRIX /SYNC COMPLEMENT CONFORMANCE INTEGRATION TESTS             |
 // |                                                                         |
 // |  Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync                      |
-// |  URL:  https://spec.matrix.org/v1.18/client-server-api/                |
+// |  URL:  ../../docs/matrix-v1.18-spec/client-server-api.md                |
 // |        #get_matrixclientv3sync                                          |
 // |                                                                         |
 // |  Complement: https://github.com/matrix-org/complement                   |
@@ -329,7 +329,7 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
 
 // --- Sync Complement fixture - v1.18 /sync contract --------------------------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 // Complement: https://github.com/matrix-org/complement
 //
 // Drives the bundled sync_v1_18 Complement-style fixture against the runtime.
@@ -363,7 +363,7 @@ SCENARIO("Sync conformance fixture (Complement-style) drives /sync against the v
 
 // --- Client-server v1.18 conformance - full endpoint family coverage ----------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync and related endpoint families
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 // Complement: https://github.com/matrix-org/complement
 //
 // Drives the bundled client_server_v1_18 fixture which covers auth, devices,

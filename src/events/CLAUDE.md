@@ -1,7 +1,7 @@
 # src/events/ — Events Module
 
 Implements Matrix event parsing, signing, hashing, authorization, state resolution, and redaction.
-Spec authority: https://spec.matrix.org/v1.18/server-server-api/
+Spec authority: ../../docs/matrix-v1.18-spec/server-server-api.md
 
 ## Key files and their responsibilities
 
@@ -59,10 +59,10 @@ Do not trim event fields manually — the algorithm determines what survives.
 
 ## Key spec sections
 
-- [PDU format](https://spec.matrix.org/v1.18/server-server-api/#pdus)
-- [Content hash](https://spec.matrix.org/v1.18/server-server-api/#calculating-the-content-hash-for-an-event)
-- [Reference hash](https://spec.matrix.org/v1.18/server-server-api/#calculating-the-reference-hash-for-an-event)
-- [Event signing](https://spec.matrix.org/v1.18/server-server-api/#signing-events)
-- [Authorization rules](https://spec.matrix.org/v1.18/server-server-api/#authorization-rules)
-- [State resolution](https://spec.matrix.org/v1.18/server-server-api/#room-state-resolution)
-- [Redactions](https://spec.matrix.org/v1.18/server-server-api/#redactions)
+- [PDU format](../../docs/matrix-v1.18-spec/server-server-api.md#pdus)
+- [Content hash](../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event)
+- [Reference hash](../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-reference-hash-for-an-event)
+- [Event signing](../../docs/matrix-v1.18-spec/server-server-api.md#signing-events)
+- [Authorization rules](../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules)
+- [State resolution](../../docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution)
+- [Redactions](../../docs/matrix-v1.18-spec/server-server-api.md#redactions)

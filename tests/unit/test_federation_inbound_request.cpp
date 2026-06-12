@@ -616,7 +616,7 @@ SCENARIO("Inbound federation applies backoff and increments failure count", "[fe
 
 // Spec: Matrix Server-Server API v1.18
 // Section: Signing Events (per-PDU signing)
-// URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
 //
 // The sender's homeserver MUST sign every PDU it creates. The transport origin
 // (the server making the HTTPS request) MAY be a relay that forwards PDUs on
@@ -742,7 +742,7 @@ SCENARIO("Federation transaction handler uses room_version_resolver for PDU auth
 }
 
 // Spec: Matrix Server-Server API v1.18 — Room Version 10 redactions
-// URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
 //
 // Room v1–v10 preserves "origin" as an allowed top-level key in the signing
 // payload.  Room v11+ removes it.  When a homeserver uses the wrong (later)
@@ -853,7 +853,7 @@ SCENARIO("Federation PDU authorization rejects comma-delimited PDUs when a signi
 
 // Spec: Matrix Server-Server API v1.18
 // Section: Authorization Rules
-// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 //
 // The old pdu_is_authorized() used a hardcoded room version "12" and a synthetic
 // power level {sender=50, required=0}, meaning every PDU with a non-empty type
@@ -974,7 +974,7 @@ SCENARIO("Full Matrix event auth rejects PDUs that pass transport checks but vio
 }
 
 // Spec: Matrix Server-Server API v1.18 — Signing Events (per-PDU signing)
-// URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
 //
 // For relayed PDUs (TLS peer is a relay forwarding on behalf of the true author)
 // the verifying server MUST resolve the sender domain's signing key and verify the
@@ -1097,7 +1097,7 @@ SCENARIO("Relayed PDU signature is verified against the sender domain key via th
 }
 
 // Spec: Matrix Server-Server API v1.18 — Authorization Rules
-// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 //
 // The server MUST run event-authorization rules before persisting any inbound PDU.
 // A PDU that fails auth MUST NOT be persisted; the pdu_sink MUST return rejected_auth
@@ -1169,6 +1169,46 @@ SCENARIO("Inbound pdu_sink enforces Matrix event-authorization rules before pers
                 REQUIRE(response.status == 200U);
                 REQUIRE(rejection_count == 1U);
                 REQUIRE(acceptance_count == 0U);
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound transaction with an unknown EDU type does not invoke the edu_sink",
+         "[federation][inbound][edu]")
+{
+    GIVEN("a runtime with a known remote and an edu_sink that counts invocations")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, token));
+
+        auto edu_count = std::make_shared<std::size_t>(0U);
+        runtime.edu_sink = [edu_count]([[maybe_unused]] merovingian::federation::InboundEduEnvelope const& env)
+            -> merovingian::federation::EduDispositionResult {
+            ++(*edu_count);
+            return {merovingian::federation::EduDispositionStatus::accepted, {}};
+        };
+
+        WHEN("a transaction containing an unrecognized EDU type is delivered")
+        {
+            // "org.example.unknown" is not a registered Matrix EDU type; the
+            // implementation discards it before forwarding to the sink.
+            auto const body = std::string{
+                "{\"origin\":\"matrix.example.org\","
+                "\"origin_server_ts\":1000,"
+                "\"pdus\":[],"
+                "\"edus\":[{\"edu_type\":\"org.example.unknown\","
+                "\"content\":{\"k\":\"v\"}}]}"};
+            auto const request = signed_request(origin, key_id, token, body);
+            [[maybe_unused]] auto const response =
+                merovingian::federation::handle_inbound_federation_request(runtime, request);
+
+            THEN("the edu_sink is never invoked — unknown EDU types are filtered before dispatch")
+            {
+                REQUIRE(*edu_count == 0U);
             }
         }
     }

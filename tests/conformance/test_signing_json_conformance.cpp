@@ -4,8 +4,8 @@
 // |              MATRIX SIGNING JSON CONFORMANCE TESTS                     |
 // |                                                                         |
 // |  Spec: Matrix v1.18 Appendices — Signing JSON                          |
-// |  URL:  https://spec.matrix.org/v1.18/appendices/#signing-json          |
-// |        https://spec.matrix.org/v1.18/appendices/#cryptographic-test-vectors |
+// |  URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json          |
+// |        ../../docs/matrix-v1.18-spec/appendices.md#cryptographic-test-vectors |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -41,7 +41,7 @@
 
 // ---------------------------------------------------------------------------
 // Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  https://spec.matrix.org/v1.18/appendices/#signing-json
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
 //
 // To sign a JSON object:
 //  1. Remove the "signatures" key if present
@@ -128,7 +128,7 @@ private:
 } // namespace
 
 // Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  https://spec.matrix.org/v1.18/appendices/#signing-json
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
 //
 // The signing payload MUST NOT contain the "signatures" or "unsigned" fields.
 SCENARIO("Signing payload excludes signatures and unsigned fields per spec",
@@ -165,7 +165,7 @@ SCENARIO("Signing payload excludes signatures and unsigned fields per spec",
 }
 
 // Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  https://spec.matrix.org/v1.18/appendices/#signing-json
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
 //
 // The signing payload is canonical JSON: keys are sorted, no whitespace.
 SCENARIO("Signing payload is canonical JSON (sorted keys, no whitespace)",
@@ -203,7 +203,7 @@ SCENARIO("Signing payload is canonical JSON (sorted keys, no whitespace)",
 }
 
 // Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  https://spec.matrix.org/v1.18/appendices/#signing-json
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
 //
 // The signature is placed at signatures.{server_name}.{key_id} in the result.
 SCENARIO("Signed event contains the signature at the correct path per spec",
@@ -254,7 +254,7 @@ SCENARIO("Signed event contains the signature at the correct path per spec",
 }
 
 // Spec: Matrix v1.18 Appendices — Checking for a Signature
-// URL:  https://spec.matrix.org/v1.18/appendices/#checking-for-a-signature
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#checking-for-a-signature
 //
 // To verify a signature:
 //  1. Remove the "signatures" key from the object
@@ -314,7 +314,7 @@ SCENARIO("Signature verification round-trip succeeds for a correctly signed even
 }
 
 // Spec: Matrix v1.18 Appendices — Checking for a Signature
-// URL:  https://spec.matrix.org/v1.18/appendices/#checking-for-a-signature
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#checking-for-a-signature
 //
 // A signature produced by one key MUST NOT verify against a different key.
 SCENARIO("Signature verification fails when a different key is used",
@@ -371,7 +371,7 @@ SCENARIO("Signature verification fails when a different key is used",
 }
 
 // Spec: Matrix v1.18 Appendices — Signing JSON
-// URL:  https://spec.matrix.org/v1.18/appendices/#signing-json
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#signing-json
 //
 // Signing an already-signed event adds to signatures without disturbing existing
 // signatures from other servers.
@@ -421,7 +421,7 @@ SCENARIO("Signing an already-signed event preserves existing signatures",
 }
 
 // Spec: Matrix v1.18 Appendices — Checking for a Signature
-// URL:  https://spec.matrix.org/v1.18/appendices/#checking-for-a-signature
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#checking-for-a-signature
 //
 // verify_event_signature_presence returns an error when the expected
 // server name or key ID is missing from the signatures object.
@@ -473,7 +473,7 @@ SCENARIO("Signature presence check returns error when server or key is absent",
 
 // ===========================================================================
 // Spec: Matrix v1.18 Appendices — Cryptographic Test Vectors
-// URL:  https://spec.matrix.org/v1.18/appendices/#cryptographic-test-vectors
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#cryptographic-test-vectors
 //
 // These tests use the EXACT seed, inputs, and expected outputs from the spec.
 // Any deviation means the implementation produces output incompatible with

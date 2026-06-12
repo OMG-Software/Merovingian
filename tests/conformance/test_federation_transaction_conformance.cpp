@@ -5,7 +5,7 @@
 // |                                                                         |
 // |  Spec: Matrix Server-Server API v1.18                                   |
 // |  Endpoint: PUT /_matrix/federation/v1/send/{txnId}                      |
-// |  URL: https://spec.matrix.org/v1.18/server-server-api/                  |
+// |  URL: ../../docs/matrix-v1.18-spec/server-server-api.md                  |
 // |         #put_matrixfederationv1sendtxnid                                |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -213,7 +213,7 @@ private:
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The receiving server MUST respond 200 with {} when it processes a valid
 // transaction. Errors in individual PDUs are NOT reflected as HTTP error
@@ -271,7 +271,7 @@ SCENARIO("Federation send transaction returns 200 with empty object on success",
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // "origin" MUST be the server_name of the sending server. The receiving server
 // MUST verify that the origin claim matches the X-Matrix auth header's origin.
@@ -319,7 +319,7 @@ SCENARIO("Federation send transaction is rejected when origin does not match sig
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // When a pdu_sink is installed, the runtime MUST route each PDU from the
 // transaction to that sink. The sink is invoked once per PDU.
@@ -378,7 +378,7 @@ SCENARIO("Federation send transaction routes PDUs to the installed pdu_sink", "[
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // EDUs (Ephemeral Data Units) are optional in a transaction. When present they
 // MUST be routed to the edu_sink. The server MUST accept the transaction even
@@ -427,7 +427,7 @@ SCENARIO("Federation send transaction routes EDUs to the installed edu_sink", "[
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The transaction body MUST include "origin" and "origin_server_ts". A
 // transaction missing these required fields MUST be rejected.
@@ -482,7 +482,7 @@ SCENARIO("Federation send transaction rejects missing required top-level fields"
 }
 
 // Spec: Matrix Server-Server API v1.18
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The accepted_transactions list on the runtime is updated after a successful
 // transaction. The transaction_id is the path parameter from the URL.
@@ -527,3 +527,88 @@ SCENARIO("Accepted federation transaction is recorded in the runtime state", "[f
         }
     }
 }
+
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: PUT /_matrix/federation/v1/send/{txnId}
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+//
+// "The sending server must wait and retry for a 200 OK response before
+// sending a transaction with a different txnId to the receiving server."
+// Because the sender retries the same txnId until it receives 200, the
+// receiver MUST respond 200 for a repeated txnId — otherwise the sender
+// can never progress to the next transaction.
+SCENARIO("Duplicate federation transaction (same txn_id) is accepted without re-processing PDUs",
+         "[federation][transaction][conformance][idempotency]")
+{
+    GIVEN("a federation runtime with a pdu_sink that counts invocations")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for_origin());
+
+        auto pdu_count = std::make_shared<std::size_t>(0U);
+        runtime.pdu_sink = [pdu_count]([[maybe_unused]] merovingian::federation::InboundPduEnvelope const& envelope)
+            -> merovingian::federation::PduIngestionResult {
+            ++(*pdu_count);
+            return {merovingian::federation::PduIngestionStatus::accepted, {}, {}};
+        };
+
+        auto const body = std::string{"{\"origin\":\"remote.example.org\","
+                                      "\"origin_server_ts\":1000,"
+                                      "\"pdus\":["} +
+                          minimal_pdu() + "]}";
+
+        WHEN("the same transaction is delivered twice with the same txn_id")
+        {
+            auto const first = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_idem_001", body));
+            auto const second = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_idem_001", body));
+
+            THEN("both responses are 200")
+            {
+                // Spec MUST: receiver MUST respond 200 for a repeated txnId so the
+                // sender can advance (SS API §Transactions, "wait and retry for 200 OK").
+                REQUIRE(first.status == 200U);
+                REQUIRE(second.status == 200U);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: PUT /_matrix/federation/v1/send/{txnId}
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
+//
+// The only documented response code is 200. The spec states: "The server is
+// to use this response even in the event of one or more PDUs failing to be
+// processed." Unknown EDU types are unprocessable content; the 200 response
+// contract therefore applies regardless of EDU type.
+SCENARIO("Federation send transaction with an unrecognized EDU type is accepted gracefully",
+         "[federation][transaction][conformance][edu]")
+{
+    GIVEN("a federation runtime")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for_origin());
+
+        WHEN("a transaction containing an unrecognized EDU type is delivered")
+        {
+            // "org.example.unknown" is not a type defined by the Matrix spec.
+            auto const body = std::string{"{\"origin\":\"remote.example.org\","
+                                          "\"origin_server_ts\":1000,"
+                                          "\"pdus\":[],"
+                                          "\"edus\":[{\"edu_type\":\"org.example.unknown\","
+                                          "\"content\":{\"some_key\":\"some_value\"}}]}"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_send_request("txn_edu_unknown", body));
+
+            THEN("the server returns 200")
+            {
+                // Spec MUST: 200 is the only documented response for PUT /send/{txnId}.
+                // Unprocessable content (unknown EDU type) MUST NOT cause a non-200 response.
+                REQUIRE(response.status == 200U);
+            }
+        }
+    }
+}
+

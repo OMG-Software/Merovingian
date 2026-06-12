@@ -1,3 +1,10 @@
+## 0.7.1
+
+- **feat(conformance): inbound transaction idempotency — 200 for duplicate txnId:** Added a conformance fixture for `PUT /_matrix/federation/v1/send/{txnId}`. The spec states the sending server must retry the same `txnId` until it receives 200 before advancing; the receiver must therefore respond 200 for a repeated `txnId`. Both requests assert 200. The `pdu_sink` deduplication invariant (sink invoked once, not twice) is separately covered by the existing unit test `Inbound federation transaction accepts signed public trusted remotes`.
+- **feat(conformance): unrecognized EDU type does not cause non-200:** Added a conformance fixture verifying that a transaction containing an unknown `edu_type` returns 200. The spec documents 200 as the only valid response, stating "The server is to use this response even in the event of one or more PDUs failing to be processed"; unprocessable EDU types fall under the same contract.
+- **feat(unit): unknown EDU type is not forwarded to the edu_sink:** Added `test_federation_inbound_request.cpp` unit test asserting that an unknown `edu_type` is filtered before the `edu_sink` is invoked. This is implementation policy (not a spec MUST), so it belongs in unit tests rather than conformance tests.
+- **fix(conformance): remove incorrect spec citations from federation transaction tests:** Corrected three conformance scenarios that cited spec MUSTs not present in Matrix v1.18: (1) "Servers MUST treat already-processed transactions as successful again" — not in spec; (2) "Unknown EDU types MUST be silently discarded" — not in spec; (3) "Servers MUST enforce a maximum transaction size" — spec limits are count-based (50 PDUs / 100 EDUs), not byte-based. The byte-limit enforcement is already tested by the unit test `Federation transaction validation accepts bounded transactions and rejects malformed ones`.
+
 ## 0.7.0
 
 - **feat(conformance): receipt endpoint promoted to spec-covered:** Added Catch2 BDD conformance fixtures for `POST /rooms/{roomId}/receipt/{receiptType}/{eventId}` covering all three valid receipt types (`m.read`, `m.read.private`, `m.fully_read`), the 403 response for non-members, and a 400 `M_INVALID_PARAM` rejection for unrecognized receipt types. The handler now validates the receipt type against the spec-defined enum before storing or federating any receipt state.
@@ -110,7 +117,7 @@
   `m.room.create` state event to select the correct v1/v2 invite wire format.
 
 - **Feature (POST /publicRooms):** Implemented `POST /_matrix/client/v3/publicRooms` per
-  [spec §post_matrixclientv3publicrooms](https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms).
+  [spec §post_matrixclientv3publicrooms](docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3publicrooms).
   Accepts `filter.generic_search_term` (case-insensitive substring match on room name, topic,
   canonical alias, and room_id), `limit` (max results per page), and `since` (integer-offset
   pagination token); returns `next_batch` when more results follow. Refactored the existing

@@ -59,7 +59,7 @@ namespace
     // Validates a byte sequence as a federated localpart.
     //
     // Spec: Matrix v1.18 § User Identifiers (historical note)
-    // URL:  https://spec.matrix.org/v1.18/appendices/#user-identifiers
+    // URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
     //
     // Historical deployments issued user IDs with characters outside the normative
     // set (uppercase, punctuation such as '#', Unicode). Servers SHOULD accept these
@@ -266,7 +266,7 @@ auto server_name_is_valid(std::string_view server_name) noexcept -> bool
 }
 
 // Spec: Matrix v1.18 § Identifier Grammar
-// URL:  https://spec.matrix.org/v1.18/appendices/#user-identifiers
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
 //
 // New localparts MUST use only: a-z, 0-9, '.', '_', '-', '=', '/', '+'.
 // Uppercase is not permitted for new user IDs.
@@ -278,7 +278,7 @@ auto localpart_is_valid_new(std::string_view localpart) noexcept -> bool
 }
 
 // Spec: Matrix v1.18 § User Identifiers (historical compatibility)
-// URL:  https://spec.matrix.org/v1.18/appendices/#user-identifiers
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#user-identifiers
 //
 // Historical user IDs may contain characters outside the normative set.
 // Servers SHOULD accept them when received over federation.

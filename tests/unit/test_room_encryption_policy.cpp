@@ -5,7 +5,7 @@
 // |                                                                         |
 // |  Spec: Merovingian mandatory encryption policy (stricter than Matrix)   |
 // |  Ref:  Matrix Client-Server API v1.18, Sec. 13 End-to-end encryption        |
-// |  URL:  https://spec.matrix.org/v1.18/client-server-api/                 |
+// |  URL:  ../../docs/matrix-v1.18-spec/client-server-api.md                 |
 // |        #end-to-end-encryption                                            |
 // |                                                                         |
 // |  Note: The Matrix spec allows unencrypted private rooms. Merovingian    |
@@ -164,7 +164,7 @@ SCENARIO("Room creation policy permits unencrypted public rooms only when explic
 // --- encrypted payload log redaction -----------------------------------------
 // Spec: Merovingian security policy - no plaintext from encrypted events in logs
 // Ref:  Matrix Client-Server API v1.18, Sec. 13.9.4 m.room.encrypted
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#mroomencrypted
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#mroomencrypted
 //
 // Encrypted event ciphertext and session material MUST NOT appear in diagnostic
 // logs or audit trails. The log summary MUST redact the payload entirely.

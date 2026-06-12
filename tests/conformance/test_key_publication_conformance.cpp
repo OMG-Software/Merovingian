@@ -54,7 +54,7 @@ namespace
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: GET /_matrix/key/v2/server
-// https://spec.matrix.org/v1.18/server-server-api/#get_matrixkeyv2server
+// ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
 SCENARIO("GET /_matrix/key/v2/server returns the spec-required published signing fields",
          "[federation][conformance][key_publishing]")
 {
@@ -131,7 +131,7 @@ SCENARIO("GET /_matrix/key/v2/server returns the spec-required published signing
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: GET /_matrix/key/v2/server
-// URL: https://spec.matrix.org/v1.18/server-server-api/#publishing-keys
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
 //
 // All key IDs in verify_keys MUST follow the "algorithm:version" convention
 // (e.g. "ed25519:1"). Ed25519 is the only defined algorithm for server
@@ -179,7 +179,7 @@ SCENARIO("GET /_matrix/key/v2/server verify_keys entries have ed25519:version ke
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: GET /_matrix/key/v2/server
-// URL: https://spec.matrix.org/v1.18/server-server-api/#publishing-keys
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
 //
 // "valid_until_ts: UNIX timestamp in milliseconds for when the server MUST
 // generate a new signing key. Servers MUST NOT return a valid_until_ts that
@@ -224,7 +224,7 @@ SCENARIO("GET /_matrix/key/v2/server valid_until_ts is strictly in the future",
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: GET /_matrix/key/v2/server
-// URL: https://spec.matrix.org/v1.18/server-server-api/#publishing-keys
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
 //
 // "old_verify_keys: The public keys that the server used to use, and when it
 // stopped using them." Each entry MUST contain a "key" (base64 public key)

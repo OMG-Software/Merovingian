@@ -4,15 +4,15 @@
 // |         MATRIX END-TO-END ENCRYPTION KEY API CONFORMANCE TESTS          |
 // |                                                                         |
 // |  Spec: Matrix Client-Server API v1.18, Sec. 12 End-to-end encryption        |
-// |  Key upload:    https://spec.matrix.org/v1.18/client-server-api/        |
+// |  Key upload:    ../../docs/matrix-v1.18-spec/client-server-api.md        |
 // |                 #post_matrixclientv3keysupload                           |
-// |  Key query:     https://spec.matrix.org/v1.18/client-server-api/        |
+// |  Key query:     ../../docs/matrix-v1.18-spec/client-server-api.md        |
 // |                 #post_matrixclientv3keysquery                            |
-// |  Key claim:     https://spec.matrix.org/v1.18/client-server-api/        |
+// |  Key claim:     ../../docs/matrix-v1.18-spec/client-server-api.md        |
 // |                 #post_matrixclientv3keysclaim                            |
-// |  Cross-signing: https://spec.matrix.org/v1.18/client-server-api/        |
+// |  Cross-signing: ../../docs/matrix-v1.18-spec/client-server-api.md        |
 // |                 #cross-signing                                            |
-// |  Key backup:    https://spec.matrix.org/v1.18/client-server-api/        |
+// |  Key backup:    ../../docs/matrix-v1.18-spec/client-server-api.md        |
 // |                 #server-side-key-backups                                 |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -92,8 +92,8 @@ SCENARIO("Key API route scaffold covers device key and backup endpoints", "[auth
 
 // --- token protection and rate limits -----------------------------------------
 // Spec: Matrix Client-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#using-access-tokens
-//       https://spec.matrix.org/v1.18/client-server-api/#rate-limiting
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#using-access-tokens
+//       ../../docs/matrix-v1.18-spec/client-server-api.md#rate-limiting
 //
 // All key API endpoints MUST require a valid access token - key material
 // belongs to authenticated users only. Rate limiting MUST be applied to
@@ -130,7 +130,7 @@ SCENARIO("Key API routes require access tokens and explicit rate limits", "[auth
 
 // --- one-time and fallback key storage ----------------------------------------
 // Spec: Matrix Client-Server API v1.18, Sec. 12.1 One-time keys
-// URL:  https://spec.matrix.org/v1.18/client-server-api/
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md
 //       #post_matrixclientv3keysupload
 //
 // The server MUST store one-time keys and fallback keys as opaque, sensitive
@@ -171,8 +171,8 @@ SCENARIO("Key API database scaffold covers one-time keys and fallback keys", "[a
 
 // --- cross-signing and key backup storage -------------------------------------
 // Spec: Matrix Client-Server API v1.18
-// Cross-signing: https://spec.matrix.org/v1.18/client-server-api/#cross-signing
-// Key backup:    https://spec.matrix.org/v1.18/client-server-api/
+// Cross-signing: ../../docs/matrix-v1.18-spec/client-server-api.md#cross-signing
+// Key backup:    ../../docs/matrix-v1.18-spec/client-server-api.md
 //                #server-side-key-backups
 //
 // Cross-signing keys and room key backups MUST be stored as server-blind,

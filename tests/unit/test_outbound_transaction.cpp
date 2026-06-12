@@ -73,7 +73,7 @@ SCENARIO("EDU transaction bodies key each EDU by edu_type so Synapse accepts the
     }
 }
 
-// Spec: https://spec.matrix.org/v1.18/server-server-api/#receipts
+// Spec: ../../docs/matrix-v1.18-spec/server-server-api.md#receipts
 // Required shape: { roomId: { receiptType: { userId: { event_ids: [eventId], data: { ts: N } } } } }
 SCENARIO("receipt EDU content follows Matrix spec nested structure", "[federation][outbound][edu][spec][receipt]")
 {

@@ -4,7 +4,7 @@
 // |              MATRIX /SYNC HANDLER CONFORMANCE TESTS                     |
 // |                                                                         |
 // |  Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync                      |
-// |  URL:  https://spec.matrix.org/v1.18/client-server-api/                |
+// |  URL:  ../../docs/matrix-v1.18-spec/client-server-api.md                |
 // |        #get_matrixclientv3sync                                          |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -132,7 +132,7 @@ namespace
 
 // --- Sync surfaces (Sec. 9.4: initial /sync response structure) ------------------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // An initial /sync (no `since` token) MUST return all queued data for the user:
 // account_data, to_device messages, device_lists, presence events, OTK counts,
@@ -234,7 +234,7 @@ SCENARIO("Sync surfaces account_data, to_device, device_lists, presence, and key
 
 // --- Sync filter - room include/exclude (Sec. 9.4: filter parameter) -------------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // The `filter` parameter's `room.not_rooms` list MUST cause the server to omit
 // the listed rooms from `rooms.join` in the response. The join map MUST be empty
@@ -276,7 +276,7 @@ SCENARIO("Sync filter limits the timeline events and applies room include/exclud
 
 // --- Incremental sync - since token semantics (Sec. 9.4: since parameter) --------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // Incremental sync (with `since`) MUST only return events newer than the `since`
 // token. account_data events that predate the token MUST be suppressed. to_device
@@ -339,7 +339,7 @@ SCENARIO("Incremental sync drops account_data that predates the since token and 
 
 // --- Long-poll wake-up (Sec. 9.4: timeout parameter) -----------------------------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // The `timeout` parameter controls how long the server waits before returning an
 // empty response when no data is available. When new data arrives during the wait
@@ -385,7 +385,7 @@ SCENARIO("Sync long-poll wakes when push_to_device_message publishes through the
 
 // --- next_batch token ordering (Sec. 9.4: next_batch semantics) ------------------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // The `next_batch` token in responses MUST advance monotonically and MUST
 // reference the actual last-published ordering, not a speculative future slot.
@@ -467,7 +467,7 @@ SCENARIO("Sync next_batch token matches last published stream ordering", "[sync]
 
 // --- Two-phase sync dispatch - needs_wait / complete (Sec. 9.4: timeout) ---------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // If `timeout` > 0 and no data is available, the server MUST signal that it
 // needs to wait (needs_wait) before the actual network timeout fires. When
@@ -548,7 +548,7 @@ SCENARIO("Two-phase sync dispatch returns needs_wait when no data is available",
 
 // --- Stale room data guard (Sec. 9.4: rooms.join incremental correctness) ---------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // `rooms.join` MUST be empty when no room activity has occurred since `since`.
 // The `can_wait=false` path MUST NOT re-emit membership state that the client
@@ -610,7 +610,7 @@ SCENARIO("Incremental sync with can_wait=false emits no room data when nothing c
 
 // --- Federation-joined room state events visible to incremental sync -----------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // If a user joins a remote room via federation (make_join/send_join), the
 // state events from the send_join response MUST be stored with a proper
@@ -702,7 +702,7 @@ SCENARIO("Federation-joined room state events are visible to incremental sync",
 }
 
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync — rooms.join
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // After a local user completes a federated join from a pending invite, the newly-
 // joined room MUST appear in rooms.join in the next incremental sync.  The server

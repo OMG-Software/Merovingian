@@ -51,7 +51,7 @@ Open work per capability area. Status column reflects the current level in the
 
 | Endpoint | Status | Needs |
 | --- | --- | --- |
-| `PUT /_matrix/federation/v1/send/{txnId}` inbound | `partial` | Richer EDU side-effects, room-version-specific PDU verification, conformance coverage. |
+| `PUT /_matrix/federation/v1/send/{txnId}` inbound | `runtime-wired` | Room-version-specific PDU verification, richer EDU side-effects. Idempotency, unknown-EDU discard, and oversize rejection now conformance-covered. |
 | `PUT /_matrix/federation/v1/send/{txnId}` outbound | `partial` | Matrix conformance coverage. |
 | Federation join/leave/invite/knock/backfill | `integrated` | Full Matrix conformance fixtures; richer production leave/knock state semantics. |
 | Server discovery | `partial` | TLS-bound origin validation, richer Matrix edge-case fixtures, live network conformance coverage. |

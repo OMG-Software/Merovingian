@@ -4,7 +4,7 @@
 // |         MATRIX PDU FORMAT CONFORMANCE TESTS                             |
 // |                                                                         |
 // |  Spec: Matrix Server-Server API v1.18 — PDUs                            |
-// |  URL:  https://spec.matrix.org/v1.18/server-server-api/#pdus            |
+// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#pdus            |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -54,7 +54,7 @@ auto const valid_pdu = std::string{
 } // namespace
 
 // Spec: Matrix Server-Server API v1.18 — PDUs
-// URL: https://spec.matrix.org/v1.18/server-server-api/#pdus
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#pdus
 //
 // parse_federation_pdu must correctly extract the core fields from a valid
 // room-v3+ PDU JSON string.
@@ -102,7 +102,7 @@ SCENARIO("parse_federation_pdu extracts required fields from a valid room v3+ PD
 }
 
 // Spec: Matrix Server-Server API v1.18 — Signing Events
-// URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
 //
 // The spec requires that a PDU carries a valid signature from the sender's server
 // (domain_of(sender)). For room v1/v2 rooms, the event-ID server must also have
@@ -154,7 +154,7 @@ SCENARIO("authorize_federation_pdu validates sender-server signatures (spec requ
 }
 
 // Spec: Matrix Server-Server API v1.18 — PDUs
-// URL: https://spec.matrix.org/v1.18/server-server-api/#pdus
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#pdus
 //
 // parse_inbound_pdu_envelope extracts the room-version-agnostic fields from a
 // PDU JSON string. A valid envelope must carry room_id, sender, event_type,
@@ -220,7 +220,7 @@ SCENARIO("parse_inbound_pdu_envelope extracts the full PDU envelope",
 }
 
 // Spec: Matrix Server-Server API v1.18 — PDUs
-// URL: https://spec.matrix.org/v1.18/server-server-api/#pdus
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#pdus
 //
 // parse_inbound_pdu_envelope must return nullopt for structurally invalid input
 // (missing required fields, wrong types, invalid JSON).
@@ -329,7 +329,7 @@ SCENARIO("parse_inbound_pdu_envelope rejects structurally invalid PDUs",
 }
 
 // Spec: Matrix Server-Server API v1.18 — PDUs
-// URL: https://spec.matrix.org/v1.18/server-server-api/#pdus
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#pdus
 //
 // "depth" must be an integer >= 1 (the create event has depth 0 by convention;
 // all subsequent events have depth >= 1). The spec says depth is a "positive
@@ -402,7 +402,7 @@ SCENARIO("PDU envelope extracts depth correctly from the JSON",
 }
 
 // Spec: Matrix Room Version 12 (MSC4291)
-// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v12.md
 //
 // "The m.room.create event MUST NOT include a room_id field. The room ID is
 // derived from the create event's reference hash: the unpadded base64url of
@@ -458,7 +458,7 @@ SCENARIO("Room v12: m.room.create PDU without room_id is accepted and room_id is
 }
 
 // Spec: Matrix Room Version 12 (MSC4291)
-// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v12.md
 //
 // "The m.room.create event MUST NOT appear in the auth_events of any other
 // event. In room version 12, the create event ID is derived deterministically

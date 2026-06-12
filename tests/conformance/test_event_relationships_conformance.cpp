@@ -5,7 +5,7 @@
 // |                                                                         |
 // |  Spec: Matrix Client-Server API v1.18                                   |
 // |  Section: Forming Relationships Between Events                          |
-// |  URL: https://spec.matrix.org/v1.18/client-server-api/                  |
+// |  URL: ../../docs/matrix-v1.18-spec/client-server-api.md                  |
 // |         #forming-relationships-between-events                           |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -103,7 +103,7 @@ using namespace merovingian::tests;
 } // namespace
 
 // Spec: Matrix Client-Server API v1.18 — Forming Relationships Between Events
-// URL: https://spec.matrix.org/v1.18/client-server-api/#forming-relationships-between-events
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#forming-relationships-between-events
 //
 // A reply is formed by setting content["m.relates_to"]["m.in_reply_to"]["event_id"]
 // to the event ID of the event being replied to. The server MUST accept this
@@ -152,7 +152,7 @@ SCENARIO("Server accepts a reply event with m.in_reply_to relationship", "[event
 }
 
 // Spec: Matrix Client-Server API v1.18 — Event Replacements (Edits)
-// URL: https://spec.matrix.org/v1.18/client-server-api/#event-replacements
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#event-replacements
 //
 // An edit/replacement event has rel_type "m.replace" and the event_id of the
 // event being replaced. It MUST also contain "m.new_content" in its content.
@@ -192,7 +192,7 @@ SCENARIO("Server accepts an event replacement (edit) with m.replace relationship
 }
 
 // Spec: Matrix Client-Server API v1.18 — Threading
-// URL: https://spec.matrix.org/v1.18/client-server-api/#threading
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#threading
 //
 // A thread reply has rel_type "m.thread", event_id pointing to the thread root,
 // and optionally "m.in_reply_to" pointing to the latest event in the thread.
@@ -231,7 +231,7 @@ SCENARIO("Server accepts a thread reply with m.thread relationship", "[event-rel
 }
 
 // Spec: Matrix Client-Server API v1.18 — Reactions
-// URL: https://spec.matrix.org/v1.18/client-server-api/#reactions
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#reactions
 //
 // A reaction event has type "m.reaction", rel_type "m.annotation", event_id
 // pointing to the annotated event, and a "key" field with the reaction (e.g.
@@ -268,7 +268,7 @@ SCENARIO("Server accepts a reaction event with m.annotation relationship",
 }
 
 // Spec: Matrix Client-Server API v1.18 — Forming Relationships Between Events
-// URL: https://spec.matrix.org/v1.18/client-server-api/#forming-relationships-between-events
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#forming-relationships-between-events
 //
 // The m.relates_to structure in the content is preserved on the wire. Events
 // with relationships can appear in /sync timeline alongside regular events.
@@ -330,7 +330,7 @@ SCENARIO("Events with m.relates_to appear in the room timeline via GET /sync",
 }
 
 // Spec: Matrix Client-Server API v1.18 — GET /rooms/{roomId}/relations
-// URL: https://spec.matrix.org/v1.18/client-server-api/
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md
 //       #get_matrixclientv1roomsroomidreleventid
 //
 // The /relations endpoint returns events related to a given event_id.
