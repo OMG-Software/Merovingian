@@ -1,3 +1,7 @@
+## 0.6.4
+
+- **Fix (client verification — `device_lists.changed` missing after key/signature upload):** `POST /keys/device_signing/upload` and `POST /keys/signatures/upload` now emit `device_lists.changed` in `/sync` per spec §11.11.1. Previously neither endpoint called `record_device_list_change`, so the user's other devices never learned about the new cross-signing identity and could not complete the self-signature query needed to finish verification. The fix adds a self-notification (`observer = subject = user`) so all of the user's devices see the change, plus the room-member fan-out and federation broadcast.
+
 ## 0.6.3
 
 - **Fix (client verification — `POST /keys/device_signing/upload` UIA):** Cross-signing key upload now requires User-Interactive Authentication (UIA) per Matrix spec §11.12.1. A request without an `auth` object returns `401` with the `m.login.password` flow challenge; only requests with a verified password proceed to key storage. This prevents a malicious actor from silently replacing a user's cross-signing keys and blocking verification.

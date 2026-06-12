@@ -1636,6 +1636,127 @@ SCENARIO("PUT /sendToDevice with \"*\" delivers to all target user devices",
     }
 }
 
+// --- POST /keys/device_signing/upload → device_lists.changed in /sync --------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// §11.11.1: When a user's cross-signing keys change the server MUST include
+// that user's ID in device_lists.changed in the next /sync for all observers,
+// including the user's own other devices.
+SCENARIO("POST /keys/device_signing/upload emits device_lists.changed in /sync",
+         "[conformance][client-server][e2ee][device-list][sync]")
+{
+    GIVEN("alice is logged in on two devices")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt           = started.runtime;
+        auto const token_a = logged_in_token(rt);                        // alice / DEVICE1
+        auto const token_b = login_existing_user(rt, "alice", "DEV_B"); // alice / DEV_B
+
+        auto const initial_sync = merovingian::homeserver::handle_client_server_request(
+            rt, {"GET", "/_matrix/client/v3/sync", token_b, {}});
+        REQUIRE(initial_sync.response.status == 200U);
+        auto const since = sync_next_batch(initial_sync.response.body);
+
+        WHEN("alice uploads cross-signing keys from DEVICE1")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token_a,
+                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MKEY":"mval"},"signatures":{}},"user_signing_key":{"user_id":"@alice:example.org","usage":["user_signing"],"keys":{"ed25519:USIGN":"uval"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+            REQUIRE(upload.response.status == 200U);
+
+            THEN("DEV_B's next /sync includes alice in device_lists.changed")
+            {
+                auto const follow_sync = merovingian::homeserver::handle_client_server_request(
+                    rt, {"GET", "/_matrix/client/v3/sync?since=" + since, token_b, {}});
+                REQUIRE(follow_sync.response.status == 200U);
+                auto const body          = parse_object(follow_sync.response.body);
+                auto const* device_lists = object_member_as_object(body, "device_lists");
+                auto const* changed =
+                    device_lists != nullptr ? object_member_as_array(*device_lists, "changed") : nullptr;
+                // Spec MUST: cross-signing key upload MUST appear in device_lists.changed so
+                // the user's other devices can re-query the new keys and complete verification.
+                REQUIRE(changed != nullptr);
+                auto alice_listed = false;
+                for (auto const& v : *changed)
+                {
+                    if (auto const* s = std::get_if<std::string>(&v.storage()))
+                    {
+                        if (*s == "@alice:example.org") { alice_listed = true; }
+                    }
+                }
+                REQUIRE(alice_listed);
+            }
+        }
+    }
+}
+
+// --- POST /keys/signatures/upload → device_lists.changed in /sync ------------
+// Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+//
+// §11.11.1: A signature upload changes the user's verified key graph; the server
+// MUST include the user's ID in device_lists.changed in subsequent syncs so that
+// other devices can re-query the updated cross-signing state.
+SCENARIO("POST /keys/signatures/upload emits device_lists.changed in /sync",
+         "[conformance][client-server][e2ee][device-list][sync]")
+{
+    GIVEN("alice has cross-signing keys and is logged in on two devices")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto& rt           = started.runtime;
+        auto const token_a = logged_in_token(rt);                        // alice / DEVICE1
+        auto const token_b = login_existing_user(rt, "alice", "DEV_B"); // alice / DEV_B
+
+        // Upload cross-signing keys first (precondition for signature upload).
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST", "/_matrix/client/v3/keys/device_signing/upload", token_a,
+                 R"({"master_key":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MKEY":"mval"},"signatures":{}},"self_signing_key":{"user_id":"@alice:example.org","usage":["self_signing"],"keys":{"ed25519:SSIGN":"sval"},"signatures":{}},"auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"})
+                .response.status == 200U);
+
+        // Advance DEV_B's since token past the cross-signing key-upload notification.
+        auto const sync_after_upload = merovingian::homeserver::handle_client_server_request(
+            rt, {"GET", "/_matrix/client/v3/sync", token_b, {}});
+        REQUIRE(sync_after_upload.response.status == 200U);
+        auto const since = sync_next_batch(sync_after_upload.response.body);
+
+        WHEN("alice uploads a device self-signature from DEVICE1")
+        {
+            auto const upload = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST", "/_matrix/client/v3/keys/signatures/upload", token_a,
+                 R"({"@alice:example.org":{"ed25519:MKEY":{"user_id":"@alice:example.org","usage":["master"],"keys":{"ed25519:MKEY":"mval"},"signatures":{"@alice:example.org":{"ed25519:DEVICE1":"c2ln"}}}}})"});
+            REQUIRE(upload.response.status == 200U);
+
+            THEN("DEV_B's next /sync includes alice in device_lists.changed")
+            {
+                auto const follow_sync = merovingian::homeserver::handle_client_server_request(
+                    rt, {"GET", "/_matrix/client/v3/sync?since=" + since, token_b, {}});
+                REQUIRE(follow_sync.response.status == 200U);
+                auto const body          = parse_object(follow_sync.response.body);
+                auto const* device_lists = object_member_as_object(body, "device_lists");
+                auto const* changed =
+                    device_lists != nullptr ? object_member_as_array(*device_lists, "changed") : nullptr;
+                // Spec MUST: signature upload MUST appear in device_lists.changed so the
+                // user's other devices discover the self-signed device and complete verification.
+                REQUIRE(changed != nullptr);
+                auto alice_listed = false;
+                for (auto const& v : *changed)
+                {
+                    if (auto const* s = std::get_if<std::string>(&v.storage()))
+                    {
+                        if (*s == "@alice:example.org") { alice_listed = true; }
+                    }
+                }
+                REQUIRE(alice_listed);
+            }
+        }
+    }
+}
+
 // --- GET /_matrix/client/v3/room_keys/version (no backup) --------------------
 // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3room_keysversion
 //
