@@ -2,6 +2,7 @@
 #pragma once
 
 #include "merovingian/platform/elf_probe.hpp"
+#include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <cstdint>
 #include <string>
@@ -53,5 +54,12 @@ private:
 // static-binary build.
 [[nodiscard]] auto linker_hardening_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck;
 [[nodiscard]] auto relro_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck;
+
+// Maps a SeccompProbeResult to a HardeningCheck:
+//   enabled — probe ran and confirmed SECCOMP_MODE_FILTER is active.
+//   unknown — probe could not confirm (filter not applied, probe failed, non-Linux).
+// Never returns `disabled` — absence of the filter is indistinguishable from
+// a kernel that does not support CONFIG_SECCOMP_FILTER at probe time.
+[[nodiscard]] auto seccomp_check_from_probe(SeccompProbeResult const& result) -> HardeningCheck;
 
 } // namespace merovingian::platform

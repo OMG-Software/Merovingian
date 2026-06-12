@@ -78,4 +78,22 @@ if grep -q "Early Phase 1 bootstrap implementation" README.md; then
     fail "README status still describes the project as early Phase 1"
 fi
 
+# Signed release infrastructure: the release workflow must produce SLSA
+# provenance attestations and SHA-256 checksums for every published artifact.
+if ! grep -qF "attest-build-provenance" .github/workflows/release.yml; then
+    fail "release.yml does not reference actions/attest-build-provenance (SLSA provenance is not attached)"
+fi
+
+if ! grep -qF "attestations: write" .github/workflows/release.yml; then
+    fail "release.yml job is missing 'attestations: write' permission required for SLSA attestation"
+fi
+
+if ! grep -qF "sha256sum" .github/workflows/release.yml; then
+    fail "release.yml does not generate sha256sum checksums for Linux release artifacts"
+fi
+
+if ! grep -qF "sha256 -q" .github/workflows/release.yml; then
+    fail "release.yml does not generate sha256 checksums for FreeBSD release artifacts"
+fi
+
 exit "$status"

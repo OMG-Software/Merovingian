@@ -51,9 +51,10 @@ SCENARIO("Runtime hardening checks deferred for alpha carry documented exception
             THEN("placeholder runtime checks are tagged alpha_exception with a non-empty note")
             {
                 auto const& checks = self_check.checks();
-                // Indices 6–11: seccomp, pledge/unveil, capsicum, privilege drop,
+                // Indices 7–11: pledge/unveil, capsicum, privilege drop,
                 // filesystem restrictions, core dump policy — still alpha exceptions.
-                auto const deferred_indices = {6U, 7U, 8U, 9U, 10U, 11U};
+                // Index 6 (seccomp) is now probe-based, not alpha_exception.
+                auto const deferred_indices = {7U, 8U, 9U, 10U, 11U};
                 for (auto const index : deferred_indices)
                 {
                     REQUIRE(checks[index].status == alpha_exception);
@@ -61,17 +62,19 @@ SCENARIO("Runtime hardening checks deferred for alpha carry documented exception
                 }
             }
 
-            AND_THEN("ELF-probe-derived checks are no longer alpha_exception")
+            AND_THEN("probe-derived checks are no longer alpha_exception")
             {
-                // linker hardening (index 1) and RELRO (index 3) are now driven
-                // by the ELF program-header probe. They report `enabled` on
-                // package builds (with -z,relro -z,now) and `unknown` on dev or
-                // static builds. Neither should ever be `alpha_exception`.
+                // linker hardening (index 1) and RELRO (index 3) are driven by the
+                // ELF program-header probe; seccomp (index 6) by a /proc/self/status
+                // probe. All three may report `enabled` or `unknown` depending on
+                // the build and runtime state, but never `alpha_exception`.
                 auto const& checks = self_check.checks();
                 REQUIRE(checks[1].name == "linker hardening");
                 REQUIRE(checks[3].name == "RELRO");
+                REQUIRE(checks[6].name == "seccomp");
                 REQUIRE(checks[1].status != alpha_exception);
                 REQUIRE(checks[3].status != alpha_exception);
+                REQUIRE(checks[6].status != alpha_exception);
             }
         }
     }

@@ -108,6 +108,7 @@ if get_option ('build_tests')
       'unit/test_file_descriptor.cpp',
       'unit/test_file_metadata.cpp',
       'unit/test_elf_probe.cpp',
+      'unit/test_seccomp_hardening.cpp',
       'unit/test_hardening_self_check.cpp',
       'unit/test_homeserver_vertical_slice.cpp',
       'unit/test_http_connection_guard.cpp',

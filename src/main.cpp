@@ -18,6 +18,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/platform/file_metadata.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <cerrno>
 #include <cstdint>
@@ -734,6 +735,11 @@ struct ListenerBinding final
 
 [[nodiscard]] auto run_server(BootstrapConfigResult const& result, ParsedArgs const& args) -> int
 {
+    // Apply the seccomp-bpf syscall allowlist before listeners bind. On non-Linux
+    // or kernels without CONFIG_SECCOMP_FILTER this is a no-op; the self-check
+    // probe below will then report `unknown` rather than `enabled`.
+    std::ignore = merovingian::platform::apply_seccomp_filter();
+
     // Fail closed when a hardening control is explicitly disabled. Documented
     // alpha exceptions are still permitted; production gating happens at
     // release-readiness time. See docs/hardening-alpha-exceptions.md.

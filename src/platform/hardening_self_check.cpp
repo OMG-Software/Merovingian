@@ -5,6 +5,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/elf_probe.hpp"
+#include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <string>
 #include <utility>
@@ -157,7 +158,7 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
                                                       "Compile did not advertise __SSP__/__SSP_STRONG__/__SSP_ALL__."));
     add("FORTIFY_SOURCE",
         enabled_or_alpha_exception(compile_time_fortify_enabled(), "Compile did not advertise _FORTIFY_SOURCE > 0."));
-    add("seccomp", enabled_or_alpha_exception(false, "Linux seccomp-bpf profile is not yet enforced at startup."));
+    add("seccomp", seccomp_check_from_probe(probe_seccomp_status()));
     add("pledge/unveil",
         enabled_or_alpha_exception(false, "OpenBSD pledge/unveil invocations are not yet wired into startup."));
     add("capsicum",
@@ -237,6 +238,21 @@ auto relro_check_from_probe(ElfHardeningResult const& result) -> HardeningCheck
         HardeningStatus::unknown,
         "ELF probe: PT_GNU_RELRO segment not found; "
         "binary may be statically linked or built without -Wl,-z,relro.",
+    };
+}
+
+auto seccomp_check_from_probe(SeccompProbeResult const& result) -> HardeningCheck
+{
+    // `enabled` only when the probe ran and confirmed a bpf filter is active.
+    // `unknown` in all other cases: filter may not have been applied (dev/dry-run),
+    // the kernel may lack CONFIG_SECCOMP_FILTER, or the platform is non-Linux.
+    if (result.probed && result.seccomp_active)
+        return HardeningCheck{{}, HardeningStatus::enabled, {}};
+    return HardeningCheck{
+        {},
+        HardeningStatus::unknown,
+        "/proc/self/status Seccomp field is not 2 (SECCOMP_MODE_FILTER); "
+        "filter may not have been applied or the platform does not support seccomp-bpf.",
     };
 }
 
