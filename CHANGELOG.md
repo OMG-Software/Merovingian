@@ -1,8 +1,24 @@
+## 0.8.3
+
+- **feat: implement `GET/PUT /_matrix/client/v3/directory/list/room/{roomId}`:** Room directory visibility is now wired. `GET` returns `{"visibility":"public"|"private"}` for known rooms (unauthenticated, 404 `M_NOT_FOUND` for unknown rooms). `PUT` lets a joined member publish or unpublish the room from the public directory, returning `{}` on success (400 `M_BAD_JSON` for invalid or missing visibility, 404 for unknown rooms, 403 `M_FORBIDDEN` for non-members). Added `directory_public` to `LocalRoom`. Matrix v1.18 conformance scenarios cover the full success and error surface for both endpoints.
+
+- **feat: implement `POST /_matrix/client/v3/rooms/{roomId}/upgrade`:** Room upgrade is now wired. It creates a new room at the requested version with a `predecessor` block in its `m.room.create` content, sends `m.room.tombstone` to the old room, and returns `{"replacement_room":"!newroomid:server"}`. Returns 400 `M_BAD_JSON` for missing `new_version`, 400 `M_UNSUPPORTED_ROOM_VERSION` for unknown versions, 403 `M_FORBIDDEN` for non-members, and 404 `M_NOT_FOUND` for unknown rooms. Matrix v1.18 conformance scenarios cover the success path and all error cases.
+
+## 0.8.2
+
+- **fix(federation): saturate outbound retry backoff before overflow:** `compute_backoff` now doubles with an explicit cap instead of using floating-point exponentiation and a narrowing cast. This keeps the retry interval monotonic while avoiding UBSan-triggering overflow on large retry counts in sanitizer builds.
+
+- **feat(conformance): outbound federation delivery spec-covered:** Added `tests/conformance/test_outbound_delivery_conformance.cpp` with 16 new SCENARIO blocks covering the outbound PUT /_matrix/federation/v1/send/{txnId} pipeline per Matrix v1.18 SS API. Tests cover: EDU transaction body shape (origin/origin_server_ts/pdus/edus), `edu_type` key requirement (not `type`), m.receipt EDU nested content structure, transaction-ID uniqueness, outbound request URL (https + correct path), X-Matrix Authorization header presence and field structure, exponential-backoff growth and cap, circuit-breaker open/closed state, success-clears and failure-sets retry state. Promotes `PUT /send/{txnId} outbound` and `Outbound federation queues` from `partial` to `spec-covered`.
+
 ## 0.8.1
 
-- **feat: implement `GET/PUT /_matrix/client/v3/directory/list/room/{roomId}`:** Room directory visibility is now wired. `GET` returns `{"visibility":"public"|"private"}` for known rooms (unauthenticated, 404 M_NOT_FOUND for unknown rooms). `PUT` lets a joined member publish or unpublish the room from the public directory, returning `{}` on success (400 M_BAD_JSON for invalid/missing visibility, 404 for unknown rooms, 403 M_FORBIDDEN for non-members). Added `directory_public` field to `LocalRoom`. Matrix v1.18 conformance scenarios cover the full success and error surface for both endpoints.
+- **fix(packaging): strip UTF-8 BOMs from release metadata and helper scripts:** Removed accidental BOM prefixes from the FreeBSD package manifest, release shell helpers, and version-reporting sources. This restores FreeBSD `pkg create` parsing and prevents shebang/metadata consumers from seeing an invalid leading byte-order marker.
 
-- **feat: implement `POST /_matrix/client/v3/rooms/{roomId}/upgrade`:** Room upgrade is now wired. Creates a new room at the requested version with a `predecessor` block in its `m.room.create` content, sends `m.room.tombstone` to the old room, and returns `{"replacement_room":"!newroomid:server"}`. Returns 400 M_BAD_JSON for missing `new_version`, 400 M_UNSUPPORTED_ROOM_VERSION for unknown versions, 403 M_FORBIDDEN for non-members, and 404 M_NOT_FOUND for unknown rooms. Matrix v1.18 conformance scenarios cover the success path and all error cases.
+- **fix(federation): apply M_INCOMPATIBLE_ROOM_VERSION check to make_knock:** The version-compatibility gate in `handle_make_membership` was gated only on `make_join`; `make_knock` now also returns 400 M_INCOMPATIBLE_ROOM_VERSION when the room's version is absent from the joining server's `ver` list, as required by Matrix v1.18 §GET /make_knock.
+
+- **fix(federation): send_knock response now includes `knock_room_state`:** The `MembershipAcceptResult` struct gains a `knock_room_state_json` field; `handle_send_membership` emits `knock_room_state` in the response when the endpoint is `send_knock`, replacing the generic join-shape fields with the correct knock-specific shape per Matrix v1.18 §PUT /send_knock.
+
+- **feat(conformance): full federation membership conformance fixtures (integrated → spec-covered):** Added 14 new SCENARIO blocks covering: make_join nullopt→404, event template type/membership fields, multi-ver parameter parsing; make_leave nullopt→404, response structure, 501 unwired; make_knock M_INCOMPATIBLE_ROOM_VERSION, nullopt→404; send_join v1 endpoint; send_leave response shape; send_knock knock_room_state; invite v2 "event" key; backfill response structure and query-parameter parsing.
 
 ## 0.8.0
 
