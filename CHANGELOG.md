@@ -1,3 +1,13 @@
+## 0.8.0
+
+- **feat(conformance): promote client-server endpoints from partial to spec-covered:** Added Matrix v1.18 conformance fixtures for `GET /_matrix/client/v1/auth_metadata` (MSC2965 OIDC discovery stub — 404 M_UNRECOGNIZED), `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}` and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` (v1.18 media thumbnail endpoints — 400/404/200 shape), and `filter_id` query parameter on `GET /sync`.
+
+- **feat(conformance): implement `filter_id` on GET /sync:** `GET /_matrix/client/v3/sync` now resolves a `filter_id` query parameter to the stored filter object and applies it to the response. Conformance fixtures verify that a stored filter is applied when referenced by ID and that an unknown `filter_id` returns 400 M_NOT_FOUND.
+
+- **feat(conformance): room-version-specific PDU content hash verification:** Inbound federation transactions now verify the `hashes.sha256` field on PDUs against the room-version-specific content hash algorithm before persisting. PDUs with missing or incorrect content hashes are rejected with a structured error. Conformance fixtures cover: valid hash accepted, missing hash rejected, incorrect hash rejected (per Matrix v1.18 SS API).
+
+- **feat(conformance): outbound federation transaction conformance:** Added conformance fixtures for outbound `PUT /_matrix/federation/v1/send/{txnId}` delivery: correct transaction envelope shape, PDU wrapping, and retry behavior on transient errors.
+
 ## 0.7.2
 
 - **fix(tests): update smoke and integration tests for retired seccomp exception and live remote fetch:** The hardening smoke test checked for `seccomp=alpha_exception`; updated to `grep -qE "seccomp=(enabled|unknown)"` to pass on both Linux (filter applied → `enabled`) and non-Linux/dry-run (`unknown`). The remote media integration test expected `"remote media fetch disabled"` (old stub behavior); updated to assert `"server discovery failed"` (live discovery attempted and correctly rejected for `remote.example.org`).

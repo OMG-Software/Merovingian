@@ -155,4 +155,52 @@ auto make_reference_hash_event_id(canonicaljson::Value const& event, rooms::Room
     return {"$" + hash.sha256, {}};
 }
 
+auto verify_pdu_content_hash(canonicaljson::Value const& event) -> bool
+{
+    // Spec: Matrix Server-Server API v1.18 — Calculating the Content Hash for an Event
+    // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event
+    //
+    // Servers MUST check that hashes.sha256 matches the SHA-256 of the canonical
+    // JSON of the event with unsigned, signatures, and hashes stripped.
+    auto const* root = std::get_if<canonicaljson::Object>(&event.storage());
+    if (root == nullptr)
+    {
+        return false;
+    }
+
+    // Extract the claimed sha256 from hashes.sha256.
+    auto const hashes_it = std::ranges::find_if(*root, [](canonicaljson::ObjectMember const& m) {
+        return m.key == "hashes";
+    });
+    if (hashes_it == root->end() || hashes_it->value == nullptr)
+    {
+        return false;
+    }
+    auto const* hashes_obj = std::get_if<canonicaljson::Object>(&hashes_it->value->storage());
+    if (hashes_obj == nullptr)
+    {
+        return false;
+    }
+    auto const sha256_it = std::ranges::find_if(*hashes_obj, [](canonicaljson::ObjectMember const& m) {
+        return m.key == "sha256";
+    });
+    if (sha256_it == hashes_obj->end() || sha256_it->value == nullptr)
+    {
+        return false;
+    }
+    auto const* claimed = std::get_if<std::string>(&sha256_it->value->storage());
+    if (claimed == nullptr || claimed->empty())
+    {
+        return false;
+    }
+
+    auto const computed = make_content_hash(event);
+    if (!computed.error.empty() || computed.sha256.empty())
+    {
+        return false;
+    }
+
+    return *claimed == computed.sha256;
+}
+
 } // namespace merovingian::events

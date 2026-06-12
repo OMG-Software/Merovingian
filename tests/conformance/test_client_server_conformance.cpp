@@ -12888,3 +12888,134 @@ SCENARIO("POST /user_directory/search result entries each contain a non-empty us
         }
     }
 }
+
+// =============================================================================
+// OIDC DISCOVERY (MSC2965)
+// =============================================================================
+
+// Spec: Matrix Client-Server API v1.18 — GET /auth_metadata (MSC2965)
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#openid-connect-discovery
+//
+// Servers that do not support OIDC MUST return 404 M_UNRECOGNIZED so that
+// clients (Element, Cindy, etc.) can detect the absence of OIDC support and
+// fall back to password-based login. The server MUST NOT return 401 for this
+// unauthenticated discovery endpoint — returning 401 would mislead clients
+// into thinking OIDC is partially supported.
+SCENARIO("GET /v1/auth_metadata returns 404 M_UNRECOGNIZED for non-OIDC servers",
+         "[conformance][client-server][oidc][auth]")
+{
+    GIVEN("a running homeserver that does not implement OIDC")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("GET /_matrix/client/v1/auth_metadata is called without credentials")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/auth_metadata", {}, {}});
+
+            THEN("the server returns 404 M_UNRECOGNIZED")
+            {
+                // Spec: non-OIDC servers MUST return 404 M_UNRECOGNIZED so clients
+                // detect the absence of OIDC before attempting OIDC login.
+                REQUIRE(response.response.status == 404U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                // Spec MUST: errcode MUST be M_UNRECOGNIZED for unimplemented endpoints.
+                REQUIRE(*errcode == "M_UNRECOGNIZED");
+            }
+        }
+    }
+}
+
+// =============================================================================
+// SYNC FILTER ID
+// =============================================================================
+
+// Spec: Matrix Client-Server API v1.18 — GET /sync
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+//
+// "filter: The ID of a filter created using the filter API or a filter
+// definition. The server will detect whether it is an ID or a definition."
+//
+// When the client passes a stored filter_id as the ?filter= parameter, the
+// server MUST apply the corresponding stored filter to the sync response.
+SCENARIO("GET /sync with a stored filter_id applies the stored filter",
+         "[conformance][client-server][sync][filtering]")
+{
+    GIVEN("a logged-in user who has uploaded a filter")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        // Upload a filter that limits the timeline to 1 event.
+        auto const upload = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST",
+             "/_matrix/client/v3/user/@alice:example.org/filter",
+             token,
+             R"({"room":{"timeline":{"limit":1}}})"});
+        REQUIRE(upload.response.status == 200U);
+        auto const filter_body = parse_object(upload.response.body);
+        auto const* filter_id_ptr = string_member(filter_body, "filter_id");
+        REQUIRE(filter_id_ptr != nullptr);
+        REQUIRE_FALSE(filter_id_ptr->empty());
+        auto const filter_id = *filter_id_ptr;
+
+        WHEN("GET /sync is called with the stored filter_id as the ?filter= parameter")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/sync?filter=" + filter_id, token, {}});
+
+            THEN("the server returns 200 with a valid sync envelope")
+            {
+                // Spec MUST: sync with a valid stored filter_id MUST return 200.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                // Spec MUST: sync response MUST include a next_batch token.
+                auto const* next_batch = string_member(body, "next_batch");
+                REQUIRE(next_batch != nullptr);
+                REQUIRE_FALSE(next_batch->empty());
+            }
+        }
+    }
+}
+
+// Spec: Matrix Client-Server API v1.18 — GET /sync
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+//
+// When the ?filter= parameter is a token that does not correspond to any stored
+// filter, the server MUST return 400 so that clients can detect the stale
+// filter reference and re-upload.
+SCENARIO("GET /sync with an unknown filter_id returns 400",
+         "[conformance][client-server][sync][filtering]")
+{
+    GIVEN("a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("GET /sync is called with a filter_id that was never stored")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/sync?filter=nonexistentfilterid", token, {}});
+
+            THEN("the server returns 400")
+            {
+                // Spec: unknown filter IDs MUST NOT be silently ignored (that would
+                // be a silent correctness failure); return 400 so the client knows to
+                // re-upload its filter before syncing.
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_NOT_FOUND");
+            }
+        }
+    }
+}

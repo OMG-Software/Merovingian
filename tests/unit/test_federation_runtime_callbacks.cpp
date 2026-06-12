@@ -2,7 +2,9 @@
 
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
@@ -137,20 +139,57 @@ private:
     std::string key_material_{};
 };
 
+// Injects the real computed content hash into an event value so that
+// verify_pdu_content_hash accepts the PDU. sign_event_for_server does not
+// compute or inject hashes, so callers must do it before signing.
+[[nodiscard]] auto with_correct_content_hash(merovingian::canonicaljson::Value event)
+    -> merovingian::canonicaljson::Value
+{
+    auto const hash = merovingian::events::make_content_hash(event);
+    if (!hash.error.empty())
+    {
+        return event;
+    }
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&event.storage());
+    if (root == nullptr)
+    {
+        return event;
+    }
+    auto new_root = merovingian::canonicaljson::Object{};
+    new_root.reserve(root->size());
+    for (auto const& member : *root)
+    {
+        if (member.key != "hashes")
+        {
+            new_root.push_back(merovingian::canonicaljson::make_member(member.key, *member.value));
+        }
+    }
+    auto hashes = merovingian::canonicaljson::Object{};
+    hashes.push_back(
+        merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{hash.sha256}));
+    new_root.push_back(
+        merovingian::canonicaljson::make_member("hashes", merovingian::canonicaljson::Value{std::move(hashes)}));
+    return merovingian::canonicaljson::Value{std::move(new_root)};
+}
+
 [[nodiscard]] auto signed_json_pdu(std::string const& origin, std::string const& key_id, std::string const& token)
     -> std::string
 {
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
     REQUIRE(derive_test_keypair(token, public_key, secret_key));
+    // No hashes field: make_content_hash strips it anyway before computing, so
+    // omitting it here gives the same result as including a placeholder.
     auto const event_json =
-        "{\"auth_events\":[],\"content\":{\"body\":\"hi\",\"msgtype\":\"m.text\"},\"depth\":1,\"hashes\":{\"sha256\":"
-        "\"hash\"},\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\",\"sender\":\"@alice:" +
+        "{\"auth_events\":[],\"content\":{\"body\":\"hi\",\"msgtype\":\"m.text\"},\"depth\":1,"
+        "\"origin_server_ts\":1,\"prev_events\":[],\"room_id\":\"!room:example.org\",\"sender\":\"@alice:" +
         origin + "\",\"type\":\"m.room.message\"}";
-    auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
+    auto const base_parsed = merovingian::canonicaljson::parse_lossless(event_json);
     auto const* policy = merovingian::rooms::find_room_version_policy("12");
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+    REQUIRE(base_parsed.error == merovingian::canonicaljson::ParseError::none);
     REQUIRE(policy != nullptr);
+    // Inject real content hash before signing so inbound hash verification passes.
+    auto const event_with_hash = with_correct_content_hash(base_parsed.value);
     auto store = TestSigningStore{
         merovingian::crypto::SigningKeyRecord{
                                               origin, key_id,
@@ -159,7 +198,7 @@ private:
                                               true, }
     };
     auto provider = TestEd25519Provider{token};
-    auto signed_event = merovingian::events::sign_event_for_server(parsed.value, *policy, store, provider, origin);
+    auto signed_event = merovingian::events::sign_event_for_server(event_with_hash, *policy, store, provider, origin);
     REQUIRE(signed_event.error.empty());
     return signed_event.event_json;
 }

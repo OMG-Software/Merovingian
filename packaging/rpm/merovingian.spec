@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.7.2
+Version:        0.8.0
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.0-1
+- feat: promote client-server and federation endpoints from partial to spec-covered
+- feat: implement filter_id query parameter on GET /sync
+- feat: implement room-version-specific PDU content hash verification on inbound federation
+- feat: add Matrix v1.18 conformance fixtures for auth_metadata, thumbnail, sync filter_id, PDU hashing
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.7.2-1
 - feat: add GET /query/directory federation conformance with full provider callback
 - feat: add make_join M_INCOMPATIBLE_ROOM_VERSION error conformance

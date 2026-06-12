@@ -104,6 +104,11 @@ redacts the event, removes `unsigned` and `signatures`, canonicalizes, and
 calculates the SHA-256 reference hash. `make_reference_hash_event_id` prefixes
 the URL-safe unpadded Base64 reference hash with `$` for modern room versions.
 
+`verify_pdu_content_hash` extracts the claimed `hashes.sha256` field from an
+inbound PDU and compares it against the result of `make_content_hash`. Inbound
+federation PDUs are rejected before reaching the `pdu_sink` when this check
+fails, as required by Matrix Server-Server API v1.18.
+
 For room version 12 (MSC4291) the room ID is the `m.room.create` event's
 reference hash with a `!` sigil — the same hash as the create event ID, which
 uses `$` — and carries no `:server` domain. `create_room` composes the create

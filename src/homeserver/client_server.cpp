@@ -6092,23 +6092,37 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // whichever device happens to be first in `rt.devices`.
         auto const session = authenticated_session(rt.homeserver, req.access_token);
         auto const device_id = session.has_value() ? session->device_id : std::string{};
-        auto const sync_request = merovingian::core::parse_query_params(req.target);
+        auto sync_request = merovingian::core::parse_query_params(req.target);
 
         // Spec: Matrix Client-Server API v1.18 — GET /sync
         // URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
         //
-        // The ?filter= parameter may be either a stored filter ID or an inline
-        // JSON object. If the value starts with '{' it is treated as inline JSON.
-        // Invalid JSON MUST be rejected with 400 M_BAD_JSON rather than silently
-        // degraded to an unrestricted filter, which would be a correctness hazard.
-        if (sync_request.filter.has_value() && !sync_request.filter->empty() &&
-            sync_request.filter->front() == '{')
+        // The ?filter= parameter is either an inline JSON object (starts with '{')
+        // or a stored filter ID. Inline JSON is validated immediately; a filter ID
+        // is resolved from the database and replaced with the stored JSON so that
+        // parse_filter_argument always receives valid inline JSON.
+        if (sync_request.filter.has_value() && !sync_request.filter->empty())
         {
-            auto const filter_parse = canonicaljson::parse_lossless(*sync_request.filter);
-            if (filter_parse.error != canonicaljson::ParseError::none)
+            if (sync_request.filter->front() == '{')
             {
-                return dispatch_err(req, rt, 400U, "M_BAD_JSON",
-                                    "filter parameter is not valid JSON");
+                auto const filter_parse = canonicaljson::parse_lossless(*sync_request.filter);
+                if (filter_parse.error != canonicaljson::ParseError::none)
+                {
+                    return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                        "filter parameter is not valid JSON");
+                }
+            }
+            else
+            {
+                // filter parameter is a stored filter ID — look it up and substitute
+                // the stored JSON so downstream parsing sees an inline object.
+                auto const stored = database::find_filter(
+                    rt.homeserver.database.persistent_store, *user, *sync_request.filter);
+                if (!stored.has_value())
+                {
+                    return dispatch_err(req, rt, 400U, "M_NOT_FOUND", "filter not found");
+                }
+                sync_request.filter = stored->json;
             }
         }
 
