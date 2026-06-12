@@ -1,3 +1,9 @@
+## 0.8.1
+
+- **feat: implement `GET/PUT /_matrix/client/v3/directory/list/room/{roomId}`:** Room directory visibility is now wired. `GET` returns `{"visibility":"public"|"private"}` for known rooms (unauthenticated, 404 M_NOT_FOUND for unknown rooms). `PUT` lets a joined member publish or unpublish the room from the public directory, returning `{}` on success (400 M_BAD_JSON for invalid/missing visibility, 404 for unknown rooms, 403 M_FORBIDDEN for non-members). Added `directory_public` field to `LocalRoom`. Matrix v1.18 conformance scenarios cover the full success and error surface for both endpoints.
+
+- **feat: implement `POST /_matrix/client/v3/rooms/{roomId}/upgrade`:** Room upgrade is now wired. Creates a new room at the requested version with a `predecessor` block in its `m.room.create` content, sends `m.room.tombstone` to the old room, and returns `{"replacement_room":"!newroomid:server"}`. Returns 400 M_BAD_JSON for missing `new_version`, 400 M_UNSUPPORTED_ROOM_VERSION for unknown versions, 403 M_FORBIDDEN for non-members, and 404 M_NOT_FOUND for unknown rooms. Matrix v1.18 conformance scenarios cover the success path and all error cases.
+
 ## 0.8.0
 
 - **feat(conformance): promote client-server endpoints from partial to spec-covered:** Added Matrix v1.18 conformance fixtures for `GET /_matrix/client/v1/auth_metadata` (MSC2965 OIDC discovery stub — 404 M_UNRECOGNIZED), `GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}` and `GET /_matrix/client/v1/media/thumbnail/{serverName}/{mediaId}` (v1.18 media thumbnail endpoints — 400/404/200 shape), and `filter_id` query parameter on `GET /sync`.

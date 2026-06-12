@@ -6372,30 +6372,49 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
 
 // --- GET /_matrix/client/v3/directory/list/room/{roomId} ---------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3directorylistroomroomid
-// IMPLEMENTATION GAP: room visibility query not yet implemented.
-SCENARIO("GET /directory/list/room/{roomId} returns 404 M_UNRECOGNIZED (implementation gap)",
+// The server MUST return {"visibility":"public"|"private"} for a known room.
+// Rooms default to private (not listed in the public directory).
+SCENARIO("GET /directory/list/room/{roomId} returns room visibility",
          "[conformance][client-server][room-discovery]")
 {
-    GIVEN("a running client-server and a logged-in user with a room")
+    GIVEN("a running homeserver and a newly created room")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
 
-        WHEN("GET /directory/list/room/{roomId} is called")
+        WHEN("GET /directory/list/room/{roomId} is called for that room")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/directory/list/room/" + room_id, token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with visibility private by default")
             {
-                // IMPLEMENTATION GAP: room directory visibility query not supported.
+                // Spec MUST: 200 with {"visibility":"public"|"private"}.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* vis = string_member(body, "visibility");
+                REQUIRE(vis != nullptr);
+                // Spec: rooms not explicitly published are private.
+                REQUIRE(*vis == "private");
+            }
+        }
+
+        WHEN("GET /directory/list/room/!nonexistent:server is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"GET", "/_matrix/client/v3/directory/list/room/!nonexistent:server", token, {}});
+
+            THEN("the server returns 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 when the room is not known to this server.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }
@@ -6403,11 +6422,12 @@ SCENARIO("GET /directory/list/room/{roomId} returns 404 M_UNRECOGNIZED (implemen
 
 // --- PUT /_matrix/client/v3/directory/list/room/{roomId} ---------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3directorylistroomroomid
-// IMPLEMENTATION GAP: room visibility update not yet implemented.
-SCENARIO("PUT /directory/list/room/{roomId} returns 404 M_UNRECOGNIZED (implementation gap)",
+// The server MUST update the room's public-directory visibility for a joined
+// member, returning {} on success. Missing or invalid visibility MUST be 400.
+SCENARIO("PUT /directory/list/room/{roomId} sets room visibility",
          "[conformance][client-server][room-discovery]")
 {
-    GIVEN("a running client-server and a logged-in user with a room")
+    GIVEN("a running homeserver and a room the authenticated user is a member of")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -6416,18 +6436,59 @@ SCENARIO("PUT /directory/list/room/{roomId} returns 404 M_UNRECOGNIZED (implemen
 
         WHEN("PUT /directory/list/room/{roomId} is called with visibility public")
         {
+            auto const put_resp = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/directory/list/room/" + room_id, token,
+                 R"({"visibility":"public"})"});
+
+            THEN("the server returns 200 and a subsequent GET reflects public")
+            {
+                // Spec MUST: 200 {} on success.
+                REQUIRE(put_resp.response.status == 200U);
+                auto const get_resp = merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/directory/list/room/" + room_id, token, {}});
+                REQUIRE(get_resp.response.status == 200U);
+                auto const body = parse_object(get_resp.response.body);
+                auto const* vis = string_member(body, "visibility");
+                REQUIRE(vis != nullptr);
+                // Spec MUST: visibility reflects the value set by PUT.
+                REQUIRE(*vis == "public");
+            }
+        }
+
+        WHEN("PUT /directory/list/room/{roomId} is called with missing visibility")
+        {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v3/directory/list/room/" + room_id, token, R"({"visibility":"public"})"});
+                {"PUT", "/_matrix/client/v3/directory/list/room/" + room_id, token, "{}"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 400 M_BAD_JSON")
             {
-                // IMPLEMENTATION GAP: room directory visibility update not supported.
+                // Spec MUST: 400 when the visibility field is absent or invalid.
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_BAD_JSON");
+            }
+        }
+
+        WHEN("PUT /directory/list/room/!nonexistent:server is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v3/directory/list/room/!nonexistent:server", token,
+                 R"({"visibility":"public"})"});
+
+            THEN("the server returns 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 when the room is not known to this server.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }
@@ -7788,11 +7849,12 @@ SCENARIO("GET /initialSync returns 404 M_UNRECOGNIZED (implementation gap)",
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/upgrade --------------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3roomsroomidupgrade
-// IMPLEMENTATION GAP: room upgrade not yet implemented.
-SCENARIO("POST /rooms/{roomId}/upgrade returns 404 M_UNRECOGNIZED (implementation gap)",
+// The server MUST create a replacement room, send m.room.tombstone to the old
+// room, and return {"replacement_room":"!newid:server"} on success.
+SCENARIO("POST /rooms/{roomId}/upgrade creates a replacement room",
          "[conformance][client-server][room-participation]")
 {
-    GIVEN("a running client-server and a logged-in user with a room")
+    GIVEN("a running homeserver and a created room")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
@@ -7805,14 +7867,75 @@ SCENARIO("POST /rooms/{roomId}/upgrade returns 404 M_UNRECOGNIZED (implementatio
                 started.runtime,
                 {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token, R"({"new_version":"11"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with a replacement_room field containing a valid room ID")
             {
-                // IMPLEMENTATION GAP: room upgrade not supported.
+                // Spec MUST: 200 {"replacement_room":"!newroomid:server"}.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* replacement = string_member(body, "replacement_room");
+                REQUIRE(replacement != nullptr);
+                // Spec MUST: replacement_room is a non-empty Matrix room ID starting with '!'.
+                REQUIRE(!replacement->empty());
+                REQUIRE(replacement->front() == '!');
+            }
+        }
+
+        WHEN("POST /rooms/{roomId}/upgrade is called with missing new_version")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token, "{}"});
+
+            THEN("the server returns 400 M_BAD_JSON")
+            {
+                // Spec MUST: 400 when new_version is absent.
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_BAD_JSON");
+            }
+        }
+
+        WHEN("POST /rooms/{roomId}/upgrade is called with an unsupported room version")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token,
+                 R"({"new_version":"99"})"});
+
+            THEN("the server returns 400 M_UNSUPPORTED_ROOM_VERSION")
+            {
+                // Spec MUST: 400 when the requested version is not supported.
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_UNSUPPORTED_ROOM_VERSION");
+            }
+        }
+    }
+
+    GIVEN("a running homeserver and an unknown room")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime);
+
+        WHEN("POST /rooms/!nonexistent:server/upgrade is called")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/rooms/!nonexistent:server/upgrade", token,
+                 R"({"new_version":"11"})"});
+
+            THEN("the server returns 404 M_NOT_FOUND")
+            {
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
             }
         }
     }
@@ -10659,9 +10782,10 @@ SCENARIO("POST /user_directory/search returns matching users", "[conformance][cl
 // 25     Room upgrade — POST /rooms/{roomId}/upgrade
 // ============================================================================
 // Spec: Matrix v1.18 §10.7 POST /_matrix/client/v3/rooms/{roomId}/upgrade
-//       IMPLEMENTATION GAP: not yet implemented. Must return 404 M_UNRECOGNIZED.
+// The server MUST create a replacement room and return {"replacement_room":...}.
 
-SCENARIO("POST /rooms/{roomId}/upgrade conformance")
+SCENARIO("POST /rooms/{roomId}/upgrade returns 200 with replacement_room",
+         "[conformance][client-server][room-participation]")
 {
     GIVEN("a started homeserver with an authenticated user and a room")
     {
@@ -10670,19 +10794,21 @@ SCENARIO("POST /rooms/{roomId}/upgrade conformance")
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
 
-        WHEN("POST /rooms/{roomId}/upgrade is called")
+        WHEN("POST /rooms/{roomId}/upgrade is called with new_version 12")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token, R"({"new_version":"11"})"});
+                {"POST", "/_matrix/client/v3/rooms/" + room_id + "/upgrade", token, R"({"new_version":"12"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with a replacement_room field")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 200 {"replacement_room":"!newroomid:server"}.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* replacement = string_member(body, "replacement_room");
+                REQUIRE(replacement != nullptr);
+                REQUIRE(!replacement->empty());
+                REQUIRE(replacement->front() == '!');
             }
         }
     }
@@ -11134,52 +11260,56 @@ SCENARIO("POST /publicRooms conformance")
     }
 }
 
-SCENARIO("GET /directory/list/room/{roomId} conformance")
+SCENARIO("GET /directory/list/room/{roomId} returns 404 for unknown room",
+         "[conformance][client-server][room-discovery]")
 {
-    GIVEN("a started homeserver with an authenticated user")
+    GIVEN("a started homeserver with no room matching the given ID")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("GET /directory/list/room/!room:example.org is called")
+        WHEN("GET /directory/list/room/!room:example.org is called for an unknown room")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/directory/list/room/!room:example.org", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 404 when the room is not known to this server.
+                REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
 }
 
-SCENARIO("PUT /directory/list/room/{roomId} conformance")
+SCENARIO("PUT /directory/list/room/{roomId} returns 404 for unknown room",
+         "[conformance][client-server][room-discovery]")
 {
-    GIVEN("a started homeserver with an authenticated user")
+    GIVEN("a started homeserver with no room matching the given ID")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
 
-        WHEN("PUT /directory/list/room/!room:example.org is called")
+        WHEN("PUT /directory/list/room/!room:example.org is called for an unknown room")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"PUT", "/_matrix/client/v3/directory/list/room/!room:example.org", token,
                                   R"({"visibility":"private"})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 404 M_NOT_FOUND")
             {
-                REQUIRE(response.response.status == 404);
+                // Spec MUST: 404 when the room is not known to this server.
+                REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* err = string_member(body, "errcode");
                 REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(*err == "M_NOT_FOUND");
             }
         }
     }
