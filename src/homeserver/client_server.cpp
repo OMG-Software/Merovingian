@@ -1914,7 +1914,7 @@ namespace
     }
 
     // Spec: GET/POST /_matrix/client/v3/publicRooms
-    // https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3publicrooms
+    // ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3publicrooms
     [[nodiscard]] auto public_rooms_filtered_json(ClientServerRuntime const& rt, std::string const& filter_term,
                                                   std::optional<std::size_t> limit,
                                                   std::size_t since_offset) -> std::string
@@ -5118,7 +5118,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(req, rt, 200U, public_rooms_json(rt));
     }
     // Spec: POST /_matrix/client/v3/publicRooms
-    // https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms
+    // ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3publicrooms
     if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
     {
         auto filter_term  = std::string{};
@@ -5932,7 +5932,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                           : handle_safety_report(rt, *user, req));
     }
     // PUT /_matrix/client/v3/sendToDevice/{eventType}/{txnId}
-    // Spec: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3sendtoeventtypetxnid
+    // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3sendtoeventtypetxnid
     if (req.method == "PUT")
     {
         if (auto const path = send_to_device_path_parts(req.target); path.has_value())
@@ -5941,7 +5941,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
     }
     // GET /_matrix/client/v3/keys/changes[?from=...&to=...]
-    // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3keyschanges
+    // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3keyschanges
     {
         auto constexpr keys_changes_base = std::string_view{"/_matrix/client/v3/keys/changes"};
         if (req.method == "GET" && starts_with(std::string_view{req.target}, keys_changes_base))
@@ -6095,7 +6095,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         auto const sync_request = merovingian::core::parse_query_params(req.target);
 
         // Spec: Matrix Client-Server API v1.18 — GET /sync
-        // URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+        // URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
         //
         // The ?filter= parameter may be either a stored filter ID or an inline
         // JSON object. If the value starts with '{' it is treated as inline JSON.
@@ -6323,7 +6323,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return complete(result);
         }
         // GET /rooms/{roomId}/state/{eventType}/{stateKey}
-        // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidstateeventtypestatekey
+        // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidstateeventtypestatekey
         // Returns the content object of a single named state event.
         if (req.method == "GET")
         {
@@ -6394,7 +6394,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return complete(result);
         }
         // GET /_matrix/client/v3/rooms/{roomId}/members
-        // Spec: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
+        // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
         // Returns the current state of the room membership as a chunk of
         // m.room.member events. Optional query params:
         //   membership     - include only this type (join/leave/invite/ban/knock)

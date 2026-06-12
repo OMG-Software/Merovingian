@@ -616,7 +616,7 @@ SCENARIO("Inbound federation applies backoff and increments failure count", "[fe
 
 // Spec: Matrix Server-Server API v1.18
 // Section: Signing Events (per-PDU signing)
-// URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
 //
 // The sender's homeserver MUST sign every PDU it creates. The transport origin
 // (the server making the HTTPS request) MAY be a relay that forwards PDUs on
@@ -742,7 +742,7 @@ SCENARIO("Federation transaction handler uses room_version_resolver for PDU auth
 }
 
 // Spec: Matrix Server-Server API v1.18 — Room Version 10 redactions
-// URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
 //
 // Room v1–v10 preserves "origin" as an allowed top-level key in the signing
 // payload.  Room v11+ removes it.  When a homeserver uses the wrong (later)
@@ -853,7 +853,7 @@ SCENARIO("Federation PDU authorization rejects comma-delimited PDUs when a signi
 
 // Spec: Matrix Server-Server API v1.18
 // Section: Authorization Rules
-// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 //
 // The old pdu_is_authorized() used a hardcoded room version "12" and a synthetic
 // power level {sender=50, required=0}, meaning every PDU with a non-empty type
@@ -974,7 +974,7 @@ SCENARIO("Full Matrix event auth rejects PDUs that pass transport checks but vio
 }
 
 // Spec: Matrix Server-Server API v1.18 — Signing Events (per-PDU signing)
-// URL: https://spec.matrix.org/v1.18/server-server-api/#signing-events
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#signing-events
 //
 // For relayed PDUs (TLS peer is a relay forwarding on behalf of the true author)
 // the verifying server MUST resolve the sender domain's signing key and verify the
@@ -1097,7 +1097,7 @@ SCENARIO("Relayed PDU signature is verified against the sender domain key via th
 }
 
 // Spec: Matrix Server-Server API v1.18 — Authorization Rules
-// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 //
 // The server MUST run event-authorization rules before persisting any inbound PDU.
 // A PDU that fails auth MUST NOT be persisted; the pdu_sink MUST return rejected_auth

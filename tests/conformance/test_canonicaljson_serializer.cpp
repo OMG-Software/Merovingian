@@ -4,8 +4,8 @@
 // |          MATRIX CANONICAL JSON SERIALIZER CONFORMANCE TESTS            |
 // |                                                                         |
 // |  Spec: Matrix v1.18 Appendices — Canonical JSON                        |
-// |  URL:  https://spec.matrix.org/v1.18/appendices/#canonical-json        |
-// |        https://spec.matrix.org/v1.18/appendices/#grammar               |
+// |  URL:  ../../docs/matrix-v1.18-spec/appendices.md#canonical-json        |
+// |        ../../docs/matrix-v1.18-spec/appendices.md#grammar               |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -247,7 +247,7 @@ SCENARIO("Canonical JSON escapes all control characters U+0000 through U+001F as
 }
 
 // Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
-// URL:  https://spec.matrix.org/v1.18/appendices/#grammar
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#grammar
 //
 // Object keys MUST be sorted by their Unicode code points. For UTF-8 strings
 // this is equivalent to byte-by-byte lexicographic order, because UTF-8 encodes
@@ -305,7 +305,7 @@ SCENARIO("Canonical JSON sorts object keys by Unicode code point (byte order)",
 }
 
 // Spec: Matrix v1.18 Appendices — Canonical JSON — Grammar
-// URL:  https://spec.matrix.org/v1.18/appendices/#grammar
+// URL:  ../../docs/matrix-v1.18-spec/appendices.md#grammar
 //
 // No insignificant whitespace: no spaces or newlines around ':' or ','
 // in the output. The output MUST be the most compact valid JSON.

@@ -4,8 +4,8 @@
 // |         MATRIX EVENT AUTHORIZATION CONFORMANCE TESTS                    |
 // |                                                                         |
 // |  Spec: Matrix Server-Server API v1.18, Room Version 6+ auth rules       |
-// |  URL:  https://spec.matrix.org/v1.18/rooms/v6/#authorization-rules      |
-// |        https://spec.matrix.org/v1.18/server-server-api/#auth-rules      |
+// |  URL:  ../../docs/matrix-v1.18-spec/rooms/v6.md#authorization-rules      |
+// |        ../../docs/matrix-v1.18-spec/server-server-api.md#auth-rules      |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -30,9 +30,9 @@
 
 // --- auth-rule hook dispatch --------------------------------------------------
 // Spec: Matrix Room Version 6, Sec. 10.4 Authorization rules
-// URL:  https://spec.matrix.org/v1.18/rooms/v6/#authorization-rules
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v6.md#authorization-rules
 // Spec: Matrix Room Version 12 (MSC4289/MSC4291)
-// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v12.md
 //
 // Room versions v6–v11 share the room_v6_plus authorization rule set.
 // Room version v12 builds on v6+ rules and adds creator privilege (MSC4289) and
@@ -95,7 +95,7 @@ SCENARIO("Event authorization uses room-version-specific auth-rule hooks", "[eve
 
 // --- power level enforcement --------------------------------------------------
 // Spec: Matrix Room Version 6, Sec. 10.4.6 Auth rule: power levels
-// URL:  https://spec.matrix.org/v1.18/rooms/v6/#authorization-rules
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v6.md#authorization-rules
 //
 // "The sender's current power level in the room MUST be greater than or equal
 // to the level required to send that event type." A server MUST reject events
@@ -130,7 +130,7 @@ SCENARIO("Event authorization rejects insufficient power levels", "[events][auth
 
 // --- membership policy --------------------------------------------------------
 // Spec: Matrix Room Version 6, Sec. 10.4.3 Auth rules for m.room.member
-// URL:  https://spec.matrix.org/v1.18/rooms/v6/#authorization-rules
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v6.md#authorization-rules
 //
 // Self-joins and invites by sufficiently powerful members MUST be allowed.
 // Kicks (forced leave on a third party) by members with insufficient power
@@ -194,9 +194,9 @@ SCENARIO("Membership policy primitives cover joins, invites, removals, and restr
 
 // --- auth event selection -----------------------------------------------------
 // Spec: Matrix Server-Server API v1.18 Sec. 4.4 auth_events
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#auth-events
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#auth-events
 // Spec: Matrix Room Version 12 (MSC4291)
-// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v12.md
 //
 // For m.room.member invite in room versions 1–11 the REQUIRED auth event set is:
 //   {m.room.create, m.room.power_levels, m.room.join_rules, m.room.member(target)}
@@ -294,7 +294,7 @@ SCENARIO("Auth event selection omits m.room.create for room version 12", "[event
 
 // --- auth-chain deduplication -------------------------------------------------
 // Spec: Matrix Server-Server API v1.18, auth_chain in send_join response
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
 //
 // The auth chain is the transitive closure of auth_events across the room
 // history. Duplicate event IDs and empty strings MUST NOT appear - they bloat

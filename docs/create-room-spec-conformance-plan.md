@@ -1,6 +1,6 @@
 # `POST /createRoom` — Matrix v1.18 Spec Conformance Plan
 
-Audited against: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom  
+Audited against: matrix-v1.18-spec/client-server-api.md#post_matrixclientv3createroom  
 Audit date: 2026-05-27  
 Branch: fix-key-server-lock-contention (merged to main after PR #148)
 

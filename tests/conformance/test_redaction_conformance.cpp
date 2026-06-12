@@ -4,8 +4,8 @@
 // |              MATRIX REDACTION CONFORMANCE TESTS                        |
 // |                                                                         |
 // |  Spec: Matrix v1.18 — Redaction rules per room version                 |
-// |  v1–v10: https://spec.matrix.org/v1.18/rooms/v10/#redactions           |
-// |  v11+:   https://spec.matrix.org/v1.18/rooms/v11/#redactions           |
+// |  v1–v10: ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions           |
+// |  v11+:   ../../docs/matrix-v1.18-spec/rooms/v11.md#redactions           |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -69,7 +69,7 @@ namespace
 
 // ---------------------------------------------------------------------------
 // Spec: v1–v10 redaction rules
-// URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
 //
 // Top-level fields preserved: event_id, type, room_id, sender, state_key,
 //   content, hashes, signatures, depth, prev_events, auth_events, origin,
@@ -234,7 +234,7 @@ SCENARIO("Redaction v1-v10: m.room.power_levels preserves the specified content 
 
 // ---------------------------------------------------------------------------
 // Spec: v11+ redaction rules differ from v1-v10
-// URL:  https://spec.matrix.org/v1.18/rooms/v11/#redactions
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v11.md#redactions
 //
 // Key changes in v11:
 //  1. "origin", "membership", "prev_state" are NO LONGER protected from
@@ -280,8 +280,8 @@ SCENARIO("Redaction v11+: origin is no longer preserved (v11 change from v10)",
 
 // ---------------------------------------------------------------------------
 // Spec: membership and prev_state are preserved in v1–v10 but dropped in v11+
-// v10: https://spec.matrix.org/v1.18/rooms/v10/#redactions
-// v11: https://spec.matrix.org/v1.18/rooms/v11/#redactions
+// v10: ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
+// v11: ../../docs/matrix-v1.18-spec/rooms/v11.md#redactions
 //
 // v11 removes "origin", "membership", and "prev_state" from the protected set.
 // ---------------------------------------------------------------------------
@@ -444,18 +444,18 @@ SCENARIO("Redaction: unsigned is never preserved in any room version",
 
 // ---------------------------------------------------------------------------
 // Spec: m.room.join_rules — preserved content fields differ by version
-// v1–v7:  https://spec.matrix.org/v1.18/rooms/v7/#redactions
+// v1–v7:  ../../docs/matrix-v1.18-spec/rooms/v7.md#redactions
 //   m.room.join_rules preserves: join_rule
-// v8–v10: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// v8–v10: ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
 //   m.room.join_rules preserves: join_rule, allow  (restricted joins, MSC3083)
-// v11+:   https://spec.matrix.org/v1.18/rooms/v11/#redactions
+// v11+:   ../../docs/matrix-v1.18-spec/rooms/v11.md#redactions
 //   m.room.join_rules preserves: join_rule, allow
 // ---------------------------------------------------------------------------
 
 // Spec: room versions 1–7 do not include restricted joins (MSC3083); the
 // m.room.join_rules redaction algorithm for those versions preserves only
 // "join_rule" — not "allow".
-// URL: https://spec.matrix.org/v1.18/rooms/v7/#redactions
+// URL: ../../docs/matrix-v1.18-spec/rooms/v7.md#redactions
 SCENARIO("Redaction v1-v7: m.room.join_rules preserves only join_rule from content",
          "[conformance][redaction][v7][join-rules]")
 {
@@ -486,7 +486,7 @@ SCENARIO("Redaction v1-v7: m.room.join_rules preserves only join_rule from conte
 // Spec: room versions 8–10 introduce restricted joins (MSC3083). The
 // m.room.join_rules redaction algorithm for those versions preserves both
 // "join_rule" AND "allow".
-// URL: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// URL: ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
 SCENARIO("Redaction v8-v10: m.room.join_rules preserves both join_rule and allow",
          "[conformance][redaction][v8][v9][v10][join-rules]")
 {
@@ -557,8 +557,8 @@ SCENARIO("Redaction v11+: m.room.join_rules preserves both join_rule and allow",
 
 // ---------------------------------------------------------------------------
 // Spec: m.room.history_visibility — history_visibility preserved in all versions
-// v10: https://spec.matrix.org/v1.18/rooms/v10/#redactions
-// v11: https://spec.matrix.org/v1.18/rooms/v11/#redactions
+// v10: ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
+// v11: ../../docs/matrix-v1.18-spec/rooms/v11.md#redactions
 // ---------------------------------------------------------------------------
 
 SCENARIO("Redaction: m.room.history_visibility preserves history_visibility in all versions",
@@ -624,7 +624,7 @@ SCENARIO("Redaction: m.room.aliases preserves aliases in v10 but strips it in v1
 
 // ---------------------------------------------------------------------------
 // Spec: m.room.third_party_invite — signed preserved in all versions
-// URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
 // ---------------------------------------------------------------------------
 
 SCENARIO("Redaction: m.room.third_party_invite preserves signed from content",
@@ -661,7 +661,7 @@ SCENARIO("Redaction: m.room.third_party_invite preserves signed from content",
 
 // ---------------------------------------------------------------------------
 // Spec: state_key is a top-level protected field in all room versions
-// URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
 // ---------------------------------------------------------------------------
 
 SCENARIO("Redaction: state_key is preserved as a top-level field in all versions",
@@ -693,7 +693,7 @@ SCENARIO("Redaction: state_key is preserved as a top-level field in all versions
 
 // ---------------------------------------------------------------------------
 // Spec: v12 inherits v11 redaction rules
-// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v12.md
 // ---------------------------------------------------------------------------
 
 SCENARIO("Redaction v12: m.room.power_levels preserves invite as in v11",

@@ -4,10 +4,10 @@
 // |         MATRIX STATE RESOLUTION CONFORMANCE TESTS                       |
 // |                                                                         |
 // |  Spec: Matrix v1.18 — State Resolution                                  |
-// |  URL:  https://spec.matrix.org/v1.18/server-server-api/                 |
+// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                 |
 // |          #room-state-resolution                                          |
 // |  v2 algorithm:                                                           |
-// |    https://spec.matrix.org/v1.18/server-server-api/                     |
+// |    ../../docs/matrix-v1.18-spec/server-server-api.md                     |
 // |          #state-resolution-algorithm-for-room-versions-2-through-10     |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -135,7 +135,7 @@ using merovingian::events::StateResolutionRequest;
 } // namespace
 
 // Spec: Matrix v1.18 — State Resolution
-// URL: https://spec.matrix.org/v1.18/server-server-api/#room-state-resolution
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution
 //
 // When a single state group is provided (no fork), the resolved state is that
 // group's state — there is nothing to conflict on. This is the common case
@@ -185,7 +185,7 @@ SCENARIO("State resolution v1: single state group is returned unchanged",
 }
 
 // Spec: Matrix v1.18 — State Resolution
-// URL: https://spec.matrix.org/v1.18/server-server-api/#room-state-resolution
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution
 //
 // When two state groups agree on every (type, state_key) pair, the resolved
 // state is identical to both groups — there is no conflict to resolve.
@@ -230,7 +230,7 @@ SCENARIO("State resolution v1: identical state groups produce no conflict",
 }
 
 // Spec: Matrix v1.18 — State Resolution
-// URL: https://spec.matrix.org/v1.18/server-server-api/#room-state-resolution
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution
 //
 // When two forks have different events for the same (type, state_key), the
 // event with the greater depth wins. On a depth tie the lexicographically
@@ -288,7 +288,7 @@ SCENARIO("State resolution v1: conflicting events — greater depth wins",
 }
 
 // Spec: Matrix v1.18 — State Resolution
-// URL: https://spec.matrix.org/v1.18/server-server-api/#room-state-resolution
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution
 //
 // On equal depth, the lexicographically smaller event ID wins (v1 tiebreak).
 // The spec says: "If two events are at the same depth the event with the
@@ -336,7 +336,7 @@ SCENARIO("State resolution v1: depth tie broken by lexicographically smaller eve
 }
 
 // Spec: Matrix v1.18 — State Resolution (v2 / SDSS)
-// URL: https://spec.matrix.org/v1.18/server-server-api/
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md
 //       #state-resolution-algorithm-for-room-versions-2-through-10
 //
 // resolve_state_v2 requires a room version policy. For a single state group
@@ -383,7 +383,7 @@ SCENARIO("State resolution v2 (SDSS): single state group is returned unchanged",
 }
 
 // Spec: Matrix v1.18 — State Resolution (v2 / SDSS)
-// URL: https://spec.matrix.org/v1.18/server-server-api/
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md
 //       #state-resolution-algorithm-for-room-versions-2-through-10
 //
 // Non-conflicted state (events that agree across all forks) is taken
@@ -449,7 +449,7 @@ SCENARIO("State resolution v2 (SDSS): non-conflicted state passes through unchan
 }
 
 // Spec: Matrix v1.18 — State Resolution (v2 / SDSS)
-// URL: https://spec.matrix.org/v1.18/server-server-api/
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md
 //       #state-resolution-algorithm-for-room-versions-2-through-10
 //
 // The resolved state must not contain duplicate (event_type, state_key) pairs.
@@ -508,7 +508,7 @@ SCENARIO("State resolution result never contains duplicate (type, state_key) pai
 
 // ---------------------------------------------------------------------------
 // Spec: State resolution v2 — conflicting events resolved by depth
-// URL:  https://spec.matrix.org/v1.18/server-server-api/
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md
 //         #state-resolution-algorithm-for-room-versions-2-through-10
 //
 // When two state groups conflict on the same (type, state_key) pair, the v2

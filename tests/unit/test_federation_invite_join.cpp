@@ -4,7 +4,7 @@
 // |        FEDERATED INVITE-THEN-JOIN CONFORMANCE TESTS                     |
 // |                                                                         |
 // |  Spec: Matrix Server-Server API v1.18                                   |
-// |  URL:  https://spec.matrix.org/v1.18/server-server-api/#joining-rooms   |
+// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#joining-rooms   |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -194,7 +194,7 @@ namespace
 
 // --- make_join auth_events ---------------------------------------------------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // The resident server MUST include in the template's auth_events:
 //   - m.room.create
@@ -263,7 +263,7 @@ SCENARIO("make_join template includes the invite event in auth_events for an inv
 
 // --- send_join auth_chain ----------------------------------------------------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
 //
 // The resident server MUST return an auth_chain that includes ALL events
 // referenced in the join PDU's auth_events. When the joining user was
@@ -357,7 +357,7 @@ SCENARIO("send_join auth_chain includes the invite event when the join PDU refer
 
 // --- invite_handler event persistence ----------------------------------------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2inviteroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid
 //
 // The resident server MUST store accepted invite events in its persistent
 // event graph so that:
@@ -434,7 +434,7 @@ SCENARIO("invite_handler stores the signed invite event in the persistent event 
 
 // --- make_join depth > 0 -----------------------------------------------------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // The make_join template MUST include depth = max(forward-extremity depths) + 1.
 // Leaving it at 0 causes the joining server to produce a join event at depth=0
@@ -587,7 +587,7 @@ SCENARIO("make_join template prev_events contains only forward extremities, not 
 
 // --- send_join response requires members_omitted -----------------------------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
 //
 // The send_join v2 response MUST include the `members_omitted` boolean field.
 // Synapse parses this as a required field in SendJoinResponse; a missing field
@@ -661,7 +661,7 @@ SCENARIO("send_join response body includes the required members_omitted field",
 
 // --- make_join auth_events must not contain create event for room v12 --------
 // Spec: Matrix Server-Server API v1.18 / MSC4291 (room version 12)
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // In room version 12, the room ID is the reference hash of the m.room.create
 // event, so the create event is NEVER listed in any event's auth_events.
@@ -745,7 +745,7 @@ SCENARIO("make_join template auth_events does not include m.room.create for room
 
 // --- make_join response required top-level and event template fields ---------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // A 200 response MUST contain:
 //   room_version  — the room version string matching the room
@@ -850,7 +850,7 @@ SCENARIO("make_join response contains all required top-level and event template 
 
 // --- make_join auth_events completeness for v12 --------------------------------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // For a v12 room where the joining user has a pending invite, auth_events MUST:
 //   - include the m.room.power_levels event ID
@@ -932,7 +932,7 @@ SCENARIO("make_join auth_events includes power_levels and join_rules alongside t
 
 // --- make_join returns 404 for unknown room -----------------------------------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // If the room is not known to the resident server it MUST return 404.
 SCENARIO("make_join returns 404 when the room does not exist on this server",
@@ -968,7 +968,7 @@ SCENARIO("make_join returns 404 when the room does not exist on this server",
 
 // --- make_join returns 400 M_INCOMPATIBLE_ROOM_VERSION -----------------------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1make_joinroomiduserid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
 //
 // If the room version is not listed in the `ver` query parameters, the server
 // MUST return 400 with errcode M_INCOMPATIBLE_ROOM_VERSION and a room_version
@@ -1031,7 +1031,7 @@ SCENARIO("make_join returns 400 M_INCOMPATIBLE_ROOM_VERSION when the room versio
 
 // --- send_join response required fields: origin, state, auth_chain -----------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
 //
 // The send_join v2 response MUST include:
 //   origin        — the resident server name
@@ -1119,7 +1119,7 @@ SCENARIO("send_join response includes origin, non-empty state, and non-empty aut
 
 // --- send_join state is PRE-JOIN (invite visible, join event absent) ---------
 // Spec: Matrix Server-Server API v1.18 §11.5.1
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
 //
 // The `state` field MUST represent the room state PRIOR TO the new join event.
 // The joining user's m.room.member event in state must therefore show
@@ -1238,7 +1238,7 @@ SCENARIO("send_join state array reflects pre-join room state with membership inv
 
 // --- Invite must not downgrade existing "join" membership -------------------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2inviteroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2inviteroomideventid
 //
 // If a local user is already persistently "join" in a remote room (they joined
 // via federation previously), and the remote server re-sends an invite (e.g.
@@ -1365,7 +1365,7 @@ SCENARIO("federated invite does not downgrade an existing join membership to inv
 
 // --- Stale in-memory membership triggers federation retry -------------------
 // Spec: Matrix Client-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#joining-rooms
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#joining-rooms
 //
 // If a local user's in-memory LocalRoom.members still lists them as joined
 // but the persistent membership record is "invite" (not "join"), the in-memory
@@ -1451,7 +1451,7 @@ SCENARIO("join_room retries federation for a remote room when persistent members
 
 // --- send_join state ingestion: empty state_key events reach store.state -------
 // Spec: Matrix Server-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
 //
 // The Matrix spec defines a state event as any event whose JSON carries a
 // "state_key" field. The value of that field may be empty (""). Events such as
@@ -1579,7 +1579,7 @@ SCENARIO("ingest_send_join_state writes empty-state-key events to store.state",
 
 // --- v12 send_join: m.room.create room_id derivation -----------------------
 // Spec: Matrix Server-Server API v1.18 / Room Version 12 (MSC4291)
-// URL:  https://spec.matrix.org/v1.18/rooms/v12/
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v12.md
 //
 // In room version 12 the m.room.create event carries no "room_id" field.
 // The room ID equals the create event's reference hash with the sigil swapped:

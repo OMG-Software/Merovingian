@@ -1027,8 +1027,8 @@ SCENARIO("A transaction with a bad-signature PDU returns 200 with a per-PDU erro
 
 // --- send_join / send_leave response shape -----------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 10 Joining Rooms
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_joinroomideventid
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv2send_leaveroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_joinroomideventid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv2send_leaveroomideventid
 //
 // The resident server MUST echo the accepted join event back under "event" for
 // v2 send_join responses. send_leave does not define that field. If this test

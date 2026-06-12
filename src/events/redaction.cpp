@@ -68,7 +68,7 @@ namespace
             // Spec: "join_rule" preserved in all versions.
             //       "allow" was introduced by restricted joins (MSC3083) in room v8
             //       and is preserved from v8 onwards (v8-v10 and v11+).
-            // URL:  https://spec.matrix.org/v1.18/rooms/v10/#redactions
+            // URL:  ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
             auto const allow_preserved =
                 policy.redaction_rules == rooms::RedactionRules::room_v8_v10 ||
                 policy.redaction_rules == rooms::RedactionRules::room_v11_plus;
@@ -87,13 +87,13 @@ namespace
         if (event_type == "m.room.aliases")
         {
             // Spec v1-v10: "aliases" key preserved. v11+: entire content stripped (no keys kept).
-            // https://spec.matrix.org/v1.18/rooms/v11/#redactions
+            // ../../docs/matrix-v1.18-spec/rooms/v11.md#redactions
             return policy.redaction_rules != rooms::RedactionRules::room_v11_plus && key == "aliases";
         }
         if (event_type == "m.room.third_party_invite")
         {
             // Spec (all versions): m.room.third_party_invite preserves "signed" from content.
-            // URL: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+            // URL: ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
             return key == "signed";
         }
         if (event_type == "m.room.redaction")

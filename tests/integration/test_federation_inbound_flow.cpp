@@ -4,7 +4,7 @@
 // |         MATRIX FEDERATION INBOUND FLOW CONFORMANCE TESTS                |
 // |                                                                         |
 // |  Spec: Matrix Server-Server API v1.18                                   |
-// |  URL:  https://spec.matrix.org/v1.18/server-server-api/                 |
+// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                 |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -262,7 +262,7 @@ private:
 
 // --- Federation key publishing ------------------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixkeyv2server
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
 //
 // The GET /_matrix/key/v2/server endpoint MUST be served without requiring
 // request authentication. The response MUST contain server_name, valid_until_ts,
@@ -357,7 +357,7 @@ SCENARIO("Homeserver publishes its persisted self-signed federation key without 
 
 // --- Superseded key publication -----------------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 3 Retrieving server keys
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#get_matrixkeyv2server
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixkeyv2server
 //
 // Keys that are no longer active MUST appear in old_verify_keys with an
 // expired_ts field. expired_ts MUST be a past timestamp - it MUST NOT be
@@ -437,7 +437,7 @@ SCENARIO("Homeserver publishes superseded signing keys in old_verify_keys", "[in
 
 // --- Inbound transaction routing ----------------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 7 Transactions
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The PUT /_matrix/federation/v1/send/{txnId} endpoint MUST return HTTP 200
 // for any transaction that passes authentication, even if individual PDUs are
@@ -488,7 +488,7 @@ SCENARIO("Homeserver routes signed inbound federation transactions through runti
 
 // --- Malformed request rejection ----------------------------------------------
 // Spec: Matrix Server-Server API v1.18, general error handling
-// URL:  https://spec.matrix.org/v1.18/server-server-api/
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md
 //
 // Requests with a malformed or missing Authorization header MUST be rejected
 // before any transaction processing occurs. Requests originating from private

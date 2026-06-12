@@ -4,10 +4,10 @@
 // |         MATRIX CLIENT-SERVER AUTH API CONFORMANCE TESTS                 |
 // |                                                                         |
 // |  Spec: Matrix Client-Server API v1.18, Sec. 5 Client Authentication         |
-// |  Login:        https://spec.matrix.org/v1.18/client-server-api/#login   |
-// |  Registration: https://spec.matrix.org/v1.18/client-server-api/         |
+// |  Login:        ../../docs/matrix-v1.18-spec/client-server-api.md#login   |
+// |  Registration: ../../docs/matrix-v1.18-spec/client-server-api.md         |
 // |                #account-registration-and-management                      |
-// |  Devices:      https://spec.matrix.org/v1.18/client-server-api/         |
+// |  Devices:      ../../docs/matrix-v1.18-spec/client-server-api.md         |
 // |                #device-management                                         |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -37,9 +37,9 @@
 // Registration: POST /_matrix/client/v3/register
 // Refresh:      POST /_matrix/client/v3/refresh
 // Devices:      GET/PUT/DELETE /_matrix/client/v3/devices/{deviceId}
-// URLs: https://spec.matrix.org/v1.18/client-server-api/#login
-//       https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3register
-//       https://spec.matrix.org/v1.18/client-server-api/#device-management
+// URLs: ../../docs/matrix-v1.18-spec/client-server-api.md#login
+//       ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3register
+//       ../../docs/matrix-v1.18-spec/client-server-api.md#device-management
 //
 // All listed endpoints MUST be routable - missing routes cause 404s that
 // break standard Matrix clients.
@@ -85,8 +85,8 @@ SCENARIO("Client-server auth route scaffold covers Milestone 9 endpoints", "[aut
 
 // --- token requirements and rate limits --------------------------------------
 // Spec: Matrix Client-Server API v1.18
-// URL:  https://spec.matrix.org/v1.18/client-server-api/#using-access-tokens
-//       https://spec.matrix.org/v1.18/client-server-api/#rate-limiting
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#using-access-tokens
+//       ../../docs/matrix-v1.18-spec/client-server-api.md#rate-limiting
 //
 // Login and registration MUST NOT require an access token (they are how
 // tokens are obtained). Logout and device management MUST require a token.
@@ -187,7 +187,7 @@ SCENARIO("Client-server auth boundary plan persists only token hashes", "[auth][
 // Logout:        POST /_matrix/client/v3/logout
 // Logout all:    POST /_matrix/client/v3/logout/all
 // Delete device: DELETE /_matrix/client/v3/devices/{deviceId}
-// URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3logout
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3logout
 //
 // Each operation MUST revoke the correct token scope: single-device for logout
 // and delete-device, all-device for logout/all.

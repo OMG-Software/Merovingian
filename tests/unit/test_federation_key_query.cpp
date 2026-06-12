@@ -4,7 +4,7 @@
 // |         MATRIX FEDERATION KEY QUERY CONFORMANCE TESTS                   |
 // |                                                                         |
 // |  Spec: Matrix Server-Server API v1.18                                   |
-// |  URL:  https://spec.matrix.org/v1.18/server-server-api/                 |
+// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                 |
 // |         #post_matrixfederationv1userkeysquery                           |
 // |         #post_matrixfederationv1userkeyesclaim                          |
 // |         #get_matrixfederationv1userdevicescircumflex                    |
@@ -53,7 +53,7 @@ namespace
 } // namespace
 
 // --- POST /_matrix/federation/v1/user/keys/query -----------------------------
-// Spec: https://spec.matrix.org/v1.18/server-server-api/#post_matrixfederationv1userkeysquery
+// Spec: ../../docs/matrix-v1.18-spec/server-server-api.md#post_matrixfederationv1userkeysquery
 //
 // Response MUST contain:
 //   device_keys      - object mapping user IDs to device key maps
@@ -169,7 +169,7 @@ SCENARIO("Federation device-key query returns published device and cross-signing
 }
 
 // --- POST /_matrix/federation/v1/user/keys/claim -----------------------------
-// Spec: https://spec.matrix.org/v1.18/server-server-api/#post_matrixfederationv1userkeyesclaim
+// Spec: ../../docs/matrix-v1.18-spec/server-server-api.md#post_matrixfederationv1userkeyesclaim
 //
 // Response MUST contain:
 //   one_time_keys - object mapping user IDs → device IDs → key IDs → key objects
@@ -290,7 +290,7 @@ SCENARIO("Federation one-time-key claim falls back to a matching fallback key wh
 }
 
 // --- GET /_matrix/federation/v1/user/devices/{userId} ------------------------
-// Spec: https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1userdevicescircumflex
+// Spec: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1userdevicescircumflex
 //
 // Response MUST contain:
 //   user_id    - the queried user's fully-qualified Matrix ID
@@ -351,7 +351,7 @@ SCENARIO("Federation user-devices query lists a user's published devices", "[fed
 
 // Spec: stream_id MUST be a monotonically increasing integer so remote servers
 // can detect gaps and schedule refetches when a device list changes.
-// https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1userdevicescircumflex
+// ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1userdevicescircumflex
 SCENARIO("Federation user-devices response reflects the store sync stream counter",
          "[federation][keys][devices]")
 {
@@ -385,7 +385,7 @@ SCENARIO("Federation user-devices response reflects the store sync stream counte
 // Spec: each device entry's keys field MUST carry the device identity keys so
 // remote servers can build Olm sessions with the correct curve25519 key.
 // A missing or wrong key causes OlmError::MissingCiphertext on the recipient.
-// https://spec.matrix.org/v1.18/server-server-api/#get_matrixfederationv1userdevicescircumflex
+// ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1userdevicescircumflex
 SCENARIO("Federation user-devices response device entry carries the curve25519 identity key",
          "[federation][keys][devices]")
 {

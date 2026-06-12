@@ -4,7 +4,7 @@
 // |         MATRIX ROOM VERSION TABLE CONFORMANCE TESTS                     |
 // |                                                                         |
 // |  Spec: Matrix v1.18 — Room Versions                                     |
-// |  URL:  https://spec.matrix.org/v1.18/rooms/                             |
+// |  URL:  ../../docs/matrix-v1.18-spec/rooms/index.md                             |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -38,7 +38,7 @@ using merovingian::rooms::StateResolutionAlgorithm;
 } // namespace
 
 // Spec: Matrix v1.18 — Room Versions
-// URL: https://spec.matrix.org/v1.18/rooms/
+// URL: ../../docs/matrix-v1.18-spec/rooms/index.md
 //
 // The spec defines 12 stable room versions (v1–v12). A server MUST be able to
 // participate in rooms of all stable versions. Returning nullptr from
@@ -132,7 +132,7 @@ SCENARIO("All stable room versions v1 through v12 are registered", "[rooms][vers
 }
 
 // Spec: Matrix v1.18 — Room Versions
-// URL: https://spec.matrix.org/v1.18/rooms/
+// URL: ../../docs/matrix-v1.18-spec/rooms/index.md
 //
 // v1–v5 use the original auth rules (room_v1), where the sender domain is NOT
 // required to match the creator's domain. v6 introduced that requirement.
@@ -161,7 +161,7 @@ SCENARIO("Room versions v1–v5 use the original auth rules (no domain check)",
 }
 
 // Spec: Matrix v1.18 — Room Versions
-// URL: https://spec.matrix.org/v1.18/rooms/
+// URL: ../../docs/matrix-v1.18-spec/rooms/index.md
 //
 // v6 introduced the conditional sender-domain check (active only when
 // content.m.federate is false). v6–v11 all share the room_v6_plus auth rule set.
@@ -188,7 +188,7 @@ SCENARIO("Room versions v6–v11 use the room_v6_plus auth rules",
 }
 
 // Spec: Matrix Room Version 12 (MSC4289/MSC4291)
-// URL: https://spec.matrix.org/v1.18/rooms/v12/
+// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md
 //
 // v12 extends v6+ auth rules with creator privilege and implicit create;
 // it uses a distinct auth rule tag for auditability.
@@ -214,7 +214,7 @@ SCENARIO("Room version 12 uses the room_v12 auth rules (distinct from v6+)",
 }
 
 // Spec: Matrix v1.18 — Room Versions
-// URL: https://spec.matrix.org/v1.18/rooms/
+// URL: ../../docs/matrix-v1.18-spec/rooms/index.md
 //
 // v1 uses the original (simple) state resolution algorithm.
 // v2 and above use the SDSS (State Resolution v2) algorithm.
@@ -255,7 +255,7 @@ SCENARIO("Room version state resolution algorithm matches the spec table",
 }
 
 // Spec: Matrix v1.18 — Room Versions
-// URL: https://spec.matrix.org/v1.18/rooms/
+// URL: ../../docs/matrix-v1.18-spec/rooms/index.md
 //
 // v1–v2 use the original event format where prev_events and auth_events are
 // [event_id, hashes] tuples. v3 introduced the simplified format where these
@@ -297,7 +297,7 @@ SCENARIO("Room version event format matches the spec table", "[rooms][versions][
 }
 
 // Spec: Matrix v1.18 — Room Versions
-// URL: https://spec.matrix.org/v1.18/rooms/
+// URL: ../../docs/matrix-v1.18-spec/rooms/index.md
 //
 // v11 changed the redaction algorithm. v1–v10 use the original rules;
 // v11+ use the new rules (origin no longer protected, m.room.create preserves
@@ -309,7 +309,7 @@ SCENARIO("Room version redaction rules match the spec table", "[rooms][versions]
     {
         // Spec: v1–v7 use the original redaction rules; join_rules preserves
         // only "join_rule" (no allow field — restricted joins didn't exist yet).
-        // URL: https://spec.matrix.org/v1.18/rooms/v7/#redactions
+        // URL: ../../docs/matrix-v1.18-spec/rooms/v7.md#redactions
         for (auto const* v : {"1", "2", "3", "4", "5", "6", "7"})
         {
             WHEN(std::string{"version "} + v + " policy is retrieved")
@@ -327,7 +327,7 @@ SCENARIO("Room version redaction rules match the spec table", "[rooms][versions]
 
         // Spec: v8–v10 introduced restricted joins (MSC3083); the allow field in
         // m.room.join_rules content is now preserved through redaction.
-        // URL: https://spec.matrix.org/v1.18/rooms/v10/#redactions
+        // URL: ../../docs/matrix-v1.18-spec/rooms/v10.md#redactions
         for (auto const* v : {"8", "9", "10"})
         {
             WHEN(std::string{"version "} + v + " policy is retrieved")
@@ -361,7 +361,7 @@ SCENARIO("Room version redaction rules match the spec table", "[rooms][versions]
 }
 
 // Spec: Matrix v1.18 — Room Versions v12 (MSC4289, MSC4291)
-// URL: https://spec.matrix.org/v1.18/rooms/v12/
+// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md
 //
 // Room v12 adds two new MSC features:
 //   MSC4289: room creators hold an effectively infinite power level
@@ -399,7 +399,7 @@ SCENARIO("Room version 12 enables MSC4289 and MSC4291 flags", "[rooms][versions]
 }
 
 // Spec: Matrix v1.18 — Room Versions
-// URL: https://spec.matrix.org/v1.18/rooms/
+// URL: ../../docs/matrix-v1.18-spec/rooms/index.md
 //
 // All registered versions must be marked stable. Unstable room versions are
 // experimental and may not be registered under a numeric string identifier.

@@ -29,7 +29,7 @@ namespace
     // This activates the sender-domain restriction in auth rule step 3:
     // cross-domain senders MUST be rejected when m.federate is false.
     // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
-    // URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+    // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
     return "{\"type\":\"m.room.create\",\"state_key\":\"\",\"sender\":\"" + std::string{creator} +
            "\",\"content\":{\"creator\":\"" + std::string{creator} +
            "\",\"m.federate\":false,\"room_version\":\"12\"},\"origin_server_ts\":1,\"depth\":0,\"prev_events\":[],\"auth_"
@@ -38,7 +38,7 @@ namespace
 
 [[nodiscard]] auto make_v1_create_event(std::string_view creator) -> std::string
 {
-    // Spec: Matrix Room Version 1 — https://spec.matrix.org/v1.18/rooms/v1/
+    // Spec: Matrix Room Version 1 — ../../docs/matrix-v1.18-spec/rooms/v1.md
     // Room versions 1–10 MUST include room_id in every PDU, including the
     // create event. The room_id is assigned by the creating server (not derived
     // from a hash as in v12/MSC4291). content.creator is required in v1–v10;
@@ -197,7 +197,7 @@ SCENARIO("Auth rules reject events when room has no create event", "[events][aut
 }
 
 // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
-// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 //
 // "If content.m.federate is false, and the domain of the sender does not match
 //  the domain of the creator of the room, reject."
@@ -242,7 +242,7 @@ SCENARIO("Auth rules reject cross-domain senders when m.federate is false (v6+)"
 }
 
 // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 3.
-// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 //
 // The domain check at step 3 is ONLY triggered when content.m.federate is false.
 // When m.federate is absent the room is federated and cross-domain senders are allowed.
@@ -652,9 +652,9 @@ SCENARIO("Auth rules reject state events when sender lacks state_default power",
 }
 
 // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 11.
-// URL: https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 // Spec: Matrix Room Version 12 (MSC4289)
-// URL: https://spec.matrix.org/v1.18/rooms/v12/
+// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md
 //
 // A room creator (with effectively infinite power) is permitted to send a
 // m.room.power_levels event, provided the new event does NOT list any creator
@@ -697,7 +697,7 @@ SCENARIO("Auth rules allow m.room.power_levels events from users with sufficient
 }
 
 // Spec: Matrix Room Version 12 (MSC4289)
-// URL: https://spec.matrix.org/v1.18/rooms/v12/
+// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md
 //
 // Room creators hold effectively infinite power that cannot be expressed as an
 // integer. A m.room.power_levels event whose content.users lists the create-event
@@ -974,7 +974,7 @@ SCENARIO("Auth rules allow a join to an invite-only room for a previously invite
 }
 
 // Spec: Matrix Room Version 8+ authorization rules for restricted joins.
-// URL:  https://spec.matrix.org/v1.18/rooms/v8/#authorization-rules
+// URL:  ../../docs/matrix-v1.18-spec/rooms/v8.md#authorization-rules
 //
 // A restricted join without an invite is allowed when the event includes
 // content.join_authorised_via_users_server naming a joined resident user with
@@ -1185,7 +1185,7 @@ SCENARIO("Auth rules reject a user who is banned from joining", "[events][auth][
 
 // ---------------------------------------------------------------------------
 // Room version 1 auth rules differ from v6+
-// Spec: https://spec.matrix.org/v1.18/rooms/v1/#authorization-rules
+// Spec: ../../docs/matrix-v1.18-spec/rooms/v1.md#authorization-rules
 //
 // In room versions 1–5, there is NO sender-domain check (the v6 rule that
 // requires sender's domain to match the create event's creator domain does
@@ -1338,7 +1338,7 @@ SCENARIO("Auth rules: room version 11 and 12 are supported",
 // ---------------------------------------------------------------------------
 // Auth rule step 2: every non-create event requires a create event in auth_events.
 // Spec: Matrix Server-Server API v1.18 — Authorization Rules
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 // ---------------------------------------------------------------------------
 
 SCENARIO("Auth rules reject a non-create event when auth_events contains no create event",
@@ -1372,7 +1372,7 @@ SCENARIO("Auth rules reject a non-create event when auth_events contains no crea
 // ---------------------------------------------------------------------------
 // Knock join rule (room v7+)
 // Spec: Matrix Server-Server API v1.18 — Authorization Rules, membership
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 // ---------------------------------------------------------------------------
 
 SCENARIO("Auth rules allow a knock when join_rule is knock and sender matches state_key",
@@ -1458,7 +1458,7 @@ SCENARIO("Auth rules reject a knock when join_rule is not knock or knock_restric
 // ---------------------------------------------------------------------------
 // Kick power-level comparison: sender PL must STRICTLY exceed target PL.
 // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 5
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 // ---------------------------------------------------------------------------
 
 SCENARIO("Auth rules reject a kick when the sender's power level equals the target's",
@@ -1511,7 +1511,7 @@ SCENARIO("Auth rules reject a kick when the sender's power level equals the targ
 // ---------------------------------------------------------------------------
 // Ban power-level comparison: sender PL must STRICTLY exceed target PL.
 // Spec: Matrix Server-Server API v1.18 — Authorization Rules, Step 5
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#authorization-rules
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#authorization-rules
 // ---------------------------------------------------------------------------
 
 SCENARIO("Auth rules reject a ban when the sender's power level equals the target's",

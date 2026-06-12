@@ -4,7 +4,7 @@
 // |              MATRIX SERVER DISCOVERY CONFORMANCE TESTS                  |
 // |                                                                         |
 // |  Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names        |
-// |  URL:  https://spec.matrix.org/v1.18/server-server-api/                 |
+// |  URL:  ../../docs/matrix-v1.18-spec/server-server-api.md                 |
 // |        #resolving-server-names                                           |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -77,7 +77,7 @@ public:
 
 // --- Direct resolution (no delegation) ---------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#resolving-server-names
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
 //
 // If the server name is a literal IP or hostname with no well-known file,
 // the server MUST be contacted directly on the given host and port. The
@@ -106,7 +106,7 @@ SCENARIO("Server discovery resolves a direct server name without well-known", "[
 
 // --- Well-known delegation ----------------------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2.1 Well-known URI delegation
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#well-known-uri
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#well-known-uri
 //
 // If the server name is not a literal IP and has no explicit port, servers
 // MUST request /.well-known/matrix/server. When the m.server property is
@@ -136,7 +136,7 @@ SCENARIO("Server discovery resolves a server name with well-known delegation", "
 
 // --- SSRF: private / loopback address rejection -------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names (security)
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#resolving-server-names
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
 //
 // Servers MUST NOT send federation traffic to private or loopback addresses.
 // Allowing federation to 127.x.x.x, 10.x.x.x, 172.16-31.x.x, 192.168.x.x,
@@ -164,7 +164,7 @@ SCENARIO("Server discovery rejects private IP addresses", "[federation][discover
 
 // --- Discovery result structure -----------------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#resolving-server-names
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
 //
 // A successful resolution result MUST carry the original server name,
 // the resolved host and port, a flag indicating TLS is required, and a flag
@@ -202,7 +202,7 @@ SCENARIO("Server discovery results have correct structure", "[federation][discov
 
 // --- Default federation port and TLS -----------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2.3 Direct IP / default port
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#resolving-server-names
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
 //
 // If no explicit port is given and no SRV record is found, servers MUST
 // use port 8448. All federation connections MUST use TLS regardless of port.
@@ -227,7 +227,7 @@ SCENARIO("Server discovery with default port 8448 uses TLS", "[federation][disco
 
 // --- Server name validation ---------------------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#resolving-server-names
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
 //
 // An empty server name is not a valid Matrix server identifier. Discovery
 // MUST fail closed rather than attempt a connection to an unspecified host.
@@ -251,7 +251,7 @@ SCENARIO("Server discovery validates server name format", "[federation][discover
 
 // --- Federation destination retry state --------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#resolving-server-names
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
 //
 // Servers SHOULD implement exponential back-off for unreachable federation
 // destinations. The FederationDestination struct persists the fields needed
@@ -290,7 +290,7 @@ SCENARIO("Federation destination persists retry state", "[federation][queue]")
 
 // --- Well-known delegation with address pinning -------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2.1 Well-known URI delegation
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#well-known-uri
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#well-known-uri
 //
 // If a valid m.server value is returned by well-known, the resolved
 // host MUST be the delegated host and the resolved port MUST be the
@@ -340,7 +340,7 @@ SCENARIO("Server discovery fetches well-known delegation and pins public IPv4 an
 
 // --- SRV fallback with address pinning ---------------------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2.2 SRV lookup
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#resolving-server-names
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
 //
 // If well-known is absent or returns no m.server, servers MUST query the
 // _matrix-fed._tcp.<server_name> SRV record. The record with the lowest
@@ -386,7 +386,7 @@ SCENARIO("Server discovery falls back to DNS SRV records and pins resolved addre
 
 // --- SSRF: private / loopback rejection via well-known and SRV ---------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names (security)
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#resolving-server-names
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
 //
 // Private IPv4 ranges (10/8, 172.16/12, 192.168/16) and IPv6 link-local
 // (fe80::/10) or loopback (::1) addresses MUST be rejected regardless of
@@ -438,7 +438,7 @@ SCENARIO("Server discovery rejects private and loopback addresses before pinning
 
 // --- Explicit port short-circuits well-known and SRV -------------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#resolving-server-names
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
 //
 // If the server name contains an explicit port (e.g. "example.org:7443"),
 // the resolution algorithm MUST stop at step 1 and MUST NOT consult
@@ -487,7 +487,7 @@ SCENARIO("Server discovery honors an explicit port in the server name", "[federa
 
 // --- Well-known fallback on invalid / missing m.server -----------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2.1 Well-known URI delegation
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#well-known-uri
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#well-known-uri
 //
 // If /.well-known/matrix/server returns malformed JSON or a JSON object that
 // lacks the m.server key, the response MUST be treated as if well-known were
@@ -553,7 +553,7 @@ SCENARIO("Server discovery falls back when the well-known body is invalid", "[fe
 
 // --- Well-known without port triggers SRV on delegated host ------------------
 // Spec: Matrix Server-Server API v1.18, Sec. 2.1 Well-known URI delegation
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#well-known-uri
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#well-known-uri
 //
 // If m.server supplies a hostname without an explicit port, the server MUST
 // perform an SRV lookup against the delegated hostname (not the original).

@@ -117,53 +117,53 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 | `docs/CLAUDE.md` | Which documents to update and when |
 
 ## Matrix Spec v1.18 Reference
-Base: https://spec.matrix.org/v1.18/
+Base: docs/matrix-v1.18-spec/index.md
 
 ### Core sections
-- [Client-Server API](https://spec.matrix.org/v1.18/client-server-api/) — rooms, events, sync, media, filtering
-- [Server-Server API](https://spec.matrix.org/v1.18/server-server-api/) — federation, transactions, key exchange, joining rooms
-- [Application Service API](https://spec.matrix.org/v1.18/application-service-api/)
-- [Identity Service API](https://spec.matrix.org/v1.18/identity-service-api/)
-- [Push Gateway API](https://spec.matrix.org/v1.18/push-gateway-api/)
+- [Client-Server API](docs/matrix-v1.18-spec/client-server-api.md) — rooms, events, sync, media, filtering
+- [Server-Server API](docs/matrix-v1.18-spec/server-server-api.md) — federation, transactions, key exchange, joining rooms
+- [Application Service API](docs/matrix-v1.18-spec/application-service-api.md)
+- [Identity Service API](docs/matrix-v1.18-spec/identity-service-api.md)
+- [Push Gateway API](docs/matrix-v1.18-spec/push-gateway-api.md)
 
 ### Frequently referenced subsections
-- [Canonical JSON](https://spec.matrix.org/v1.18/appendices/#canonical-json) — canonical JSON encoding rules
-- [Signing JSON](https://spec.matrix.org/v1.18/appendices/#signing-json) — how to sign JSON objects
-- [Event Signing](https://spec.matrix.org/v1.18/appendices/#event-signing) — event signing test vectors
-- [Identifier Grammar](https://spec.matrix.org/v1.18/appendices/#identifier-grammar) — user IDs, room IDs, event IDs
-- [Cryptographic Key Representation](https://spec.matrix.org/v1.18/appendices/#cryptographic-key-representation)
-- [Security Threat Model](https://spec.matrix.org/v1.18/appendices/#security-threat-model)
-- [Room Versions](https://spec.matrix.org/v1.18/rooms/) — v1–v12 feature matrix
-- [Room v10](https://spec.matrix.org/v1.18/rooms/v10/) · [v11](https://spec.matrix.org/v1.18/rooms/v11/) · [v12 (MSC4291)](https://spec.matrix.org/v1.18/rooms/v12/)
-- [Event Authorization Rules](https://spec.matrix.org/v1.18/server-server-api/#authorization-rules)
-- [Signing Events (Federation)](https://spec.matrix.org/v1.18/server-server-api/#signing-events)
-- [State Resolution](https://spec.matrix.org/v1.18/server-server-api/#room-state-resolution)
-- [Joining Rooms](https://spec.matrix.org/v1.18/server-server-api/#joining-rooms)
-- [Server Discovery](https://spec.matrix.org/v1.18/client-server-api/#server-discovery)
-- [Client Authentication](https://spec.matrix.org/v1.18/client-server-api/#client-authentication)
-- [Room Event Format](https://spec.matrix.org/v1.18/client-server-api/#room-event-format)
+- [Canonical JSON](docs/matrix-v1.18-spec/appendices.md#canonical-json) — canonical JSON encoding rules
+- [Signing JSON](docs/matrix-v1.18-spec/appendices.md#signing-json) — how to sign JSON objects
+- [Event Signing](docs/matrix-v1.18-spec/appendices.md#event-signing) — event signing test vectors
+- [Identifier Grammar](docs/matrix-v1.18-spec/appendices.md#identifier-grammar) — user IDs, room IDs, event IDs
+- [Cryptographic Key Representation](docs/matrix-v1.18-spec/appendices.md#cryptographic-key-representation)
+- [Security Threat Model](docs/matrix-v1.18-spec/appendices.md#security-threat-model)
+- [Room Versions](docs/matrix-v1.18-spec/rooms/index.md) — v1–v12 feature matrix
+- [Room v10](docs/matrix-v1.18-spec/rooms/v10.md) · [v11](docs/matrix-v1.18-spec/rooms/v11.md) · [v12 (MSC4291)](docs/matrix-v1.18-spec/rooms/v12.md)
+- [Event Authorization Rules](docs/matrix-v1.18-spec/server-server-api.md#authorization-rules)
+- [Signing Events (Federation)](docs/matrix-v1.18-spec/server-server-api.md#signing-events)
+- [State Resolution](docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution)
+- [Joining Rooms](docs/matrix-v1.18-spec/server-server-api.md#joining-rooms)
+- [Server Discovery](docs/matrix-v1.18-spec/client-server-api.md#server-discovery)
+- [Client Authentication](docs/matrix-v1.18-spec/client-server-api.md#client-authentication)
+- [Room Event Format](docs/matrix-v1.18-spec/client-server-api.md#room-event-format)
 
 ## Glossary
 | Term | Definition | Code / Spec |
 |------|-----------|-------------|
-| PDU | Persistent Data Unit — a room event propagated over federation | `federation/`, [spec §pdus](https://spec.matrix.org/v1.18/server-server-api/#pdus) |
-| EDU | Ephemeral Data Unit — non-persisted federation message (typing, presence) | `federation/`, [spec §edus](https://spec.matrix.org/v1.18/server-server-api/#edus) |
+| PDU | Persistent Data Unit — a room event propagated over federation | `federation/`, [spec §pdus](docs/matrix-v1.18-spec/server-server-api.md#pdus) |
+| EDU | Ephemeral Data Unit — non-persisted federation message (typing, presence) | `federation/`, [spec §edus](docs/matrix-v1.18-spec/server-server-api.md#edus) |
 | Event ID | Unique identifier for a room event (format varies by room version) | `events/event_id.hpp` |
-| Auth chain | Sequence of auth events proving an event's validity | `auth/`, [spec §authorization-rules](https://spec.matrix.org/v1.18/server-server-api/#authorization-rules) |
-| State resolution | Algorithm to merge divergent room state across forks | `events/state_resolution.hpp`, [spec](https://spec.matrix.org/v1.18/server-server-api/#room-state-resolution) |
-| Canonical JSON | Deterministic JSON encoding for signing/hashing | `canonicaljson/`, [spec](https://spec.matrix.org/v1.18/appendices/#canonical-json) |
+| Auth chain | Sequence of auth events proving an event's validity | `auth/`, [spec §authorization-rules](docs/matrix-v1.18-spec/server-server-api.md#authorization-rules) |
+| State resolution | Algorithm to merge divergent room state across forks | `events/state_resolution.hpp`, [spec](docs/matrix-v1.18-spec/server-server-api.md#room-state-resolution) |
+| Canonical JSON | Deterministic JSON encoding for signing/hashing | `canonicaljson/`, [spec](docs/matrix-v1.18-spec/appendices.md#canonical-json) |
 | Signing key | Ed25519 key pair used to sign events and federation requests | `crypto/ed25519.hpp` |
 | Stream token | Monotonic token for sync pagination | `sync/stream_token.hpp` |
-| Room version | Defines event format, auth rules, and state resolution algorithm | `events/room_version_policy.hpp`, [spec](https://spec.matrix.org/v1.18/rooms/) |
+| Room version | Defines event format, auth rules, and state resolution algorithm | `events/room_version_policy.hpp`, [spec](docs/matrix-v1.18-spec/rooms/index.md) |
 | Via servers | List of server names used to route joins (v12/MSC4291) | `federation/` |
-| Content hash | SHA-256 hash of event content, used for integrity checks | [spec](https://spec.matrix.org/v1.18/server-server-api/#calculating-the-content-hash-for-an-event) |
-| Reference hash | Hash of redacted event, used in event IDs | [spec](https://spec.matrix.org/v1.18/server-server-api/#calculating-the-reference-hash-for-an-event) |
+| Content hash | SHA-256 hash of event content, used for integrity checks | [spec](docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event) |
+| Reference hash | Hash of redacted event, used in event IDs | [spec](docs/matrix-v1.18-spec/server-server-api.md#calculating-the-reference-hash-for-an-event) |
 | Redaction | Strips non-essential keys from an event, preserving integrity | `events/redaction.hpp` |
 | Power levels | Per-user permission levels in a room (ban, kick, redact, etc.) | `auth/authorization.hpp` |
 | Membership | User's room membership state (join, leave, invite, ban, knock) | `federation/membership_endpoints.hpp` |
-| Backfill | Retrieving historical events from other servers to fill gaps | [spec](https://spec.matrix.org/v1.18/server-server-api/#backfilling-and-retrieving-missing-events) |
+| Backfill | Retrieving historical events from other servers to fill gaps | [spec](docs/matrix-v1.18-spec/server-server-api.md#backfilling-and-retrieving-missing-events) |
 | Transaction | Batch of PDUs/EDUs sent between servers | `federation/transactions.hpp` |
-| Key ID | `algorithm:version` identifier for a signing key | `crypto/`, [spec](https://spec.matrix.org/v1.18/appendices/#cryptographic-key-representation) |
+| Key ID | `algorithm:version` identifier for a signing key | `crypto/`, [spec](docs/matrix-v1.18-spec/appendices.md#cryptographic-key-representation) |
 | Complement | Matrix federation test suite (used in integration tests) | `tests/fixtures/complement/` |
 
 ## Build & Test Commands

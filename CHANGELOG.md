@@ -117,7 +117,7 @@
   `m.room.create` state event to select the correct v1/v2 invite wire format.
 
 - **Feature (POST /publicRooms):** Implemented `POST /_matrix/client/v3/publicRooms` per
-  [spec §post_matrixclientv3publicrooms](https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3publicrooms).
+  [spec §post_matrixclientv3publicrooms](docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3publicrooms).
   Accepts `filter.generic_search_term` (case-insensitive substring match on room name, topic,
   canonical alias, and room_id), `limit` (max results per page), and `since` (integer-offset
   pagination token); returns `next_batch` when more results follow. Refactored the existing

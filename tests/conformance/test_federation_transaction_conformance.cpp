@@ -5,7 +5,7 @@
 // |                                                                         |
 // |  Spec: Matrix Server-Server API v1.18                                   |
 // |  Endpoint: PUT /_matrix/federation/v1/send/{txnId}                      |
-// |  URL: https://spec.matrix.org/v1.18/server-server-api/                  |
+// |  URL: ../../docs/matrix-v1.18-spec/server-server-api.md                  |
 // |         #put_matrixfederationv1sendtxnid                                |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
@@ -213,7 +213,7 @@ private:
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The receiving server MUST respond 200 with {} when it processes a valid
 // transaction. Errors in individual PDUs are NOT reflected as HTTP error
@@ -271,7 +271,7 @@ SCENARIO("Federation send transaction returns 200 with empty object on success",
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // "origin" MUST be the server_name of the sending server. The receiving server
 // MUST verify that the origin claim matches the X-Matrix auth header's origin.
@@ -319,7 +319,7 @@ SCENARIO("Federation send transaction is rejected when origin does not match sig
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // When a pdu_sink is installed, the runtime MUST route each PDU from the
 // transaction to that sink. The sink is invoked once per PDU.
@@ -378,7 +378,7 @@ SCENARIO("Federation send transaction routes PDUs to the installed pdu_sink", "[
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // EDUs (Ephemeral Data Units) are optional in a transaction. When present they
 // MUST be routed to the edu_sink. The server MUST accept the transaction even
@@ -427,7 +427,7 @@ SCENARIO("Federation send transaction routes EDUs to the installed edu_sink", "[
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The transaction body MUST include "origin" and "origin_server_ts". A
 // transaction missing these required fields MUST be rejected.
@@ -482,7 +482,7 @@ SCENARIO("Federation send transaction rejects missing required top-level fields"
 }
 
 // Spec: Matrix Server-Server API v1.18
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The accepted_transactions list on the runtime is updated after a successful
 // transaction. The transaction_id is the path parameter from the URL.
@@ -530,7 +530,7 @@ SCENARIO("Accepted federation transaction is recorded in the runtime state", "[f
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // "The sending server must wait and retry for a 200 OK response before
 // sending a transaction with a different txnId to the receiving server."
@@ -577,7 +577,7 @@ SCENARIO("Duplicate federation transaction (same txn_id) is accepted without re-
 
 // Spec: Matrix Server-Server API v1.18
 // Endpoint: PUT /_matrix/federation/v1/send/{txnId}
-// URL: https://spec.matrix.org/v1.18/server-server-api/#put_matrixfederationv1sendtxnid
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#put_matrixfederationv1sendtxnid
 //
 // The only documented response code is 200. The spec states: "The server is
 // to use this response even in the event of one or more PDUs failing to be

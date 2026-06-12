@@ -4,8 +4,8 @@
 
 ## Source
 
-- Official OpenAPI document: https://spec.matrix.org/v1.18/client-server-api/api.json
-- Human-readable reference: https://spec.matrix.org/v1.18/client-server-api/
+- Official OpenAPI document: matrix-v1.18-spec/client-server-api.md
+- Human-readable reference: matrix-v1.18-spec/client-server-api.md
 - OpenAPI: 3.1.0
 - Title: Matrix Client-Server API
 - Version: v1.18

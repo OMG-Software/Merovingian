@@ -4,7 +4,7 @@
 // |         MATRIX CLIENT-SERVER API CONFORMANCE TESTS                      |
 // |                                                                         |
 // |  Spec: Matrix Client-Server API v1.18                                   |
-// |  URL:  https://spec.matrix.org/v1.18/client-server-api/                 |
+// |  URL:  ../../docs/matrix-v1.18-spec/client-server-api.md                 |
 // |                                                                         |
 // |  !! IMPORTANT - FOR HUMANS AND LLMs ALIKE !!                            |
 // |                                                                         |
@@ -204,7 +204,7 @@ using namespace merovingian::tests;
 // --- Matrix error shape -------------------------------------------------------
 // Spec: Matrix Client-Server API v1.18
 // Standard error response format
-// URL: https://spec.matrix.org/v1.18/client-server-api/#standard-error-response
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#standard-error-response
 //
 // Every error response MUST carry an "errcode" string and an "error" human-
 // readable string. The shape is stable across all endpoints.
@@ -231,7 +231,7 @@ SCENARIO("Client-server runtime wraps errors in stable Matrix-style shapes", "[h
 // --- Production API surface ---------------------------------------------------
 // Spec: Matrix Client-Server API v1.18
 // /sync - initial sync response
-// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // A compliant /sync response MUST include "next_batch". The server MUST NOT
 // leak raw key material ("secret") in sync payloads.
@@ -265,7 +265,7 @@ SCENARIO("Client-server runtime exposes production-named start and flow APIs", "
 // --- Account and device session management ------------------------------------
 // Spec: Matrix Client-Server API v1.18
 // POST /register, POST /login, GET /account/whoami, GET /devices, PUT /devices/{deviceId}
-// URL: https://spec.matrix.org/v1.18/client-server-api/#account-registration-and-management
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#account-registration-and-management
 //
 // Registration MUST return 200 with a user_id. Login MUST return an access_token.
 // Authenticated endpoints MUST validate the Bearer token and return the correct
@@ -329,7 +329,7 @@ SCENARIO("Client-server runtime account and device endpoints use real sessions",
 // --- Malformed request body rejection -----------------------------------------
 // Spec: Matrix Client-Server API v1.18
 // Standard error response - M_BAD_JSON
-// URL: https://spec.matrix.org/v1.18/client-server-api/#standard-error-response
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#standard-error-response
 //
 // If the request body is not valid JSON or is missing required fields, the
 // server MUST return HTTP 400 with errcode M_BAD_JSON. The server MUST fail
@@ -371,7 +371,7 @@ SCENARIO("Client-server runtime rejects malformed Matrix JSON request bodies", "
 // --- HTTP request dispatch -----------------------------------------------------
 // Spec: Matrix Client-Server API v1.18
 // Authentication - Bearer token via Authorization header
-// URL: https://spec.matrix.org/v1.18/client-server-api/#client-authentication
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#client-authentication
 //
 // The server MUST accept the Authorization: Bearer <token> header for
 // authentication. The HTTP adapter must correctly parse the request line,
@@ -419,7 +419,7 @@ SCENARIO("Client-server runtime dispatches complete HTTP requests through Matrix
 // --- HTTP body length validation ----------------------------------------------
 // Spec: Matrix Client-Server API v1.18
 // Standard error response - M_BAD_REQUEST
-// URL: https://spec.matrix.org/v1.18/client-server-api/#standard-error-response
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#standard-error-response
 //
 // The server MUST validate that the received body matches the declared
 // Content-Length. Bodies shorter or longer than declared MUST be rejected
@@ -458,7 +458,7 @@ SCENARIO("Client-server runtime HTTP adapter rejects incomplete and trailing req
 // --- Login flow discovery -----------------------------------------------------
 // Spec: Matrix Client-Server API v1.18
 // GET /_matrix/client/v3/login
-// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3login
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3login
 //
 // GET /login is unauthenticated and MUST return 200 with a "flows" array.
 // The array MUST include "m.login.password" when password login is supported.
@@ -616,7 +616,7 @@ SCENARIO("Client-server registration discovery endpoints track availability toke
 // --- JSON string escaping -----------------------------------------------------
 // Spec: Matrix Client-Server API v1.18
 // Device management - PUT /devices/{deviceId}
-// URL: https://spec.matrix.org/v1.18/client-server-api/#put_matrixclientv3devicesdeviceid
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3devicesdeviceid
 //
 // Device IDs and display names may contain quotes and backslashes. The server
 // MUST produce valid JSON-escaped strings in all responses. Malformed JSON in
@@ -670,8 +670,8 @@ SCENARIO("Client-server runtime escapes login and device JSON strings", "[homese
 // --- Room creation, state, and sync ------------------------------------------
 // Spec: Matrix Client-Server API v1.18
 // POST /createRoom, GET /rooms/{roomId}/state, GET /joined_rooms, GET /sync
-// URL: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom
-// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3sync
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3createroom
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
 //
 // A successful room creation MUST return HTTP 200 with a "room_id". The /sync
 // response MUST include "event_count" and MUST NOT expose plaintext encrypted
@@ -3299,7 +3299,7 @@ SCENARIO("Account data endpoint percent-decodes the type path segment for secret
     }
 }
 
-// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3room_keysversion
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3room_keysversion
 SCENARIO("POST /room_keys/version returns a version identifier to the client",
          "[homeserver][client-server][key-api][key-backup]")
 {
@@ -3332,7 +3332,7 @@ SCENARIO("POST /room_keys/version returns a version identifier to the client",
 
             THEN("the response is 200 with a JSON object containing a non-empty string version field")
             {
-                // Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3room_keysversion
+                // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3room_keysversion
                 // The response MUST be a JSON object with a string "version" field.
                 // Element fails with "Unable to set up keys" if the field is absent.
                 REQUIRE(response.response.status == 200U);
@@ -3345,7 +3345,7 @@ SCENARIO("POST /room_keys/version returns a version identifier to the client",
     }
 }
 
-// Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclientv3createroom
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3createroom
 // "If the preset is private_chat or trusted_private_chat, the server SHOULD enable end-to-end
 // encryption in the room."
 SCENARIO("private_chat preset auto-emits m.room.encryption when the client omits it",
@@ -3448,7 +3448,7 @@ SCENARIO("public_chat preset does not auto-emit m.room.encryption",
 
 // --- auth_events selection ----------------------------------------------------
 // Spec: Matrix Server-Server API v1.18 Sec. 4.4 auth_events
-// URL:  https://spec.matrix.org/v1.18/server-server-api/#auth_events
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#auth_events
 //
 // Per the spec, auth_events for each event type MUST be:
 //   m.room.create:  none
@@ -3694,11 +3694,11 @@ SCENARIO("createRoom does not duplicate preset events when client provides them 
 // |  E2EE key bundle bootstrap (Element /maybeAcceptKeyBundle flow)         |
 // |                                                                          |
 // |  Spec:                                                                   |
-// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |  - ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclien    |
 // |    tsv3keysupload                                                        |
-// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |  - ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclien    |
 // |    tsv3keysquery                                                         |
-// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |  - ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclien    |
 // |    tsv3keysdevice_signingupload                                          |
 // |                                                                          |
 // |  Reproduces the round-trip Element performs when joining an encrypted    |
@@ -3893,13 +3893,13 @@ SCENARIO("E2EE cross-signing keys round-trip via /keys/device_signing/upload + /
 // |  End-to-end E2EE bootstrap (Element Rust crypto order)                  |
 // |                                                                          |
 // |  Spec:                                                                   |
-// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |  - ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclien    |
 // |    tsv3keysupload                                                        |
-// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |  - ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclien    |
 // |    tsv3keysdevice_signingupload                                          |
-// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |  - ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclien    |
 // |    tsv3keyssignaturesupload                                              |
-// |  - https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien    |
+// |  - ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclien    |
 // |    tsv3room_keysversion                                                  |
 // |                                                                          |
 // |  Replays the exact order of requests Element's matrix-rust-sdk sends     |
@@ -4575,7 +4575,7 @@ SCENARIO("Stopping and resuming room sharing emits device_lists.left then change
 // +-------------------------------------------------------------------------+
 // |  Login device_id default collision (regression)                          |
 // |                                                                          |
-// |  Spec: https://spec.matrix.org/v1.18/client-server-api/#post_matrixclien |
+// |  Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclien |
 // |  tsv3login                                                               |
 // |                                                                          |
 // |  When the client omits `device_id` from the login body, the server must |
@@ -4935,7 +4935,7 @@ SCENARIO("Room members response is derived from current state even when the memb
 
 // Spec: Matrix CS API v1.18
 // Section: GET /rooms/{roomId}/members
-// URL: https://spec.matrix.org/v1.18/client-server-api/#get_matrixclientv3roomsroomidmembers
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
 //
 // MUST return 403 if the requester is not a current or previous room member.
 SCENARIO("GET /rooms/{roomId}/members returns 403 for a user who has never been a member",
@@ -5065,7 +5065,7 @@ SCENARIO("GET /rooms/{roomId}/members returns 200 for a user who previously left
 
 // Spec: Matrix CS API v1.18
 // Section: Rate limiting
-// URL: https://spec.matrix.org/v1.18/client-server-api/#rate-limiting
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#rate-limiting
 //
 // The rate limiter MUST key unauthenticated buckets by (source-IP, route)
 // so that one client cannot exhaust the login/register budget for others.
@@ -5111,7 +5111,7 @@ SCENARIO("Rate limit buckets are isolated per source IP", "[homeserver][client-s
 
 // Spec: Matrix CS API v1.18
 // Section: Rate limiting / trusted-proxy headers
-// URL: https://spec.matrix.org/v1.18/client-server-api/#rate-limiting
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#rate-limiting
 //
 // If the direct peer is a configured trusted proxy the server MUST
 // use the leftmost X-Forwarded-For address for rate-limit keying so
