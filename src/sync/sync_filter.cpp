@@ -160,11 +160,10 @@ auto parse_filter_argument(std::string_view filter_argument) -> SyncFilter
     {
         return out;
     }
-    // Treat a non-JSON token as a filter id reference. The alpha homeserver
-    // does not yet persist named filters; without storage the safest behaviour
-    // is "no filter" rather than rejecting the request, so the caller falls
-    // back to default sync semantics. When filter storage lands the parser
-    // can be extended to look up the stored JSON here.
+    // A non-JSON token is a filter ID. The caller (sync handler) resolves
+    // filter IDs to their stored JSON before calling this function, so any
+    // remaining non-JSON token here indicates an unresolved ID — treat it
+    // as no filter rather than failing (defensive fallback only).
     if (filter_argument.front() != '{')
     {
         return out;

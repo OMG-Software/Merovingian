@@ -25,8 +25,10 @@
 
 #include "federation_signing_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/events/event_id.hpp"
 #include "merovingian/events/event_signer.hpp"
 #include "merovingian/federation/inbound_ingestion.hpp"
 #include "merovingian/federation/inbound_request.hpp"
@@ -182,19 +184,55 @@ private:
     std::string key_material_{};
 };
 
+// Replace the hashes.sha256 field in an event value with the actual computed
+// content hash so that verify_pdu_content_hash accepts the PDU. The signing
+// pipeline does not auto-inject hashes, so test helpers must do it explicitly.
+[[nodiscard]] auto with_correct_content_hash(merovingian::canonicaljson::Value event)
+    -> merovingian::canonicaljson::Value
+{
+    auto const hash = merovingian::events::make_content_hash(event);
+    if (!hash.error.empty())
+    {
+        return event;
+    }
+    auto const* root = std::get_if<merovingian::canonicaljson::Object>(&event.storage());
+    if (root == nullptr)
+    {
+        return event;
+    }
+    auto new_root = merovingian::canonicaljson::Object{};
+    new_root.reserve(root->size());
+    for (auto const& member : *root)
+    {
+        if (member.key != "hashes")
+        {
+            new_root.push_back(merovingian::canonicaljson::make_member(member.key, *member.value));
+        }
+    }
+    auto hashes = merovingian::canonicaljson::Object{};
+    hashes.push_back(
+        merovingian::canonicaljson::make_member("sha256", merovingian::canonicaljson::Value{hash.sha256}));
+    new_root.push_back(
+        merovingian::canonicaljson::make_member("hashes", merovingian::canonicaljson::Value{std::move(hashes)}));
+    return merovingian::canonicaljson::Value{std::move(new_root)};
+}
+
 [[nodiscard]] auto minimal_pdu() -> std::string
 {
     auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
     auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
     REQUIRE(derive_test_keypair(key_seed, public_key, secret_key));
+    // Event without a hashes field: make_content_hash strips hashes anyway, so
+    // the computed hash is correct whether or not a placeholder is present.
     auto const event_json = "{\"auth_events\":[],\"content\":{\"body\":\"hello\",\"msgtype\":\"m.text\"},\"depth\":3,"
-                            "\"hashes\":{\"sha256\":"
-                            "\"hash\"},\"origin_server_ts\":1000,\"prev_events\":[\"$prev:local.example.org\"],\"room_"
-                            "id\":\"!test:local.example.org\","
+                            "\"origin_server_ts\":1000,\"prev_events\":[\"$prev:local.example.org\"],"
+                            "\"room_id\":\"!test:local.example.org\","
                             "\"sender\":\"@alice:remote.example.org\",\"type\":\"m.room.message\"}";
-    auto const parsed = merovingian::canonicaljson::parse_lossless(event_json);
+    auto const base_parsed = merovingian::canonicaljson::parse_lossless(event_json);
+    REQUIRE(base_parsed.error == merovingian::canonicaljson::ParseError::none);
+    // Inject the real content hash before signing so inbound hash verification passes.
+    auto const event_with_hash = with_correct_content_hash(base_parsed.value);
     auto const* policy = merovingian::rooms::find_room_version_policy("12");
-    REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
     REQUIRE(policy != nullptr);
     auto store = ConformanceSigningStore{
         merovingian::crypto::SigningKeyRecord{
@@ -204,7 +242,7 @@ private:
                                               true, }
     };
     auto provider = ConformanceEd25519Provider{key_seed};
-    auto signed_event = merovingian::events::sign_event_for_server(parsed.value, *policy, store, provider, origin);
+    auto signed_event = merovingian::events::sign_event_for_server(event_with_hash, *policy, store, provider, origin);
     REQUIRE(signed_event.error.empty());
     return signed_event.event_json;
 }

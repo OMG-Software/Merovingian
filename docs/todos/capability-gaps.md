@@ -37,7 +37,7 @@ Open work per capability area. Status column reflects the current level in the
 | `GET /_matrix/media/v3/thumbnail/*`, `GET /_matrix/client/v1/media/thumbnail/*` | `runtime-wired` | Real image resampling, remote thumbnail fetch, and v1.18 conformance fixtures. |
 | `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` | `spec-covered` | |
 | `POST /_matrix/client/v3/user_directory/search` | `spec-covered` | |
-| `GET /_matrix/client/v3/sync` | `spec-covered` | Wire `filter_id` query parameter, unread-notification/summary semantics, durable stream tokens. |
+| `GET /_matrix/client/v3/sync` | `spec-covered` | Unread-notification/summary semantics, durable stream tokens. `filter_id` parameter now wired and conformance-covered. |
 | `POST /_matrix/client/v3/account/password` | `spec-covered` | UI-auth re-authentication and `logout_devices` handling. |
 | `POST /_matrix/client/v3/createRoom` | `spec-covered` | Broader conformance fixtures. |
 | `POST /_matrix/client/v3/rooms/{roomId}/join` | `spec-covered` | Federation-aware joins. |
@@ -51,11 +51,11 @@ Open work per capability area. Status column reflects the current level in the
 
 | Endpoint | Status | Needs |
 | --- | --- | --- |
-| `PUT /_matrix/federation/v1/send/{txnId}` inbound | `runtime-wired` | Room-version-specific PDU verification, richer EDU side-effects. Idempotency, unknown-EDU discard, and oversize rejection now conformance-covered. |
+| `PUT /_matrix/federation/v1/send/{txnId}` inbound | `spec-covered` | Richer EDU side-effects. Idempotency, unknown-EDU discard, oversize rejection, and PDU content-hash verification now conformance-covered. |
 | `PUT /_matrix/federation/v1/send/{txnId}` outbound | `partial` | Matrix conformance coverage. |
 | Federation join/leave/invite/knock/backfill | `integrated` | Full Matrix conformance fixtures; richer production leave/knock state semantics. make_join M_INCOMPATIBLE_ROOM_VERSION now conformance-covered. |
 | Server discovery | `partial` | TLS-bound origin validation, richer Matrix edge-case fixtures, live network conformance coverage. |
-| Request and event signing/verification | `partial` | Room-version-specific PDU hash verification, live interoperability test, conformance coverage. |
+| Request and event signing/verification | `spec-covered` | Live interoperability test. Inbound PDU content-hash verification now wired and conformance-covered. |
 | `GET /_matrix/federation/v1/query/profile` | `spec-covered` | |
 | `GET /_matrix/federation/v1/query/directory` | `spec-covered` | |
 | Event-graph queries | `partial` | Historical state-at-event reconstruction, conformance fixtures. |

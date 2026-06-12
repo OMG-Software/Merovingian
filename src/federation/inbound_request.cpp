@@ -1548,8 +1548,25 @@ auto handle_inbound_federation_request(FederationRuntimeState& runtime, SignedFe
         {
             continue;
         }
-        // PDU passed signature and auth checks; hand it to the ingestion
-        // sink for persistence. State-resolution conflicts are no longer
+        // Spec: Matrix Server-Server API v1.18 — Calculating the Content Hash for an Event
+        // URL: ../../docs/matrix-v1.18-spec/server-server-api.md#calculating-the-content-hash-for-an-event
+        // Servers MUST verify the content hash of the event before processing it.
+        {
+            auto const parsed_for_hash = canonicaljson::parse_lossless(encoded_pdu);
+            if (parsed_for_hash.error != canonicaljson::ParseError::none ||
+                !events::verify_pdu_content_hash(parsed_for_hash.value))
+            {
+                pdu_errors.push_back(canonicaljson::make_member(
+                    pdu.event_id, canonicaljson::Value{canonicaljson::Object{
+                                      canonicaljson::make_member("error", canonicaljson::Value{
+                                                                              std::string{"PDU content hash verification failed"}})}}));
+                audit_federation(runtime, "federation.pdu_hash_rejected", request.origin, request.target,
+                                 "content-hash-mismatch");
+                continue;
+            }
+        }
+        // PDU passed signature, auth, and content-hash checks; hand it to the
+        // ingestion sink for persistence. State-resolution conflicts are no longer
         // silently logged: when the sink surfaces a state_conflict context
         // and a `state_conflict_resolver` is wired, we run state-res v2 to
         // merge the forks. Successful merges are audited as
