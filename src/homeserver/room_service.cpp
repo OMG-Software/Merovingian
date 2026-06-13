@@ -1183,6 +1183,27 @@ namespace
     return {true, result.response_body};
 }
 
+namespace
+{
+// Derives an "ed25519:<hex>" key_id from the first four bytes of a public key.
+// Tying the id to the key material gives every generated key a unique id, so a
+// stale federation notary cache for a previous id becomes irrelevant after a
+// rotation. Shared by key generation and key rotation.
+[[nodiscard]] auto derive_ed25519_key_id(std::array<unsigned char, crypto_sign_PUBLICKEYBYTES> const& public_key)
+    -> std::string
+{
+    static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
+    auto key_version = std::string{};
+    key_version.reserve(8U);
+    for (auto i = 0U; i < 4U; ++i)
+    {
+        key_version += hex_digits[(public_key[i] >> 4U) & 0x0fU];
+        key_version += hex_digits[public_key[i] & 0x0fU];
+    }
+    return "ed25519:" + key_version;
+}
+} // namespace
+
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>
 {
@@ -1195,9 +1216,24 @@ namespace
     // with a far-future valid_until_ts will never re-fetch it, causing BadSignatureError
     // on every outbound request. Ignoring "ed25519:auto" forces generation of a new
     // key whose key_id is unknown to any stale notary cache.
-    auto const it = std::ranges::find_if(all_keys, [&server_name](database::PersistentServerSigningKey const& k) {
-        return k.server_name == server_name && k.key_id != "ed25519:auto" && !k.secret_key.empty();
-    });
+    // Select the usable key with the greatest valid_until_ts. After a rotation the
+    // store holds both the retired key (valid_until_ts == "now") and the freshly
+    // activated key (valid_until_ts == now + 7 days); choosing the furthest expiry
+    // guarantees the new key is loaded as active and the retired one is left for
+    // publication under old_verify_keys.
+    auto it = all_keys.end();
+    for (auto candidate = all_keys.begin(); candidate != all_keys.end(); ++candidate)
+    {
+        if (candidate->server_name != server_name || candidate->key_id == "ed25519:auto" ||
+            candidate->secret_key.empty())
+        {
+            continue;
+        }
+        if (it == all_keys.end() || candidate->valid_until_ts > it->valid_until_ts)
+        {
+            it = candidate;
+        }
+    }
 
     if (it != all_keys.end())
     {
@@ -1245,18 +1281,9 @@ namespace
         return std::nullopt;
     }
 
-    // Derive the key_id from the first four bytes of the public key as lowercase hex.
-    // This ties the ID to the key material so that each new key gets a unique ID;
-    // stale notary-cache entries for old IDs become irrelevant after key rotation.
-    static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
-    auto key_version = std::string{};
-    key_version.reserve(8U);
-    for (auto i = 0U; i < 4U; ++i)
-    {
-        key_version += hex_digits[(public_key[i] >> 4U) & 0x0fU];
-        key_version += hex_digits[public_key[i] & 0x0fU];
-    }
-    auto const key_id = "ed25519:" + key_version;
+    // Derive the key_id from the public key material so each new key gets a unique
+    // id; stale notary-cache entries for old ids become irrelevant after rotation.
+    auto const key_id = derive_ed25519_key_id(public_key);
 
     // Publish now + 7 days as valid_until_ts so federation peers periodically
     // re-fetch the key rather than caching it indefinitely.
@@ -1383,6 +1410,73 @@ namespace
     }
 
     return make_operation_result(true, std::move(signed_response.output));
+}
+
+[[nodiscard]] auto rotate_server_signing_key(HomeserverRuntime& runtime) -> OperationResult
+{
+    auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+
+    // Ensure a current active key exists to retire (this also loads its secret into
+    // the runtime). Without a current key there is nothing to rotate from.
+    auto const current = ensure_runtime_server_signing_key(runtime);
+    if (!current.has_value())
+    {
+        return make_operation_result(false, {}, "server signing key unavailable", 500U);
+    }
+
+    auto const now_ms = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+            .count());
+
+    // Retire the current key by setting its valid_until_ts to "now" so the next
+    // publish moves it into old_verify_keys. Passing an empty secret preserves the
+    // stored secret (store_server_signing_key keeps the existing value on empty),
+    // which keeps the retired public key available for verifying historical events.
+    auto retired = database::PersistentServerSigningKey{current->server_name, current->key_id, current->public_key,
+                                                        now_ms, std::string{}};
+    if (!database::store_server_signing_key(runtime.database.persistent_store, std::move(retired)))
+    {
+        return make_operation_result(false, {}, "failed to retire current signing key", 500U);
+    }
+
+    // Generate the new active key with a derived key_id and a rolling 7-day expiry,
+    // matching ensure_runtime_server_signing_key's first-generation behaviour.
+    auto public_key = std::array<unsigned char, crypto_sign_PUBLICKEYBYTES>{};
+    auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
+    if (!generate_random_signing_keypair(public_key, secret_key))
+    {
+        return make_operation_result(false, {}, "signing key generation failed", 500U);
+    }
+    auto const key_id = derive_ed25519_key_id(public_key);
+    auto constexpr seven_days_ms = std::uint64_t{7U * 24U * 60U * 60U * 1000U};
+    auto new_key = database::PersistentServerSigningKey{
+        current->server_name,
+        key_id,
+        events::matrix_base64_from_bytes(
+            std::string_view{reinterpret_cast<char const*>(public_key.data()), public_key.size()}),
+        now_ms + seven_days_ms,
+        events::matrix_base64_from_bytes(
+            std::string_view{reinterpret_cast<char const*>(secret_key.data()), secret_key.size()}),
+    };
+    if (!database::store_server_signing_key(runtime.database.persistent_store, new_key))
+    {
+        return make_operation_result(false, {}, "failed to store rotated signing key", 500U);
+    }
+    runtime.database.signing_secret_key = std::vector<unsigned char>(secret_key.begin(), secret_key.end());
+    log_diagnostic("signing_key.rotated", {
+                                              {"server_name",    current->server_name, false},
+                                              {"retired_key_id", current->key_id,      false},
+                                              {"new_key_id",     key_id,               false}
+    });
+
+    // Refresh the cached key-server response so federation peers immediately observe
+    // the rotation on their next GET /_matrix/key/v2/server.
+    auto const published = publish_server_signing_keys(runtime);
+    if (!published.ok)
+    {
+        return published;
+    }
+    return make_operation_result(true, key_id);
 }
 
 [[nodiscard]] auto create_room(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult

@@ -59,8 +59,7 @@ namespace
 
 } // namespace
 
-SCENARIO("PostgreSQL persistence integration is gated by an explicit test URI",
-         "[database][postgresql][integration]")
+SCENARIO("PostgreSQL persistence integration is gated by an explicit test URI", "[database][postgresql][integration]")
 {
     GIVEN("the PostgreSQL integration test environment")
     {
@@ -91,8 +90,7 @@ SCENARIO("PostgreSQL persistence integration is gated by an explicit test URI",
     }
 }
 
-SCENARIO("PostgreSQL bootstrap brings the schema to the current version",
-         "[database][postgresql][integration][schema]")
+SCENARIO("PostgreSQL bootstrap brings the schema to the current version", "[database][postgresql][integration][schema]")
 {
     GIVEN("a live PostgreSQL URI")
     {
@@ -120,8 +118,7 @@ SCENARIO("PostgreSQL bootstrap brings the schema to the current version",
                     REQUIRE(record.version >= 1U);
                     REQUIRE(record.version <= merovingian::database::current_schema_version());
                 }
-                REQUIRE(opened.store.schema.tables.size() >=
-                        merovingian::database::initial_schema_tables().size());
+                REQUIRE(opened.store.schema.tables.size() >= merovingian::database::initial_schema_tables().size());
             }
         }
     }
@@ -185,8 +182,7 @@ SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen 
         auto const user_id = "@pg-restart-user-" + suffix + ":example.org";
         auto const room_id = "!pg-restart-room-" + suffix + ":example.org";
         auto const event_id = "$pg-restart-event-" + suffix + ":example.org";
-        REQUIRE(merovingian::database::store_user(opened.store,
-                                                  {user_id, "hash:restart-test", false, false, false}));
+        REQUIRE(merovingian::database::store_user(opened.store, {user_id, "hash:restart-test", false, false, false}));
         // store_access_token requires the versioned hash prefix; a bare string
         // is rejected before the row is ever written.
         REQUIRE(merovingian::database::store_access_token(
@@ -195,8 +191,7 @@ SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen 
         REQUIRE(merovingian::database::store_membership(opened.store, {room_id, user_id, "join", 1U}) ==
                 merovingian::database::MembershipStoreResult::stored);
         REQUIRE(merovingian::database::store_event(
-            opened.store,
-            {event_id, room_id, user_id, "{\"type\":\"m.room.message\"}", 1U, 1U, {}, {}, {}}));
+            opened.store, {event_id, room_id, user_id, "{\"type\":\"m.room.message\"}", 1U, 1U, {}, {}, {}}));
 
         WHEN("the store is closed and reopened")
         {
@@ -206,9 +201,10 @@ SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen 
             THEN("user token room membership and event all survive the restart")
             {
                 REQUIRE(reopened.ok);
-                auto const user_found = std::ranges::any_of(
-                    reopened.store.users,
-                    [&user_id](merovingian::database::PersistentUser const& u) { return u.user_id == user_id; });
+                auto const user_found = std::ranges::any_of(reopened.store.users,
+                                                            [&user_id](merovingian::database::PersistentUser const& u) {
+                                                                return u.user_id == user_id;
+                                                            });
                 REQUIRE(user_found);
 
                 auto const token_found = std::ranges::any_of(
@@ -217,13 +213,15 @@ SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen 
                     });
                 REQUIRE(token_found);
 
-                auto const room_found = std::ranges::any_of(
-                    reopened.store.rooms,
-                    [&room_id](merovingian::database::PersistentRoom const& r) { return r.room_id == room_id; });
+                auto const room_found = std::ranges::any_of(reopened.store.rooms,
+                                                            [&room_id](merovingian::database::PersistentRoom const& r) {
+                                                                return r.room_id == room_id;
+                                                            });
                 REQUIRE(room_found);
 
                 auto const member_found = std::ranges::any_of(
-                    reopened.store.memberships, [&room_id, &user_id](merovingian::database::PersistentMembership const& m) {
+                    reopened.store.memberships,
+                    [&room_id, &user_id](merovingian::database::PersistentMembership const& m) {
                         return m.room_id == room_id && m.user_id == user_id && m.membership == "join";
                     });
                 REQUIRE(member_found);
@@ -258,15 +256,14 @@ SCENARIO("PostgreSQL account data policy rules and federation queues survive res
         auto const dest_name = "federation.restart-" + suffix + ".example.org";
         auto const txn_id = "pg-restart-txn-" + suffix;
 
-        REQUIRE(merovingian::database::store_account_data(
-            opened.store, {user_id, "", "m.push_rules", "{\"global\":{}}", 1U}));
+        REQUIRE(merovingian::database::store_account_data(opened.store,
+                                                          {user_id, "", "m.push_rules", "{\"global\":{}}", 1U}));
         REQUIRE(merovingian::database::store_policy_rule(
             opened.store, {rule_id, "server", "bad.example.org", "block", "test restart"}));
-        REQUIRE(merovingian::database::store_federation_destination(
-            opened.store, {dest_name, "idle", 0U, 0U, 0U}));
+        REQUIRE(merovingian::database::store_federation_destination(opened.store, {dest_name, "idle", 0U, 0U, 0U}));
         REQUIRE(merovingian::database::store_federation_transaction(
-            opened.store, {txn_id, dest_name, "PUT", "/_matrix/federation/v1/send/" + txn_id,
-                           "local.example.org", "1000", "{\"pdus\":[]}", 0U, 0U}));
+            opened.store, {txn_id, dest_name, "PUT", "/_matrix/federation/v1/send/" + txn_id, "local.example.org",
+                           "1000", "{\"pdus\":[]}", 0U, 0U}));
 
         WHEN("the store is closed and reopened")
         {
@@ -278,29 +275,29 @@ SCENARIO("PostgreSQL account data policy rules and federation queues survive res
                 REQUIRE(reopened.ok);
 
                 auto const acct_found = std::ranges::any_of(
-                    reopened.store.account_data,
-                    [&user_id](merovingian::database::PersistentAccountData const& d) {
+                    reopened.store.account_data, [&user_id](merovingian::database::PersistentAccountData const& d) {
                         return d.user_id == user_id && d.event_type == "m.push_rules";
                     });
                 REQUIRE(acct_found);
 
                 auto const rule_found = std::ranges::any_of(
-                    reopened.store.policy_rules,
-                    [&rule_id](merovingian::database::PersistentPolicyRule const& r) { return r.rule_id == rule_id; });
+                    reopened.store.policy_rules, [&rule_id](merovingian::database::PersistentPolicyRule const& r) {
+                        return r.rule_id == rule_id;
+                    });
                 REQUIRE(rule_found);
 
-                auto const dest_found = std::ranges::any_of(
-                    reopened.store.federation_destinations,
-                    [&dest_name](merovingian::database::PersistentFederationDestination const& d) {
-                        return d.server_name == dest_name;
-                    });
+                auto const dest_found =
+                    std::ranges::any_of(reopened.store.federation_destinations,
+                                        [&dest_name](merovingian::database::PersistentFederationDestination const& d) {
+                                            return d.server_name == dest_name;
+                                        });
                 REQUIRE(dest_found);
 
-                auto const txn_found = std::ranges::any_of(
-                    reopened.store.federation_transactions,
-                    [&txn_id](merovingian::database::PersistentFederationTransaction const& t) {
-                        return t.transaction_id == txn_id;
-                    });
+                auto const txn_found =
+                    std::ranges::any_of(reopened.store.federation_transactions,
+                                        [&txn_id](merovingian::database::PersistentFederationTransaction const& t) {
+                                            return t.transaction_id == txn_id;
+                                        });
                 REQUIRE(txn_found);
             }
         }
@@ -326,9 +323,9 @@ SCENARIO("PostgreSQL media metadata survives an open/close/reopen cycle",
         auto const remote_media_id = "pg-restart-remote-" + suffix;
         auto const remote_server = "media.restart-" + suffix + ".example.org";
 
-        REQUIRE(merovingian::database::store_local_media(
-            opened.store,
-            {media_id, "@owner:example.org", "image/png", 1024U, "sha256", "abc123digest", false, false}));
+        REQUIRE(
+            merovingian::database::store_local_media(opened.store, {media_id, "@owner:example.org", "image/png", 1024U,
+                                                                    "sha256", "abc123digest", false, false}));
         REQUIRE(merovingian::database::store_remote_media(
             opened.store, {remote_server, remote_media_id, "image/jpeg", 2048U, false}));
 
@@ -342,8 +339,7 @@ SCENARIO("PostgreSQL media metadata survives an open/close/reopen cycle",
                 REQUIRE(reopened.ok);
 
                 auto const local_found = std::ranges::any_of(
-                    reopened.store.local_media,
-                    [&media_id](merovingian::database::PersistentLocalMedia const& m) {
+                    reopened.store.local_media, [&media_id](merovingian::database::PersistentLocalMedia const& m) {
                         return m.media_id == media_id && m.content_type == "image/png";
                     });
                 REQUIRE(local_found);
@@ -359,8 +355,7 @@ SCENARIO("PostgreSQL media metadata survives an open/close/reopen cycle",
     }
 }
 
-SCENARIO("PostgreSQL role separation: runtime role cannot execute DDL",
-         "[database][postgresql][integration][roles]")
+SCENARIO("PostgreSQL role separation: runtime role cannot execute DDL", "[database][postgresql][integration][roles]")
 {
     GIVEN("a live PostgreSQL URI plus migration and runtime role names")
     {
@@ -380,8 +375,7 @@ SCENARIO("PostgreSQL role separation: runtime role cannot execute DDL",
             REQUIRE(merovingian::database::set_postgresql_role(connection.connection, runtime_role));
             auto const after_set = merovingian::database::current_postgresql_user(connection.connection);
             auto const ddl_attempt = connection.connection.execute(
-                {"runtime_role_ddl_smoke",
-                 "CREATE TABLE merovingian_runtime_role_smoke (id TEXT PRIMARY KEY)", {}});
+                {"runtime_role_ddl_smoke", "CREATE TABLE merovingian_runtime_role_smoke (id TEXT PRIMARY KEY)", {}});
             // Cleanup: switch back to migration role so subsequent scenarios
             // can DDL freely. RESET ROLE returns to the original login user.
             REQUIRE(merovingian::database::reset_postgresql_role(connection.connection));
@@ -390,13 +384,167 @@ SCENARIO("PostgreSQL role separation: runtime role cannot execute DDL",
             // grant policy should prevent), drop it now to keep the database
             // tidy. The DROP runs as the migration role.
             std::ignore = connection.connection.execute(
-                {"drop_runtime_role_smoke",
-                 "DROP TABLE IF EXISTS merovingian_runtime_role_smoke", {}});
+                {"drop_runtime_role_smoke", "DROP TABLE IF EXISTS merovingian_runtime_role_smoke", {}});
 
             THEN("the runtime-role session is denied DDL and CURRENT_USER reflects the role switch")
             {
                 REQUIRE(after_set == std::string{runtime_role});
                 REQUIRE_FALSE(ddl_attempt.ok);
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL transaction rollback leaves no partial rows", "[database][postgresql][integration][transaction]")
+{
+    GIVEN("a live PostgreSQL connection")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        auto const migration_role = migration_role_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto connection = merovingian::database::open_postgresql_connection(uri);
+        REQUIRE(connection.ok);
+        auto& executor = connection.connection;
+        if (!migration_role.empty())
+        {
+            REQUIRE(merovingian::database::set_postgresql_role(executor, migration_role));
+        }
+
+        // Scratch table name derived from a process-unique suffix; '-' is replaced
+        // so the result is a valid unquoted SQL identifier. The value is fully
+        // controlled (timestamp + counter), so the inline interpolation is safe.
+        auto probe = std::string{"merovingian_rollback_probe_"} + unique_test_suffix();
+        std::ranges::replace(probe, '-', '_');
+        std::ignore = executor.execute({"rb_predrop", "DROP TABLE IF EXISTS " + probe, {}});
+
+        WHEN("a helper-managed transaction hits a duplicate-key failure")
+        {
+            auto const rolled_back = executor.execute_transaction({
+                {"rb_create",           "CREATE TABLE " + probe + " (id TEXT PRIMARY KEY)", {}},
+                {"rb_insert",           "INSERT INTO " + probe + " (id) VALUES ('x')",      {}},
+                {"rb_insert_duplicate", "INSERT INTO " + probe + " (id) VALUES ('x')",      {}},
+            });
+
+            THEN("no trace of the table or row survives, and a committed transaction does persist")
+            {
+                REQUIRE_FALSE(rolled_back);
+                // The rolled-back CREATE/INSERT must have left nothing behind.
+                auto const exists = executor.execute(
+                    {"rb_exists",
+                     "SELECT count(*) FROM information_schema.tables WHERE table_name = '" + probe + "'",
+                     {}});
+                REQUIRE(exists.ok);
+                REQUIRE(exists.rows.size() == 1U);
+                REQUIRE(exists.rows.front().size() == 1U);
+                REQUIRE(exists.rows.front().front() == "0");
+
+                // Positive control: the same statements under COMMIT do persist,
+                // proving the rollback (not a broken connection) caused the absence.
+                REQUIRE(executor.execute_transaction({
+                    {"rb_create2", "CREATE TABLE " + probe + " (id TEXT PRIMARY KEY)", {}},
+                    {"rb_insert2", "INSERT INTO " + probe + " (id) VALUES ('x')",      {}},
+                }));
+                auto const count = executor.execute({"rb_count", "SELECT count(*) FROM " + probe, {}});
+                REQUIRE(count.ok);
+                REQUIRE(count.rows.size() == 1U);
+                REQUIRE(count.rows.front().front() == "1");
+
+                std::ignore = executor.execute({"rb_cleanup", "DROP TABLE IF EXISTS " + probe, {}});
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL migrations apply in contiguous order and bootstrap is idempotent",
+         "[database][postgresql][integration][schema][migrations]")
+{
+    GIVEN("a live PostgreSQL URI")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+
+        WHEN("the persistent store is opened and then opened a second time")
+        {
+            auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(opened.ok);
+
+            auto versions = std::vector<std::uint32_t>{};
+            versions.reserve(opened.store.schema.applied_migrations.size());
+            for (auto const& record : opened.store.schema.applied_migrations)
+            {
+                versions.push_back(static_cast<std::uint32_t>(record.version));
+            }
+            std::ranges::sort(versions);
+
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("every version from 1..current is present exactly once and re-bootstrap is a no-op")
+            {
+                // Strictly increasing by one ⇒ ordered, contiguous, and free of gaps
+                // or duplicates across the applied-migration ledger.
+                REQUIRE_FALSE(versions.empty());
+                REQUIRE(versions.front() == 1U);
+                REQUIRE(versions.back() == merovingian::database::current_schema_version());
+                for (auto index = std::size_t{1U}; index < versions.size(); ++index)
+                {
+                    REQUIRE(versions[index] == versions[index - 1U] + 1U);
+                }
+                REQUIRE(versions.size() == static_cast<std::size_t>(merovingian::database::current_schema_version()));
+
+                // Re-opening must not re-apply migrations: same version, same ledger size.
+                REQUIRE(reopened.ok);
+                REQUIRE(reopened.store.schema.version == merovingian::database::current_schema_version());
+                REQUIRE(reopened.store.schema.applied_migrations.size() ==
+                        opened.store.schema.applied_migrations.size());
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL role separation: the migration role can execute DDL the runtime role cannot",
+         "[database][postgresql][integration][roles]")
+{
+    GIVEN("a live PostgreSQL URI plus a migration role name")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        auto const migration_role = migration_role_from_environment();
+        if (uri.empty() || migration_role.empty())
+        {
+            SUCCEED("skipped: live PG URI or migration role env var is not set");
+            return;
+        }
+        auto connection = merovingian::database::open_postgresql_connection(uri);
+        REQUIRE(connection.ok);
+        auto& executor = connection.connection;
+
+        WHEN("the session switches to the migration role and performs DDL + DML")
+        {
+            REQUIRE(merovingian::database::set_postgresql_role(executor, migration_role));
+            auto const after_set = merovingian::database::current_postgresql_user(executor);
+
+            auto probe = std::string{"merovingian_migration_role_smoke_"} + unique_test_suffix();
+            std::ranges::replace(probe, '-', '_');
+            std::ignore = executor.execute({"mr_predrop", "DROP TABLE IF EXISTS " + probe, {}});
+            auto const create = executor.execute({"mr_create", "CREATE TABLE " + probe + " (id TEXT PRIMARY KEY)", {}});
+            auto const insert = executor.execute({"mr_insert", "INSERT INTO " + probe + " (id) VALUES ('x')", {}});
+
+            // Cleanup regardless of assertion outcomes, then return to the login role.
+            std::ignore = executor.execute({"mr_drop", "DROP TABLE IF EXISTS " + probe, {}});
+            REQUIRE(merovingian::database::reset_postgresql_role(executor));
+
+            THEN("the migration role is granted DDL and DML (the inverse of the runtime-role denial)")
+            {
+                REQUIRE(after_set == std::string{migration_role});
+                REQUIRE(create.ok);
+                REQUIRE(insert.ok);
             }
         }
     }
