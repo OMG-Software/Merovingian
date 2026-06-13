@@ -157,8 +157,8 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg install -y meson ninja pkgconf llvm git perl5 bison flex \
-              gmake openssl libsodium postgresql17-client curl sqlite3 catch2
+            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex \
+              gmake openssl libsodium postgresql17-client python3
           run: sh scripts/build-freebsd-pkg.sh
       - name: Attest FreeBSD package
         uses: actions/attest-build-provenance@v2

@@ -110,6 +110,20 @@ class PackagesWorkflowTests(unittest.TestCase):
                 content = (REPO_ROOT / path).read_text(encoding="utf-8")
                 self.assertIn(expected, content)
 
+    def test_freebsd_packages_workflow_uses_the_supported_dependency_set(self) -> None:
+        # GIVEN the FreeBSD packaging job in the packages workflow.
+        self.assertTrue(PACKAGES_WORKFLOW.is_file(), "packages workflow is missing")
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the VM provisions build dependencies before invoking the repo's
+        # FreeBSD packaging script.
+        # THEN it uses the repository's supported pkg set, including python3,
+        # and does not introduce extra packages that the other FreeBSD flows do
+        # not rely on.
+        self.assertIn("pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex \\", workflow)
+        self.assertIn("gmake openssl libsodium postgresql17-client python3", workflow)
+        self.assertNotIn("postgresql17-client curl sqlite3 catch2", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

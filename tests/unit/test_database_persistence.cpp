@@ -129,6 +129,34 @@ SCENARIO("Database statement validation allows SET and RESET role switching SQL"
     }
 }
 
+SCENARIO("Database statement validation allows explicit PostgreSQL transaction control SQL", "[database]")
+{
+    GIVEN("BEGIN, SAVEPOINT, ROLLBACK TO SAVEPOINT, and COMMIT statements with no placeholders")
+    {
+        auto const begin = merovingian::database::PreparedStatement{"postgresql_begin", "BEGIN", {}};
+        auto const savepoint = merovingian::database::PreparedStatement{"postgresql_savepoint", "SAVEPOINT sp1", {}};
+        auto const rollback =
+            merovingian::database::PreparedStatement{"postgresql_rollback", "ROLLBACK TO SAVEPOINT sp1", {}};
+        auto const commit = merovingian::database::PreparedStatement{"postgresql_commit", "COMMIT", {}};
+
+        WHEN("each statement is validated")
+        {
+            auto const begin_result = merovingian::database::prepared_statement_is_valid(begin);
+            auto const savepoint_result = merovingian::database::prepared_statement_is_valid(savepoint);
+            auto const rollback_result = merovingian::database::prepared_statement_is_valid(rollback);
+            auto const commit_result = merovingian::database::prepared_statement_is_valid(commit);
+
+            THEN("the boundary accepts transaction-control statements needed by the PostgreSQL durability tests")
+            {
+                REQUIRE(begin_result.valid);
+                REQUIRE(savepoint_result.valid);
+                REQUIRE(rollback_result.valid);
+                REQUIRE(commit_result.valid);
+            }
+        }
+    }
+}
+
 SCENARIO("Database statement validation enforces placeholder arity", "[database]")
 {
     GIVEN("statements with matching and mismatched placeholder arity")
@@ -737,8 +765,7 @@ SCENARIO("delete_key_backup_version removes the version from the store", "[datab
 
         WHEN("a non-existent version is deleted")
         {
-            auto const result =
-                merovingian::database::delete_key_backup_version(store, "@alice:example.org", "99");
+            auto const result = merovingian::database::delete_key_backup_version(store, "@alice:example.org", "99");
 
             THEN("the operation succeeds idempotently and the existing version is unaffected")
             {
@@ -1164,8 +1191,7 @@ SCENARIO("SQLite migration bootstrap records the applied migration in schema_mig
                 auto saw_initial_schema = false;
                 while (sqlite3_step(statement) == SQLITE_ROW)
                 {
-                    auto const* name =
-                        reinterpret_cast<char const*>(sqlite3_column_text(statement, 0));
+                    auto const* name = reinterpret_cast<char const*>(sqlite3_column_text(statement, 0));
                     if (name != nullptr && std::string{name} == "initial_schema")
                     {
                         saw_initial_schema = true;
@@ -1196,33 +1222,29 @@ SCENARIO("repair_missing_state_entries creates state entries for events with sta
         store.events.push_back({.event_id = "$create:example.org",
                                 .room_id = room_id,
                                 .sender_user_id = "@james:example.org",
-                                .json =
-                                    R"({"type":"m.room.create","state_key":"","content":{"room_version":"10"}})",
+                                .json = R"({"type":"m.room.create","state_key":"","content":{"room_version":"10"}})",
                                 .depth = 1U,
                                 .stream_ordering = 1U});
-        store.events.push_back(
-            {.event_id = "$power_levels:example.org",
-             .room_id = room_id,
-             .sender_user_id = "@james:example.org",
-             .json = R"({"type":"m.room.power_levels","state_key":"","content":{}})",
-             .depth = 2U,
-             .stream_ordering = 2U});
+        store.events.push_back({.event_id = "$power_levels:example.org",
+                                .room_id = room_id,
+                                .sender_user_id = "@james:example.org",
+                                .json = R"({"type":"m.room.power_levels","state_key":"","content":{}})",
+                                .depth = 2U,
+                                .stream_ordering = 2U});
         store.events.push_back(
             {.event_id = "$member:example.org",
              .room_id = room_id,
              .sender_user_id = "@james:example.org",
-             .json =
-                 R"({"type":"m.room.member","state_key":"@james:example.org","content":{"membership":"join"}})",
+             .json = R"({"type":"m.room.member","state_key":"@james:example.org","content":{"membership":"join"}})",
              .depth = 3U,
              .stream_ordering = 3U});
         // Non-state event — no state_key field in JSON.
-        store.events.push_back(
-            {.event_id = "$message:example.org",
-             .room_id = room_id,
-             .sender_user_id = "@james:example.org",
-             .json = R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"hello"}})",
-             .depth = 4U,
-             .stream_ordering = 4U});
+        store.events.push_back({.event_id = "$message:example.org",
+                                .room_id = room_id,
+                                .sender_user_id = "@james:example.org",
+                                .json = R"({"type":"m.room.message","content":{"msgtype":"m.text","body":"hello"}})",
+                                .depth = 4U,
+                                .stream_ordering = 4U});
 
         // Member state entry exists; create/power_levels entries are missing.
         store.state.push_back({room_id, "m.room.member", "@james:example.org", "$member:example.org"});
@@ -1256,8 +1278,9 @@ SCENARIO("repair_missing_state_entries creates state entries for events with sta
 
             THEN("no state entry is created for the non-state message event")
             {
-                auto const has_message = std::ranges::any_of(
-                    store.state, [&](auto const& s) { return s.event_id == "$message:example.org"; });
+                auto const has_message = std::ranges::any_of(store.state, [&](auto const& s) {
+                    return s.event_id == "$message:example.org";
+                });
                 REQUIRE_FALSE(has_message);
             }
 
@@ -1295,16 +1318,14 @@ SCENARIO("repair_missing_state_entries selects the highest stream_ordering event
             {.event_id = "$join_old:example.org",
              .room_id = room_id,
              .sender_user_id = "@alice:example.org",
-             .json =
-                 R"({"type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"join"}})",
+             .json = R"({"type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"join"}})",
              .depth = 1U,
              .stream_ordering = 1U});
         store.events.push_back(
             {.event_id = "$leave:example.org",
              .room_id = room_id,
              .sender_user_id = "@alice:example.org",
-             .json =
-                 R"({"type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"leave"}})",
+             .json = R"({"type":"m.room.member","state_key":"@alice:example.org","content":{"membership":"leave"}})",
              .depth = 2U,
              .stream_ordering = 5U});
 
