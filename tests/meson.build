@@ -164,6 +164,7 @@ if get_option ('build_tests')
       'conformance/test_client_server_conformance.cpp',
       'conformance/test_event_auth_rules.cpp',
       'conformance/test_event_authorization.cpp',
+      'conformance/test_event_graph_conformance.cpp',
       'conformance/test_event_relationships_conformance.cpp',
       'conformance/test_events.cpp',
       'conformance/test_federation_conformance.cpp',

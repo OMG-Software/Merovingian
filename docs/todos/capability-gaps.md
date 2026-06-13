@@ -18,7 +18,7 @@ Open work per capability area. Status column reflects the current level in the
 | Rooms, events, and sync | `runtime-wired` | Add sync long polling and filters, real payloads for presence/device/to-device/account-data surfaces, restricted join rule evaluation, third-party invite auth, and broader Matrix v1.18 room-version conformance fixtures. |
 | Federation | `runtime-wired` | Room-version-specific PDU verification, simultaneously-active multiple signing keys, and broader Matrix federation conformance coverage. Key-rotation publication with `old_verify_keys` landed in 0.8.6. |
 | Media repository | `runtime-wired` | Live remote media transport and server discovery wired in v0.7.2. Thumbnail records now carry actual content type and byte size (dimensions remain 0×0 until an image decoder is linked). Remaining: real image resampling library integration, multipart upload handling, and Matrix v1.18 remote-thumbnail conformance fixtures. |
-| Database persistence | `runtime-wired` | Enforce runtime/migration grants through separate PostgreSQL users in deployment packaging. Transaction-rollback, migration-ordering, and role-grant durability tests landed in 0.8.6. |
+| Database persistence | `runtime-wired` | Enforce runtime/migration grants through separate PostgreSQL users in deployment packaging. Transaction-rollback, migration-ordering, and role-grant durability tests landed in 0.8.6; savepoint isolation and cross-connection isolation/visibility/uniqueness durability tests landed in 0.8.9. |
 | Observability and audit | `runtime-wired` | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
 | Trust and safety | `runtime-wired` | Add Matrix v1.18 conformance fixtures, policy server transport integration, durable policy-rule management, and richer moderation workflows. |
 | Runtime hardening | `integrated` | ELF program-header probe (linker/RELRO) retired in v0.7.2; seccomp-bpf allowlist applied and probe retired in v0.7.2. Remaining: harden default action to `SECCOMP_RET_KILL_PROCESS` after allowlist validation, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
@@ -66,7 +66,7 @@ Open work per capability area. Status column reflects the current level in the
 | Request and event signing/verification | `spec-covered` | Live signed-request interop test against a real Synapse peer landed in 0.8.6 (opt-in). Inbound PDU content-hash verification wired and conformance-covered. |
 | `GET /_matrix/federation/v1/query/profile` | `spec-covered` | |
 | `GET /_matrix/federation/v1/query/directory` | `spec-covered` | |
-| Event-graph queries | `partial` | Historical state-at-event reconstruction, conformance fixtures. |
+| Event-graph queries | `partial` | `auth_chain`/`auth_chain_ids` reconstruction for `/state` and `/state_ids` (transitive auth-event closure) landed in 0.8.9 with conformance fixtures. Remaining: historical state-at-event reconstruction (running state resolution as of a specific event). |
 | Outbound federation queues | `spec-covered` | Live federation delivery coverage under realistic load. |
 | Key publication (`GET /_matrix/key/v2/server`) | `spec-covered` | Key-ID format, valid_until_ts expiry, old_verify_keys structural contract, and key-rotation publication (new key active, retired key in old_verify_keys) now covered by conformance fixtures. |
 

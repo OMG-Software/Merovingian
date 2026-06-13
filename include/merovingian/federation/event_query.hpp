@@ -17,17 +17,19 @@ namespace merovingian::federation
                                         std::string_view origin_server_name) -> std::string;
 
 // Builds the canonical-JSON response body for an inbound federation
-// `GET /_matrix/federation/v1/state/{roomId}?event_id=...` request. Returns
-// the room's current state events; historical-state-at-event reconstruction
-// is not yet implemented. Returns an empty string when the room has no
-// recorded state.
+// `GET /_matrix/federation/v1/state/{roomId}?event_id=...` request. Returns the
+// room's current state events in `pdus` and the transitive auth-event closure
+// of that state in `auth_chain`. Historical-state-at-event reconstruction
+// (running state resolution as of a specific event) is not yet implemented.
+// Returns an empty string when the room has no recorded state.
 [[nodiscard]] auto build_state_response(database::PersistentStore const& store, std::string_view room_id)
     -> std::string;
 
 // Builds the canonical-JSON response body for an inbound federation
-// `GET /_matrix/federation/v1/state_ids/{roomId}?event_id=...` request.
-// Returns event IDs only. Returns an empty string when the room has no
-// recorded state.
+// `GET /_matrix/federation/v1/state_ids/{roomId}?event_id=...` request. Returns
+// the current state event IDs in `pdu_ids` and the transitive auth-event
+// closure of that state in `auth_chain_ids`. Returns an empty string when the
+// room has no recorded state.
 [[nodiscard]] auto build_state_ids_response(database::PersistentStore const& store, std::string_view room_id)
     -> std::string;
 

@@ -549,3 +549,125 @@ SCENARIO("PostgreSQL role separation: the migration role can execute DDL the run
         }
     }
 }
+
+SCENARIO("PostgreSQL savepoints isolate a failing statement without losing prior work",
+         "[database][postgresql][integration][transaction][savepoint]")
+{
+    GIVEN("a live PostgreSQL connection with a scratch table inside an open transaction")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        auto const migration_role = migration_role_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto connection = merovingian::database::open_postgresql_connection(uri);
+        REQUIRE(connection.ok);
+        auto& executor = connection.connection;
+        if (!migration_role.empty())
+        {
+            REQUIRE(merovingian::database::set_postgresql_role(executor, migration_role));
+        }
+
+        // Fully-controlled scratch identifier (timestamp + counter); '-' is
+        // replaced so the result is a valid unquoted SQL identifier.
+        auto probe = std::string{"merovingian_savepoint_probe_"} + unique_test_suffix();
+        std::ranges::replace(probe, '-', '_');
+        std::ignore = executor.execute({"sp_predrop", "DROP TABLE IF EXISTS " + probe, {}});
+        REQUIRE(executor.execute({"sp_create", "CREATE TABLE " + probe + " (id TEXT PRIMARY KEY)", {}}).ok);
+
+        WHEN("a statement after a savepoint fails and the transaction rolls back to that savepoint")
+        {
+            // Begin a transaction, insert a durable row, then take a savepoint.
+            REQUIRE(executor.execute({"sp_begin", "BEGIN", {}}).ok);
+            REQUIRE(executor.execute({"sp_keep", "INSERT INTO " + probe + " (id) VALUES ('keep')", {}}).ok);
+            REQUIRE(executor.execute({"sp_mark", "SAVEPOINT sp1", {}}).ok);
+            // A duplicate-key insert fails and aborts the transaction to the
+            // savepoint boundary; without recovery the connection cannot proceed.
+            auto const failed = executor.execute({"sp_dup", "INSERT INTO " + probe + " (id) VALUES ('keep')", {}});
+            // Rolling back to the savepoint recovers the transaction so the
+            // earlier 'keep' row survives and further work can continue.
+            REQUIRE(executor.execute({"sp_rollback", "ROLLBACK TO SAVEPOINT sp1", {}}).ok);
+            REQUIRE(executor.execute({"sp_other", "INSERT INTO " + probe + " (id) VALUES ('other')", {}}).ok);
+            REQUIRE(executor.execute({"sp_commit", "COMMIT", {}}).ok);
+
+            THEN("the failed statement is discarded but the pre- and post-savepoint rows commit")
+            {
+                // The duplicate insert must have been rejected.
+                REQUIRE_FALSE(failed.ok);
+                auto const rows = executor.execute(
+                    {"sp_select", "SELECT id FROM " + probe + " ORDER BY id", {}});
+                REQUIRE(rows.ok);
+                // Exactly 'keep' and 'other' survive; the duplicate left no trace.
+                REQUIRE(rows.rows.size() == 2U);
+                REQUIRE(rows.rows.at(0U).front() == "keep");
+                REQUIRE(rows.rows.at(1U).front() == "other");
+
+                std::ignore = executor.execute({"sp_cleanup", "DROP TABLE IF EXISTS " + probe, {}});
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL concurrent connections enforce isolation and commit visibility",
+         "[database][postgresql][integration][transaction][concurrency]")
+{
+    GIVEN("two independent live PostgreSQL connections sharing one committed scratch table")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto writer = merovingian::database::open_postgresql_connection(uri);
+        auto reader = merovingian::database::open_postgresql_connection(uri);
+        REQUIRE(writer.ok);
+        REQUIRE(reader.ok);
+        auto& writer_exec = writer.connection;
+        auto& reader_exec = reader.connection;
+
+        auto probe = std::string{"merovingian_concurrency_probe_"} + unique_test_suffix();
+        std::ranges::replace(probe, '-', '_');
+        std::ignore = writer_exec.execute({"cc_predrop", "DROP TABLE IF EXISTS " + probe, {}});
+        // The table is created and committed (autocommit) so the reader
+        // connection can see the table before any rows are written.
+        REQUIRE(writer_exec.execute({"cc_create", "CREATE TABLE " + probe + " (id TEXT PRIMARY KEY)", {}}).ok);
+
+        WHEN("the writer inserts a row inside an uncommitted transaction")
+        {
+            REQUIRE(writer_exec.execute({"cc_begin", "BEGIN", {}}).ok);
+            REQUIRE(writer_exec.execute({"cc_insert", "INSERT INTO " + probe + " (id) VALUES ('shared')", {}}).ok);
+
+            // Before the writer commits, the reader's snapshot must not see the row.
+            auto const before = reader_exec.execute(
+                {"cc_before", "SELECT count(*) FROM " + probe + " WHERE id = 'shared'", {}});
+
+            REQUIRE(writer_exec.execute({"cc_commit", "COMMIT", {}}).ok);
+
+            // After commit, a fresh read on the other connection must see the row.
+            auto const after = reader_exec.execute(
+                {"cc_after", "SELECT count(*) FROM " + probe + " WHERE id = 'shared'", {}});
+
+            // A second connection inserting the same primary key must be rejected,
+            // proving the unique constraint is enforced across connections.
+            auto const conflict = reader_exec.execute(
+                {"cc_conflict", "INSERT INTO " + probe + " (id) VALUES ('shared')", {}});
+
+            THEN("uncommitted writes stay invisible, committed writes appear, and the PK is enforced")
+            {
+                REQUIRE(before.ok);
+                // Read isolation: the writer's open transaction is invisible to the reader.
+                REQUIRE(before.rows.front().front() == "0");
+                REQUIRE(after.ok);
+                // Commit visibility: once committed, the row is visible to the other connection.
+                REQUIRE(after.rows.front().front() == "1");
+                // Cross-connection uniqueness: the duplicate insert is rejected.
+                REQUIRE_FALSE(conflict.ok);
+
+                std::ignore = writer_exec.execute({"cc_cleanup", "DROP TABLE IF EXISTS " + probe, {}});
+            }
+        }
+    }
+}
