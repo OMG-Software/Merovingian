@@ -35,8 +35,10 @@ Open work per capability area. Status column reflects the current level in the
 | `GET /_matrix/client/v1/auth_metadata`, MSC2965 OIDC | `partial` | Real OIDC support; currently returns 404 M_UNRECOGNIZED as unsupported signal. |
 | `GET /_matrix/client/v3/voip/turnServer` | `partial` | Real TURN credential issuance; currently returns empty 200. |
 | `GET /_matrix/media/v3/thumbnail/*`, `GET /_matrix/client/v1/media/thumbnail/*` | `runtime-wired` | Real image resampling, remote thumbnail fetch, and v1.18 conformance fixtures. |
+| `GET /_matrix/client/v1/media/config` | `spec-covered` | |
 | `GET /_matrix/client/v3/directory/list/room/{roomId}` | `spec-covered` | |
 | `PUT /_matrix/client/v3/directory/list/room/{roomId}` | `spec-covered` | |
+| `GET /_matrix/client/v3/rooms/{roomId}/aliases` | `spec-covered` | |
 | `GET /_matrix/client/v3/rooms/{roomId}/joined_members` | `spec-covered` | |
 | `GET /_matrix/client/v3/rooms/{roomId}/event/{eventId}` | `spec-covered` | |
 | `POST /_matrix/client/v3/rooms/{roomId}/upgrade` | `spec-covered` | Full state copy (name, topic, join rules, power levels, etc.) to replacement room. |

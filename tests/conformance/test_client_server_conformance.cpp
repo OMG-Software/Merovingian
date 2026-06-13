@@ -5894,8 +5894,8 @@ SCENARIO("POST /media/v1/create returns 404 M_UNRECOGNIZED (implementation gap)"
 
 // --- GET /_matrix/client/v1/media/config --------------------------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1mediaconfig
-// IMPLEMENTATION GAP: authenticated media config endpoint not yet implemented.
-SCENARIO("GET /v1/media/config returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][media]")
+// Summary: The authenticated v1 media config endpoint returns the media upload limits.
+SCENARIO("GET /v1/media/config returns upload limits", "[conformance][client-server][media]")
 {
     GIVEN("a running client-server and a logged-in user")
     {
@@ -5908,14 +5908,12 @@ SCENARIO("GET /v1/media/config returns 404 M_UNRECOGNIZED (implementation gap)",
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v1/media/config", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns a media config object")
             {
-                // IMPLEMENTATION GAP: authenticated media config not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: config response is a JSON object.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(object_member(body, "m.upload.size") != nullptr);
             }
         }
     }
@@ -6355,9 +6353,8 @@ SCENARIO("DELETE /directory/room/{alias} returns 404 M_UNRECOGNIZED (implementat
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/aliases ---------------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidaliases
-// IMPLEMENTATION GAP: room alias listing not yet implemented.
-SCENARIO("GET /rooms/{roomId}/aliases returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][room-directory]")
+// Summary: The server returns an `aliases` array for joined room members.
+SCENARIO("GET /rooms/{roomId}/aliases returns alias array", "[conformance][client-server][room-directory]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
     {
@@ -6371,14 +6368,12 @@ SCENARIO("GET /rooms/{roomId}/aliases returns 404 M_UNRECOGNIZED (implementation
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/aliases", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns the known aliases array")
             {
-                // IMPLEMENTATION GAP: room alias listing not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: response contains an aliases array.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(object_member_as_array(body, "aliases") != nullptr);
             }
         }
     }
@@ -11311,13 +11306,11 @@ SCENARIO("GET /rooms/{roomId}/aliases conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/aliases", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns an aliases array")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(object_member_as_array(body, "aliases") != nullptr);
             }
         }
     }

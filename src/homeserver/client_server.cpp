@@ -5982,10 +5982,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     // GET /_matrix/media/v3/config
+    // GET /_matrix/client/v1/media/config
     // Reports the maximum upload size so clients know how large a file they
     // may attach. The value is sourced from security.media.max_upload_size so
     // client hints match the repository policy enforced during upload.
-    if (req.method == "GET" && req.target == "/_matrix/media/v3/config")
+    if (req.method == "GET" &&
+        (req.target == "/_matrix/media/v3/config" || req.target == "/_matrix/client/v1/media/config"))
     {
         auto const parsed_limit = config::parse_size_limit(rt.homeserver.config.security().media.max_upload_size);
         auto const bounded_limit = std::min(parsed_limit.valid ? parsed_limit.bytes : std::uint64_t{104857600U},
@@ -6638,6 +6640,38 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.body);
             }
             return complete(result);
+        }
+        // GET /_matrix/client/v3/rooms/{roomId}/aliases
+        // Spec: returns the room aliases currently known to this homeserver.
+        if (req.method == "GET")
+        {
+            auto constexpr aliases_s = std::string_view{"/aliases"};
+            auto const path_suffix = suffix.substr(0U, suffix.find('?'));
+            if (path_suffix.size() > aliases_s.size() && path_suffix.ends_with(aliases_s))
+            {
+                auto const encoded_room_id = path_suffix.substr(0U, path_suffix.size() - aliases_s.size());
+                auto const room_id = core::percent_decode_path_component(encoded_room_id);
+                auto const& store = rt.homeserver.database.persistent_store;
+                auto const requester_joined =
+                    std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
+                        return membership.room_id == room_id && membership.user_id == *user &&
+                               membership.membership == "join";
+                    });
+                if (!requester_joined)
+                {
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
+                }
+                auto aliases = canonicaljson::Array{};
+                for (auto const& alias : store.room_aliases)
+                {
+                    if (alias.room_id == room_id)
+                    {
+                        aliases.push_back(canonicaljson::Value{alias.room_alias});
+                    }
+                }
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("aliases", json_arr(std::move(aliases)))})));
+            }
         }
         // GET /_matrix/client/v3/rooms/{roomId}/joined_members
         // Spec: returns joined MXIDs mapped to their room profile fields.

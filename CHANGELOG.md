@@ -1,6 +1,6 @@
 ## 0.8.8
 
-- **feat(client-server): promote joined members and single-event retrieval to spec-covered:** `GET /_matrix/client/v3/rooms/{roomId}/joined_members` now returns the Matrix v1.18 `joined` map for joined users, and `GET /_matrix/client/v3/rooms/{roomId}/event/{eventId}` returns the requested room event to joined members. Conformance scenarios now assert the successful response shapes instead of the previous implementation-gap `M_UNRECOGNIZED` behavior.
+- **feat(client-server): promote more Matrix v1.18 endpoints to spec-covered:** `GET /_matrix/client/v3/rooms/{roomId}/joined_members` now returns the Matrix v1.18 `joined` map for joined users, `GET /_matrix/client/v3/rooms/{roomId}/event/{eventId}` returns the requested room event to joined members, `GET /_matrix/client/v1/media/config` mirrors the v3 media upload-limit response, and `GET /_matrix/client/v3/rooms/{roomId}/aliases` returns the known room aliases array. Conformance scenarios now assert the successful response shapes instead of the previous implementation-gap `M_UNRECOGNIZED` behavior.
 
 ## 0.8.7
 
