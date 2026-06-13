@@ -1839,8 +1839,8 @@ namespace
 }
 
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
-                                            std::string_view device_id, std::uint64_t since_stream_id)
-    -> std::vector<PersistentToDeviceMessage>
+                                            std::string_view device_id, std::uint64_t since_stream_id,
+                                            std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>
 {
     // Does this message address the requesting device? Empty target_device_id
     // or "*" means broadcast to all of this user's devices; otherwise it is
@@ -1854,18 +1854,18 @@ namespace
                message.target_device_id == device_id;
     };
 
-    // Delete-on-acknowledgement, not delete-on-read. A message is returned (and
-    // kept in storage) until the device proves receipt by advancing its since
-    // token past it. Messages newer than `since` are delivered WITHOUT deletion,
-    // so a dropped /sync response stays recoverable when the client retries with
-    // the same token — this is what stops encrypted room keys from being lost on
-    // the first, most fragile delivery. Messages at or below `since` were already
-    // acknowledged on a prior successful sync and are now safe to purge.
+    // Delete-on-acknowledgement, not delete-on-read. The upper bound is the
+    // response snapshot: newer rows stay pending so next_batch cannot
+    // acknowledge a room key that was never put in the /sync response.
     auto drained = std::vector<PersistentToDeviceMessage>{};
     auto acknowledged = std::vector<PersistentToDeviceMessage>{};
     for (auto const& message : store.to_device_messages)
     {
         if (!addressed_to_device(message))
+        {
+            continue;
+        }
+        if (message.stream_id > upper_stream_id)
         {
             continue;
         }

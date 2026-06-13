@@ -2237,10 +2237,12 @@ namespace
 
     [[nodiscard]] auto build_to_device_events_array(database::PersistentStore& store, std::string_view user,
                                                     std::string_view device_id, std::uint64_t since_sync_stream_id,
+                                                    std::uint64_t sync_stream_upper_bound,
                                                     std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
-        auto const drained = database::drain_to_device_messages(store, user, device_id, since_sync_stream_id);
+        auto const drained =
+            database::drain_to_device_messages(store, user, device_id, since_sync_stream_id, sync_stream_upper_bound);
         for (auto const& message : drained)
         {
             auto event = canonicaljson::Object{};
@@ -2451,6 +2453,7 @@ namespace
             }
         }
 
+        auto const sync_stream_upper_bound = store.next_sync_stream_id;
         auto max_observed_sync_stream_id = since_sync_stream_id;
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
@@ -2627,8 +2630,8 @@ namespace
             }
         }
 
-        auto to_device_events =
-            build_to_device_events_array(store, user, device_id, since_sync_stream_id, max_observed_sync_stream_id);
+        auto to_device_events = build_to_device_events_array(store, user, device_id, since_sync_stream_id,
+                                                             sync_stream_upper_bound, max_observed_sync_stream_id);
         auto [device_changed, device_left] =
             build_device_list_arrays(store, user, since_sync_stream_id, max_observed_sync_stream_id);
         auto presence_events =
@@ -2638,7 +2641,7 @@ namespace
         auto otk_counts = build_otk_counts(store, user, device_id);
         auto fallback_key_types = build_fallback_key_types(store, user, device_id);
 
-        auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, store.next_sync_stream_id);
+        auto const advanced_sync_stream_id = std::max(max_observed_sync_stream_id, sync_stream_upper_bound);
         auto const next_token =
             sync::StreamToken{rt.homeserver.database.next_stream_ordering - 1U,
                               rt.homeserver.database.next_stream_ordering - 1U, advanced_sync_stream_id};

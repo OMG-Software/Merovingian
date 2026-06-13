@@ -506,8 +506,8 @@ enum class MembershipStoreResult
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool;
 [[nodiscard]] auto enqueue_to_device_message(PersistentStore& store, PersistentToDeviceMessage message) -> bool;
 [[nodiscard]] auto drain_to_device_messages(PersistentStore& store, std::string_view user_id,
-                                            std::string_view device_id, std::uint64_t since_stream_id)
-    -> std::vector<PersistentToDeviceMessage>;
+                                            std::string_view device_id, std::uint64_t since_stream_id,
+                                            std::uint64_t upper_stream_id) -> std::vector<PersistentToDeviceMessage>;
 [[nodiscard]] auto record_device_list_change(PersistentStore& store, PersistentDeviceListChange change) -> bool;
 [[nodiscard]] auto upsert_presence(PersistentStore& store, PersistentPresence state) -> bool;
 // Store a sync filter uploaded by a client. On conflict the JSON is replaced.
@@ -530,8 +530,8 @@ enum class MembershipStoreResult
 // (or empty string for to-device sends) if the (user_id, room_id,
 // event_type, txn_id) tuple was already committed; nullopt otherwise.
 [[nodiscard]] auto find_client_txn_event_id(PersistentStore const& store, std::string_view user_id,
-                                             std::string_view room_id, std::string_view event_type,
-                                             std::string_view txn_id) -> std::optional<std::string>;
+                                            std::string_view room_id, std::string_view event_type,
+                                            std::string_view txn_id) -> std::optional<std::string>;
 // Record an idempotent send result. Silently succeeds if the key already
 // exists (the original store wins — the client may retry while still in-flight).
 [[nodiscard]] auto store_client_txn(PersistentStore& store, PersistentClientTxnRecord record) -> bool;
