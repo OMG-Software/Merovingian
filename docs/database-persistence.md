@@ -15,10 +15,13 @@ remaining work before PostgreSQL-backed production operation.
 - Validated execution helper that rejects invalid statements before they reach an executor.
 - Migration step and migration plan models.
 - Contiguous upgrade and explicit downgrade migration-plan validation.
-- Initial schema deployed at version `1` in its final shape: 42 core
+- Initial schema deployed at version `1` in its final shape: 45 core
   tables covering every Matrix storage area from the project plan. There
   are no live databases to upgrade, so historical per-version migrations
-  have been collapsed into the single `initial_schema` step. Future schema
+  have been collapsed into the single `initial_schema` step. Until the
+  project reaches production-ready `v1.0.0`, pre-release schema changes are
+  folded into version `1` and no `ALTER TABLE` migration files are kept.
+  After `v1.0.0`, deployed databases become compatibility targets and schema
   changes will add their own forward migrations.
 - SQLite RAII wrappers around database connections and prepared statements.
 - SQLite current-schema bootstrap for new database files.
@@ -44,7 +47,8 @@ remaining work before PostgreSQL-backed production operation.
   keys, cross-signing keys, key signatures, key backup versions, and key
   backup sessions.
 - Physical migration-file loading for SQL files with explicit metadata and
-  statement names.
+  statement names; the checked-in pre-production migration directory currently
+  contains only the complete version-1 `initial_schema` create-table file.
 - Offline `merovingian-db-migrate` planning scaffold.
 - Database `runtime` and `migration` role separation.
 - Runtime hydration for users, sessions, rooms, memberships, events, client
@@ -81,7 +85,7 @@ remaining work before PostgreSQL-backed production operation.
   `SET ROLE` statement, so the API is safe to call with operator-supplied
   role names.
 
-- Client transaction-idempotency dedup via `client_txn_ids` table (migration 006).
+- Client transaction-idempotency dedup via the version-1 `client_txn_ids` table.
   Keyed on `(user_id, room_id, event_type, txn_id)`; `room_id` is empty string
   for to-device sends. `event_id` stores the assigned event ID for room sends and
   is empty for to-device entries. Both SQLite and PostgreSQL hydrate rows on

@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.6
+Version:        0.8.7
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.7-1
+- fix: collapse pre-production database migrations into complete v1 schema
 * Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.6-1
 - feat: server signing-key rotation (rotate_server_signing_key, old_verify_keys publication)
 - test: key-rotation conformance, live-Synapse send/signing interop, PostgreSQL durability

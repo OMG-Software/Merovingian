@@ -22,6 +22,26 @@
 namespace
 {
 
+[[nodiscard]] auto locate_repository_migrations_directory() -> std::filesystem::path
+{
+    auto candidate = std::filesystem::current_path();
+    while (!candidate.empty())
+    {
+        auto const migrations = candidate / "migrations";
+        if (std::filesystem::exists(migrations / "001_initial_schema.sql"))
+        {
+            return migrations;
+        }
+        auto const parent = candidate.parent_path();
+        if (parent == candidate)
+        {
+            break;
+        }
+        candidate = parent;
+    }
+    return {};
+}
+
 class RecordingExecutor final : public merovingian::database::DatabaseExecutor
 {
 public:
@@ -826,6 +846,38 @@ SCENARIO("Physical migration files load into validated migration plans", "[datab
 
         std::filesystem::remove(file);
         std::filesystem::remove(directory);
+    }
+}
+
+SCENARIO("Checked-in pre-production migrations remain a single v1 create-table schema", "[database][migration][files]")
+{
+    GIVEN("the repository migration directory")
+    {
+        auto const directory = locate_repository_migrations_directory();
+
+        WHEN("the checked-in migration files are loaded")
+        {
+            REQUIRE_FALSE(directory.empty());
+            auto const loaded = merovingian::database::load_migration_files(directory.string());
+
+            THEN("only the full initial schema exists before production migrations begin")
+            {
+                REQUIRE(loaded.ok);
+                REQUIRE(loaded.steps.size() == 1U);
+                REQUIRE(loaded.steps.front().version == 1U);
+                REQUIRE(loaded.steps.front().name == "initial_schema");
+                REQUIRE(loaded.steps.front().statements.size() ==
+                        merovingian::database::initial_schema_tables().size());
+
+                for (auto const& statement : loaded.steps.front().statements)
+                {
+                    // Before v1.0.0 there are no live databases to migrate; the
+                    // checked-in v1 file must create the whole schema directly.
+                    REQUIRE(statement.sql.find("CREATE TABLE ") == 0U);
+                    REQUIRE(statement.sql.find("ALTER TABLE ") == std::string::npos);
+                }
+            }
+        }
     }
 }
 
