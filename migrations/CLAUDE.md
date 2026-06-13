@@ -11,7 +11,14 @@ NNN_snake_case_description.sql
 
 `NNN` is a zero-padded three-digit integer: `001`, `002`, ..., `010`, `011`, ...
 The next migration number is always `max(existing) + 1`.
-Current highest: `006`.
+Current highest: `001`.
+
+Until the project reaches production-ready `v1.0.0`, the checked-in schema
+remains a single version-1 initial schema. Fold pre-production table additions
+into `001_initial_schema.sql`; do not add `ALTER TABLE` migration files for
+pre-beta/pre-1.0 schema churn. After `v1.0.0`, deployed databases become a
+compatibility boundary and schema changes must be added as new forward
+migration files instead of modifying already-applied migrations.
 
 ## File format
 
@@ -30,7 +37,9 @@ NEXT SQL STATEMENT
 
 ## Safety rules
 
-1. **Never modify an existing migration.** Write a new one instead.
+1. **Never modify an existing production migration.** Write a new one instead.
+   Before `v1.0.0`, keep schema churn folded into `001_initial_schema.sql`
+   because there are no supported live production databases to upgrade.
 2. **Never drop a column or table** without explicit user approval — data loss is irreversible.
 3. **Always provide a DEFAULT when adding NOT NULL columns** to existing tables — both SQLite
    and PostgreSQL require this for non-empty tables.
