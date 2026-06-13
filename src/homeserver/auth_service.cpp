@@ -169,7 +169,15 @@ namespace
     [[nodiscard]] auto issue_token_hash(HomeserverRuntime const& runtime, std::string_view token)
         -> std::optional<std::string>
     {
-        return hash_token_v3(runtime, token);
+        if (auto const v3 = hash_token_v3(runtime, token); v3.has_value())
+        {
+            return v3;
+        }
+        // Signing key unavailable (e.g. corrupted or not yet initialised): fall
+        // back to the unkeyed v2 SHA-256 hash so local operations (login, logout,
+        // session lookup) still work.  Federation will fail separately if the
+        // signing key is broken; login should not be collateral damage.
+        return hash_token_v2(token);
     }
 
     [[nodiscard]] auto lookup_token_hashes(HomeserverRuntime const& runtime, std::string_view token)

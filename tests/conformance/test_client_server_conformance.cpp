@@ -195,7 +195,7 @@ auto constexpr remote_key_seed = "client-server-conformance-remote-seed";
 {
     auto remote = merovingian::federation::FederationRemoteRuntime{};
     remote.server_name = remote_origin;
-    remote.signing_key = {remote_origin, remote_key_id, 2000U,
+    remote.signing_key = {remote_origin, remote_key_id, 0U,
                           merovingian::federation::test::keypair_from_seed(remote_key_seed).public_key};
     remote.discovery.server_name = remote_origin;
     remote.discovery.well_known_host = remote_origin;
