@@ -43,9 +43,12 @@ struct RegistrationValidationSession final
     std::string medium{};
     std::string address{};
     std::string client_secret{};
+    std::string client_ip{};
     std::optional<std::string> country{};
     std::optional<std::string> next_link{};
     std::uint64_t send_attempt{0U};
+    std::uint64_t created_at_ms{0U};
+    std::uint64_t updated_at_ms{0U};
 };
 
 struct ClientApiLimits final

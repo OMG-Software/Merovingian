@@ -41,6 +41,10 @@ Implemented now:
   responses via a single `handle_client_server_request` boundary).
   Reverse proxies must not add their own CORS headers; see
   `docs/configuration.md` Reverse proxy examples.
+- response-header validation at both the client-server header assembler and
+  final wire formatter, dropping invalid header names/values instead of
+  emitting them on the wire
+- `X-Content-Type-Options: nosniff` on every response
 
 Not implemented yet:
 
@@ -50,6 +54,14 @@ Not implemented yet:
 - runtime application of the slowloris progress policy
 - HTTP/2
 - keep-alive (every connection currently sends `Connection: close`)
+
+## Response-header safety
+
+Runtime-generated response headers are validated with the shared HTTP header
+grammar before they are stored or written to the wire. This prevents CR/LF and
+other invalid octets from being reflected through CORS or future dynamic header
+surfaces. The wire formatter also injects `X-Content-Type-Options: nosniff`
+when the response did not already set it.
 
 ## Outbound HTTP client
 

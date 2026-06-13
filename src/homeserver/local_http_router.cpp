@@ -536,6 +536,31 @@ namespace
         return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
     }
 
+    [[nodiscard]] auto object_member_as_array(canonicaljson::Object const& object, std::string_view key)
+        -> canonicaljson::Array const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&value->storage());
+    }
+
+    [[nodiscard]] auto object_member_as_int(canonicaljson::Object const& object, std::string_view key)
+        -> std::int64_t const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<std::int64_t>(&value->storage());
+    }
+
+    [[nodiscard]] auto object_member_as_bool(canonicaljson::Object const& object, std::string_view key) -> bool const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<bool>(&value->storage());
+    }
+
+    [[nodiscard]] auto user_belongs_to_origin(std::string_view user_id, std::string_view origin) -> bool
+    {
+        return !user_id.empty() && server_name_from_user_id(user_id) == origin;
+    }
+
     auto enqueue_direct_to_device_messages(HomeserverRuntime& runtime, std::string_view content_json) -> void
     {
         auto const parsed = canonicaljson::parse_lossless(std::string{content_json});
@@ -629,20 +654,18 @@ namespace
             // federation handler audits the event without issuing a non-200 HTTP status
             // (a non-200 causes the remote to back off all federation to this server).
             {
-                auto const* room_policy = rooms::find_room_version_policy(
-                    envelope.room_version.empty() ? "12" : envelope.room_version);
+                auto const* room_policy =
+                    rooms::find_room_version_policy(envelope.room_version.empty() ? "12" : envelope.room_version);
                 if (room_policy != nullptr)
                 {
                     auto const pdu_parsed = canonicaljson::parse_lossless(envelope.json);
                     if (pdu_parsed.error == canonicaljson::ParseError::none)
                     {
-                        auto const auth_map = build_pdu_auth_event_map(
-                            rt->database.persistent_store, envelope.room_id,
-                            envelope.sender,
-                            envelope.state_key.value_or(std::string{}),
-                            envelope.event_type);
-                        auto const auth_decision = events::authorize_event_against_auth_events(
-                            pdu_parsed.value, *room_policy, auth_map);
+                        auto const auth_map =
+                            build_pdu_auth_event_map(rt->database.persistent_store, envelope.room_id, envelope.sender,
+                                                     envelope.state_key.value_or(std::string{}), envelope.event_type);
+                        auto const auth_decision =
+                            events::authorize_event_against_auth_events(pdu_parsed.value, *room_policy, auth_map);
                         if (!auth_decision.allowed)
                         {
                             return {federation::PduIngestionStatus::rejected_auth,
@@ -677,21 +700,18 @@ namespace
             if (envelope.event_type == "m.room.member" && envelope.state_key.has_value())
             {
                 auto const mem_parsed = canonicaljson::parse_lossless(envelope.json);
-                auto const* mem_obj =
-                    mem_parsed.error == canonicaljson::ParseError::none
-                        ? std::get_if<canonicaljson::Object>(&mem_parsed.value.storage())
-                        : nullptr;
+                auto const* mem_obj = mem_parsed.error == canonicaljson::ParseError::none
+                                          ? std::get_if<canonicaljson::Object>(&mem_parsed.value.storage())
+                                          : nullptr;
                 auto const* membership_str = mem_obj != nullptr ? content_membership(*mem_obj) : nullptr;
                 if (membership_str != nullptr)
                 {
                     auto const stream = rt->database.next_stream_ordering - 1U;
-                    std::ignore =
-                        upsert_membership(rt->database.persistent_store, envelope.room_id,
-                                          *envelope.state_key, *membership_str, stream);
-                    auto const room_it =
-                        std::ranges::find_if(rt->database.rooms, [&](LocalRoom const& r) {
-                            return r.room_id == envelope.room_id;
-                        });
+                    std::ignore = upsert_membership(rt->database.persistent_store, envelope.room_id,
+                                                    *envelope.state_key, *membership_str, stream);
+                    auto const room_it = std::ranges::find_if(rt->database.rooms, [&](LocalRoom const& r) {
+                        return r.room_id == envelope.room_id;
+                    });
                     if (room_it != rt->database.rooms.end())
                     {
                         auto& members = room_it->members;
@@ -792,88 +812,76 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::receipt: {
-                // content: { <room_id>: { "m.read": { <user_id>: { ts } } } }
-                auto const& content = envelope.content_json;
-                auto const m_read_pos = content.find("\"m.read\"");
-                if (m_read_pos == std::string::npos)
+                auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
+                auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                if (parsed.error != canonicaljson::ParseError::none || root == nullptr)
                 {
-                    return {federation::EduDispositionStatus::accepted, {}};
+                    return {federation::EduDispositionStatus::rejected_invalid, "receipt content must be an object"};
                 }
-                // Find the room_id key (first quoted string before m.read)
-                auto const obj_start = content.find('{');
-                if (obj_start == std::string::npos)
+                for (auto const& room_member : *root)
                 {
-                    return {federation::EduDispositionStatus::accepted, {}};
-                }
-                auto room_id_start = content.find('"', obj_start);
-                if (room_id_start == std::string::npos || room_id_start >= m_read_pos)
-                {
-                    return {federation::EduDispositionStatus::accepted, {}};
-                }
-                auto room_id_end = content.find('"', room_id_start + 1U);
-                if (room_id_end == std::string::npos)
-                {
-                    return {federation::EduDispositionStatus::accepted, {}};
-                }
-                auto room_id = content.substr(room_id_start + 1U, room_id_end - room_id_start - 1U);
-                // Find user_id after "m.read": {
-                auto const user_obj_start = content.find('{', m_read_pos);
-                if (user_obj_start == std::string::npos)
-                {
-                    return {federation::EduDispositionStatus::accepted, {}};
-                }
-                auto user_id_start = content.find('"', user_obj_start);
-                if (user_id_start == std::string::npos)
-                {
-                    return {federation::EduDispositionStatus::accepted, {}};
-                }
-                auto user_id_end = content.find('"', user_id_start + 1U);
-                if (user_id_end == std::string::npos)
-                {
-                    return {federation::EduDispositionStatus::accepted, {}};
-                }
-                auto user_id = content.substr(user_id_start + 1U, user_id_end - user_id_start - 1U);
-                // Find event_id inside the user's object
-                auto const event_key_pos = content.find("\"event_id\"", user_id_end);
-                std::string event_id;
-                if (event_key_pos != std::string::npos)
-                {
-                    auto event_val_start = content.find('"', content.find(':', event_key_pos));
-                    if (event_val_start != std::string::npos)
+                    auto const* receipt_types = std::get_if<canonicaljson::Object>(&room_member.value->storage());
+                    if (receipt_types == nullptr)
                     {
-                        auto event_val_end = content.find('"', event_val_start + 1U);
-                        if (event_val_end != std::string::npos)
+                        return {federation::EduDispositionStatus::rejected_invalid,
+                                "receipt room entry must be an object"};
+                    }
+                    for (auto const& receipt_type_member : *receipt_types)
+                    {
+                        auto const* users = std::get_if<canonicaljson::Object>(&receipt_type_member.value->storage());
+                        if (users == nullptr)
                         {
-                            event_id = content.substr(event_val_start + 1U, event_val_end - event_val_start - 1U);
+                            return {federation::EduDispositionStatus::rejected_invalid,
+                                    "receipt type entry must be an object"};
+                        }
+                        for (auto const& user_member : *users)
+                        {
+                            if (!user_belongs_to_origin(user_member.key, envelope.origin))
+                            {
+                                return {federation::EduDispositionStatus::rejected_invalid,
+                                        "receipt user_id must belong to the sending origin"};
+                            }
+                            auto const* receipt = std::get_if<canonicaljson::Object>(&user_member.value->storage());
+                            if (receipt == nullptr)
+                            {
+                                return {federation::EduDispositionStatus::rejected_invalid,
+                                        "receipt user entry must be an object"};
+                            }
+                            auto const* event_ids = object_member_as_array(*receipt, "event_ids");
+                            if (event_ids == nullptr || event_ids->empty())
+                            {
+                                return {federation::EduDispositionStatus::rejected_invalid,
+                                        "receipt event_ids must be a non-empty array"};
+                            }
+                            auto const* first_event_id = std::get_if<std::string>(&event_ids->front().storage());
+                            if (first_event_id == nullptr || first_event_id->empty())
+                            {
+                                return {federation::EduDispositionStatus::rejected_invalid,
+                                        "receipt event_ids entries must be strings"};
+                            }
+                            auto const* data = object_member_as_object(*receipt, "data");
+                            auto const* ts_value = data == nullptr ? nullptr : object_member_as_int(*data, "ts");
+                            auto const ts =
+                                ts_value != nullptr && *ts_value > 0 ? static_cast<std::uint64_t>(*ts_value) : 0U;
+                            auto existing = std::ranges::find_if(rt->receipts, [&](auto const& current) {
+                                return current.room_id == room_member.key && current.user_id == user_member.key &&
+                                       current.receipt_type == receipt_type_member.key;
+                            });
+                            rt->database.persistent_store.next_sync_stream_id += 1U;
+                            auto const stream_id = rt->database.persistent_store.next_sync_stream_id;
+                            if (existing != rt->receipts.end())
+                            {
+                                existing->event_id = *first_event_id;
+                                existing->ts = ts;
+                                existing->stream_id = stream_id;
+                            }
+                            else
+                            {
+                                rt->receipts.push_back({room_member.key, receipt_type_member.key, user_member.key,
+                                                        *first_event_id, ts, stream_id});
+                            }
                         }
                     }
-                }
-                // Find ts
-                auto const ts_key_pos = content.find("\"ts\"", user_id_end);
-                auto ts = std::uint64_t{0U};
-                if (ts_key_pos != std::string::npos)
-                {
-                    auto const ts_val_start = content.find_first_of("0123456789", ts_key_pos);
-                    if (ts_val_start != std::string::npos)
-                    {
-                        ts = std::strtoull(content.data() + ts_val_start, nullptr, 10U);
-                    }
-                }
-                auto existing = std::ranges::find_if(rt->receipts, [&](auto const& r) {
-                    return r.room_id == room_id && r.user_id == user_id;
-                });
-                rt->database.persistent_store.next_sync_stream_id += 1U;
-                auto const stream_id = rt->database.persistent_store.next_sync_stream_id;
-                if (existing != rt->receipts.end())
-                {
-                    existing->event_id = event_id;
-                    existing->ts = ts;
-                    existing->stream_id = stream_id;
-                }
-                else
-                {
-                    rt->receipts.push_back(
-                        {std::string{room_id}, "m.read", std::string{user_id}, event_id, ts, stream_id});
                 }
                 if (rt->sync_notifier != nullptr)
                 {
@@ -883,69 +891,53 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::presence: {
-                // content: { push: [ { user_id, presence } ] }
-                auto const& content = envelope.content_json;
-                auto const push_pos = content.find("\"push\"");
-                if (push_pos == std::string::npos)
+                auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
+                auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                if (parsed.error != canonicaljson::ParseError::none || root == nullptr)
+                {
+                    return {federation::EduDispositionStatus::rejected_invalid, "presence content must be an object"};
+                }
+                auto const* push = object_member_as_array(*root, "push");
+                if (push == nullptr)
                 {
                     return {federation::EduDispositionStatus::accepted, {}};
                 }
-                // Parse each presence entry in the push array
-                auto const arr_start = content.find('[', push_pos);
-                if (arr_start == std::string::npos)
+                for (auto const& entry : *push)
                 {
-                    return {federation::EduDispositionStatus::accepted, {}};
-                }
-                auto pos = arr_start + 1U;
-                while (pos < content.size())
-                {
-                    auto const obj_pos = content.find('{', pos);
-                    if (obj_pos == std::string::npos)
+                    auto const* presence = std::get_if<canonicaljson::Object>(&entry.storage());
+                    if (presence == nullptr)
                     {
-                        break;
+                        return {federation::EduDispositionStatus::rejected_invalid, "presence entry must be an object"};
                     }
-                    auto const obj_end = content.find('}', obj_pos);
-                    if (obj_end == std::string::npos)
+                    auto const* user_id = object_member_as_string(*presence, "user_id");
+                    if (user_id == nullptr || !user_belongs_to_origin(*user_id, envelope.origin))
                     {
-                        break;
+                        return {federation::EduDispositionStatus::rejected_invalid,
+                                "presence user_id must belong to the sending origin"};
                     }
-                    auto const obj = content.substr(obj_pos, obj_end - obj_pos + 1U);
-                    auto user_id = std::string{};
-                    auto presence = std::string{"offline"};
-                    auto uid_pos = obj.find("\"user_id\"");
-                    if (uid_pos != std::string::npos)
+                    auto state = database::PersistentPresence{};
+                    state.user_id = *user_id;
+                    if (auto const* presence_value = object_member_as_string(*presence, "presence");
+                        presence_value != nullptr && !presence_value->empty())
                     {
-                        auto uid_val_start = obj.find('"', obj.find(':', uid_pos));
-                        if (uid_val_start != std::string::npos)
-                        {
-                            auto uid_val_end = obj.find('"', uid_val_start + 1U);
-                            if (uid_val_end != std::string::npos)
-                            {
-                                user_id = obj.substr(uid_val_start + 1U, uid_val_end - uid_val_start - 1U);
-                            }
-                        }
+                        state.presence = *presence_value;
                     }
-                    auto pres_pos = obj.find("\"presence\"");
-                    if (pres_pos != std::string::npos)
+                    if (auto const* status_msg = object_member_as_string(*presence, "status_msg");
+                        status_msg != nullptr)
                     {
-                        auto pres_val_start = obj.find('"', obj.find(':', pres_pos));
-                        if (pres_val_start != std::string::npos)
-                        {
-                            auto pres_val_end = obj.find('"', pres_val_start + 1U);
-                            if (pres_val_end != std::string::npos)
-                            {
-                                presence = obj.substr(pres_val_start + 1U, pres_val_end - pres_val_start - 1U);
-                            }
-                        }
+                        state.status_msg = *status_msg;
                     }
-                    if (!user_id.empty())
+                    if (auto const* last_active_ago = object_member_as_int(*presence, "last_active_ago");
+                        last_active_ago != nullptr && *last_active_ago >= 0)
                     {
-                        auto state = database::PersistentPresence{};
-                        state.user_id = user_id;
-                        state.presence = presence;
-                        std::ignore = database::upsert_presence(rt->database.persistent_store, std::move(state));
+                        state.last_active_ago = *last_active_ago;
                     }
-                    pos = obj_end + 1U;
+                    if (auto const* currently_active = object_member_as_bool(*presence, "currently_active");
+                        currently_active != nullptr)
+                    {
+                        state.currently_active = *currently_active;
+                    }
+                    std::ignore = database::upsert_presence(rt->database.persistent_store, std::move(state));
                 }
                 if (rt->sync_notifier != nullptr)
                 {
@@ -964,30 +956,27 @@ namespace
                 return {federation::EduDispositionStatus::accepted, {}};
             }
             case federation::EduType::device_list_update: {
-                // content: { user_id, device_id?, stream_id? }
-                auto const& content = envelope.content_json;
-                auto user_id = std::string{};
-                auto uid_pos = content.find("\"user_id\"");
-                if (uid_pos != std::string::npos)
+                auto const parsed = canonicaljson::parse_lossless(envelope.content_json);
+                auto const* root = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                if (parsed.error != canonicaljson::ParseError::none || root == nullptr)
                 {
-                    auto val_start = content.find('"', content.find(':', uid_pos));
-                    if (val_start != std::string::npos)
-                    {
-                        auto val_end = content.find('"', val_start + 1U);
-                        if (val_end != std::string::npos)
-                        {
-                            user_id = content.substr(val_start + 1U, val_end - val_start - 1U);
-                        }
-                    }
+                    return {federation::EduDispositionStatus::rejected_invalid,
+                            "device list update content must be an object"};
                 }
-                if (!user_id.empty())
+                auto const* user_id = object_member_as_string(*root, "user_id");
+                if (user_id == nullptr || !user_belongs_to_origin(*user_id, envelope.origin))
+                {
+                    return {federation::EduDispositionStatus::rejected_invalid,
+                            "device list update user_id must belong to the sending origin"};
+                }
+                if (!user_id->empty())
                 {
                     // Record for all local users who may need to re-fetch keys
                     for (auto const& user : rt->database.persistent_store.users)
                     {
                         auto change = database::PersistentDeviceListChange{};
                         change.observer_user_id = user.user_id;
-                        change.subject_user_id = user_id;
+                        change.subject_user_id = *user_id;
                         change.change_type = "changed";
                         std::ignore =
                             database::record_device_list_change(rt->database.persistent_store, std::move(change));
@@ -1329,9 +1318,8 @@ namespace
             // disappears from rooms.join and the user enters an infinite invite loop.
             {
                 auto const& mems = rt->database.persistent_store.memberships;
-                auto const it    = std::ranges::find_if(mems, [&](database::PersistentMembership const& m) {
-                    return m.room_id == invite.room_id && m.user_id == *target_user &&
-                           m.membership == "join";
+                auto const it = std::ranges::find_if(mems, [&](database::PersistentMembership const& m) {
+                    return m.room_id == invite.room_id && m.user_id == *target_user && m.membership == "join";
                 });
                 if (it != mems.end())
                 {
@@ -1851,8 +1839,6 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     }
     if (starts_with(request.target, "/_matrix/federation/"))
     {
-        // Primary path: real X-Matrix Authorization header from production traffic.
-        // Fallback path: pipe-delimited token used by integration test fixtures.
         auto signed_request_opt = std::optional<federation::SignedFederationRequest>{};
         auto const x_matrix = federation::parse_x_matrix_authorization_header(request.access_token);
         if (x_matrix.has_value())
@@ -1874,10 +1860,6 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             req.canonical_json_verified = true;
             req.body = request.body;
             signed_request_opt = std::move(req);
-        }
-        else
-        {
-            signed_request_opt = parse_signed_federation_request(request);
         }
         if (!signed_request_opt.has_value())
         {

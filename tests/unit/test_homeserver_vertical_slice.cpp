@@ -50,12 +50,9 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -85,8 +82,8 @@ public:
         return {};
     }
 
-    [[nodiscard]] auto lookup_addresses(std::string_view host,
-                                        std::uint16_t port) -> merovingian::federation::ResolvedAddressSet override
+    [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t port)
+        -> merovingian::federation::ResolvedAddressSet override
     {
         auto result = merovingian::federation::ResolvedAddressSet{};
         result.ok = true;
@@ -389,7 +386,7 @@ SCENARIO("Homeserver admin observability endpoints expose runtime metrics and du
 //
 // Passwords MUST be stored as Argon2id hashes - never in plaintext, never as
 // a weaker algorithm. Access tokens MUST be stored as versioned hashes with the
-// "token-hash:v2:" prefix and MUST be random and unique per session.
+// "token-hash:v3:" prefix and MUST be random and unique per session.
 SCENARIO("Homeserver local auth stores hardened password and token hashes", "[homeserver][vertical][auth][security]")
 {
     GIVEN("a started runtime with local registration enabled")
@@ -439,10 +436,10 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
                 // Spec MUST: two distinct sessions MUST be stored for two logins.
                 // Do NOT remove - fewer sessions means tokens were aliased, breaking revocation.
                 REQUIRE(runtime.database.sessions.size() == 2U);
-                // Spec MUST: token hashes MUST carry the versioned "token-hash:v2:" prefix.
+                // Spec MUST: token hashes MUST carry the versioned "token-hash:v3:" prefix.
                 // Do NOT remove - prefix validates the hashing algorithm version on lookup.
-                REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v2:", 0U) == 0U);
-                REQUIRE(runtime.database.sessions.back().access_token_hash.rfind("token-hash:v2:", 0U) == 0U);
+                REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v3:", 0U) == 0U);
+                REQUIRE(runtime.database.sessions.back().access_token_hash.rfind("token-hash:v3:", 0U) == 0U);
                 // Spec MUST: stored token hashes MUST be distinct across sessions.
                 // Do NOT remove - identical hashes allow one token to authenticate as another.
                 REQUIRE(runtime.database.sessions.front().access_token_hash !=
@@ -494,7 +491,7 @@ SCENARIO("Homeserver rejects same-length incorrect passwords and crafted token c
                 // Spec MUST: incorrect password MUST return 403 regardless of length match.
                 // Do NOT remove - a 200 here means password checking is bypassed or broken.
                 REQUIRE(bad_login.status == 403U);
-                REQUIRE(bad_login.body == "bad credentials");
+                REQUIRE(bad_login.body == "invalid login");
                 // Spec MUST: a single-character mutation of a valid token MUST be rejected.
                 // Do NOT remove - acceptance indicates the comparison is truncated or prefix-only.
                 REQUIRE_FALSE(fake_auth.has_value());
@@ -1118,7 +1115,9 @@ SCENARIO("Audit log never captures raw access token material on auth rejection",
         // Register and log in so the audit sink is exercised by a real token
         // path first — ensures we are not just checking an empty log.
         auto const user = merovingian::homeserver::handle_local_http_request(
-            runtime, {"POST", "/_matrix/client/v3/register", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
                       merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
         // Spec MUST: registration MUST succeed for the audit baseline to exist.
         // Do NOT remove — test is invalid without a prior audit entry.
@@ -1151,8 +1150,7 @@ SCENARIO("Audit log never captures raw access token material on auth rejection",
                 // Security MUST: no audit row actor or target MUST contain the "mvs_" prefix.
                 // Do NOT remove — "mvs_" in audit rows leaks namespace and token shape.
                 auto const mvs_prefix_in_actor = std::ranges::any_of(audit, [](auto const& row) {
-                    return row.actor.find("mvs_") != std::string::npos ||
-                           row.target.find("mvs_") != std::string::npos;
+                    return row.actor.find("mvs_") != std::string::npos || row.target.find("mvs_") != std::string::npos;
                 });
                 REQUIRE_FALSE(mvs_prefix_in_actor);
 

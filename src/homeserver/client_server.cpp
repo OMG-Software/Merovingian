@@ -152,6 +152,10 @@ namespace
     auto append_header_if_missing(std::vector<std::pair<std::string, std::string>>& headers, std::string_view name,
                                   std::string value) -> void
     {
+        if (!http::header_name_is_valid(name) || !http::header_value_is_valid(value))
+        {
+            return;
+        }
         for (auto const& existing : headers)
         {
             if (existing.first == name)
@@ -169,6 +173,7 @@ namespace
     auto apply_cors_headers(LocalHttpRequest const& req, LocalHttpResponse& response, config::CorsConfig const& cors)
         -> void
     {
+        append_header_if_missing(response.headers, "X-Content-Type-Options", "nosniff");
         if (cors.allowed_origins.empty())
         {
             return;
@@ -1314,6 +1319,25 @@ namespace
         return lowercase_hex(bytes.data(), bytes.size());
     }
 
+    auto constexpr registration_validation_session_ttl_ms = std::uint64_t{15U * 60U * 1000U};
+    auto constexpr registration_validation_max_sessions_per_remote = std::size_t{4U};
+    auto constexpr registration_validation_max_sessions_global = std::size_t{256U};
+
+    [[nodiscard]] auto wall_clock_milliseconds() -> std::uint64_t
+    {
+        return static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch())
+                .count());
+    }
+
+    auto prune_registration_validation_sessions(ClientServerRuntime& rt, std::uint64_t now_ms) -> void
+    {
+        std::erase_if(rt.registration_validation_sessions, [now_ms](RegistrationValidationSession const& session) {
+            return now_ms > session.updated_at_ms &&
+                   now_ms - session.updated_at_ms > registration_validation_session_ttl_ms;
+        });
+    }
+
     [[nodiscard]] auto find_registration_validation_session(ClientServerRuntime& rt, std::string_view medium,
                                                             std::string_view address, std::string_view client_secret,
                                                             std::optional<std::string_view> country = std::nullopt)
@@ -1336,11 +1360,13 @@ namespace
 
     [[nodiscard]] auto ensure_registration_validation_session(ClientServerRuntime& rt, std::string_view medium,
                                                               std::string_view address, std::string_view client_secret,
-                                                              std::uint64_t send_attempt,
+                                                              std::string_view client_ip, std::uint64_t send_attempt,
                                                               std::optional<std::string> next_link = std::nullopt,
                                                               std::optional<std::string> country = std::nullopt)
-        -> RegistrationValidationSession&
+        -> RegistrationValidationSession*
     {
+        auto const now_ms = wall_clock_milliseconds();
+        prune_registration_validation_sessions(rt, now_ms);
         auto* existing = find_registration_validation_session(
             rt, medium, address, client_secret,
             country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt);
@@ -1348,13 +1374,25 @@ namespace
         {
             existing->send_attempt = std::max(existing->send_attempt, send_attempt);
             existing->next_link = next_link;
-            return *existing;
+            existing->client_ip = std::string{client_ip};
+            existing->updated_at_ms = now_ms;
+            return existing;
         }
 
-        rt.registration_validation_sessions.push_back({generate_registration_session_id(), std::string{medium},
-                                                       std::string{address}, std::string{client_secret},
-                                                       std::move(country), std::move(next_link), send_attempt});
-        return rt.registration_validation_sessions.back();
+        auto const per_remote_sessions = static_cast<std::size_t>(std::ranges::count_if(
+            rt.registration_validation_sessions, [client_ip](RegistrationValidationSession const& session) {
+                return session.client_ip == client_ip;
+            }));
+        if (per_remote_sessions >= registration_validation_max_sessions_per_remote ||
+            rt.registration_validation_sessions.size() >= registration_validation_max_sessions_global)
+        {
+            return nullptr;
+        }
+
+        rt.registration_validation_sessions.push_back(
+            {generate_registration_session_id(), std::string{medium}, std::string{address}, std::string{client_secret},
+             std::string{client_ip}, std::move(country), std::move(next_link), send_attempt, now_ms, now_ms});
+        return &rt.registration_validation_sessions.back();
     }
 
     [[nodiscard]] auto parse_register_email_request_body(std::string_view body)
@@ -5275,9 +5313,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "email must be a plausible address");
         }
-        auto& session = ensure_registration_validation_session(rt, "email", body->email, body->client_secret,
-                                                               body->send_attempt, body->next_link);
-        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session.sid))})));
+        auto* session = ensure_registration_validation_session(rt, "email", body->email, body->client_secret,
+                                                               req.remote_addr, body->send_attempt, body->next_link);
+        if (session == nullptr)
+        {
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
     }
 
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register/msisdn/requestToken")
@@ -5302,9 +5344,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "phone_number must not be empty");
         }
         auto const address = body->country + ":" + body->phone_number;
-        auto& session = ensure_registration_validation_session(rt, "msisdn", address, body->client_secret,
-                                                               body->send_attempt, body->next_link, body->country);
-        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session.sid))})));
+        auto* session =
+            ensure_registration_validation_session(rt, "msisdn", address, body->client_secret, req.remote_addr,
+                                                   body->send_attempt, body->next_link, body->country);
+        if (session == nullptr)
+        {
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
     }
 
     if (req.method == "POST" && req.target == "/_matrix/client/v3/register")

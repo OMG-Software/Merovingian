@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/auth_service.hpp"
+
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/session.hpp"
-#include "merovingian/homeserver/auth_service.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
@@ -58,6 +59,11 @@ namespace
         return token_hash.starts_with("token-hash:v2:");
     }
 
+    [[nodiscard]] auto token_hash_is_v3(std::string_view token_hash) noexcept -> bool
+    {
+        return token_hash.starts_with("token-hash:v3:");
+    }
+
     [[nodiscard]] auto password_hash_payload(std::string_view password_hash) noexcept -> std::string_view
     {
         auto constexpr prefix = std::string_view{"password-hash:v2:"};
@@ -77,6 +83,12 @@ namespace
             return std::nullopt;
         }
         return "password-hash:v2:" + std::string{output.data()};
+    }
+
+    [[nodiscard]] auto dummy_password_hash() -> std::string const*
+    {
+        static auto const dummy = hash_password("merovingian-invalid-login-dummy");
+        return dummy.has_value() ? &(*dummy) : nullptr;
     }
 
     [[nodiscard]] auto password_matches(std::string_view password_hash, std::string_view password) noexcept -> bool
@@ -99,7 +111,7 @@ namespace
         return "@" + std::string{localpart} + ":" + std::string{server_name};
     }
 
-    [[nodiscard]] auto hash_token(std::string_view token) -> std::optional<std::string>
+    [[nodiscard]] auto hash_token_v2(std::string_view token) -> std::optional<std::string>
     {
         if (!sodium_is_ready())
         {
@@ -119,9 +131,75 @@ namespace
         return "token-hash:v2:" + to_hex(digest.data(), digest.size());
     }
 
+    [[nodiscard]] auto token_hash_key(HomeserverRuntime const& runtime)
+        -> std::optional<std::array<unsigned char, crypto_generichash_KEYBYTES>>
+    {
+        if (!sodium_is_ready() || runtime.database.signing_secret_key.size() < crypto_generichash_KEYBYTES)
+        {
+            return std::nullopt;
+        }
+        auto key = std::array<unsigned char, crypto_generichash_KEYBYTES>{};
+        std::copy_n(runtime.database.signing_secret_key.begin(), crypto_generichash_KEYBYTES, key.begin());
+        return key;
+    }
+
+    [[nodiscard]] auto hash_token_v3(HomeserverRuntime const& runtime, std::string_view token)
+        -> std::optional<std::string>
+    {
+        auto const key = token_hash_key(runtime);
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        auto digest = std::array<unsigned char, token_hash_bytes>{};
+        auto token_bytes = std::vector<unsigned char>{};
+        token_bytes.reserve(token.size());
+        for (auto const character : token)
+        {
+            token_bytes.push_back(static_cast<unsigned char>(character));
+        }
+        if (crypto_generichash(digest.data(), digest.size(), token_bytes.data(), token_bytes.size(), key->data(),
+                               key->size()) != 0)
+        {
+            return std::nullopt;
+        }
+        return "token-hash:v3:" + to_hex(digest.data(), digest.size());
+    }
+
+    [[nodiscard]] auto issue_token_hash(HomeserverRuntime const& runtime, std::string_view token)
+        -> std::optional<std::string>
+    {
+        if (auto const v3 = hash_token_v3(runtime, token); v3.has_value())
+        {
+            return v3;
+        }
+        // Signing key unavailable (e.g. corrupted or not yet initialised): fall
+        // back to the unkeyed v2 SHA-256 hash so local operations (login, logout,
+        // session lookup) still work.  Federation will fail separately if the
+        // signing key is broken; login should not be collateral damage.
+        return hash_token_v2(token);
+    }
+
+    [[nodiscard]] auto lookup_token_hashes(HomeserverRuntime const& runtime, std::string_view token)
+        -> std::vector<std::string>
+    {
+        auto hashes = std::vector<std::string>{};
+        if (auto const v3 = hash_token_v3(runtime, token); v3.has_value())
+        {
+            hashes.push_back(*v3);
+        }
+        if (auto const v2 = hash_token_v2(token); v2.has_value())
+        {
+            hashes.push_back(*v2);
+        }
+        return hashes;
+    }
+
     [[nodiscard]] auto token_hash_matches(std::string_view left, std::string_view right) noexcept -> bool
     {
-        return token_hash_is_v2(left) && token_hash_is_v2(right) && left.size() == right.size() &&
+        auto const same_version =
+            (token_hash_is_v2(left) && token_hash_is_v2(right)) || (token_hash_is_v3(left) && token_hash_is_v3(right));
+        return same_version && left.size() == right.size() &&
                sodium_memcmp(left.data(), right.data(), left.size()) == 0;
     }
 
@@ -152,10 +230,19 @@ namespace
         return iterator == database.users.end() ? nullptr : &(*iterator);
     }
 
-    [[nodiscard]] auto find_session(LocalDatabase const& database, std::string_view token_hash) -> LocalSession const*
+    [[nodiscard]] auto matches_any_token_hash(std::string_view stored_hash,
+                                              std::vector<std::string> const& token_hashes) -> bool
     {
-        auto const iterator = std::ranges::find_if(database.sessions, [token_hash](LocalSession const& session) {
-            return token_hash_matches(session.access_token_hash, token_hash) && !session.revoked;
+        return std::ranges::any_of(token_hashes, [stored_hash](std::string const& candidate) {
+            return token_hash_matches(stored_hash, candidate);
+        });
+    }
+
+    [[nodiscard]] auto find_session(LocalDatabase const& database, std::vector<std::string> const& token_hashes)
+        -> LocalSession const*
+    {
+        auto const iterator = std::ranges::find_if(database.sessions, [&token_hashes](LocalSession const& session) {
+            return matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked;
         });
         return iterator == database.sessions.end() ? nullptr : &(*iterator);
     }
@@ -280,35 +367,32 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                        {"device_id", std::string{device_id}, false}
     });
     auto* user = find_user(runtime.database, user_id);
-    if (user == nullptr)
+    auto const* password_hash = user != nullptr ? &user->password_hash : dummy_password_hash();
+    auto const password_valid = password_hash != nullptr && password_matches(*password_hash, password);
+    if (user == nullptr || !password_valid)
     {
+        auto const audit_reason = user == nullptr ? "unknown user" : "bad credentials";
         // Matrix spec §5.7.2: login failures must be 403 M_FORBIDDEN.
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {{"user_id",   std::string{user_id},   false},
-                              {"device_id", std::string{device_id}, false},
-                              {"status",    "403",                  false},
-                              {"reason",    "unknown user",         false}},
+                             {
+                                 {"user_id",   std::string{user_id},   false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"status",    "403",                  false},
+                                 {"reason",    audit_reason,           false}
+        },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", std::string{user_id}, std::string{device_id}, "403:unknown user");
-        return make_operation_result(false, {}, "unknown user", 403U);
-    }
-    if (!password_matches(user->password_hash, password))
-    {
-        log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {{"user_id",   std::string{user_id},   false},
-                              {"device_id", std::string{device_id}, false},
-                              {"status",    "403",                  false},
-                              {"reason",    "bad credentials",      false}},
-                             observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", std::string{user_id}, std::string{device_id}, "403:bad credentials");
-        return make_operation_result(false, {}, "bad credentials", 403U);
+                             "login.rejected", std::string{user_id}, std::string{device_id},
+                             std::string{"403:"} + audit_reason);
+        return make_operation_result(false, {}, "invalid login", 403U);
     }
     if (!auth::device_id_is_valid(device_id))
     {
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {{"user_id",   std::string{user_id},   false},
-                              {"device_id", std::string{device_id}, false},
-                              {"reason",    "invalid device id",    false}},
+                             {
+                                 {"user_id",   std::string{user_id},   false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"reason",    "invalid device id",    false}
+        },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.rejected", std::string{user_id}, std::string{device_id}, "invalid device id");
         return make_operation_result(false, {}, "invalid device id");
@@ -328,34 +412,39 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     {
         // Account locked or suspended: still a 403, not a 400.
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {{"user_id",   user->user_id,          false},
-                              {"device_id", std::string{device_id}, false},
-                              {"status",    "403",                  false},
-                              {"reason",    login.reason,           false}},
+                             {
+                                 {"user_id",   user->user_id,          false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"status",    "403",                  false},
+                                 {"reason",    login.reason,           false}
+        },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "login.rejected", user->user_id, std::string{device_id},
-                             "403:" + login.reason);
-        return make_operation_result(false, {}, login.reason, 403U);
+                             "login.rejected", user->user_id, std::string{device_id}, "403:" + login.reason);
+        return make_operation_result(false, {}, "invalid login", 403U);
     }
 
     auto const token = issue_token();
     if (!token.has_value())
     {
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {{"user_id",   user->user_id,             false},
-                              {"device_id", std::string{device_id},    false},
-                              {"reason",    "token generation failed", false}},
+                             {
+                                 {"user_id",   user->user_id,             false},
+                                 {"device_id", std::string{device_id},    false},
+                                 {"reason",    "token generation failed", false}
+        },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.rejected", user->user_id, std::string{device_id}, "token generation failed");
         return make_operation_result(false, {}, "token generation failed");
     }
-    auto const token_hash = hash_token(*token);
+    auto const token_hash = issue_token_hash(runtime, *token);
     if (!token_hash.has_value())
     {
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {{"user_id",   user->user_id,          false},
-                              {"device_id", std::string{device_id}, false},
-                              {"reason",    "token hashing failed", false}},
+                             {
+                                 {"user_id",   user->user_id,          false},
+                                 {"device_id", std::string{device_id}, false},
+                                 {"reason",    "token hashing failed", false}
+        },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.rejected", user->user_id, std::string{device_id}, "token hashing failed");
         return make_operation_result(false, {}, "token hashing failed");
@@ -373,10 +462,12 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                                                  {user->user_id, std::string{device_id}, *token_hash, false}))
     {
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
-                             {{"user_id",   user->user_id,              false},
-                              {"device_id", std::string{device_id},     false},
-                              {"status",    "500",                      false},
-                              {"reason",    "login persistence failed", false}},
+                             {
+                                 {"user_id",   user->user_id,              false},
+                                 {"device_id", std::string{device_id},     false},
+                                 {"status",    "500",                      false},
+                                 {"reason",    "login persistence failed", false}
+        },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "login.rejected", user->user_id, std::string{device_id}, "500:login persistence failed");
         return make_operation_result(false, {}, "login persistence failed", 500U);
@@ -406,7 +497,7 @@ auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_vie
     {
         return make_operation_result(false, {}, "refresh token generation failed", 500U);
     }
-    auto const refresh_hash = hash_token(*refresh_token);
+    auto const refresh_hash = issue_token_hash(runtime, *refresh_token);
     if (!refresh_hash.has_value())
     {
         return make_operation_result(false, {}, "refresh token hashing failed", 500U);
@@ -423,16 +514,17 @@ auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_vie
 
 auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_token) -> SessionRefreshResult
 {
-    auto const refresh_hash = hash_token(refresh_token);
-    if (!refresh_hash.has_value())
+    auto const refresh_hashes = lookup_token_hashes(runtime, refresh_token);
+    if (refresh_hashes.empty())
     {
         return {false, 401U, {}, {}, {}, {}, "unauthenticated"};
     }
 
-    auto const refresh = std::ranges::find_if(
-        runtime.database.persistent_store.refresh_tokens, [&refresh_hash](database::PersistentRefreshToken const& row) {
-            return token_hash_matches(row.token_hash, *refresh_hash) && !row.revoked;
-        });
+    auto const refresh =
+        std::ranges::find_if(runtime.database.persistent_store.refresh_tokens,
+                             [&refresh_hashes](database::PersistentRefreshToken const& row) {
+                                 return matches_any_token_hash(row.token_hash, refresh_hashes) && !row.revoked;
+                             });
     if (refresh == runtime.database.persistent_store.refresh_tokens.end())
     {
         return {false, 401U, {}, {}, {}, {}, "refresh token rejected"};
@@ -444,7 +536,7 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     {
         return {false, 401U, {}, {}, {}, {}, "refresh subject rejected"};
     }
-    if (database::revoke_refresh_token(runtime.database.persistent_store, *refresh_hash) == 0U)
+    if (database::revoke_refresh_token(runtime.database.persistent_store, refresh->token_hash) == 0U)
     {
         return {false, 500U, {}, {}, {}, {}, "refresh token revocation failed"};
     }
@@ -463,8 +555,8 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     {
         return {false, 500U, {}, {}, {}, {}, "token generation failed"};
     }
-    auto const access_hash = hash_token(*access_token);
-    auto const new_refresh_hash = hash_token(*new_refresh_token);
+    auto const access_hash = issue_token_hash(runtime, *access_token);
+    auto const new_refresh_hash = issue_token_hash(runtime, *new_refresh_token);
     if (!access_hash.has_value() || !new_refresh_hash.has_value())
     {
         return {false, 500U, {}, {}, {}, {}, "token hashing failed"};
@@ -485,23 +577,27 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
 
 auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_token) -> std::optional<std::string>
 {
-    auto const token_hash = hash_token(access_token);
-    if (!token_hash.has_value())
+    auto const token_hashes = lookup_token_hashes(runtime, access_token);
+    if (token_hashes.empty())
     {
         // Security: never pass the raw bearer token to the audit log.
         // When hashing itself fails we have no identity to report — use "<unknown>".
         log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
-                             {{"reason", "token hashing failed", false}},
+                             {
+                                 {"reason", "token hashing failed", false}
+        },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "access_token.rejected", "<unknown>", "<unknown>", "token hashing failed");
         return std::nullopt;
     }
-    auto const* session = find_session(runtime.database, *token_hash);
+    auto const* session = find_session(runtime.database, token_hashes);
     if (session == nullptr)
     {
         // Security: no session for this token hash — report without leaking the raw token.
         log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
-                             {{"reason", "session not found", false}},
+                             {
+                                 {"reason", "session not found", false}
+        },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "access_token.rejected", "<unknown>", "<unknown>", "session not found");
         return std::nullopt;
@@ -511,7 +607,9 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
         // Security: session exists but the owning user record is gone — use the
         // user_id from the session record, not the raw bearer token.
         log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
-                             {{"reason", "user not found", false}},
+                             {
+                                 {"reason", "user not found", false}
+        },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
                              "access_token.rejected", session->user_id, session->user_id, "user not found");
         return std::nullopt;
@@ -527,12 +625,12 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
 auto authenticated_session(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<LocalSession>
 {
-    auto const token_hash = hash_token(access_token);
-    if (!token_hash.has_value())
+    auto const token_hashes = lookup_token_hashes(runtime, access_token);
+    if (token_hashes.empty())
     {
         return std::nullopt;
     }
-    auto const* session = find_session(runtime.database, *token_hash);
+    auto const* session = find_session(runtime.database, token_hashes);
     if (session == nullptr || find_user(runtime.database, session->user_id) == nullptr)
     {
         return std::nullopt;
@@ -559,23 +657,25 @@ auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view
 
 auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult
 {
-    auto const token_hash = hash_token(access_token);
-    if (!token_hash.has_value())
+    auto const token_hashes = lookup_token_hashes(runtime, access_token);
+    if (token_hashes.empty())
     {
         return make_operation_result(false, {}, "unauthenticated");
     }
     auto user_id = std::string{};
     auto device_id = std::string{};
+    auto persisted_hash = std::string{};
     auto revoked_any = false;
 
     for (auto& session : runtime.database.sessions)
     {
-        if (token_hash_matches(session.access_token_hash, *token_hash) && !session.revoked)
+        if (matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked)
         {
             if (user_id.empty())
             {
                 user_id = session.user_id;
                 device_id = session.device_id;
+                persisted_hash = session.access_token_hash;
             }
             session.revoked = true;
             revoked_any = true;
@@ -586,13 +686,13 @@ auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token
         return make_operation_result(false, {}, "unauthenticated");
     }
 
-    if (database::revoke_access_token(runtime.database.persistent_store, *token_hash) == 0U)
+    if (database::revoke_access_token(runtime.database.persistent_store, persisted_hash) == 0U)
     {
         return make_operation_result(false, {}, "token revocation persistence failed", 500U);
     }
     for (auto& session : runtime.database.sessions)
     {
-        if (token_hash_matches(session.access_token_hash, *token_hash))
+        if (matches_any_token_hash(session.access_token_hash, token_hashes))
         {
             session.revoked = true;
         }
@@ -688,8 +788,8 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     return make_operation_result(true, *user_id);
 }
 
-auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
-                                std::string_view password) -> bool
+auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token, std::string_view password)
+    -> bool
 {
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
