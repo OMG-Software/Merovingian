@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // GCC 16 with -O2 and LTO emits a false-positive -Wmaybe-uninitialized warning

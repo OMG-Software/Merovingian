@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/federation/outbound_transaction.hpp"

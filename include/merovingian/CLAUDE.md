@@ -6,6 +6,7 @@ The directory mirrors `src/` 1:1: `include/merovingian/auth/` ↔ `src/auth/`.
 ## File conventions
 
 ```cpp
+// SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 

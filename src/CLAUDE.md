@@ -5,7 +5,8 @@ Module directory names match: `src/auth/` ↔ `include/merovingian/auth/`.
 
 ## File conventions
 
-- First line: `// SPDX-License-Identifier: GPL-3.0-or-later`
+- First line: `// SPDX-FileCopyrightText: 2026 James Chapman
+// SPDX-License-Identifier: GPL-3.0-or-later`
 - Include order: matching header first, then standard library (`<algorithm>`, `<string>`, …), then third-party
 - File-local helpers belong in an anonymous `namespace { }` block — never pollute the module namespace
 
