@@ -1,3 +1,4 @@
+// SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 // GCC 16 with -O2 and LTO emits a false-positive -Wmaybe-uninitialized warning
@@ -882,6 +883,12 @@ namespace
         std::string room_id{};
         std::string event_type{};
         std::string state_key{};
+    };
+
+    struct RoomEventPathParts final
+    {
+        std::string room_id{};
+        std::string event_id{};
     };
 
     struct AdminReviewPathParts final
@@ -4042,6 +4049,45 @@ namespace
                                   core::percent_decode_path_component(state_key)};
     }
 
+    [[nodiscard]] auto room_event_path_parts(std::string_view target) -> std::optional<RoomEventPathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/event/"};
+        auto const path = target.substr(0U, target.find('?'));
+        auto const suffix = route_suffix(path, prefix);
+        auto const marker_pos = suffix.find(marker);
+        if (suffix.empty() || marker_pos == std::string_view::npos || marker_pos == 0U ||
+            marker_pos + marker.size() >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        auto const event_id = suffix.substr(marker_pos + marker.size());
+        if (event_id.empty() || event_id.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return RoomEventPathParts{core::percent_decode_path_component(suffix.substr(0U, marker_pos)),
+                                  core::percent_decode_path_component(event_id)};
+    }
+
+    [[nodiscard]] auto room_joined_members_path_room_id(std::string_view target) -> std::optional<std::string>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
+        auto constexpr marker = std::string_view{"/joined_members"};
+        auto const path = target.substr(0U, target.find('?'));
+        auto const suffix = route_suffix(path, prefix);
+        if (suffix.size() <= marker.size() || !suffix.ends_with(marker))
+        {
+            return std::nullopt;
+        }
+        auto const room_id = suffix.substr(0U, suffix.size() - marker.size());
+        if (room_id.empty() || room_id.find('/') != std::string_view::npos)
+        {
+            return std::nullopt;
+        }
+        return core::percent_decode_path_component(room_id);
+    }
+
     struct RoomTypingPathParts final
     {
         std::string room_id{};
@@ -5937,10 +5983,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     // GET /_matrix/media/v3/config
+    // GET /_matrix/client/v1/media/config
     // Reports the maximum upload size so clients know how large a file they
     // may attach. The value is sourced from security.media.max_upload_size so
     // client hints match the repository policy enforced during upload.
-    if (req.method == "GET" && req.target == "/_matrix/media/v3/config")
+    if (req.method == "GET" &&
+        (req.target == "/_matrix/media/v3/config" || req.target == "/_matrix/client/v1/media/config"))
     {
         auto const parsed_limit = config::parse_size_limit(rt.homeserver.config.security().media.max_upload_size);
         auto const bounded_limit = std::min(parsed_limit.valid ? parsed_limit.bytes : std::uint64_t{104857600U},
@@ -6492,6 +6540,37 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             });
             return complete(result);
         }
+        // GET /_matrix/client/v3/rooms/{roomId}/event/{eventId}
+        // Spec: returns the full event for a room the requester is a member of.
+        if (req.method == "GET")
+        {
+            if (auto const path = room_event_path_parts(req.target); path.has_value())
+            {
+                auto const& store = rt.homeserver.database.persistent_store;
+                auto const is_joined =
+                    std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
+                        return membership.room_id == path->room_id && membership.user_id == *user &&
+                               membership.membership == "join";
+                    });
+                if (!is_joined)
+                {
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "not a member of this room");
+                }
+                auto const event = std::ranges::find_if(store.events, [&](database::PersistentEvent const& current) {
+                    return current.room_id == path->room_id && current.event_id == path->event_id;
+                });
+                if (event == store.events.end())
+                {
+                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "event not found");
+                }
+                auto const serialized = canonicaljson::serialize_canonical(client_event_value(*event));
+                if (serialized.error != canonicaljson::CanonicalJsonError::none)
+                {
+                    return dispatch_err(req, rt, 500U, "M_UNKNOWN", "failed to serialize event");
+                }
+                return complete({200U, serialized.output});
+            }
+        }
         // GET /rooms/{roomId}/state/{eventType}/{stateKey}
         // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidstateeventtypestatekey
         // Returns the content object of a single named state event.
@@ -6562,6 +6641,79 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, result.status, error_code_for_status(result.status), result.body);
             }
             return complete(result);
+        }
+        // GET /_matrix/client/v3/rooms/{roomId}/aliases
+        // Spec: returns the room aliases currently known to this homeserver.
+        if (req.method == "GET")
+        {
+            auto constexpr aliases_s = std::string_view{"/aliases"};
+            auto const path_suffix = suffix.substr(0U, suffix.find('?'));
+            if (path_suffix.size() > aliases_s.size() && path_suffix.ends_with(aliases_s))
+            {
+                auto const encoded_room_id = path_suffix.substr(0U, path_suffix.size() - aliases_s.size());
+                auto const room_id = core::percent_decode_path_component(encoded_room_id);
+                auto const& store = rt.homeserver.database.persistent_store;
+                auto const requester_joined =
+                    std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
+                        return membership.room_id == room_id && membership.user_id == *user &&
+                               membership.membership == "join";
+                    });
+                if (!requester_joined)
+                {
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
+                }
+                auto aliases = canonicaljson::Array{};
+                for (auto const& alias : store.room_aliases)
+                {
+                    if (alias.room_id == room_id)
+                    {
+                        aliases.push_back(canonicaljson::Value{alias.room_alias});
+                    }
+                }
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("aliases", json_arr(std::move(aliases)))})));
+            }
+        }
+        // GET /_matrix/client/v3/rooms/{roomId}/joined_members
+        // Spec: returns joined MXIDs mapped to their room profile fields.
+        if (req.method == "GET")
+        {
+            if (auto const room_id = room_joined_members_path_room_id(req.target); room_id.has_value())
+            {
+                auto const& store = rt.homeserver.database.persistent_store;
+                auto const requester_joined =
+                    std::ranges::any_of(store.memberships, [&](database::PersistentMembership const& membership) {
+                        return membership.room_id == *room_id && membership.user_id == *user &&
+                               membership.membership == "join";
+                    });
+                if (!requester_joined)
+                {
+                    return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "user is not a member of this room");
+                }
+                auto joined = canonicaljson::Object{};
+                for (auto const& membership : store.memberships)
+                {
+                    if (membership.room_id != *room_id || membership.membership != "join")
+                    {
+                        continue;
+                    }
+                    auto member_info = canonicaljson::Object{};
+                    if (auto const profile = database::find_profile(store, membership.user_id); profile.has_value())
+                    {
+                        if (!profile->avatar_url.empty())
+                        {
+                            member_info.push_back(json_member("avatar_url", json_str(profile->avatar_url)));
+                        }
+                        if (!profile->displayname.empty())
+                        {
+                            member_info.push_back(json_member("display_name", json_str(profile->displayname)));
+                        }
+                    }
+                    joined.push_back(json_member(membership.user_id, json_obj(std::move(member_info))));
+                }
+                return dispatch_resp(req, rt, 200U,
+                                     json_serialize(json_obj({json_member("joined", json_obj(std::move(joined)))})));
+            }
         }
         // GET /_matrix/client/v3/rooms/{roomId}/members
         // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidmembers
