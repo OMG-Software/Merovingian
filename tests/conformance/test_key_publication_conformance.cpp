@@ -9,6 +9,7 @@
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
 #include "merovingian/homeserver/http_server.hpp"
+#include "merovingian/homeserver/room_service.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -284,6 +285,96 @@ SCENARIO("GET /_matrix/key/v2/server old_verify_keys entries contain key and exp
                     // belongs in verify_keys, not old_verify_keys.
                     REQUIRE(*expired_ts <= now_ms);
                 }
+            }
+        }
+    }
+}
+
+// Spec: Matrix Server-Server API v1.18
+// Endpoint: GET /_matrix/key/v2/server
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#publishing-keys
+//
+// "old_verify_keys: The public keys that the server used to use, and when it
+// stopped using them." After rotating its signing key, the server MUST publish
+// the newly generated key in verify_keys and move the previously active key into
+// old_verify_keys with an expired_ts in the past, so federation peers can still
+// verify events signed under the retired key while rejecting it as a current key.
+SCENARIO("GET /_matrix/key/v2/server reflects a signing key rotation",
+         "[federation][conformance][key_publishing][key_rotation]")
+{
+    GIVEN("a started runtime serving an initial active signing key")
+    {
+        auto started = merovingian::homeserver::start_client_server(key_publication_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const before = merovingian::homeserver::dispatch_local_http_request(
+            runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
+            merovingian::homeserver::HttpDispatchMode::federation);
+        REQUIRE(before.status == 200U);
+        auto const before_parsed = merovingian::canonicaljson::parse_lossless(before.body);
+        auto const* before_root = std::get_if<merovingian::canonicaljson::Object>(&before_parsed.value.storage());
+        REQUIRE(before_root != nullptr);
+        auto const* before_verify_value = json_get(*before_root, "verify_keys");
+        REQUIRE(before_verify_value != nullptr);
+        auto const* before_verify_keys =
+            std::get_if<merovingian::canonicaljson::Object>(&before_verify_value->storage());
+        REQUIRE(before_verify_keys != nullptr);
+        // Exactly one signing key is active before rotation.
+        REQUIRE(before_verify_keys->size() == 1U);
+        auto const original_key_id = before_verify_keys->front().key;
+
+        WHEN("the signing key is rotated and the key server is served again")
+        {
+            auto const rotation = merovingian::homeserver::rotate_server_signing_key(runtime.homeserver);
+            REQUIRE(rotation.ok);
+
+            auto const now_ms = static_cast<std::int64_t>(
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                    .count());
+
+            auto const after = merovingian::homeserver::dispatch_local_http_request(
+                runtime, {"GET", "/_matrix/key/v2/server", {}, {}},
+                merovingian::homeserver::HttpDispatchMode::federation);
+
+            THEN("the new key is active in verify_keys and the previous key is retired in old_verify_keys")
+            {
+                REQUIRE(after.status == 200U);
+                auto const parsed = merovingian::canonicaljson::parse_lossless(after.body);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+
+                // Spec MUST: the current active signing key is published in verify_keys.
+                auto const* verify_value = json_get(*root, "verify_keys");
+                REQUIRE(verify_value != nullptr);
+                auto const* verify_keys = std::get_if<merovingian::canonicaljson::Object>(&verify_value->storage());
+                REQUIRE(verify_keys != nullptr);
+                REQUIRE(verify_keys->size() == 1U);
+                auto const new_key_id = verify_keys->front().key;
+                // Rotation MUST activate a new, distinct key id derived from the new key material.
+                REQUIRE(new_key_id != original_key_id);
+                // Spec appendix: key IDs use the "ed25519:version" format.
+                REQUIRE(new_key_id.rfind("ed25519:", 0) == 0U);
+
+                // Spec MUST: the superseded key MUST appear in old_verify_keys.
+                auto const* old_value = json_get(*root, "old_verify_keys");
+                REQUIRE(old_value != nullptr);
+                auto const* old_keys = std::get_if<merovingian::canonicaljson::Object>(&old_value->storage());
+                REQUIRE(old_keys != nullptr);
+                auto const* retired_value = json_get(*old_keys, original_key_id);
+                REQUIRE(retired_value != nullptr);
+                auto const* retired = std::get_if<merovingian::canonicaljson::Object>(&retired_value->storage());
+                REQUIRE(retired != nullptr);
+                // Spec MUST: each old key entry exposes its base64 public key for verifying old events.
+                REQUIRE(json_get(*retired, "key") != nullptr);
+                // Spec MUST: expired_ts is a positive, past millisecond timestamp (key no longer active).
+                auto const* expired_value = json_get(*retired, "expired_ts");
+                REQUIRE(expired_value != nullptr);
+                auto const* expired_ts = std::get_if<std::int64_t>(&expired_value->storage());
+                REQUIRE(expired_ts != nullptr);
+                REQUIRE(*expired_ts > std::int64_t{0});
+                REQUIRE(*expired_ts <= now_ms);
             }
         }
     }

@@ -110,6 +110,13 @@ struct ValidatedMakeLeaveResponse final
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
     -> std::optional<database::PersistentServerSigningKey>;
 [[nodiscard]] auto publish_server_signing_keys(HomeserverRuntime& runtime) -> OperationResult;
+// Rotates this server's Ed25519 signing key. The currently active key is retired
+// (its valid_until_ts is set to "now" so it is published under old_verify_keys) and
+// a freshly generated key becomes active. Federation peers continue to verify events
+// signed under the retired key via old_verify_keys until it expires from their cache.
+// Refreshes the cached /_matrix/key/v2/server response. On success the result value
+// carries the new active key_id.
+[[nodiscard]] auto rotate_server_signing_key(HomeserverRuntime& runtime) -> OperationResult;
 [[nodiscard]] auto send_event(HomeserverRuntime& runtime, std::string_view access_token, std::string_view room_id,
                               std::string_view event_json) -> OperationResult;
 [[nodiscard]] auto fetch_room_state(HomeserverRuntime const& runtime, std::string_view access_token,

@@ -1,3 +1,7 @@
+## 0.8.6
+
+- **feat(federation): server signing-key rotation:** added `rotate_server_signing_key()`, which retires the current Ed25519 signing key (setting its `valid_until_ts` to now so it publishes under `old_verify_keys`) and activates a freshly generated key. `ensure_runtime_server_signing_key()` now selects the usable key with the greatest `valid_until_ts`, so the rotated-in key becomes active while the retired key remains available for verifying historical events. `GET /_matrix/key/v2/server` reflects the rotation: the new key in `verify_keys`, the previous key in `old_verify_keys` with a past `expired_ts`. Matrix v1.18 SS API conformance scenario added. Note: a single key is active at a time (spec-conformant); simultaneously-active multiple keys remain deferred as the existing conformance encodes one active key.
+
 ## 0.8.5
 
 - **fix(ci): keep inbound presence `last_active_ago` assignments signed:** the federation presence EDU handler now writes validated non-negative activity ages into the signed `PersistentPresence::last_active_ago` field without an unsigned cast that Clang rejected under `-Wsign-conversion -Werror`. Added a regression covering accepted inbound presence snapshots with `last_active_ago` so the behavior stays pinned while CI continues to enforce warning-free builds.
