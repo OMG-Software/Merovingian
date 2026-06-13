@@ -401,3 +401,152 @@ SCENARIO("PostgreSQL role separation: runtime role cannot execute DDL",
         }
     }
 }
+
+SCENARIO("PostgreSQL transaction rollback leaves no partial rows",
+         "[database][postgresql][integration][transaction]")
+{
+    GIVEN("a live PostgreSQL connection")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+        auto connection = merovingian::database::open_postgresql_connection(uri);
+        REQUIRE(connection.ok);
+        auto& executor = connection.connection;
+
+        // Scratch table name derived from a process-unique suffix; '-' is replaced
+        // so the result is a valid unquoted SQL identifier. The value is fully
+        // controlled (timestamp + counter), so the inline interpolation is safe.
+        auto probe = std::string{"merovingian_rollback_probe_"} + unique_test_suffix();
+        std::ranges::replace(probe, '-', '_');
+        std::ignore = executor.execute({"rb_predrop", "DROP TABLE IF EXISTS " + probe, {}});
+
+        WHEN("a transaction creates and inserts a row but is rolled back")
+        {
+            REQUIRE(executor.execute({"rb_begin", "BEGIN", {}}).ok);
+            REQUIRE(executor.execute({"rb_create", "CREATE TABLE " + probe + " (id TEXT PRIMARY KEY)", {}}).ok);
+            REQUIRE(executor.execute({"rb_insert", "INSERT INTO " + probe + " (id) VALUES ('x')", {}}).ok);
+            REQUIRE(executor.execute({"rb_rollback", "ROLLBACK", {}}).ok);
+
+            THEN("no trace of the table or row survives, and a committed transaction does persist")
+            {
+                // The rolled-back CREATE/INSERT must have left nothing behind.
+                auto const exists = executor.execute(
+                    {"rb_exists",
+                     "SELECT count(*) FROM information_schema.tables WHERE table_name = '" + probe + "'", {}});
+                REQUIRE(exists.ok);
+                REQUIRE(exists.rows.size() == 1U);
+                REQUIRE(exists.rows.front().size() == 1U);
+                REQUIRE(exists.rows.front().front() == "0");
+
+                // Positive control: the same statements under COMMIT do persist,
+                // proving the rollback (not a broken connection) caused the absence.
+                REQUIRE(executor.execute({"rb_begin2", "BEGIN", {}}).ok);
+                REQUIRE(executor.execute({"rb_create2", "CREATE TABLE " + probe + " (id TEXT PRIMARY KEY)", {}}).ok);
+                REQUIRE(executor.execute({"rb_insert2", "INSERT INTO " + probe + " (id) VALUES ('x')", {}}).ok);
+                REQUIRE(executor.execute({"rb_commit", "COMMIT", {}}).ok);
+                auto const count = executor.execute({"rb_count", "SELECT count(*) FROM " + probe, {}});
+                REQUIRE(count.ok);
+                REQUIRE(count.rows.size() == 1U);
+                REQUIRE(count.rows.front().front() == "1");
+
+                std::ignore = executor.execute({"rb_cleanup", "DROP TABLE IF EXISTS " + probe, {}});
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL migrations apply in contiguous order and bootstrap is idempotent",
+         "[database][postgresql][integration][schema][migrations]")
+{
+    GIVEN("a live PostgreSQL URI")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        if (uri.empty())
+        {
+            SUCCEED("skipped: MEROVINGIAN_TEST_POSTGRESQL_URI is not set");
+            return;
+        }
+
+        WHEN("the persistent store is opened and then opened a second time")
+        {
+            auto opened = merovingian::database::open_postgresql_persistent_store(uri);
+            REQUIRE(opened.ok);
+
+            auto versions = std::vector<std::uint32_t>{};
+            versions.reserve(opened.store.schema.applied_migrations.size());
+            for (auto const& record : opened.store.schema.applied_migrations)
+            {
+                versions.push_back(static_cast<std::uint32_t>(record.version));
+            }
+            std::ranges::sort(versions);
+
+            auto reopened = merovingian::database::open_postgresql_persistent_store(uri);
+
+            THEN("every version from 1..current is present exactly once and re-bootstrap is a no-op")
+            {
+                // Strictly increasing by one ⇒ ordered, contiguous, and free of gaps
+                // or duplicates across the applied-migration ledger.
+                REQUIRE_FALSE(versions.empty());
+                REQUIRE(versions.front() == 1U);
+                REQUIRE(versions.back() == merovingian::database::current_schema_version());
+                for (auto index = std::size_t{1U}; index < versions.size(); ++index)
+                {
+                    REQUIRE(versions[index] == versions[index - 1U] + 1U);
+                }
+                REQUIRE(versions.size() ==
+                        static_cast<std::size_t>(merovingian::database::current_schema_version()));
+
+                // Re-opening must not re-apply migrations: same version, same ledger size.
+                REQUIRE(reopened.ok);
+                REQUIRE(reopened.store.schema.version == merovingian::database::current_schema_version());
+                REQUIRE(reopened.store.schema.applied_migrations.size() ==
+                        opened.store.schema.applied_migrations.size());
+            }
+        }
+    }
+}
+
+SCENARIO("PostgreSQL role separation: the migration role can execute DDL the runtime role cannot",
+         "[database][postgresql][integration][roles]")
+{
+    GIVEN("a live PostgreSQL URI plus a migration role name")
+    {
+        auto const uri = postgresql_uri_from_environment();
+        auto const migration_role = migration_role_from_environment();
+        if (uri.empty() || migration_role.empty())
+        {
+            SUCCEED("skipped: live PG URI or migration role env var is not set");
+            return;
+        }
+        auto connection = merovingian::database::open_postgresql_connection(uri);
+        REQUIRE(connection.ok);
+        auto& executor = connection.connection;
+
+        WHEN("the session switches to the migration role and performs DDL + DML")
+        {
+            REQUIRE(merovingian::database::set_postgresql_role(executor, migration_role));
+            auto const after_set = merovingian::database::current_postgresql_user(executor);
+
+            auto probe = std::string{"merovingian_migration_role_smoke_"} + unique_test_suffix();
+            std::ranges::replace(probe, '-', '_');
+            std::ignore = executor.execute({"mr_predrop", "DROP TABLE IF EXISTS " + probe, {}});
+            auto const create = executor.execute({"mr_create", "CREATE TABLE " + probe + " (id TEXT PRIMARY KEY)", {}});
+            auto const insert = executor.execute({"mr_insert", "INSERT INTO " + probe + " (id) VALUES ('x')", {}});
+
+            // Cleanup regardless of assertion outcomes, then return to the login role.
+            std::ignore = executor.execute({"mr_drop", "DROP TABLE IF EXISTS " + probe, {}});
+            REQUIRE(merovingian::database::reset_postgresql_role(executor));
+
+            THEN("the migration role is granted DDL and DML (the inverse of the runtime-role denial)")
+            {
+                REQUIRE(after_set == std::string{migration_role});
+                REQUIRE(create.ok);
+                REQUIRE(insert.ok);
+            }
+        }
+    }
+}
