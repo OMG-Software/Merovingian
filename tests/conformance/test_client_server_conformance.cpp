@@ -7792,8 +7792,9 @@ SCENARIO("GET /rooms/{roomId}/members returns the room membership", "[conformanc
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/joined_members --------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidjoined_members
-// IMPLEMENTATION GAP: joined member map not yet implemented.
-SCENARIO("GET /rooms/{roomId}/joined_members returns 404 M_UNRECOGNIZED (implementation gap)",
+// Summary: The current user must be in the room, and a successful response
+// contains a `joined` map keyed by MXID.
+SCENARIO("GET /rooms/{roomId}/joined_members returns joined member map",
          "[conformance][client-server][room-participation]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
@@ -7808,14 +7809,15 @@ SCENARIO("GET /rooms/{roomId}/joined_members returns 404 M_UNRECOGNIZED (impleme
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/joined_members", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns the joined member map")
             {
-                // IMPLEMENTATION GAP: joined members not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: joined_members succeeds for the current room member.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* joined = object_member_as_object(body, "joined");
+                REQUIRE(joined != nullptr);
+                auto const* alice = object_member_as_object(*joined, "@alice:example.org");
+                REQUIRE(alice != nullptr);
             }
         }
     }
@@ -7823,8 +7825,8 @@ SCENARIO("GET /rooms/{roomId}/joined_members returns 404 M_UNRECOGNIZED (impleme
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/event/{eventId} -------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomideventeventid
-// IMPLEMENTATION GAP: single event retrieval not yet implemented.
-SCENARIO("GET /rooms/{roomId}/event/{eventId} returns 404 M_UNRECOGNIZED (implementation gap)",
+// Summary: The server returns the requested room event to a joined member.
+SCENARIO("GET /rooms/{roomId}/event/{eventId} returns the requested event",
          "[conformance][client-server][room-participation]")
 {
     GIVEN("a running client-server and a logged-in user with a room and a message")
@@ -7840,14 +7842,17 @@ SCENARIO("GET /rooms/{roomId}/event/{eventId} returns 404 M_UNRECOGNIZED (implem
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + event_id, token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns the event object")
             {
-                // IMPLEMENTATION GAP: single event retrieval not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: a visible event is returned to a joined room member.
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* returned_event_id = string_member(body, "event_id");
+                REQUIRE(returned_event_id != nullptr);
+                REQUIRE(*returned_event_id == event_id);
+                auto const* event_type = string_member(body, "type");
+                REQUIRE(event_type != nullptr);
+                REQUIRE(*event_type == "m.room.message");
             }
         }
     }
@@ -10950,13 +10955,13 @@ SCENARIO("GET /rooms/{roomId}/joined_members conformance")
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/joined_members", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns joined member objects")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* joined = object_member_as_object(body, "joined");
+                REQUIRE(joined != nullptr);
+                REQUIRE(object_member_as_object(*joined, "@alice:example.org") != nullptr);
             }
         }
     }
@@ -10970,19 +10975,20 @@ SCENARIO("GET /rooms/{roomId}/event/{eventId} conformance")
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
         auto const room_id = create_room(started.runtime, token);
+        auto const event_id = send_message(started.runtime, token, room_id);
 
-        WHEN("GET /rooms/{roomId}/event/$eventId is called")
+        WHEN("GET /rooms/{roomId}/event/{eventId} is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/event/$event_id", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/event/" + event_id, token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns the requested event")
             {
-                REQUIRE(response.response.status == 404);
+                REQUIRE(response.response.status == 200);
                 auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                auto const* returned_event_id = string_member(body, "event_id");
+                REQUIRE(returned_event_id != nullptr);
+                REQUIRE(*returned_event_id == event_id);
             }
         }
     }

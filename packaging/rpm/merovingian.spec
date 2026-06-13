@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.7
+Version:        0.8.8
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.8-1
+- feat: promote joined_members and single room event retrieval to spec-covered
 * Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.7-1
 - fix: collapse pre-production database migrations into complete v1 schema
 * Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.6-1

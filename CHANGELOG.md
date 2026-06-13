@@ -1,3 +1,7 @@
+## 0.8.8
+
+- **feat(client-server): promote joined members and single-event retrieval to spec-covered:** `GET /_matrix/client/v3/rooms/{roomId}/joined_members` now returns the Matrix v1.18 `joined` map for joined users, and `GET /_matrix/client/v3/rooms/{roomId}/event/{eventId}` returns the requested room event to joined members. Conformance scenarios now assert the successful response shapes instead of the previous implementation-gap `M_UNRECOGNIZED` behavior.
+
 ## 0.8.7
 
 - **fix(database): collapse pre-production migration files into v1:** removed stale `002`-`006` SQL migration artifacts and folded the checked-in `001_initial_schema.sql` file into the complete current schema using only `CREATE TABLE` statements. Runtime bootstrap was already v1-only; the repository migration directory now matches that pre-`1.0.0` policy while keeping the migration framework ready for production-era forward migrations.
