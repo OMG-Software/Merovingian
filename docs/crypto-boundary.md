@@ -12,6 +12,8 @@ implementing custom cryptographic primitives.
 - Server signing service that selects the active server key and delegates
   signing to a provider.
 - Runtime server signing-key persistence for the current local Ed25519 key.
+- Explicit server signing-key rotation (`rotate_server_signing_key`) that retires
+  the active key into `old_verify_keys` and activates a freshly generated key.
 - Validation for Ed25519 public-key shape, signature shape, and key IDs.
 - Bounded random request-size validation.
 - Event-signing integration tests using deterministic provider doubles.
@@ -34,6 +36,12 @@ The runtime signing key is now generated using `crypto_sign_keypair`, which
 produces a cryptographically random keypair. The secret key is held only in
 process memory and is not persisted to disk; on restart a new keypair is
 generated and the public key is upserted, effecting an automatic key rotation.
+An explicit rotation is also available via `rotate_server_signing_key`: it retires
+the active key (setting its `valid_until_ts` to now so it publishes under
+`old_verify_keys` with a past `expired_ts`) and activates a freshly generated key.
+`ensure_runtime_server_signing_key` selects the key with the greatest
+`valid_until_ts`, so the rotated-in key becomes active while peers can still verify
+events signed under the retired key. A single key is active at a time.
 Comma-delimited PDUs without JSON are rejected when a signing key is available,
 closing the legacy-verification bypass.
 
@@ -59,7 +67,8 @@ The boundary provides these guarantees:
 
 These remain deferred:
 
-- Signing-key rotation and audit-log persistence.
+- Simultaneously-active multiple signing keys (one key is active at a time).
+- Audit-log persistence for signing-key lifecycle changes.
 - Hardware-backed key support.
 - Persistent secret-key storage (key file, HSM, or key vault).
 

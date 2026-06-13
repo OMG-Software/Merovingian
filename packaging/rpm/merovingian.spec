@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.5
+Version:        0.8.6
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,11 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.6-1
+- feat: server signing-key rotation (rotate_server_signing_key, old_verify_keys publication)
+- test: key-rotation conformance, live-Synapse send/signing interop, PostgreSQL durability
+* Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.5-1
+- fix: security findings hardening (federation auth, token hashing, EDU parsing, response headers)
 * Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.4-1
 - fix: implement POST /_matrix/client/v3/delete_devices with UIA and idempotent bulk deletion
 * Thu Jun 12 2026 James Chapman <claude@ping.me.uk> - 0.8.3-1
