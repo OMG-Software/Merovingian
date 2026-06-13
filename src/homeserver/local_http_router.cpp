@@ -930,7 +930,7 @@ namespace
                     if (auto const* last_active_ago = object_member_as_int(*presence, "last_active_ago");
                         last_active_ago != nullptr && *last_active_ago >= 0)
                     {
-                        state.last_active_ago = static_cast<std::uint64_t>(*last_active_ago);
+                        state.last_active_ago = *last_active_ago;
                     }
                     if (auto const* currently_active = object_member_as_bool(*presence, "currently_active");
                         currently_active != nullptr)

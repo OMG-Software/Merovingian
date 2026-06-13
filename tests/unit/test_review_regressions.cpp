@@ -553,6 +553,63 @@ SCENARIO("Inbound presence and device-list EDUs reject user IDs from a different
     }
 }
 
+SCENARIO("Inbound presence EDUs persist non-negative last_active_ago values from the sending origin",
+         "[homeserver][federation][edu][presence][review][regression]")
+{
+    GIVEN("a started client-server runtime and a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto constexpr remote_origin = "remote.example.org";
+        auto constexpr remote_key_id = "ed25519:auto";
+        auto constexpr remote_key_seed = "presence-last-active-review-seed";
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+
+        auto const presence_content = R"({
+            "push":[
+                {
+                    "user_id":"@alice:remote.example.org",
+                    "presence":"online",
+                    "status_msg":"available",
+                    "last_active_ago":42000,
+                    "currently_active":true
+                }
+            ]
+        })";
+        auto const presence_transaction =
+            merovingian::federation::build_edu_transaction_body(remote_origin, "m.presence", presence_content);
+        REQUIRE(presence_transaction.has_value());
+        auto const target = std::string{"/_matrix/federation/v1/send/txn-presence-accepted-1"};
+
+        WHEN("the remote sends a valid presence EDU with a non-negative last_active_ago")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver, {"PUT", target,
+                                     x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed,
+                                                            "example.org", "PUT", target, *presence_transaction),
+                                     *presence_transaction});
+
+            THEN("the presence snapshot is stored with the provided activity age")
+            {
+                REQUIRE(response.status == 200U);
+                auto const persisted =
+                    std::ranges::find_if(runtime.homeserver.database.persistent_store.presence_states,
+                                         [](merovingian::database::PersistentPresence const& state) {
+                                             return state.user_id == "@alice:remote.example.org";
+                                         });
+                REQUIRE(persisted != runtime.homeserver.database.persistent_store.presence_states.end());
+                REQUIRE(persisted->presence == "online");
+                REQUIRE(persisted->status_msg == "available");
+                REQUIRE(persisted->last_active_ago == 42000);
+                REQUIRE(persisted->currently_active);
+            }
+        }
+    }
+}
+
 SCENARIO("A blocking remote join does not serialize unrelated client requests",
          "[homeserver][locking][review][regression]")
 {
