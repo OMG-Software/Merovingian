@@ -45,7 +45,7 @@ Open work per capability area. Status column reflects the current level in the
 | `POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId}` | `spec-covered` | |
 | `POST /_matrix/client/v3/user_directory/search` | `spec-covered` | |
 | `POST /_matrix/client/v3/delete_devices` | `spec-covered` | |
-| `GET /_matrix/client/v3/sync` | `spec-covered` | Unread-notification/summary semantics, durable stream tokens. `filter_id` parameter now wired and conformance-covered. |
+| `GET /_matrix/client/v3/sync` | `spec-covered` | Unread-notification/summary semantics. `filter_id` parameter now wired and conformance-covered; sync-only stream tokens now bound to the response snapshot for to-device delivery so room keys queued during response construction remain pending for the next sync. |
 | `POST /_matrix/client/v3/account/password` | `spec-covered` | UI-auth re-authentication and `logout_devices` handling. |
 | `POST /_matrix/client/v3/createRoom` | `spec-covered` | Broader conformance fixtures. |
 | `POST /_matrix/client/v3/rooms/{roomId}/join` | `spec-covered` | Federation-aware joins. |

@@ -157,6 +157,45 @@ SCENARIO("Database statement validation allows explicit PostgreSQL transaction c
     }
 }
 
+SCENARIO("To-device drain does not acknowledge messages beyond the sync response snapshot", "[database][to-device]")
+{
+    GIVEN("Alice has two pending to-device room-key messages")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        REQUIRE(merovingian::database::enqueue_to_device_message(
+            store, {0U, "@bob:example.org", "@alice:example.org", "ALICE", "m.room_key", R"({"k":"one"})"}));
+        REQUIRE(merovingian::database::enqueue_to_device_message(
+            store, {0U, "@bob:example.org", "@alice:example.org", "ALICE", "m.room_key", R"({"k":"two"})"}));
+
+        WHEN("sync drains only through the first response snapshot")
+        {
+            auto const first =
+                merovingian::database::drain_to_device_messages(store, "@alice:example.org", "ALICE", 0U, 1U);
+
+            THEN("only the first message is delivered and neither queued row is prematurely deleted")
+            {
+                REQUIRE(first.size() == 1U);
+                REQUIRE(first.front().content_json == R"({"k":"one"})");
+                REQUIRE(store.to_device_messages.size() == 2U);
+            }
+        }
+
+        WHEN("Alice acknowledges the first snapshot and syncs through the second")
+        {
+            auto const second =
+                merovingian::database::drain_to_device_messages(store, "@alice:example.org", "ALICE", 1U, 2U);
+
+            THEN("the first row is purged as acknowledged and the second room key is delivered")
+            {
+                REQUIRE(second.size() == 1U);
+                REQUIRE(second.front().content_json == R"({"k":"two"})");
+                REQUIRE(store.to_device_messages.size() == 1U);
+                REQUIRE(store.to_device_messages.front().content_json == R"({"k":"two"})");
+            }
+        }
+    }
+}
+
 SCENARIO("Database statement validation enforces placeholder arity", "[database]")
 {
     GIVEN("statements with matching and mismatched placeholder arity")
