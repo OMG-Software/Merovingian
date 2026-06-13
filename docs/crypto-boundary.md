@@ -25,6 +25,10 @@ hashing, media deduplication hashes, and Matrix event hashes use LibSodium.
 Event signing and verification now flow through the Ed25519 provider interface.
 Runtime-created local room events use the persisted server signing-key record
 and fail closed if the signing key cannot be materialized.
+Access-token and refresh-token hashes now use a keyed BLAKE2b (`token-hash:v3`)
+construction seeded from runtime secret material; the previous unkeyed
+`token-hash:v2` form remains accepted only for lookup compatibility with older
+persisted rows.
 
 The runtime signing key is now generated using `crypto_sign_keypair`, which
 produces a cryptographically random keypair. The secret key is held only in
@@ -46,6 +50,8 @@ The boundary provides these guarantees:
 - Random byte requests are bounded at the interface edge.
 - Runtime signing keys are generated from system entropy, not derived from
   public server identity values.
+- Newly issued bearer-token digests are keyed, so a database leak no longer
+  exposes reusable unkeyed token hashes for offline correlation.
 - Commma-delimited PDUs without JSON body are rejected rather than bypassing
   Ed25519 cryptographic verification.
 

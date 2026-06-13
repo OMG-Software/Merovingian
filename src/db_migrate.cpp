@@ -13,7 +13,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.8.4"};
+constexpr auto version = std::string_view{"0.8.5"};
 
 auto print_help() -> void
 {
@@ -80,4 +80,3 @@ auto main(int argc, char const* const* argv) -> int
     std::cout << merovingian::database::offline_migrator_summary(plan) << '\n';
     return plan.ok ? 0 : 78;
 }
-

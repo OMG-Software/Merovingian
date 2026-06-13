@@ -41,7 +41,7 @@ namespace
 
     [[nodiscard]] auto token_is_hash(std::string_view token_hash) noexcept -> bool
     {
-        return token_hash.starts_with("token-hash:v2:");
+        return token_hash.starts_with("token-hash:v2:") || token_hash.starts_with("token-hash:v3:");
     }
 
     [[nodiscard]] auto media_hash_is_valid(std::string_view hash_algorithm, std::string_view digest) noexcept -> bool
@@ -2115,8 +2115,8 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
 }
 
 [[nodiscard]] auto find_client_txn_event_id(PersistentStore const& store, std::string_view user_id,
-                                             std::string_view room_id, std::string_view event_type,
-                                             std::string_view txn_id) -> std::optional<std::string>
+                                            std::string_view room_id, std::string_view event_type,
+                                            std::string_view txn_id) -> std::optional<std::string>
 {
     auto const it = std::ranges::find_if(store.client_txn_ids, [&](PersistentClientTxnRecord const& r) {
         return r.user_id == user_id && r.room_id == room_id && r.event_type == event_type && r.txn_id == txn_id;
@@ -2139,12 +2139,12 @@ auto restore_sync_stream_id(PersistentStore& store) -> void
     {
         return true;
     }
-    auto const statement = record_statement(
-        "insert_client_txn_id",
-        "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id) "
-        "VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
-        {public_value(record.user_id), public_value(record.room_id), public_value(record.event_type),
-         public_value(record.txn_id), public_value(record.event_id)});
+    auto const statement =
+        record_statement("insert_client_txn_id",
+                         "INSERT INTO client_txn_ids (user_id, room_id, event_type, txn_id, event_id) "
+                         "VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
+                         {public_value(record.user_id), public_value(record.room_id), public_value(record.event_type),
+                          public_value(record.txn_id), public_value(record.event_id)});
     if (!record_and_persist(store, statement))
     {
         return false;
@@ -2212,8 +2212,7 @@ auto repair_missing_state_entries(PersistentStore& store) -> std::size_t
 
         // Skip tuples that already have a state entry.
         if (std::ranges::any_of(store.state, [&tuple](PersistentStateEvent const& s) {
-                return s.room_id == tuple.room_id && s.event_type == tuple.event_type &&
-                       s.state_key == tuple.state_key;
+                return s.room_id == tuple.room_id && s.event_type == tuple.event_type && s.state_key == tuple.state_key;
             }))
         {
             continue;

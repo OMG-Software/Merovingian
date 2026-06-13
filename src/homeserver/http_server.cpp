@@ -105,9 +105,9 @@ namespace
     auto log_swallowed_exception(std::string_view site) -> void
     {
         auto fields = std::vector<observability::StructuredLogField>{
-            observability::StructuredLogField{"site", std::string{site}, false},
+            observability::StructuredLogField{"site", std::string{site},                          false},
             observability::StructuredLogField{"type", std::string{current_exception_type_name()}, false},
-            observability::StructuredLogField{"what", current_exception_message(), false}
+            observability::StructuredLogField{"what", current_exception_message(),                false}
         };
         log_diagnostic("sync.exception", std::move(fields));
     }
@@ -249,21 +249,27 @@ namespace
             auto const now = std::chrono::steady_clock::now();
             if (now - start > request_head_deadline)
             {
-                log_diagnostic("request.head_slowloris",
-                               {
-                                   {"reason",  "overall_deadline", false},
-                                   {"elapsed_ms", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count()), false},
-                                   {"bytes_received", std::to_string(buffer.size()), false}
+                log_diagnostic(
+                    "request.head_slowloris",
+                    {
+                        {"reason",         "overall_deadline",                                                       false},
+                        {"elapsed_ms",
+                         std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - start).count()),
+                         false                                                                                            },
+                        {"bytes_received", std::to_string(buffer.size()),                                            false}
                 });
                 return {std::move(buffer), std::string::npos};
             }
             if (now - last_byte > inter_byte_timeout)
             {
-                log_diagnostic("request.head_slowloris",
-                               {
-                                   {"reason",  "inter_byte_timeout", false},
-                                   {"elapsed_ms", std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - last_byte).count()), false},
-                                   {"bytes_received", std::to_string(buffer.size()), false}
+                log_diagnostic(
+                    "request.head_slowloris",
+                    {
+                        {"reason",         "inter_byte_timeout",                                                         false},
+                        {"elapsed_ms",
+                         std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(now - last_byte).count()),
+                         false                                                                                                },
+                        {"bytes_received", std::to_string(buffer.size()),                                                false}
                 });
                 return {std::move(buffer), std::string::npos};
             }
@@ -362,12 +368,25 @@ namespace
         // Per-response headers (CORS preflight, Vary: Origin) come first so
         // the browser sees them before Content-Length/Content-Type. Defaulted
         // to empty for the few synthetic responses that carry no metadata.
+        auto has_nosniff = false;
         for (auto const& header : headers)
         {
+            if (!http::header_name_is_valid(header.first) || !http::header_value_is_valid(header.second))
+            {
+                continue;
+            }
+            if (header.first == "X-Content-Type-Options" && header.second == "nosniff")
+            {
+                has_nosniff = true;
+            }
             response.append("\r\n");
             response.append(header.first);
             response.append(": ");
             response.append(header.second);
+        }
+        if (!has_nosniff)
+        {
+            response.append("\r\nX-Content-Type-Options: nosniff");
         }
         response.append("\r\nContent-Length: ");
         response.append(std::to_string(body.size()));
@@ -444,8 +463,8 @@ namespace
         return std::string{authorization.substr(prefix.size())};
     }
 
-    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body,
-                                            std::string_view peer_addr) -> LocalHttpRequest
+    [[nodiscard]] auto build_local_request(http::RequestHead const& head, std::string body, std::string_view peer_addr)
+        -> LocalHttpRequest
     {
         auto request = LocalHttpRequest{};
         request.method = head.method;
@@ -484,7 +503,10 @@ namespace
             {
                 if (auto cached = cache->load())
                 {
-                    return {DispatchResult::Status::complete, {200U, *cached}, {}};
+                    return {
+                        DispatchResult::Status::complete, {200U, *cached},
+                         {}
+                    };
                 }
             }
         }
@@ -611,32 +633,32 @@ namespace
                 auto const fd = stream.fd();
                 auto wait = result.wait;
                 wait.timeout = std::min(wait.timeout, max_async_wait);
-                auto submitted = sync_pool->submit(
-                    [fd, &runtime, &stats, request_copy = local_request, wait, notifier]() mutable {
-                        try
-                        {
-                            std::ignore = notifier->wait_for_change(wait.since_stream_ordering,
-                                                                     wait.since_sync_stream_id,
-                                                                     wait.timeout);
-                        }
-                        catch (...)
-                        {
-                            log_swallowed_exception("sync_pool_dispatch");
-                        }
-                        auto const final_result = handle_client_server_request(runtime, request_copy, false);
-                        ++stats.completed_requests;
-                        log_diagnostic("request.completed",
-                                       {{"method",         request_copy.method,                                       false},
-                                        {"target",         observability::sanitized_http_target(request_copy.target), false},
-                                        {"status",         std::to_string(final_result.response.status),              false},
-                                        {"response_bytes", std::to_string(final_result.response.body.size()),          false}});
-                        auto const formatted =
-                            format_response(final_result.response.status, final_result.response.body,
-                                            final_result.response.headers);
-                        std::ignore = ::send(fd, formatted.data(), formatted.size(), MSG_NOSIGNAL);
-                        std::ignore = ::shutdown(fd, SHUT_RDWR);
-                        ::close(fd);
+                auto submitted = sync_pool->submit([fd, &runtime, &stats, request_copy = local_request, wait,
+                                                    notifier]() mutable {
+                    try
+                    {
+                        std::ignore = notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id,
+                                                                wait.timeout);
+                    }
+                    catch (...)
+                    {
+                        log_swallowed_exception("sync_pool_dispatch");
+                    }
+                    auto const final_result = handle_client_server_request(runtime, request_copy, false);
+                    ++stats.completed_requests;
+                    log_diagnostic("request.completed",
+                                   {
+                                       {"method",         request_copy.method,                                       false},
+                                       {"target",         observability::sanitized_http_target(request_copy.target), false},
+                                       {"status",         std::to_string(final_result.response.status),              false},
+                                       {"response_bytes", std::to_string(final_result.response.body.size()),         false}
                     });
+                    auto const formatted = format_response(final_result.response.status, final_result.response.body,
+                                                           final_result.response.headers);
+                    std::ignore = ::send(fd, formatted.data(), formatted.size(), MSG_NOSIGNAL);
+                    std::ignore = ::shutdown(fd, SHUT_RDWR);
+                    ::close(fd);
+                });
                 if (submitted)
                 {
                     return true; // fd is now owned by the sync pool thread
@@ -649,8 +671,7 @@ namespace
             try
             {
                 std::ignore = notifier->wait_for_change(result.wait.since_stream_ordering,
-                                                         result.wait.since_sync_stream_id,
-                                                         result.wait.timeout);
+                                                        result.wait.since_sync_stream_id, result.wait.timeout);
             }
             catch (...)
             {
@@ -705,8 +726,8 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
 }
 
 auto serve_one_http_connection(int client_fd, ClientServerRuntime& runtime, HttpServeStats& stats,
-                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool,
-                               std::string_view peer_addr) -> bool
+                               HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool, std::string_view peer_addr)
+    -> bool
 {
     auto stream = PlainConnectionStream{client_fd};
     return serve_stream(stream, runtime, stats, dispatch_mode, sync_pool, peer_addr);
@@ -773,21 +794,23 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
         // SocketHandle for RAII so it is closed even on exceptions.
         auto client = core::SocketHandle{raw_client};
         auto fd = client.release();
-        auto submitted = pool.submit([&runtime, &stats, dispatch_mode, sync_pool, fd, peer_addr = std::move(peer_addr)] {
-            auto guard = core::SocketHandle{fd};
-            ++stats.accepted_connections;
-            auto const handed_off = serve_one_http_connection(fd, runtime, stats, dispatch_mode, sync_pool, peer_addr);
-            if (handed_off)
-            {
-                // The sync pool thread owns the fd; do NOT shut it down here.
-                std::ignore = guard.release();
-            }
-            else
-            {
-                std::ignore = ::shutdown(fd, SHUT_RDWR);
-                // ~SocketHandle closes fd on both normal and exceptional exit.
-            }
-        });
+        auto submitted =
+            pool.submit([&runtime, &stats, dispatch_mode, sync_pool, fd, peer_addr = std::move(peer_addr)] {
+                auto guard = core::SocketHandle{fd};
+                ++stats.accepted_connections;
+                auto const handed_off =
+                    serve_one_http_connection(fd, runtime, stats, dispatch_mode, sync_pool, peer_addr);
+                if (handed_off)
+                {
+                    // The sync pool thread owns the fd; do NOT shut it down here.
+                    std::ignore = guard.release();
+                }
+                else
+                {
+                    std::ignore = ::shutdown(fd, SHUT_RDWR);
+                    // ~SocketHandle closes fd on both normal and exceptional exit.
+                }
+            });
         if (!submitted)
         {
             // Pool is stopped — close the fd that nobody will handle.
@@ -875,9 +898,9 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                 // TLS async offload is not yet implemented; sync waits block the
                 // pool thread (nullptr sync_pool = fall back to synchronous wait).
                 std::ignore = serve_stream(stream, runtime, stats, dispatch_mode, nullptr, tls_peer_addr);
-            std::ignore = ::shutdown(fd, SHUT_RDWR);
-            // ~SocketHandle closes fd.
-        });
+                std::ignore = ::shutdown(fd, SHUT_RDWR);
+                // ~SocketHandle closes fd.
+            });
         if (!submitted)
         {
             std::ignore = ::shutdown(fd, SHUT_RDWR);

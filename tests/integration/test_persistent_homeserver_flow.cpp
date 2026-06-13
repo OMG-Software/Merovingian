@@ -183,11 +183,10 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
                 token = token_from_login_body(login.response.body);
                 // Real Ed25519 keypair required: OTK and fallback signatures
                 // are now cryptographically verified server-side.
-                auto const keys_kp =
-                    merovingian::federation::test::keypair_from_seed("persistent-keys-seed");
+                auto const keys_kp = merovingian::federation::test::keypair_from_seed("persistent-keys-seed");
                 auto const keys_ed25519 = merovingian::federation::test::pubkey_b64(keys_kp);
-                auto const otk_json = merovingian::federation::test::make_signed_otk_json(
-                    "@keys:example.org", "KEYS1", "otk", keys_kp.secret_key);
+                auto const otk_json = merovingian::federation::test::make_signed_otk_json("@keys:example.org", "KEYS1",
+                                                                                          "otk", keys_kp.secret_key);
                 auto const fb_json = merovingian::federation::test::make_signed_fallback_key_json(
                     "@keys:example.org", "KEYS1", "fallback", keys_kp.secret_key);
                 auto const keys_upload_body =
@@ -195,8 +194,7 @@ SCENARIO("SQLite-backed client-server runtime persists E2EE key API state across
                         R"({"device_keys":{"algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"device_id":"KEYS1","keys":{"curve25519:KEYS1":"curve-key","ed25519:KEYS1":")"} +
                     keys_ed25519 +
                     R"("},"signatures":{},"user_id":"@keys:example.org"},"one_time_keys":{"signed_curve25519:AAA":)" +
-                    otk_json +
-                    R"(},"fallback_keys":{"signed_curve25519:FB":)" + fb_json + R"(}})";
+                    otk_json + R"(},"fallback_keys":{"signed_curve25519:FB":)" + fb_json + R"(}})";
                 auto const upload = merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/keys/upload", token, keys_upload_body});
 
@@ -374,11 +372,11 @@ SCENARIO("Persistent homeserver store records the client-server flow",
                     return t.revoked;
                 });
                 REQUIRE(revoked == 1U);
-                // Both tokens must use the v2 hash format.
-                auto const all_v2 = std::all_of(all_tokens.begin(), all_tokens.end(), [](auto const& t) {
-                    return t.token_hash.find("token-hash:v2:") == 0U;
+                // Both tokens must use the v3 hash format.
+                auto const all_v3 = std::all_of(all_tokens.begin(), all_tokens.end(), [](auto const& t) {
+                    return t.token_hash.find("token-hash:v3:") == 0U;
                 });
-                REQUIRE(all_v2);
+                REQUIRE(all_v3);
                 REQUIRE(runtime.homeserver.database.persistent_store.rooms.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.memberships.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.events.size() == 8U);

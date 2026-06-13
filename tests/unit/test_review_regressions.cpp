@@ -6,6 +6,7 @@
 #include "merovingian/database/migration.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/database/schema.hpp"
+#include "merovingian/federation/outbound_transaction.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
 #include "merovingian/homeserver/client_server.hpp"
@@ -73,12 +74,9 @@ private:
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -90,12 +88,9 @@ private:
     security.registration.require_token = true;
     security.registration.token_file = token_file.string();
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -373,6 +368,32 @@ SCENARIO("Federation auth failures do not surface as client-style 401s", "[homes
     }
 }
 
+SCENARIO("Pipe-delimited federation fixture auth is rejected on the production federation listener",
+         "[homeserver][security][federation][review]")
+{
+    GIVEN("a started runtime handling a federation request with legacy pipe-delimited auth")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the inbound federation route is requested with the fixture token format")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime, {"GET",
+                          "/_matrix/federation/v1/query/profile?user_id=%40jcadmin%3Aexample.org&field=displayname",
+                          "remote.example.org|ed25519:auto|signature|example.org|1000|canonical",
+                          {}});
+
+            THEN("the request is rejected instead of being accepted as real X-Matrix auth")
+            {
+                REQUIRE(response.status == 502U);
+                REQUIRE(response.body == "malformed federation authorization");
+            }
+        }
+    }
+}
+
 SCENARIO("Inbound federation query/profile answers existing local users even without a stored profile row",
          "[homeserver][federation][query-profile][review][regression]")
 {
@@ -415,6 +436,118 @@ SCENARIO("Inbound federation query/profile answers existing local users even wit
                 REQUIRE(response.status == 200U);
                 REQUIRE(response.body.find(R"("displayname":"")") != std::string::npos);
                 REQUIRE(response.body.find(R"("avatar_url":"")") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound receipt EDUs read event_ids arrays instead of ad hoc event_id fields",
+         "[homeserver][federation][edu][receipt][review][regression]")
+{
+    GIVEN("a started client-server runtime with a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto constexpr remote_origin = "remote.example.org";
+        auto constexpr remote_key_id = "ed25519:auto";
+        auto constexpr remote_key_seed = "receipt-review-seed";
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+
+        auto const content =
+            R"({"!room:example.org":{"m.read":{"@alice:remote.example.org":{"event_ids":["$event:remote.example.org"],"data":{"ts":42}}}}})";
+        auto const transaction =
+            merovingian::federation::build_edu_transaction_body(remote_origin, "m.receipt", content);
+        REQUIRE(transaction.has_value());
+        auto const target = std::string{"/_matrix/federation/v1/send/txn-receipt-1"};
+
+        WHEN("the receipt EDU is delivered through the local federation listener")
+        {
+            auto const response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver, {"PUT", target,
+                                     x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed,
+                                                            "example.org", "PUT", target, *transaction),
+                                     *transaction});
+
+            THEN("the stored receipt uses the first event_ids entry as required by the Matrix shape")
+            {
+                REQUIRE(response.status == 200U);
+                auto const receipt = std::ranges::find_if(runtime.homeserver.receipts, [](auto const& candidate) {
+                    return candidate.user_id == "@alice:remote.example.org";
+                });
+                REQUIRE(receipt != runtime.homeserver.receipts.end());
+                REQUIRE(receipt->event_id == "$event:remote.example.org");
+                REQUIRE(receipt->receipt_type == "m.read");
+            }
+        }
+    }
+}
+
+SCENARIO("Inbound presence and device-list EDUs reject user IDs from a different origin",
+         "[homeserver][federation][edu][origin-check][review][regression]")
+{
+    GIVEN("a started client-server runtime with a local user and a trusted remote")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const registered = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(registered.response.status == 200U);
+
+        auto constexpr remote_origin = "remote.example.org";
+        auto constexpr remote_key_id = "ed25519:auto";
+        auto constexpr remote_key_seed = "origin-check-review-seed";
+        merovingian::federation::upsert_remote(runtime.homeserver.federation,
+                                               remote_runtime(remote_origin, remote_key_id, remote_key_seed));
+
+        auto const presence_content =
+            R"({"push":[{"user_id":"@mallory:evil.example.org","presence":"online","status_msg":"spoofed"}]})";
+        auto const presence_transaction =
+            merovingian::federation::build_edu_transaction_body(remote_origin, "m.presence", presence_content);
+        REQUIRE(presence_transaction.has_value());
+        auto const presence_target = std::string{"/_matrix/federation/v1/send/txn-presence-1"};
+
+        auto const device_list_content =
+            R"({"user_id":"@mallory:evil.example.org","device_id":"DEVICE1","stream_id":9})";
+        auto const device_list_transaction = merovingian::federation::build_edu_transaction_body(
+            remote_origin, "m.device_list_update", device_list_content);
+        REQUIRE(device_list_transaction.has_value());
+        auto const device_list_target = std::string{"/_matrix/federation/v1/send/txn-device-list-1"};
+
+        WHEN("the remote sends EDUs whose user_ids claim a different server")
+        {
+            auto const presence_response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver,
+                {"PUT", presence_target,
+                 x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed, "example.org", "PUT",
+                                        presence_target, *presence_transaction),
+                 *presence_transaction});
+            auto const device_list_response = merovingian::homeserver::handle_federation_http_request(
+                runtime.homeserver,
+                {"PUT", device_list_target,
+                 x_matrix_authorization(remote_origin, remote_key_id, remote_key_seed, "example.org", "PUT",
+                                        device_list_target, *device_list_transaction),
+                 *device_list_transaction});
+
+            THEN("no spoofed presence or device-list side effects are recorded")
+            {
+                REQUIRE(presence_response.status == 200U);
+                REQUIRE(device_list_response.status == 200U);
+                REQUIRE(std::ranges::none_of(runtime.homeserver.database.persistent_store.presence_states,
+                                             [](auto const& state) {
+                                                 return state.user_id == "@mallory:evil.example.org";
+                                             }));
+                REQUIRE(std::ranges::none_of(runtime.homeserver.database.persistent_store.device_list_changes,
+                                             [](auto const& change) {
+                                                 return change.subject_user_id == "@mallory:evil.example.org";
+                                             }));
             }
         }
     }
@@ -860,40 +993,42 @@ SCENARIO("leave_room recovers missing membership row from current state before r
 
         // Register and log in the user.
         auto const reg_resp = merovingian::homeserver::handle_client_server_request(
-            rt, {"POST", "/_matrix/client/v3/register", {},
-                 merovingian::tests::registration_json("bob", "SecurePass1!")});
+            rt,
+            {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("bob", "SecurePass1!")});
         REQUIRE(reg_resp.response.status == 200U);
         auto const login_resp = merovingian::homeserver::handle_client_server_request(
             rt,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"SecurePass1!","device_id":"DEV1"})"});
         REQUIRE(login_resp.response.status == 200U);
         auto const access_token = extract_json_string(login_resp.response.body, "access_token");
 
         // Simulate a partial join: room stored, join state event stored, but NO
         // membership row — this is the state left behind by a mid-join server restart.
-        auto constexpr room_id   = "!partialroom:remote.example.org";
-        auto constexpr user_id   = "@bob:example.org";
-        auto constexpr event_id  = "$join_ev1:remote.example.org";
-        auto const join_event_json = std::string{
-            R"({"type":"m.room.member","state_key":")" + std::string{user_id} +
-            R"(","sender":")" + std::string{user_id} +
-            R"(","room_id":")" + std::string{room_id} +
-            R"(","origin_server_ts":1700000000000,"depth":1,)"
-            R"("auth_events":[],"prev_events":[],)"
-            R"("content":{"membership":"join"}})"};
+        auto constexpr room_id = "!partialroom:remote.example.org";
+        auto constexpr user_id = "@bob:example.org";
+        auto constexpr event_id = "$join_ev1:remote.example.org";
+        auto const join_event_json =
+            std::string{R"({"type":"m.room.member","state_key":")" + std::string{user_id} + R"(","sender":")" +
+                        std::string{user_id} + R"(","room_id":")" + std::string{room_id} +
+                        R"(","origin_server_ts":1700000000000,"depth":1,)"
+                        R"("auth_events":[],"prev_events":[],)"
+                        R"("content":{"membership":"join"}})"};
         {
             auto& store = rt.homeserver.database.persistent_store;
             store.rooms.push_back({std::string{room_id}, std::string{user_id}});
-            auto pe            = merovingian::database::PersistentEvent{};
-            pe.event_id        = event_id;
-            pe.room_id         = room_id;
-            pe.sender_user_id  = user_id;
-            pe.json            = join_event_json;
+            auto pe = merovingian::database::PersistentEvent{};
+            pe.event_id = event_id;
+            pe.room_id = room_id;
+            pe.sender_user_id = user_id;
+            pe.json = join_event_json;
             pe.stream_ordering = rt.homeserver.database.next_stream_ordering++;
             auto state = std::optional<merovingian::database::PersistentStateEvent>{
-                merovingian::database::PersistentStateEvent{
-                    std::string{room_id}, "m.room.member", std::string{user_id}, std::string{event_id}}};
+                merovingian::database::PersistentStateEvent{std::string{room_id}, "m.room.member", std::string{user_id},
+                                                            std::string{event_id}}
+            };
             std::ignore = merovingian::database::store_event_with_state(store, std::move(pe), state);
             // Deliberately do NOT store a membership row.
         }
@@ -903,8 +1038,7 @@ SCENARIO("leave_room recovers missing membership row from current state before r
             // outbound_client is null → federation fails → 502 expected.
             // The key assertion is that we do NOT get 403 "user is not joined",
             // which would mean the recovery logic did not fire.
-            auto const result = merovingian::homeserver::leave_room(
-                rt.homeserver, access_token, room_id);
+            auto const result = merovingian::homeserver::leave_room(rt.homeserver, access_token, room_id);
 
             THEN("the response is not 403 — membership was recovered from state")
             {
@@ -931,18 +1065,22 @@ SCENARIO("leave_room takes the federated make_leave/send_leave path for remote r
         auto& rt = started.runtime;
 
         auto const reg_resp = merovingian::homeserver::handle_client_server_request(
-            rt, {"POST", "/_matrix/client/v3/register", {},
+            rt, {"POST",
+                 "/_matrix/client/v3/register",
+                 {},
                  merovingian::tests::registration_json("carol", "SecurePass2!")});
         REQUIRE(reg_resp.response.status == 200U);
         auto const login_resp = merovingian::homeserver::handle_client_server_request(
             rt,
-            {"POST", "/_matrix/client/v3/login", {},
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
              R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@carol:example.org"},"password":"SecurePass2!","device_id":"DEV2"})"});
         REQUIRE(login_resp.response.status == 200U);
         auto const access_token = extract_json_string(login_resp.response.body, "access_token");
 
-        auto constexpr room_id   = "!fedroom:remote.example.org";
-        auto constexpr user_id   = "@carol:example.org";
+        auto constexpr room_id = "!fedroom:remote.example.org";
+        auto constexpr user_id = "@carol:example.org";
 
         {
             auto& store = rt.homeserver.database.persistent_store;
@@ -956,11 +1094,10 @@ SCENARIO("leave_room takes the federated make_leave/send_leave path for remote r
         {
             // Ensure outbound_client and discovery_network are null so the
             // federation call returns {false, "federation not available"}.
-            rt.homeserver.outbound_client    = nullptr;
-            rt.homeserver.discovery_network  = nullptr;
+            rt.homeserver.outbound_client = nullptr;
+            rt.homeserver.discovery_network = nullptr;
 
-            auto const result = merovingian::homeserver::leave_room(
-                rt.homeserver, access_token, room_id);
+            auto const result = merovingian::homeserver::leave_room(rt.homeserver, access_token, room_id);
 
             THEN("the call fails with 502 indicating the federated leave path was taken")
             {

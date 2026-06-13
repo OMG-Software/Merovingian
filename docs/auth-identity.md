@@ -32,6 +32,12 @@ production-gated.
   restart.
 - Refresh-token hashes are persisted, rotated, and revoked on global logout or
   device deletion without storing plaintext token material.
+- Login failures for unknown users, wrong passwords, and locked/suspended
+  accounts collapse to the same external `invalid login` result while still
+  recording the internal rejection reason in audit logs.
+- Newly issued access and refresh tokens are persisted as keyed
+  `token-hash:v3:` digests derived from runtime secret material; token lookup
+  still accepts legacy `token-hash:v2:` rows during migration.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.

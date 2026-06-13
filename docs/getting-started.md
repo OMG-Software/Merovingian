@@ -226,8 +226,7 @@ listener rather than the client listener.
 |---|---|
 | `duplicate configuration key` at startup | Two active `database.backend` lines in the config — remove one |
 | `registration token required` on register | Pass `auth.token` in the request body or set `require_token=false` |
-| `unknown user` on login (HTTP 403) | User does not exist — register first |
-| `bad credentials` on login (HTTP 403) | Wrong password |
+| `invalid login` on login (HTTP 403) | Generic login failure for unknown user, wrong password, or a policy-denied account |
 | Client shows "Failed to get registration options" | `/.well-known/matrix/client` returns 404 — see step 8 |
 | Client OPTIONS requests return 401 | Old build — upgrade to 0.2.10+ |
 | Client shows "Connection lost" immediately after login | Old build returning 404 on `/capabilities` or `/pushrules/` — upgrade to 0.2.11+ |

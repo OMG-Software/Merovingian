@@ -212,7 +212,8 @@ auto constexpr remote_key_seed = "client-server-conformance-remote-seed";
     auto const signature = merovingian::federation::make_federation_signature(
         remote_origin, "example.org", method, target, body,
         merovingian::federation::test::keypair_from_seed(remote_key_seed).secret_key);
-    return std::string{remote_origin} + "|" + remote_key_id + "|" + signature + "|example.org|1000|canonical";
+    return std::string{"X-Matrix origin=\""} + remote_origin + "\",key=\"" + remote_key_id + "\",sig=\"" + signature +
+           "\",destination=\"example.org\"";
 }
 
 auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRuntime& runtime, std::string txn_id,
