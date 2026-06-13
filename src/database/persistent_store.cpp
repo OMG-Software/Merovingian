@@ -1842,29 +1842,49 @@ namespace
                                             std::string_view device_id, std::uint64_t since_stream_id)
     -> std::vector<PersistentToDeviceMessage>
 {
+    // Does this message address the requesting device? Empty target_device_id
+    // or "*" means broadcast to all of this user's devices; otherwise it is
+    // addressed to one specific device.
+    auto const addressed_to_device = [&](PersistentToDeviceMessage const& message) {
+        if (message.target_user_id != user_id)
+        {
+            return false;
+        }
+        return message.target_device_id.empty() || message.target_device_id == "*" ||
+               message.target_device_id == device_id;
+    };
+
+    // Delete-on-acknowledgement, not delete-on-read. A message is returned (and
+    // kept in storage) until the device proves receipt by advancing its since
+    // token past it. Messages newer than `since` are delivered WITHOUT deletion,
+    // so a dropped /sync response stays recoverable when the client retries with
+    // the same token — this is what stops encrypted room keys from being lost on
+    // the first, most fragile delivery. Messages at or below `since` were already
+    // acknowledged on a prior successful sync and are now safe to purge.
     auto drained = std::vector<PersistentToDeviceMessage>{};
+    auto acknowledged = std::vector<PersistentToDeviceMessage>{};
     for (auto const& message : store.to_device_messages)
     {
-        if (message.target_user_id != user_id || message.stream_id <= since_stream_id)
+        if (!addressed_to_device(message))
         {
             continue;
         }
-        // Empty target_device_id or "*" means broadcast to all this user's
-        // devices; otherwise the message is addressed to a specific device.
-        if (!message.target_device_id.empty() && message.target_device_id != "*" &&
-            message.target_device_id != device_id)
+        if (message.stream_id > since_stream_id)
         {
-            continue;
+            drained.push_back(message);
         }
-        drained.push_back(message);
+        else
+        {
+            acknowledged.push_back(message);
+        }
     }
-    // Delete the delivered rows from both the in-memory mirror and the
-    // backing store so the queue stays bounded. Broadcast (`*`) rows
-    // remain in storage until every observing device has drained them;
-    // we leave them behind here so the next device's /sync still sees
-    // them. The deletion is scoped by stream_id so concurrent senders
-    // can't race a row in between drain and delete.
-    for (auto const& message : drained)
+    // Purge acknowledged, device-targeted rows from both the in-memory mirror and
+    // the backing store so the queue stays bounded. Broadcast (`*`/empty) rows are
+    // shared across this user's devices and are not acknowledged per-device here,
+    // so they are left in storage (filtered out of future syncs by the since
+    // token) rather than deleted on one device's acknowledgement. Deletion is
+    // scoped by stream_id so concurrent senders can't race a row in between.
+    for (auto const& message : acknowledged)
     {
         auto const targeted_device = !message.target_device_id.empty() && message.target_device_id != "*";
         if (!targeted_device)

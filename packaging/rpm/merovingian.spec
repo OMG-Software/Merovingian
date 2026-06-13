@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.8
+Version:        0.8.9
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -89,6 +89,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.9-1
+- feat: reconstruct auth_chain/auth_chain_ids for federation /state and /state_ids
+- test: server-discovery edge-case conformance and PostgreSQL savepoint/concurrency durability
 * Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.8-1
 - feat: promote joined_members and single room event retrieval to spec-covered
 * Sat Jun 13 2026 James Chapman <claude@ping.me.uk> - 0.8.7-1

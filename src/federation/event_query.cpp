@@ -12,9 +12,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdint>
+#include <deque>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -65,6 +67,55 @@ namespace
         return nullptr;
     }
 
+    [[nodiscard]] auto find_event(database::PersistentStore const& store, std::string_view event_id)
+        -> database::PersistentEvent const*
+    {
+        auto const it = std::ranges::find_if(store.events, [event_id](database::PersistentEvent const& event) {
+            return event.event_id == event_id;
+        });
+        return it == store.events.end() ? nullptr : &*it;
+    }
+
+    // Computes the transitive closure of auth events reachable from `seed_ids`
+    // by following PersistentEvent::auth_event_ids. The traversal is breadth
+    // first from the seed order so the result is deterministic, and every ID is
+    // emitted at most once. Seeds (and references) that do not resolve to a
+    // stored event are skipped rather than emitted, so callers never surface a
+    // dangling ID for which no PDU body exists.
+    [[nodiscard]] auto collect_auth_chain(database::PersistentStore const& store,
+                                          std::vector<std::string> const& seed_ids) -> std::vector<std::string>
+    {
+        auto ordered = std::vector<std::string>{};
+        auto seen = std::unordered_set<std::string>{};
+        auto queue = std::deque<std::string>{};
+        for (auto const& id : seed_ids)
+        {
+            if (seen.insert(id).second)
+            {
+                queue.push_back(id);
+            }
+        }
+        while (!queue.empty())
+        {
+            auto const id = std::move(queue.front());
+            queue.pop_front();
+            auto const* event = find_event(store, id);
+            if (event == nullptr)
+            {
+                continue;
+            }
+            ordered.push_back(id);
+            for (auto const& auth_id : event->auth_event_ids)
+            {
+                if (seen.insert(auth_id).second)
+                {
+                    queue.push_back(auth_id);
+                }
+            }
+        }
+        return ordered;
+    }
+
 } // namespace
 
 auto build_event_response(database::PersistentStore const& store, std::string_view event_id,
@@ -98,17 +149,17 @@ auto build_event_response(database::PersistentStore const& store, std::string_vi
 auto build_state_response(database::PersistentStore const& store, std::string_view room_id) -> std::string
 {
     auto pdus = canonicaljson::Array{};
+    // Seed IDs for the auth chain: every auth event named by a returned state
+    // event. The transitive closure is computed once after the state is gathered.
+    auto auth_seed_ids = std::vector<std::string>{};
     for (auto const& state_event : store.state)
     {
         if (state_event.room_id != room_id)
         {
             continue;
         }
-        auto const event = std::ranges::find_if(
-            store.events, [&state_event](database::PersistentEvent const& candidate) {
-                return candidate.event_id == state_event.event_id;
-            });
-        if (event == store.events.end() || event->json.empty())
+        auto const* event = find_event(store, state_event.event_id);
+        if (event == nullptr || event->json.empty())
         {
             continue;
         }
@@ -117,6 +168,7 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
         {
             continue;
         }
+        auth_seed_ids.insert(auth_seed_ids.end(), event->auth_event_ids.begin(), event->auth_event_ids.end());
         pdus.push_back(std::move(*value));
     }
     if (pdus.empty())
@@ -124,25 +176,48 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
         log_diagnostic("state_query.not_found", {{"room_id", std::string{room_id}, false}});
         return {};
     }
+    // auth_chain carries the full event bodies for the transitive auth closure
+    // so a receiving server can authorize the returned state. Spec: SS API
+    // GET /_matrix/federation/v1/state/{roomId}.
+    auto auth_chain = canonicaljson::Array{};
+    for (auto const& auth_id : collect_auth_chain(store, auth_seed_ids))
+    {
+        auto const* event = find_event(store, auth_id);
+        if (event == nullptr || event->json.empty())
+        {
+            continue;
+        }
+        auto value = parsed_value(event->json);
+        if (!value.has_value())
+        {
+            continue;
+        }
+        auth_chain.push_back(std::move(*value));
+    }
     auto const pdu_count = pdus.size();
+    auto const auth_chain_count = auth_chain.size();
     auto response = canonicaljson::Object{};
-    // auth_chain reconstruction is not yet implemented; an empty array keeps
-    // the response well-formed for clients that tolerate it.
-    response.push_back(canonicaljson::make_member("auth_chain", canonicaljson::Value{canonicaljson::Array{}}));
+    response.push_back(canonicaljson::make_member("auth_chain", canonicaljson::Value{std::move(auth_chain)}));
     response.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdus)}));
-    log_diagnostic("state_query.accepted", {{"room_id", std::string{room_id}, false},
-                                            {"pdus",    std::to_string(pdu_count), false}});
+    log_diagnostic("state_query.accepted", {{"room_id",    std::string{room_id},            false},
+                                            {"pdus",       std::to_string(pdu_count),       false},
+                                            {"auth_chain", std::to_string(auth_chain_count), false}});
     return serialize(std::move(response));
 }
 
 auto build_state_ids_response(database::PersistentStore const& store, std::string_view room_id) -> std::string
 {
     auto pdu_ids = canonicaljson::Array{};
+    auto auth_seed_ids = std::vector<std::string>{};
     for (auto const& state_event : store.state)
     {
         if (state_event.room_id != room_id)
         {
             continue;
+        }
+        if (auto const* event = find_event(store, state_event.event_id); event != nullptr)
+        {
+            auth_seed_ids.insert(auth_seed_ids.end(), event->auth_event_ids.begin(), event->auth_event_ids.end());
         }
         pdu_ids.push_back(canonicaljson::Value{state_event.event_id});
     }
@@ -151,12 +226,19 @@ auto build_state_ids_response(database::PersistentStore const& store, std::strin
         log_diagnostic("state_ids_query.not_found", {{"room_id", std::string{room_id}, false}});
         return {};
     }
+    auto auth_chain_ids = canonicaljson::Array{};
+    for (auto const& auth_id : collect_auth_chain(store, auth_seed_ids))
+    {
+        auth_chain_ids.push_back(canonicaljson::Value{auth_id});
+    }
     auto const pdu_id_count = pdu_ids.size();
+    auto const auth_chain_id_count = auth_chain_ids.size();
     auto response = canonicaljson::Object{};
-    response.push_back(canonicaljson::make_member("auth_chain_ids", canonicaljson::Value{canonicaljson::Array{}}));
+    response.push_back(canonicaljson::make_member("auth_chain_ids", canonicaljson::Value{std::move(auth_chain_ids)}));
     response.push_back(canonicaljson::make_member("pdu_ids", canonicaljson::Value{std::move(pdu_ids)}));
-    log_diagnostic("state_ids_query.accepted", {{"room_id", std::string{room_id},           false},
-                                                {"pdu_ids", std::to_string(pdu_id_count), false}});
+    log_diagnostic("state_ids_query.accepted", {{"room_id",        std::string{room_id},                false},
+                                                {"pdu_ids",        std::to_string(pdu_id_count),        false},
+                                                {"auth_chain_ids", std::to_string(auth_chain_id_count), false}});
     return serialize(std::move(response));
 }
 

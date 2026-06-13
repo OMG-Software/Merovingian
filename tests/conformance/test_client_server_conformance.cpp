@@ -4545,14 +4545,20 @@ SCENARIO("Encrypted invite join completes the local query claim sendToDevice boo
                 REQUIRE(sender != nullptr);
                 REQUIRE(*sender == "@alice:example.org");
 
+                // Spec (CS API v1.18, Send-to-Device messaging): deletion is keyed on
+                // acknowledgement via the next_batch token, so the "exactly once" re-sync
+                // must acknowledge with that token rather than starting a fresh sync (an
+                // un-advanced token MUST redeliver — covered in the sync unit test).
+                auto const bob_next_batch = sync_next_batch(bob_sync.response.body);
                 auto const bob_sync_again = merovingian::homeserver::handle_client_server_request(
-                    started.runtime, {"GET", "/_matrix/client/v3/sync", bob, {}});
+                    started.runtime, {"GET", "/_matrix/client/v3/sync?since=" + bob_next_batch, bob, {}});
                 REQUIRE(bob_sync_again.response.status == 200U);
                 auto const bob_sync_again_body = parse_object(bob_sync_again.response.body);
                 auto const* to_device_again = object_member_as_object(bob_sync_again_body, "to_device");
                 REQUIRE(to_device_again != nullptr);
                 auto const* events_again = object_member_as_array(*to_device_again, "events");
                 REQUIRE(events_again != nullptr);
+                // Spec: an acknowledged message MUST NOT be redelivered.
                 REQUIRE(events_again->empty());
             }
         }
@@ -10163,7 +10169,7 @@ SCENARIO("PUT /sendToDevice targets only the addressed local device and drains o
                 {"PUT", "/_matrix/client/v3/sendToDevice/m.room_key/txn-targeted", alice,
                  R"({"messages":{"@bob:example.org":{"bob_DEV":{"session_key":"sk1","room_id":"!r:example.org"}}}})"});
 
-            THEN("only bob_DEV receives the message and a later sync does not redeliver it")
+            THEN("only bob_DEV receives the message and an acknowledged later sync does not redeliver it")
             {
                 REQUIRE(send.response.status == 200U);
 
@@ -10187,14 +10193,23 @@ SCENARIO("PUT /sendToDevice targets only the addressed local device and drains o
                 REQUIRE(device_two_events != nullptr);
                 REQUIRE(device_two_events->empty());
 
+                // Spec (CS API v1.18, Send-to-Device messaging): the server deletes a
+                // to-device message only once the client acknowledges it by syncing
+                // with the next_batch token from the response that delivered it. A sync
+                // with the SAME/un-advanced token MUST redeliver, so the acknowledged
+                // re-sync below uses next_batch. Re-syncing without a token would
+                // re-deliver, which is correct behaviour (covered in the sync unit test).
+                auto const device_one_next_batch = sync_next_batch(device_one_sync.response.body);
                 auto const device_one_sync_again = merovingian::homeserver::handle_client_server_request(
-                    started.runtime, {"GET", "/_matrix/client/v3/sync", bob_device_one, {}});
+                    started.runtime,
+                    {"GET", "/_matrix/client/v3/sync?since=" + device_one_next_batch, bob_device_one, {}});
                 REQUIRE(device_one_sync_again.response.status == 200U);
                 auto const device_one_again_body = parse_object(device_one_sync_again.response.body);
                 auto const* device_one_to_device_again = object_member_as_object(device_one_again_body, "to_device");
                 REQUIRE(device_one_to_device_again != nullptr);
                 auto const* device_one_events_again = object_member_as_array(*device_one_to_device_again, "events");
                 REQUIRE(device_one_events_again != nullptr);
+                // Spec: an acknowledged message MUST NOT be redelivered.
                 REQUIRE(device_one_events_again->empty());
             }
         }

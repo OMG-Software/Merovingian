@@ -624,3 +624,201 @@ SCENARIO("Server discovery uses SRV on the delegated host when no port is suppli
         }
     }
 }
+
+// --- IP literal server name short-circuits delegation ------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names (step 1)
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
+//
+// If the server name is a literal public IPv4 address, the server MUST be
+// contacted directly on that address at the default federation port. Neither
+// well-known nor SRV records are consulted, and TLS is still required.
+SCENARIO("Server discovery contacts a public IPv4 literal directly", "[federation][discovery][literal]")
+{
+    GIVEN("a server name that is a public IPv4 literal with misleading delegation data")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "{\"m.server\":\"misleading.example.net:9999\"}", {}};
+        network.srv_records = {
+            {"misleading.example.net", 9999U, 0U, 0U}
+        };
+        network.addresses.emplace("203.0.113.5", std::vector<std::string>{"203.0.113.5"});
+
+        WHEN("discovery resolves the IPv4 literal")
+        {
+            auto const result = merovingian::federation::discover_server("203.0.113.5", network, 5U);
+
+            THEN("the literal is used directly without consulting well-known or SRV")
+            {
+                // Spec MUST: a public IP literal is permitted as a federation destination.
+                // Do NOT remove/change - false here would block direct-IP federation entirely.
+                REQUIRE(result.discovery_allowed);
+                // Spec MUST: resolved_host MUST be the literal itself, not any delegated host.
+                // Do NOT remove/change - step 1 forbids delegation when the name is an IP literal.
+                REQUIRE(result.resolved_host == "203.0.113.5");
+                // Spec MUST: resolved_port MUST default to 8448 when no explicit port is given.
+                // Do NOT remove/change - using the well-known port 9999 violates the literal short-circuit.
+                REQUIRE(result.resolved_port == 8448U);
+                // Spec MUST: TLS is required for all federation traffic, including direct-IP.
+                // Do NOT remove/change - plaintext federation is not permitted.
+                REQUIRE(result.tls_required);
+                // Spec MUST: well-known MUST NOT be fetched for an IP literal.
+                // Do NOT remove/change - fetching delegation for a literal contradicts step 1.
+                REQUIRE(network.fetched_server.empty());
+                // Spec MUST: SRV MUST NOT be queried for an IP literal.
+                // Do NOT remove/change - SRV resolution of a literal is meaningless and forbidden.
+                REQUIRE(network.last_srv_lookup.empty());
+            }
+        }
+    }
+}
+
+// --- IPv6 literal with explicit port -----------------------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 2 Resolving server names (step 1)
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
+//
+// A bracketed IPv6 literal with an explicit port MUST be contacted directly on
+// that host and port. The brackets are stripped from the resolved host and the
+// explicit port is honored verbatim.
+SCENARIO("Server discovery honors a bracketed IPv6 literal with an explicit port",
+         "[federation][discovery][literal][ipv6]")
+{
+    GIVEN("a bracketed IPv6 literal carrying an explicit port")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.addresses.emplace("2001:db8::5", std::vector<std::string>{"2001:db8::5"});
+
+        WHEN("discovery resolves the bracketed IPv6 literal")
+        {
+            auto const result = merovingian::federation::discover_server("[2001:db8::5]:7000", network, 5U);
+
+            THEN("the host is the unbracketed literal and the explicit port is used")
+            {
+                // Spec MUST: a public IPv6 literal is a permitted destination.
+                // Do NOT remove/change - false here would block all IPv6-literal federation.
+                REQUIRE(result.discovery_allowed);
+                // Spec MUST: resolved_host MUST be the IPv6 address without the surrounding brackets.
+                // Do NOT remove/change - leaving brackets in breaks the TLS/connect host string.
+                REQUIRE(result.resolved_host == "2001:db8::5");
+                // Spec MUST: resolved_port MUST equal the explicit port from the literal.
+                // Do NOT remove/change - dropping the explicit port silently breaks federation.
+                REQUIRE(result.resolved_port == 7000U);
+                // Spec MUST: SRV MUST NOT be consulted when an explicit port is present.
+                // Do NOT remove/change - the explicit port is the highest-precedence step.
+                REQUIRE(network.last_srv_lookup.empty());
+            }
+        }
+    }
+}
+
+// --- Empty m.server value is treated as absent -------------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 2.1 Well-known URI delegation
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#well-known-uri
+//
+// A well-known body whose m.server value is an empty string carries no usable
+// delegation. It MUST be treated as if m.server were absent: discovery falls
+// through to SRV and then direct resolution of the original server name.
+SCENARIO("Server discovery treats an empty m.server as no delegation", "[federation][discovery][well-known]")
+{
+    GIVEN("a well-known body with an empty m.server and no SRV records")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "{\"m.server\":\"\"}", {}};
+        network.addresses.emplace("example.org", std::vector<std::string>{"203.0.113.7"});
+
+        WHEN("discovery proceeds")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("discovery falls through to direct resolution of the original server name")
+            {
+                // Spec MUST: an empty m.server is not a fatal error; discovery MUST still succeed.
+                // Do NOT remove/change - failing closed here would break reachable servers.
+                REQUIRE(result.discovery_allowed);
+                // Spec MUST: resolved_host MUST be the original server name when m.server is empty.
+                // Do NOT remove/change - using an empty delegated host would route to nowhere.
+                REQUIRE(result.resolved_host == "example.org");
+                // Spec MUST: resolved_port MUST default to 8448 with no delegation or SRV record.
+                // Do NOT remove/change - any other port contradicts the default federation port.
+                REQUIRE(result.resolved_port == 8448U);
+            }
+        }
+    }
+}
+
+// --- SRV selection breaks priority ties by weight ----------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 2.2 SRV lookup (RFC 2782 ordering)
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
+//
+// Among SRV records sharing the lowest priority, the record with the greater
+// weight MUST be preferred. The chosen target and its port become the
+// federation destination.
+SCENARIO("Server discovery prefers the higher-weight SRV record at equal priority",
+         "[federation][discovery][dns][srv]")
+{
+    GIVEN("two equal-priority SRV records with different weights")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.srv_records = {
+            {"low.example.net",  9448U, 10U, 5U },
+            {"high.example.net", 9449U, 10U, 50U},
+        };
+        network.addresses.emplace("high.example.net", std::vector<std::string>{"198.51.100.5"});
+
+        WHEN("discovery resolves through the SRV records")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("the higher-weight target wins the tie and becomes the destination")
+            {
+                // Spec MUST: the SRV lookup MUST target _matrix-fed._tcp.<server_name>.
+                // Do NOT remove/change - querying the wrong name silently ignores SRV records.
+                REQUIRE(network.last_srv_lookup == "_matrix-fed._tcp.example.org");
+                // Spec MUST: discovery MUST succeed for a public SRV target.
+                // Do NOT remove/change - false here would block SRV-resolved federation.
+                REQUIRE(result.discovery_allowed);
+                // Spec MUST: at equal priority the greater weight MUST be selected.
+                // Do NOT remove/change - choosing the lower-weight target violates RFC 2782 ordering.
+                REQUIRE(result.resolved_host == "high.example.net");
+                // Spec MUST: the winning record's port MUST be used.
+                // Do NOT remove/change - using the losing record's port breaks federation.
+                REQUIRE(result.resolved_port == 9449U);
+            }
+        }
+    }
+}
+
+// --- Invalid delegated port falls through ------------------------------------
+// Spec: Matrix Server-Server API v1.18, Sec. 2.1 Well-known URI delegation
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#well-known-uri
+//
+// An m.server value carrying an invalid port (e.g. port 0) is not a usable
+// delegation. It MUST be treated as absent rather than connecting to an
+// invalid port; discovery falls through to SRV and then direct resolution.
+SCENARIO("Server discovery rejects a delegated port of zero and falls through",
+         "[federation][discovery][well-known]")
+{
+    GIVEN("a well-known delegation whose m.server port is zero")
+    {
+        auto network = FakeDiscoveryNetwork{};
+        network.well_known = {true, true, "{\"m.server\":\"fed.example.net:0\"}", {}};
+        network.addresses.emplace("example.org", std::vector<std::string>{"203.0.113.9"});
+
+        WHEN("discovery proceeds")
+        {
+            auto const result = merovingian::federation::discover_server("example.org", network, 5U);
+
+            THEN("the invalid delegation is ignored and the original server name resolves directly")
+            {
+                // Spec MUST: an invalid delegated port MUST NOT be used as a destination.
+                // Do NOT remove/change - connecting to port 0 is never valid.
+                REQUIRE(result.resolved_host == "example.org");
+                // Spec MUST: resolved_port MUST default to 8448 after the invalid delegation is discarded.
+                // Do NOT remove/change - honoring port 0 would break all outbound federation.
+                REQUIRE(result.resolved_port == 8448U);
+                // Spec MUST: discovery MUST still succeed via direct fall-through.
+                // Do NOT remove/change - failing closed on a bad port would block a reachable server.
+                REQUIRE(result.discovery_allowed);
+            }
+        }
+    }
+}

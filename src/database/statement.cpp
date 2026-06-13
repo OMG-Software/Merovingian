@@ -30,14 +30,17 @@ namespace
 
     [[nodiscard]] auto starts_with_allowed_verb(std::string_view sql) noexcept -> bool
     {
-        // SET and RESET cover session-level role switching (SET ROLE / RESET
-        // ROLE). They never carry $N placeholders or user-supplied row data,
-        // so widening the allowlist with them keeps the boundary's intent
-        // (prepared-shape DDL/DML only) while letting the PostgreSQL role
-        // helpers go through the same validation path.
+        // SET/RESET cover session-level role switching. BEGIN/COMMIT/ROLLBACK/
+        // SAVEPOINT cover explicit transaction-control statements used by the
+        // live PostgreSQL durability scenarios. These statements never carry
+        // row-shaped user input, so allowing their fixed leading verbs keeps
+        // the boundary narrow while letting transaction semantics be exercised
+        // through the same validated executor path.
         return sql.starts_with("SELECT ") || sql.starts_with("INSERT ") || sql.starts_with("UPDATE ") ||
                sql.starts_with("DELETE ") || sql.starts_with("CREATE ") || sql.starts_with("ALTER ") ||
-               sql.starts_with("DROP ") || sql.starts_with("SET ") || sql.starts_with("RESET ");
+               sql.starts_with("DROP ") || sql.starts_with("SET ") || sql.starts_with("RESET ") ||
+               sql.starts_with("BEGIN") || sql.starts_with("COMMIT") || sql.starts_with("ROLLBACK") ||
+               sql.starts_with("SAVEPOINT ");
     }
 
     [[nodiscard]] auto placeholder_arity_matches(std::string_view sql, std::size_t parameter_count) -> bool

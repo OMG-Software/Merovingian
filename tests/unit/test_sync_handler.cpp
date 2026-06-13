@@ -337,6 +337,60 @@ SCENARIO("Incremental sync drops account_data that predates the since token and 
     }
 }
 
+// --- to_device redelivery when the sync response is lost (Sec. 9.4: since) --------
+// Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+//
+// A to_device message MUST NOT be discarded until the client acknowledges it by
+// advancing its since token past the message. /sync is long-polled, so a response
+// carrying a room key can be dropped on the wire; when the client retries with the
+// SAME (un-advanced) since token, the server MUST re-deliver the message. Deleting
+// on read instead of on acknowledgement permanently loses encrypted room keys and
+// makes the first message in a session undecryptable.
+SCENARIO("to_device messages survive a lost sync response and are redelivered on retry with the same token",
+         "[sync][handler][incremental][to-device]")
+{
+    GIVEN("Alice's runtime with a pending to_device room key")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+        auto const device_id = first_device_id_for(rt, alice_id);
+        REQUIRE(merovingian::homeserver::push_to_device_message(
+            rt, {0U, "@bob:example.org", alice_id, device_id, "m.room_key", R"({"k":"v"})"}));
+
+        WHEN("Alice's initial /sync response is lost, so she retries from the same initial position")
+        {
+            // First sync delivers the key, but the response never reaches the
+            // client, so the client does NOT advance its since token.
+            auto const first_response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+            REQUIRE(first_response.response.status == 200U);
+
+            // The client retries the initial sync (still no since token).
+            auto const retry_response = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("the retried sync re-delivers the room key instead of dropping it")
+            {
+                REQUIRE(retry_response.response.status == 200U);
+                auto const retry_body = parse_body(retry_response.response.body);
+                auto const* retry_root = as_object(retry_body);
+                auto const* to_device = as_object(*json_member(*retry_root, "to_device"));
+                auto const* td_events = as_array(*json_member(*to_device, "events"));
+                REQUIRE(td_events != nullptr);
+                // Spec MUST: an unacknowledged to_device message MUST be redelivered.
+                // Do NOT remove/change - dropping it loses the megolm key and breaks decryption.
+                REQUIRE_FALSE(td_events->empty());
+                auto const* first_event = as_object(td_events->front());
+                REQUIRE(first_event != nullptr);
+                REQUIRE(std::get<std::string>(json_member(*first_event, "type")->storage()) == "m.room_key");
+            }
+        }
+    }
+}
+
 // --- Long-poll wake-up (Sec. 9.4: timeout parameter) -----------------------------
 // Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
 // URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
