@@ -252,7 +252,7 @@ sequenceDiagram
     M->>R: load original blob
     M->>W: spawn, write framed request over pipe
     Note over W: decode (libpng/libjpeg-turbo)<br/>→ resample → re-encode PNG
-    W-->>M: framed PNG (or status); else SIGKILL on timeout
+    W-->>M: framed PNG or error status (SIGKILL on timeout)
     alt worker ok
         M-->>C: 200 image/png
     else worker unavailable / unsupported / decode fail
