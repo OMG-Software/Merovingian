@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.0
+Version:        0.8.10
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -91,7 +91,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Sat Jun 14 2026 James Chapman <claude@ping.me.uk> - 0.9.0-1
+* Sat Jun 14 2026 James Chapman <claude@ping.me.uk> - 0.8.10-1
 - feat: real image thumbnails via a sandboxed out-of-process worker (libpng/libjpeg-turbo)
 - feat: reconstruct federation /state and /state_ids as of a requested event
 - fix: decode backfill IDs and return predecessor PDUs
