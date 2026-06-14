@@ -82,4 +82,4 @@ python build.py wsl --builddir build-tsan --buildtype debug --sanitize thread
 
 ## Project Status
 
-Merovingian is beyond a toy prototype, but it is still an in-development homeserver with incomplete production gates. Federation, persistence, packaging, and security controls are actively being built out and corrected. The project should be treated as test-only until the blocking items in [docs/todos/production-milestone.md](C:/dev/Merovingian/docs/todos/production-milestone.md) are closed.
+Merovingian is beyond a toy prototype, but it is still an in-development homeserver with incomplete production gates. Federation, persistence, packaging, and security controls are actively being built out and corrected. The project should be treated as test-only until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.

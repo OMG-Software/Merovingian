@@ -55,7 +55,6 @@ Implemented now:
 
 Not implemented yet:
 
-- signing-key rotation
 - full Matrix room-version conformance fixture suite
 - resident-side restricted-join allow-condition evaluation (requires checking
   parent-space membership when choosing whether to grant a join)
