@@ -17,10 +17,10 @@ Open work per capability area. Status column reflects the current level in the
 | E2EE key APIs | `runtime-wired` | Add full key-count algorithms, complete backup session retrieval/deletion, broader Matrix v1.18 semantics, and remaining conformance fixtures. |
 | Rooms, events, and sync | `runtime-wired` | Add sync long polling and filters, real payloads for presence/device/to-device/account-data surfaces, restricted join rule evaluation, third-party invite auth, and broader Matrix v1.18 room-version conformance fixtures. |
 | Federation | `runtime-wired` | Room-version-specific PDU verification, simultaneously-active multiple signing keys, and broader Matrix federation conformance coverage. Key-rotation publication with `old_verify_keys` landed in 0.8.6. |
-| Media repository | `runtime-wired` | Live remote media transport and server discovery wired in v0.7.2. Thumbnail records now carry actual content type and byte size (dimensions remain 0×0 until an image decoder is linked). Remaining: real image resampling library integration, multipart upload handling, and Matrix v1.18 remote-thumbnail conformance fixtures. |
+| Media repository | `runtime-wired` | Live remote media transport and server discovery wired in v0.7.2. Real image resampling landed in 0.8.10 via the sandboxed out-of-process `merovingian-thumbnail-worker` (libpng/libjpeg-turbo), generated on demand per requested geometry. Remaining: multipart upload handling and Matrix v1.18 remote-thumbnail conformance fixtures. |
 | Database persistence | `runtime-wired` | Enforce runtime/migration grants through separate PostgreSQL users in deployment packaging. Transaction-rollback, migration-ordering, and role-grant durability tests landed in 0.8.6; savepoint isolation and cross-connection isolation/visibility/uniqueness durability tests landed in 0.8.9. |
 | Observability and audit | `runtime-wired` | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
-| Trust and safety | `runtime-wired` | Add Matrix v1.18 conformance fixtures, policy server transport integration, durable policy-rule management, and richer moderation workflows. |
+| Trust and safety | `runtime-wired` | Durable policy-rule storage exists (`policy_rules` table + persistent store). Remaining: remote policy-server transport (the engine evaluates a pre-populated `PolicyServerHook` with no HTTP caller), admin policy-rule management workflows, Matrix v1.18 conformance fixtures, and richer moderation workflows. |
 | Runtime hardening | `integrated` | ELF program-header probe (linker/RELRO) retired in v0.7.2; seccomp-bpf allowlist applied and probe retired in v0.7.2. Remaining: harden default action to `SECCOMP_RET_KILL_PROCESS` after allowlist validation, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `integrated` | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
@@ -34,7 +34,7 @@ Open work per capability area. Status column reflects the current level in the
 | --- | --- | --- |
 | `GET /_matrix/client/v1/auth_metadata`, MSC2965 OIDC | `partial` | Real OIDC support; currently returns 404 M_UNRECOGNIZED as unsupported signal. |
 | `GET /_matrix/client/v3/voip/turnServer` | `partial` | Real TURN credential issuance; currently returns empty 200. |
-| `GET /_matrix/media/v3/thumbnail/*`, `GET /_matrix/client/v1/media/thumbnail/*` | `runtime-wired` | Real image resampling, remote thumbnail fetch, and v1.18 conformance fixtures. |
+| `GET /_matrix/media/v3/thumbnail/*`, `GET /_matrix/client/v1/media/thumbnail/*` | `runtime-wired` | Real image resampling (PNG/JPEG, `scale`/`crop`) via the sandboxed worker landed in 0.8.10. Remaining: remote-thumbnail fetch and v1.18 conformance fixtures. |
 | `GET /_matrix/client/v1/media/config` | `spec-covered` | |
 | `GET /_matrix/client/v3/directory/list/room/{roomId}` | `spec-covered` | |
 | `PUT /_matrix/client/v3/directory/list/room/{roomId}` | `spec-covered` | |
@@ -66,7 +66,7 @@ Open work per capability area. Status column reflects the current level in the
 | Request and event signing/verification | `spec-covered` | Live signed-request interop test against a real Synapse peer landed in 0.8.6 (opt-in). Inbound PDU content-hash verification wired and conformance-covered. |
 | `GET /_matrix/federation/v1/query/profile` | `spec-covered` | |
 | `GET /_matrix/federation/v1/query/directory` | `spec-covered` | |
-| Event-graph queries | `partial` | `auth_chain`/`auth_chain_ids` reconstruction for `/state` and `/state_ids` (transitive auth-event closure) landed in 0.8.9 with conformance fixtures. Remaining: historical state-at-event reconstruction (running state resolution as of a specific event). |
+| Event-graph queries | `spec-covered` | `auth_chain`/`auth_chain_ids` transitive-closure reconstruction landed in 0.8.9; historical state-at-event reconstruction for `/state` and `/state_ids` (honouring the required `event_id`, resolving state prior to that event by walking the DAG) landed in 0.8.10 with conformance fixtures. Remaining: full state-resolution-v2 across conflicting forks (current reconstruction is the conflict-free linearisation). |
 | Outbound federation queues | `spec-covered` | Live federation delivery coverage under realistic load. |
 | Key publication (`GET /_matrix/key/v2/server`) | `spec-covered` | Key-ID format, valid_until_ts expiry, old_verify_keys structural contract, and key-rotation publication (new key active, retired key in old_verify_keys) now covered by conformance fixtures. |
 

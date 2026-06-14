@@ -21,10 +21,53 @@
 - E2EE /keys/upload signature validation (verifies one-time and fallback key signatures against the device's own identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE)
 - Token handling
 - Media handling
+- Image decoding (thumbnail generation; isolated in a sandboxed worker)
+- Outbound requests (SSRF via federation discovery and remote media fetch)
 - Config parsing
 - Database migrations
 
-## Mitigations applied (v0.5.37)
+## Trust boundaries
+
+Each attacker class reaches the server through a specific boundary. The gate at
+that boundary must run, fail-closed, before any state is touched.
+
+```mermaid
+flowchart TB
+    localuser["Malicious local user"]
+    peer["Malicious federated server"]
+    proxy["Malicious reverse proxy"]
+    uploader["Media upload attacker"]
+
+    subgraph trusted["Trusted: validated server state"]
+        state[("Persistent store + runtime state")]
+    end
+
+    clientgate["Client edge gate<br/>token auth · rate limit · bounded parse"]
+    fedgate["Federation edge gate<br/>X-Matrix sig · PDU hash+sig · auth rules"]
+    headergate["Header/transport validation<br/>no test-only auth on prod listener"]
+    mediagate["Media decode boundary<br/>sandboxed worker · decode-bomb guard"]
+
+    localuser --> clientgate --> state
+    peer --> fedgate --> state
+    proxy --> headergate --> clientgate
+    uploader --> mediagate --> state
+```
+
+| Attacker | Primary surface | Key mitigation |
+|---|---|---|
+| Malicious local user | Client-server API | Access-token auth, login-enumeration-resistant errors, rate limits, bounded parsers |
+| Malicious federated server | Federation transactions | X-Matrix verification, per-PDU content-hash + sender-domain Ed25519 checks, auth rules before persist, EDU origin-ownership checks |
+| Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers |
+| Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
+| Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation |
+| DB exfiltration attacker | Persistence | Prepared statements only, runtime/migration role separation, audit redaction |
+| Supply-chain attacker | Dependencies, release | Vendored/pinned subprojects, secret scanning, SBOM; signing/provenance tracked in production milestone |
+| Compromised administrator | Admin surface | Audited admin actions; richer admin authZ tracked as a gap |
+
+## Mitigations applied
+
+Specific issues found and fixed, in the order they landed. Each entry names the
+threat it closes; the controls above are the standing defences these reinforce.
 
 - **Production federation-listener auth confusion:** the production federation
   listener previously accepted a pipe-delimited fixture token format in
