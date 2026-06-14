@@ -116,7 +116,7 @@ auto install_local_audit_database(LocalDatabase* database) noexcept -> void
     // point the thread-local database pointer. The sink function is
     // installed exactly once; if multiple threads race, the function
     // pointer is a plain write that is safe under TSan.
-    (void)ensure_audit_sink_installed();
+    std::ignore = ensure_audit_sink_installed();
     thread_audit_database() = database;
 }
 

@@ -30,7 +30,10 @@ constexpr std::array<unsigned char, 81U> sample_png_8x8{
 }
 
 // Reads the width/height from a PNG's IHDR chunk (bytes 16..23, big-endian).
-[[nodiscard]] auto png_dimensions(std::string const& png) -> std::pair<std::uint32_t, std::uint32_t>
+// [[maybe_unused]]: only referenced by the worker scenarios, which are compiled
+// out when the image codecs (and thus the worker) are unavailable.
+[[maybe_unused]] [[nodiscard]] auto png_dimensions(std::string const& png)
+    -> std::pair<std::uint32_t, std::uint32_t>
 {
     auto read_be = [&png](std::size_t offset) {
         return (static_cast<std::uint32_t>(static_cast<unsigned char>(png[offset])) << 24) |
@@ -41,7 +44,7 @@ constexpr std::array<unsigned char, 81U> sample_png_8x8{
     return {read_be(16U), read_be(20U)};
 }
 
-[[nodiscard]] auto is_png(std::string const& bytes) -> bool
+[[maybe_unused]] [[nodiscard]] auto is_png(std::string const& bytes) -> bool
 {
     return bytes.size() > 8U && static_cast<unsigned char>(bytes[0]) == 137U && bytes[1] == 'P' && bytes[2] == 'N' &&
            bytes[3] == 'G';

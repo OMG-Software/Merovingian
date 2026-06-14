@@ -12,6 +12,7 @@
 #include <cstring>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -139,7 +140,7 @@ namespace
         auto const flags = ::fcntl(fd, F_GETFL, 0);
         if (flags >= 0)
         {
-            (void)::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+            std::ignore = ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         }
     }
 
@@ -347,7 +348,7 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     if (::waitpid(pid, &status, WNOHANG) == 0)
     {
         ::kill(pid, SIGKILL);
-        (void)::waitpid(pid, &status, 0);
+        std::ignore = ::waitpid(pid, &status, 0);
     }
 
     if (!wrote)

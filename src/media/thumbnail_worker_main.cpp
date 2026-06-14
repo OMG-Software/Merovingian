@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <tuple>
 #include <vector>
 
 #include <sys/resource.h>
@@ -38,6 +39,22 @@
 
 namespace
 {
+
+// Sanitizer builds (ASan/TSan/MSan) reserve an enormous virtual address space
+// for shadow memory, which a tight RLIMIT_AS would make un-mmap-able — the
+// instrumented worker would die before decoding. Detect such builds so the
+// address-space cap is skipped there (CI only); production builds keep it.
+#if defined(__has_feature)
+#if __has_feature(address_sanitizer) || __has_feature(thread_sanitizer) || __has_feature(memory_sanitizer)
+constexpr bool sanitizer_build = true;
+#else
+constexpr bool sanitizer_build = false;
+#endif
+#elif defined(__SANITIZE_ADDRESS__) || defined(__SANITIZE_THREAD__)
+constexpr bool sanitizer_build = true;
+#else
+constexpr bool sanitizer_build = false;
+#endif
 
 using merovingian::media::ThumbnailMethod;
 using merovingian::media::ThumbnailSourceFormat;
@@ -65,19 +82,22 @@ struct Rgba final
 auto harden() -> void
 {
     auto const apply = [](int resource, std::uint64_t value) {
-        auto limit = rlimit{value, value};
-        (void)::setrlimit(resource, &limit);
+        auto limit = rlimit{static_cast<rlim_t>(value), static_cast<rlim_t>(value)};
+        std::ignore = ::setrlimit(resource, &limit);
     };
-    apply(RLIMIT_AS, max_address_space);
+    if (!sanitizer_build)
+    {
+        apply(RLIMIT_AS, max_address_space);
+    }
     apply(RLIMIT_CPU, max_cpu_seconds);
     apply(RLIMIT_FSIZE, max_file_size);
     apply(RLIMIT_CORE, 0U);
     apply(RLIMIT_NOFILE, 16U);
 #if defined(__linux__)
-    (void)::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
-    (void)::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+    std::ignore = ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+    std::ignore = ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
 #endif
-    (void)merovingian::platform::apply_seccomp_filter();
+    std::ignore = merovingian::platform::apply_seccomp_filter();
 }
 
 [[nodiscard]] auto read_all_stdin() -> std::string

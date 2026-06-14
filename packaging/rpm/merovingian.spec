@@ -86,12 +86,14 @@ fi
 %doc README.md docs/configuration.md docs/release-process.md
 %{_bindir}/merovingian-server
 %{_bindir}/merovingian-db-migrate
+%dir %{_libexecdir}/merovingian
+%{_libexecdir}/merovingian/merovingian-thumbnail-worker
 %{_unitdir}/merovingian.service
 %dir %{_sysconfdir}/merovingian
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Sat Jun 14 2026 James Chapman <claude@ping.me.uk> - 0.8.10-1
+* Sun Jun 14 2026 James Chapman <claude@ping.me.uk> - 0.8.10-1
 - feat: real image thumbnails via a sandboxed out-of-process worker (libpng/libjpeg-turbo)
 - feat: reconstruct federation /state and /state_ids as of a requested event
 - fix: decode backfill IDs and return predecessor PDUs

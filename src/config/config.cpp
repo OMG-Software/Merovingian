@@ -7,6 +7,7 @@
 #include <limits>
 #include <optional>
 #include <string_view>
+#include <tuple>
 #include <utility>
 
 namespace merovingian::config
@@ -713,7 +714,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
             // Off is a legitimate value (silence the module entirely),
             // but we warn at validate time so the operator notices.
             // No finding here: off is intentional, not a misconfig.
-            (void)level;
+            std::ignore = level;
         }
     }
 
