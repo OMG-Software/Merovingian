@@ -360,17 +360,17 @@ SCENARIO("send_join passes the resolved room version to the membership acceptor 
                                                  "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
 
         auto captured_room_version = std::make_shared<std::string>();
-        runtime.membership_acceptor = [captured_room_version, join_event_body](
-                                          merovingian::federation::FederationEndpoint /*endpoint*/,
-                                          [[maybe_unused]] std::string_view /*room_id*/,
-                                          [[maybe_unused]] std::string_view /*event_id*/,
-                                          merovingian::federation::InboundPduEnvelope const& envelope)
+        runtime.membership_acceptor = [captured_room_version,
+                                       join_event_body](merovingian::federation::FederationEndpoint /*endpoint*/,
+                                                        [[maybe_unused]] std::string_view /*room_id*/,
+                                                        [[maybe_unused]] std::string_view /*event_id*/,
+                                                        merovingian::federation::InboundPduEnvelope const& envelope)
             -> merovingian::federation::MembershipAcceptResult {
             *captured_room_version = envelope.room_version;
-            auto result            = merovingian::federation::MembershipAcceptResult{};
-            result.accepted        = true;
-            result.status          = 200U;
-            result.room_version    = "10";
+            auto result = merovingian::federation::MembershipAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            result.room_version = "10";
             result.signed_event_json = join_event_body;
             return result;
         };
@@ -378,8 +378,8 @@ SCENARIO("send_join passes the resolved room version to the membership acceptor 
         WHEN("a signed send_join request is dispatched for the room")
         {
             auto const event_id = std::string{"$join_event:"} + origin;
-            auto const target   = "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/" + event_id;
-            auto const request  = signed_put_request(origin, key_id, key_seed, target, join_event_body);
+            auto const target = "/_matrix/federation/v2/send_join/" + std::string{room_id} + "/" + event_id;
+            auto const request = signed_put_request(origin, key_id, key_seed, target, join_event_body);
             auto const response = merovingian::federation::handle_inbound_federation_request(runtime, request);
 
             THEN("the membership acceptor receives an envelope with room_version 10, not hardcoded 12")
@@ -914,8 +914,7 @@ SCENARIO("GET /event/{eventId} returns the PDU when the event_query_provider is 
 
         WHEN("a signed GET /event/$known_event:local.example.org is dispatched")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/event/$known_event:local.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/event/$known_event:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -932,8 +931,7 @@ SCENARIO("GET /event/{eventId} returns the PDU when the event_query_provider is 
 
         WHEN("a signed GET /event/ request names an unknown event")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/event/$no_such_event:local.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/event/$no_such_event:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -954,8 +952,7 @@ SCENARIO("GET /event/{eventId} returns the PDU when the event_query_provider is 
 
         WHEN("a signed GET /event/{eventId} is dispatched")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/event/$some_event:local.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/event/$some_event:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -984,16 +981,20 @@ SCENARIO("GET /state/{roomId} returns room state when the state_query_provider i
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        runtime.state_query_provider = [](std::string_view queried_room_id) -> std::string {
-            if (queried_room_id == "!conformance:local.example.org")
+        // The provider only returns a body when it receives BOTH the room ID and
+        // the required event_id query parameter, proving the handler threads the
+        // spec-required `event_id` through to the state resolver.
+        runtime.state_query_provider = [](std::string_view queried_room_id,
+                                          std::string_view queried_event_id) -> std::string {
+            if (queried_room_id == "!conformance:local.example.org" && queried_event_id == "$anchor:local.example.org")
                 return R"({"auth_chain":[],"pdus":[]})";
             return {};
         };
 
         WHEN("state is requested for the known room")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/state/!conformance:local.example.org"};
+            auto const target = std::string{
+                "/_matrix/federation/v1/state/!conformance:local.example.org?event_id=$anchor:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1008,8 +1009,8 @@ SCENARIO("GET /state/{roomId} returns room state when the state_query_provider i
 
         WHEN("state is requested for an unknown room")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/state/!unknown:local.example.org"};
+            auto const target = std::string{
+                "/_matrix/federation/v1/state/!unknown:local.example.org?event_id=$anchor:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1018,6 +1019,19 @@ SCENARIO("GET /state/{roomId} returns room state when the state_query_provider i
                 // Spec MUST: 404 when the room is not known to this server.
                 REQUIRE(response.status == 404U);
                 REQUIRE(response.body.find("M_NOT_FOUND") != std::string::npos);
+            }
+        }
+
+        WHEN("state is requested without the required event_id parameter")
+        {
+            auto const target = std::string{"/_matrix/federation/v1/state/!conformance:local.example.org"};
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the response is 400 because event_id is a required query parameter")
+            {
+                // Spec MUST: event_id is a REQUIRED query parameter for GET /state/{roomId}.
+                REQUIRE(response.status == 400U);
             }
         }
     }
@@ -1029,8 +1043,7 @@ SCENARIO("GET /state/{roomId} returns room state when the state_query_provider i
 
         WHEN("state is requested")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/state/!conformance:local.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/state/!conformance:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1057,16 +1070,19 @@ SCENARIO("GET /state_ids/{roomId} returns event-ID lists when the state_ids_quer
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        runtime.state_ids_query_provider = [](std::string_view queried_room_id) -> std::string {
-            if (queried_room_id == "!conformance:local.example.org")
+        // The provider only returns a body when the handler threads through both
+        // the room ID and the spec-required `event_id` query parameter.
+        runtime.state_ids_query_provider = [](std::string_view queried_room_id,
+                                              std::string_view queried_event_id) -> std::string {
+            if (queried_room_id == "!conformance:local.example.org" && queried_event_id == "$anchor:local.example.org")
                 return R"({"pdu_ids":["$create:local.example.org"],"auth_chain_ids":[]})";
             return {};
         };
 
         WHEN("state_ids is requested for the known room")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/state_ids/!conformance:local.example.org"};
+            auto const target = std::string{
+                "/_matrix/federation/v1/state_ids/!conformance:local.example.org?event_id=$anchor:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1076,8 +1092,7 @@ SCENARIO("GET /state_ids/{roomId} returns event-ID lists when the state_ids_quer
                 REQUIRE(response.status == 200U);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
                 // Spec MUST: pdu_ids array is present.
                 REQUIRE(json_get(*root, std::string{"pdu_ids"}) != nullptr);
@@ -1088,8 +1103,8 @@ SCENARIO("GET /state_ids/{roomId} returns event-ID lists when the state_ids_quer
 
         WHEN("state_ids is requested for an unknown room")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/state_ids/!unknown:local.example.org"};
+            auto const target = std::string{
+                "/_matrix/federation/v1/state_ids/!unknown:local.example.org?event_id=$anchor:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1109,8 +1124,7 @@ SCENARIO("GET /state_ids/{roomId} returns event-ID lists when the state_ids_quer
 
         WHEN("state_ids is requested")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/state_ids/!conformance:local.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/state_ids/!conformance:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1138,19 +1152,16 @@ SCENARIO("POST /get_missing_events/{roomId} returns missing PDUs when the provid
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         auto provider_invoked = std::make_shared<bool>(false);
-        runtime.missing_events_query_provider =
-            [provider_invoked](std::string_view /*room_id*/,
-                               std::string_view /*body*/) -> std::string {
+        runtime.missing_events_query_provider = [provider_invoked](std::string_view /*room_id*/,
+                                                                   std::string_view /*body*/) -> std::string {
             *provider_invoked = true;
             return R"({"events":[]})";
         };
 
         WHEN("a signed POST /get_missing_events request is dispatched")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/get_missing_events/!conformance:local.example.org"};
-            auto const body =
-                std::string{R"({"limit":10,"min_depth":1,"earliest_events":[],"latest_events":[]})"};
+            auto const target = std::string{"/_matrix/federation/v1/get_missing_events/!conformance:local.example.org"};
+            auto const body = std::string{R"({"limit":10,"min_depth":1,"earliest_events":[],"latest_events":[]})"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_post_request(origin, key_id, key_seed, target, body));
 
@@ -1161,8 +1172,7 @@ SCENARIO("POST /get_missing_events/{roomId} returns missing PDUs when the provid
                 REQUIRE(*provider_invoked);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
                 // Spec MUST: 'events' array is present.
                 REQUIRE(json_get(*root, std::string{"events"}) != nullptr);
@@ -1177,10 +1187,8 @@ SCENARIO("POST /get_missing_events/{roomId} returns missing PDUs when the provid
 
         WHEN("a signed POST /get_missing_events request is dispatched")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/get_missing_events/!conformance:local.example.org"};
-            auto const body =
-                std::string{R"({"limit":10,"min_depth":1,"earliest_events":[],"latest_events":[]})"};
+            auto const target = std::string{"/_matrix/federation/v1/get_missing_events/!conformance:local.example.org"};
+            auto const body = std::string{R"({"limit":10,"min_depth":1,"earliest_events":[],"latest_events":[]})"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_post_request(origin, key_id, key_seed, target, body));
 
@@ -1208,8 +1216,7 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        runtime.profile_query_provider =
-            [](std::string_view user_id) -> merovingian::federation::FederationProfile {
+        runtime.profile_query_provider = [](std::string_view user_id) -> merovingian::federation::FederationProfile {
             if (user_id == "@alice:local.example.org")
                 return {true, "Alice", "mxc://local.example.org/avatar"};
             return {false, {}, {}};
@@ -1217,8 +1224,7 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 
         WHEN("a profile request is made for a known local user")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1228,8 +1234,7 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
                 REQUIRE(response.status == 200U);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
                 // Spec MUST: displayname field present when no field filter is set.
                 auto const* dn = json_get(*root, std::string{"displayname"});
@@ -1244,8 +1249,8 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 
         WHEN("a profile request uses field=displayname to filter the response")
         {
-            auto const target = std::string{
-                "/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org&field=displayname"};
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org&field=displayname"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1255,8 +1260,7 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
                 REQUIRE(response.status == 200U);
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
                 REQUIRE(json_get(*root, std::string{"displayname"}) != nullptr);
                 // avatar_url MUST NOT appear when field=displayname.
@@ -1266,8 +1270,7 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 
         WHEN("a profile request is made for an unknown user")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/query/profile?user_id=@nobody:local.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/query/profile?user_id=@nobody:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1281,8 +1284,8 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 
         WHEN("a profile request supplies an invalid field parameter")
         {
-            auto const target = std::string{
-                "/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org&field=badfield"};
+            auto const target =
+                std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org&field=badfield"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1302,8 +1305,7 @@ SCENARIO("GET /query/profile returns user profile fields when the profile_query_
 
         WHEN("a profile request is dispatched")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/query/profile?user_id=@alice:local.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1334,17 +1336,16 @@ SCENARIO("GET /make_knock returns knock template when membership_template_provid
 
         auto template_invoked = std::make_shared<bool>(false);
         runtime.membership_template_provider =
-            [template_invoked](merovingian::federation::FederationEndpoint endpoint,
-                               std::string_view target_room_id, std::string_view user_id,
-                               std::vector<std::string> const& /*supported_room_versions*/)
+            [template_invoked](merovingian::federation::FederationEndpoint endpoint, std::string_view target_room_id,
+                               std::string_view user_id, std::vector<std::string> const& /*supported_room_versions*/)
             -> std::optional<merovingian::federation::MembershipEventTemplate> {
             *template_invoked = true;
             // Provider MUST only be called with make_knock endpoint here.
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::make_knock);
             auto tmpl = merovingian::federation::MembershipEventTemplate{};
-            tmpl.room_id      = std::string{target_room_id};
-            tmpl.user_id      = std::string{user_id};
-            tmpl.membership   = "knock";
+            tmpl.room_id = std::string{target_room_id};
+            tmpl.user_id = std::string{user_id};
+            tmpl.membership = "knock";
             tmpl.room_version = "12";
             return tmpl;
         };
@@ -1353,8 +1354,7 @@ SCENARIO("GET /make_knock returns knock template when membership_template_provid
         {
             auto const knocking_user = std::string{"@remote:"} + origin;
             auto const target =
-                "/_matrix/federation/v1/make_knock/" + std::string{room_id} + "/" + knocking_user +
-                "?ver=12";
+                "/_matrix/federation/v1/make_knock/" + std::string{room_id} + "/" + knocking_user + "?ver=12";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1366,8 +1366,7 @@ SCENARIO("GET /make_knock returns knock template when membership_template_provid
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: room_version is present.
@@ -1390,8 +1389,8 @@ SCENARIO("GET /make_knock returns knock template when membership_template_provid
 
         WHEN("a signed GET /make_knock request is dispatched")
         {
-            auto const target = "/_matrix/federation/v1/make_knock/" + std::string{room_id} +
-                                 "/@remote:" + origin + "?ver=12";
+            auto const target =
+                "/_matrix/federation/v1/make_knock/" + std::string{room_id} + "/@remote:" + origin + "?ver=12";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1435,18 +1434,16 @@ SCENARIO("PUT /send_knock processes the knock and returns 200 when the acceptor 
 
         WHEN("a signed PUT /send_knock request is dispatched")
         {
-            auto const event_id   = std::string{"$knock_event:"} + origin;
-            auto const target     = "/_matrix/federation/v1/send_knock/" +
-                                    std::string{room_id} + "/" + event_id;
+            auto const event_id = std::string{"$knock_event:"} + origin;
+            auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + event_id;
             // Minimal well-formed knock PDU envelope.
-            auto const body = std::string{
-                R"({"type":"m.room.member",)"
-                R"("room_id":"!conformance:local.example.org",)"
-                R"("sender":"@remote:remote.example.org",)"
-                R"("state_key":"@remote:remote.example.org",)"
-                R"("content":{"membership":"knock"},)"
-                R"("depth":2,"hashes":{"sha256":"x"},)"
-                R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
+            auto const body = std::string{R"({"type":"m.room.member",)"
+                                          R"("room_id":"!conformance:local.example.org",)"
+                                          R"("sender":"@remote:remote.example.org",)"
+                                          R"("state_key":"@remote:remote.example.org",)"
+                                          R"("content":{"membership":"knock"},)"
+                                          R"("depth":2,"hashes":{"sha256":"x"},)"
+                                          R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -1471,16 +1468,14 @@ SCENARIO("PUT /send_knock processes the knock and returns 200 when the acceptor 
         WHEN("a signed PUT /send_knock request is dispatched")
         {
             auto const event_id = std::string{"$knock_event:"} + origin;
-            auto const target   = "/_matrix/federation/v1/send_knock/" +
-                                   std::string{room_id} + "/" + event_id;
-            auto const body = std::string{
-                R"({"type":"m.room.member",)"
-                R"("room_id":"!conformance:local.example.org",)"
-                R"("sender":"@remote:remote.example.org",)"
-                R"("state_key":"@remote:remote.example.org",)"
-                R"("content":{"membership":"knock"},)"
-                R"("depth":2,"hashes":{"sha256":"x"},)"
-                R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
+            auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + event_id;
+            auto const body = std::string{R"({"type":"m.room.member",)"
+                                          R"("room_id":"!conformance:local.example.org",)"
+                                          R"("sender":"@remote:remote.example.org",)"
+                                          R"("state_key":"@remote:remote.example.org",)"
+                                          R"("content":{"membership":"knock"},)"
+                                          R"("depth":2,"hashes":{"sha256":"x"},)"
+                                          R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -1513,21 +1508,20 @@ SCENARIO("GET /query/directory returns room_id and servers when the alias is kno
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        runtime.directory_query_provider =
-            [](std::string_view alias) -> merovingian::federation::FederationDirectory {
+        runtime.directory_query_provider = [](std::string_view alias) -> merovingian::federation::FederationDirectory {
             if (alias == "#general:local.example.org")
             {
-                return {true, "!room123:local.example.org",
-                        {"local.example.org", "remote.example.org"}};
+                return {
+                    true, "!room123:local.example.org", {"local.example.org", "remote.example.org"}
+                };
             }
             return {false, {}, {}};
         };
 
         WHEN("a signed GET /query/directory?room_alias=%23general%3Alocal.example.org is dispatched")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/query/directory"
-                            "?room_alias=%23general%3Alocal.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/query/directory"
+                                            "?room_alias=%23general%3Alocal.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1538,8 +1532,7 @@ SCENARIO("GET /query/directory returns room_id and servers when the alias is kno
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: room_id is a string in the 200 response.
@@ -1561,8 +1554,7 @@ SCENARIO("GET /query/directory returns room_id and servers when the alias is kno
 // URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1querydirectory
 //
 // Spec MUST: 404 when the alias is unknown to this server.
-SCENARIO("GET /query/directory returns 404 when the alias is unknown",
-         "[federation][conformance][query_directory]")
+SCENARIO("GET /query/directory returns 404 when the alias is unknown", "[federation][conformance][query_directory]")
 {
     GIVEN("a runtime with directory_query_provider that does not know the alias")
     {
@@ -1576,9 +1568,8 @@ SCENARIO("GET /query/directory returns 404 when the alias is unknown",
 
         WHEN("a signed GET /query/directory?room_alias=%23unknown%3Alocal.example.org is dispatched")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/query/directory"
-                            "?room_alias=%23unknown%3Alocal.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/query/directory"
+                                            "?room_alias=%23unknown%3Alocal.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1604,9 +1595,8 @@ SCENARIO("GET /query/directory returns 501 when no directory_query_provider is i
 
         WHEN("a signed GET /query/directory request is dispatched")
         {
-            auto const target =
-                std::string{"/_matrix/federation/v1/query/directory"
-                            "?room_alias=%23general%3Alocal.example.org"};
+            auto const target = std::string{"/_matrix/federation/v1/query/directory"
+                                            "?room_alias=%23general%3Alocal.example.org"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1637,15 +1627,14 @@ SCENARIO("make_join returns 400 M_INCOMPATIBLE_ROOM_VERSION when room version is
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        runtime.membership_template_provider =
-            [](merovingian::federation::FederationEndpoint /*endpoint*/,
-               std::string_view target_room_id, std::string_view user_id,
-               std::vector<std::string> const& /*supported*/)
+        runtime.membership_template_provider = [](merovingian::federation::FederationEndpoint /*endpoint*/,
+                                                  std::string_view target_room_id, std::string_view user_id,
+                                                  std::vector<std::string> const& /*supported*/)
             -> std::optional<merovingian::federation::MembershipEventTemplate> {
-            auto tmpl         = merovingian::federation::MembershipEventTemplate{};
-            tmpl.room_id      = std::string{target_room_id};
-            tmpl.user_id      = std::string{user_id};
-            tmpl.membership   = "join";
+            auto tmpl = merovingian::federation::MembershipEventTemplate{};
+            tmpl.room_id = std::string{target_room_id};
+            tmpl.user_id = std::string{user_id};
+            tmpl.membership = "join";
             tmpl.room_version = "12";
             return tmpl;
         };
@@ -1653,8 +1642,7 @@ SCENARIO("make_join returns 400 M_INCOMPATIBLE_ROOM_VERSION when room version is
         WHEN("the joining server advertises only ver=1 (incompatible with room v12)")
         {
             auto const target =
-                "/_matrix/federation/v1/make_join/" + std::string{room_id} +
-                "/@remote:" + origin + "?ver=1";
+                "/_matrix/federation/v1/make_join/" + std::string{room_id} + "/@remote:" + origin + "?ver=1";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1665,8 +1653,7 @@ SCENARIO("make_join returns 400 M_INCOMPATIBLE_ROOM_VERSION when room version is
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: errcode is M_INCOMPATIBLE_ROOM_VERSION.
@@ -1702,9 +1689,8 @@ SCENARIO("make_join returns 404 M_NOT_FOUND when the template provider has no ro
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         runtime.membership_template_provider =
-            [](merovingian::federation::FederationEndpoint, std::string_view,
-               std::string_view, std::vector<std::string> const&)
-            -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+               std::vector<std::string> const&) -> std::optional<merovingian::federation::MembershipEventTemplate> {
             return std::nullopt;
         };
 
@@ -1743,21 +1729,20 @@ SCENARIO("make_join event template contains required type and content.membership
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         runtime.membership_template_provider =
-            [](merovingian::federation::FederationEndpoint, std::string_view target_room_id,
-               std::string_view user_id, std::vector<std::string> const&)
-            -> std::optional<merovingian::federation::MembershipEventTemplate> {
-            auto tmpl         = merovingian::federation::MembershipEventTemplate{};
-            tmpl.room_id      = std::string{target_room_id};
-            tmpl.user_id      = std::string{user_id};
-            tmpl.membership   = "join";
+            [](merovingian::federation::FederationEndpoint, std::string_view target_room_id, std::string_view user_id,
+               std::vector<std::string> const&) -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            auto tmpl = merovingian::federation::MembershipEventTemplate{};
+            tmpl.room_id = std::string{target_room_id};
+            tmpl.user_id = std::string{user_id};
+            tmpl.membership = "join";
             tmpl.room_version = "12";
             return tmpl;
         };
 
         WHEN("a signed make_join request is dispatched")
         {
-            auto const user    = std::string{"@remote:"} + origin;
-            auto const target  = "/_matrix/federation/v1/make_join/" + std::string{room_id} + "/" + user + "?ver=12";
+            auto const user = std::string{"@remote:"} + origin;
+            auto const target = "/_matrix/federation/v1/make_join/" + std::string{room_id} + "/" + user + "?ver=12";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1814,22 +1799,20 @@ SCENARIO("make_join accepts a join when room version is among multiple ver= quer
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         runtime.membership_template_provider =
-            [](merovingian::federation::FederationEndpoint, std::string_view target_room_id,
-               std::string_view user_id, std::vector<std::string> const&)
-            -> std::optional<merovingian::federation::MembershipEventTemplate> {
-            auto tmpl         = merovingian::federation::MembershipEventTemplate{};
-            tmpl.room_id      = std::string{target_room_id};
-            tmpl.user_id      = std::string{user_id};
-            tmpl.membership   = "join";
+            [](merovingian::federation::FederationEndpoint, std::string_view target_room_id, std::string_view user_id,
+               std::vector<std::string> const&) -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            auto tmpl = merovingian::federation::MembershipEventTemplate{};
+            tmpl.room_id = std::string{target_room_id};
+            tmpl.user_id = std::string{user_id};
+            tmpl.membership = "join";
             tmpl.room_version = "12";
             return tmpl;
         };
 
         WHEN("the joining server advertises ver=10&ver=11&ver=12 (room version 12 is included)")
         {
-            auto const target =
-                "/_matrix/federation/v1/make_join/" + std::string{room_id} +
-                "/@remote:" + origin + "?ver=10&ver=11&ver=12";
+            auto const target = "/_matrix/federation/v1/make_join/" + std::string{room_id} + "/@remote:" + origin +
+                                "?ver=10&ver=11&ver=12";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1843,8 +1826,7 @@ SCENARIO("make_join accepts a join when room version is among multiple ver= quer
         WHEN("the joining server advertises only incompatible versions ver=1&ver=2")
         {
             auto const target =
-                "/_matrix/federation/v1/make_join/" + std::string{room_id} +
-                "/@remote:" + origin + "?ver=1&ver=2";
+                "/_matrix/federation/v1/make_join/" + std::string{room_id} + "/@remote:" + origin + "?ver=1&ver=2";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1876,16 +1858,14 @@ SCENARIO("make_leave returns 404 M_NOT_FOUND when the template provider has no r
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         runtime.membership_template_provider =
-            [](merovingian::federation::FederationEndpoint, std::string_view,
-               std::string_view, std::vector<std::string> const&)
-            -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+               std::vector<std::string> const&) -> std::optional<merovingian::federation::MembershipEventTemplate> {
             return std::nullopt;
         };
 
         WHEN("a signed make_leave request is dispatched for an unknown room")
         {
-            auto const target =
-                "/_matrix/federation/v1/make_leave/" + std::string{room_id} + "/@remote:" + origin;
+            auto const target = "/_matrix/federation/v1/make_leave/" + std::string{room_id} + "/@remote:" + origin;
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1915,21 +1895,19 @@ SCENARIO("make_leave response contains room_version and a leave event template",
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         runtime.membership_template_provider =
-            [](merovingian::federation::FederationEndpoint, std::string_view target_room_id,
-               std::string_view user_id, std::vector<std::string> const&)
-            -> std::optional<merovingian::federation::MembershipEventTemplate> {
-            auto tmpl         = merovingian::federation::MembershipEventTemplate{};
-            tmpl.room_id      = std::string{target_room_id};
-            tmpl.user_id      = std::string{user_id};
-            tmpl.membership   = "leave";
+            [](merovingian::federation::FederationEndpoint, std::string_view target_room_id, std::string_view user_id,
+               std::vector<std::string> const&) -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            auto tmpl = merovingian::federation::MembershipEventTemplate{};
+            tmpl.room_id = std::string{target_room_id};
+            tmpl.user_id = std::string{user_id};
+            tmpl.membership = "leave";
             tmpl.room_version = "12";
             return tmpl;
         };
 
         WHEN("a signed make_leave request is dispatched")
         {
-            auto const target =
-                "/_matrix/federation/v1/make_leave/" + std::string{room_id} + "/@remote:" + origin;
+            auto const target = "/_matrix/federation/v1/make_leave/" + std::string{room_id} + "/@remote:" + origin;
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -1990,8 +1968,7 @@ SCENARIO("make_leave and send_leave return 501 Not Implemented when handlers are
 
         WHEN("make_leave is requested without a template provider")
         {
-            auto const target =
-                "/_matrix/federation/v1/make_leave/" + std::string{room_id} + "/@remote:" + origin;
+            auto const target = "/_matrix/federation/v1/make_leave/" + std::string{room_id} + "/@remote:" + origin;
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -2005,15 +1982,14 @@ SCENARIO("make_leave and send_leave return 501 Not Implemented when handlers are
         WHEN("send_leave v2 is requested without a membership_acceptor")
         {
             auto const event_id = std::string{"$leave_event:"} + origin;
-            auto const target   = "/_matrix/federation/v2/send_leave/" + std::string{room_id} + "/" + event_id;
-            auto const body     = std::string{
-                "{\"type\":\"m.room.member\","
-                "\"room_id\":\"!conformance:local.example.org\","
-                "\"sender\":\"@remote:remote.example.org\","
-                "\"state_key\":\"@remote:remote.example.org\","
-                "\"content\":{\"membership\":\"leave\"},"
-                "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
-                "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
+            auto const target = "/_matrix/federation/v2/send_leave/" + std::string{room_id} + "/" + event_id;
+            auto const body = std::string{"{\"type\":\"m.room.member\","
+                                          "\"room_id\":\"!conformance:local.example.org\","
+                                          "\"sender\":\"@remote:remote.example.org\","
+                                          "\"state_key\":\"@remote:remote.example.org\","
+                                          "\"content\":{\"membership\":\"leave\"},"
+                                          "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
+                                          "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -2043,13 +2019,12 @@ SCENARIO("make_knock returns 400 M_INCOMPATIBLE_ROOM_VERSION when room version n
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         runtime.membership_template_provider =
-            [](merovingian::federation::FederationEndpoint, std::string_view target_room_id,
-               std::string_view user_id, std::vector<std::string> const&)
-            -> std::optional<merovingian::federation::MembershipEventTemplate> {
-            auto tmpl         = merovingian::federation::MembershipEventTemplate{};
-            tmpl.room_id      = std::string{target_room_id};
-            tmpl.user_id      = std::string{user_id};
-            tmpl.membership   = "knock";
+            [](merovingian::federation::FederationEndpoint, std::string_view target_room_id, std::string_view user_id,
+               std::vector<std::string> const&) -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            auto tmpl = merovingian::federation::MembershipEventTemplate{};
+            tmpl.room_id = std::string{target_room_id};
+            tmpl.user_id = std::string{user_id};
+            tmpl.membership = "knock";
             tmpl.room_version = "12";
             return tmpl;
         };
@@ -2057,8 +2032,7 @@ SCENARIO("make_knock returns 400 M_INCOMPATIBLE_ROOM_VERSION when room version n
         WHEN("the knocking server advertises only ver=1 (incompatible with room v12)")
         {
             auto const target =
-                "/_matrix/federation/v1/make_knock/" + std::string{room_id} +
-                "/@remote:" + origin + "?ver=1";
+                "/_matrix/federation/v1/make_knock/" + std::string{room_id} + "/@remote:" + origin + "?ver=1";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -2071,8 +2045,7 @@ SCENARIO("make_knock returns 400 M_INCOMPATIBLE_ROOM_VERSION when room version n
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: errcode is M_INCOMPATIBLE_ROOM_VERSION.
@@ -2105,17 +2078,15 @@ SCENARIO("make_knock returns 404 M_NOT_FOUND when the template provider has no r
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         runtime.membership_template_provider =
-            [](merovingian::federation::FederationEndpoint, std::string_view,
-               std::string_view, std::vector<std::string> const&)
-            -> std::optional<merovingian::federation::MembershipEventTemplate> {
+            [](merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+               std::vector<std::string> const&) -> std::optional<merovingian::federation::MembershipEventTemplate> {
             return std::nullopt;
         };
 
         WHEN("a signed make_knock request is dispatched for an unknown room")
         {
             auto const target =
-                "/_matrix/federation/v1/make_knock/" + std::string{room_id} +
-                "/@remote:" + origin + "?ver=12";
+                "/_matrix/federation/v1/make_knock/" + std::string{room_id} + "/@remote:" + origin + "?ver=12";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -2139,32 +2110,29 @@ SCENARIO("make_knock returns 404 M_NOT_FOUND when the template provider has no r
 // v2. The response shape (room_version, auth_chain, state, event) is identical
 // to v2 — the only historical difference was an extra [200, …] tuple wrapper
 // which is no longer required by modern peers.
-SCENARIO("send_join v1 endpoint returns 200 with the required response fields",
-         "[federation][conformance][send_join]")
+SCENARIO("send_join v1 endpoint returns 200 with the required response fields", "[federation][conformance][send_join]")
 {
     GIVEN("a runtime with membership_acceptor wired")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const join_event_body = std::string{
-            "{\"type\":\"m.room.member\","
-            "\"room_id\":\"!conformance:local.example.org\","
-            "\"sender\":\"@remote:remote.example.org\","
-            "\"state_key\":\"@remote:remote.example.org\","
-            "\"content\":{\"membership\":\"join\"},"
-            "\"depth\":1,\"hashes\":{\"sha256\":\"x\"},"
-            "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
+        auto const join_event_body = std::string{"{\"type\":\"m.room.member\","
+                                                 "\"room_id\":\"!conformance:local.example.org\","
+                                                 "\"sender\":\"@remote:remote.example.org\","
+                                                 "\"state_key\":\"@remote:remote.example.org\","
+                                                 "\"content\":{\"membership\":\"join\"},"
+                                                 "\"depth\":1,\"hashes\":{\"sha256\":\"x\"},"
+                                                 "\"origin_server_ts\":1,\"prev_events\":[],\"auth_events\":[]}"};
 
         runtime.membership_acceptor =
-            [join_event_body](merovingian::federation::FederationEndpoint,
-                              std::string_view, std::string_view,
-                              merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::MembershipAcceptResult {
-            auto result              = merovingian::federation::MembershipAcceptResult{};
-            result.accepted          = true;
-            result.status            = 200U;
-            result.room_version      = "12";
+            [join_event_body](
+                merovingian::federation::FederationEndpoint, std::string_view, std::string_view,
+                merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
+            auto result = merovingian::federation::MembershipAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
+            result.room_version = "12";
             result.signed_event_json = join_event_body;
             return result;
         };
@@ -2173,7 +2141,7 @@ SCENARIO("send_join v1 endpoint returns 200 with the required response fields",
         {
             auto const event_id = std::string{"$join_event:"} + origin;
             // v1 path — federation/v1/send_join (not v2)
-            auto const target   = "/_matrix/federation/v1/send_join/" + std::string{room_id} + "/" + event_id;
+            auto const target = "/_matrix/federation/v1/send_join/" + std::string{room_id} + "/" + event_id;
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, join_event_body));
 
@@ -2184,8 +2152,7 @@ SCENARIO("send_join v1 endpoint returns 200 with the required response fields",
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: room_version is present (same as v2).
@@ -2210,8 +2177,7 @@ SCENARIO("send_join v1 endpoint returns 200 with the required response fields",
 // Spec: v1 path MUST be supported. "event" MUST NOT appear in the response
 // (it is send_join-only). The response body for send_leave carries no
 // room state — the leaving server already has it.
-SCENARIO("send_leave v1 endpoint returns 200 without event field",
-         "[federation][conformance][send_leave]")
+SCENARIO("send_leave v1 endpoint returns 200 without event field", "[federation][conformance][send_leave]")
 {
     GIVEN("a runtime with membership_acceptor wired for send_leave")
     {
@@ -2219,10 +2185,8 @@ SCENARIO("send_leave v1 endpoint returns 200 without event field",
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         runtime.membership_acceptor =
-            [](merovingian::federation::FederationEndpoint endpoint,
-               std::string_view, std::string_view,
-               merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::MembershipAcceptResult {
+            [](merovingian::federation::FederationEndpoint endpoint, std::string_view, std::string_view,
+               merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::send_leave);
             return {true, 200U, {}, {}, {}};
         };
@@ -2231,15 +2195,14 @@ SCENARIO("send_leave v1 endpoint returns 200 without event field",
         {
             auto const event_id = std::string{"$leave_event:"} + origin;
             // v1 path — federation/v1/send_leave (not v2)
-            auto const target   = "/_matrix/federation/v1/send_leave/" + std::string{room_id} + "/" + event_id;
-            auto const body     = std::string{
-                "{\"type\":\"m.room.member\","
-                "\"room_id\":\"!conformance:local.example.org\","
-                "\"sender\":\"@remote:remote.example.org\","
-                "\"state_key\":\"@remote:remote.example.org\","
-                "\"content\":{\"membership\":\"leave\"},"
-                "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
-                "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
+            auto const target = "/_matrix/federation/v1/send_leave/" + std::string{room_id} + "/" + event_id;
+            auto const body = std::string{"{\"type\":\"m.room.member\","
+                                          "\"room_id\":\"!conformance:local.example.org\","
+                                          "\"sender\":\"@remote:remote.example.org\","
+                                          "\"state_key\":\"@remote:remote.example.org\","
+                                          "\"content\":{\"membership\":\"leave\"},"
+                                          "\"depth\":2,\"hashes\":{\"sha256\":\"x\"},"
+                                          "\"origin_server_ts\":2,\"prev_events\":[],\"auth_events\":[]}"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -2264,8 +2227,7 @@ SCENARIO("send_leave v1 endpoint returns 200 without event field",
 // Spec MUST: 200 response body is {"knock_room_state": [<StrippedStateEvent>]}.
 // knock_room_state carries the stripped room state events the knocking server
 // needs to display the room name, topic, avatar, etc. to the knocking user.
-SCENARIO("send_knock response contains the knock_room_state array",
-         "[federation][conformance][send_knock]")
+SCENARIO("send_knock response contains the knock_room_state array", "[federation][conformance][send_knock]")
 {
     GIVEN("a runtime with membership_acceptor that returns knock_room_state events")
     {
@@ -2273,14 +2235,12 @@ SCENARIO("send_knock response contains the knock_room_state array",
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         runtime.membership_acceptor =
-            [](merovingian::federation::FederationEndpoint endpoint,
-               std::string_view, std::string_view,
-               merovingian::federation::InboundPduEnvelope const&)
-            -> merovingian::federation::MembershipAcceptResult {
+            [](merovingian::federation::FederationEndpoint endpoint, std::string_view, std::string_view,
+               merovingian::federation::InboundPduEnvelope const&) -> merovingian::federation::MembershipAcceptResult {
             REQUIRE(endpoint == merovingian::federation::FederationEndpoint::send_knock);
-            auto result                  = merovingian::federation::MembershipAcceptResult{};
-            result.accepted              = true;
-            result.status                = 200U;
+            auto result = merovingian::federation::MembershipAcceptResult{};
+            result.accepted = true;
+            result.status = 200U;
             // Resident server supplies stripped state events for knock display.
             result.knock_room_state_json = {
                 R"({"type":"m.room.name","state_key":"","content":{"name":"Knock Test Room"}})"};
@@ -2290,15 +2250,14 @@ SCENARIO("send_knock response contains the knock_room_state array",
         WHEN("a signed send_knock request is dispatched")
         {
             auto const event_id = std::string{"$knock_event:"} + origin;
-            auto const target   = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + event_id;
-            auto const body     = std::string{
-                R"({"type":"m.room.member",)"
-                R"("room_id":"!conformance:local.example.org",)"
-                R"("sender":"@remote:remote.example.org",)"
-                R"("state_key":"@remote:remote.example.org",)"
-                R"("content":{"membership":"knock"},)"
-                R"("depth":2,"hashes":{"sha256":"x"},)"
-                R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
+            auto const target = "/_matrix/federation/v1/send_knock/" + std::string{room_id} + "/" + event_id;
+            auto const body = std::string{R"({"type":"m.room.member",)"
+                                          R"("room_id":"!conformance:local.example.org",)"
+                                          R"("sender":"@remote:remote.example.org",)"
+                                          R"("state_key":"@remote:remote.example.org",)"
+                                          R"("content":{"membership":"knock"},)"
+                                          R"("depth":2,"hashes":{"sha256":"x"},)"
+                                          R"("origin_server_ts":2,"prev_events":[],"auth_events":[]})"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -2309,8 +2268,7 @@ SCENARIO("send_knock response contains the knock_room_state array",
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: knock_room_state is an array.
@@ -2332,20 +2290,18 @@ SCENARIO("send_knock response contains the knock_room_state array",
 //
 // Spec MUST: v2 response is {"event": <signed-event-object>}. The "event" key
 // MUST be a JSON object, not a string, array, or null.
-SCENARIO("invite v2 response body contains the event key as a JSON object",
-         "[federation][conformance][invite_v2]")
+SCENARIO("invite v2 response body contains the event key as a JSON object", "[federation][conformance][invite_v2]")
 {
     GIVEN("a runtime with invite_handler that returns a signed event")
     {
         auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
-        auto const signed_event_json = std::string{
-            R"({"type":"m.room.member","sender":"@alice:remote.example.org",)"
-            R"("state_key":"@bob:local.example.org","content":{"membership":"invite"}})"};
+        auto const signed_event_json =
+            std::string{R"({"type":"m.room.member","sender":"@alice:remote.example.org",)"
+                        R"("state_key":"@bob:local.example.org","content":{"membership":"invite"}})"};
 
-        runtime.invite_handler =
-            [signed_event_json]([[maybe_unused]] merovingian::federation::InviteRequest const& req)
+        runtime.invite_handler = [signed_event_json]([[maybe_unused]] merovingian::federation::InviteRequest const& req)
             -> merovingian::federation::InviteAcceptResult {
             return {true, 200U, {}, signed_event_json};
         };
@@ -2353,8 +2309,8 @@ SCENARIO("invite v2 response body contains the event key as a JSON object",
         WHEN("a signed invite v2 request is dispatched")
         {
             auto const event_id = std::string{"$invite_event:"} + origin;
-            auto const target   = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
-            auto const body     = std::string{"{\"room_version\":\"12\",\"invite_event_json\":\"{}\"}"};
+            auto const target = "/_matrix/federation/v2/invite/" + std::string{room_id} + "/" + event_id;
+            auto const body = std::string{"{\"room_version\":\"12\",\"invite_event_json\":\"{}\"}"};
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_put_request(origin, key_id, key_seed, target, body));
 
@@ -2365,8 +2321,7 @@ SCENARIO("invite v2 response body contains the event key as a JSON object",
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: v2 response has "event" key.
@@ -2390,8 +2345,7 @@ SCENARIO("invite v2 response body contains the event key as a JSON object",
 //   origin          - the server_name of the responding server
 //   origin_server_ts - millisecond POSIX timestamp
 //   pdus            - array of PDUs, oldest first
-SCENARIO("backfill response contains origin, origin_server_ts, and pdus fields",
-         "[federation][conformance][backfill]")
+SCENARIO("backfill response contains origin, origin_server_ts, and pdus fields", "[federation][conformance][backfill]")
 {
     GIVEN("a runtime with backfill_provider that returns one PDU")
     {
@@ -2399,8 +2353,7 @@ SCENARIO("backfill response contains origin, origin_server_ts, and pdus fields",
         merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
 
         auto const pdu_body = std::string{R"({"type":"m.room.message","content":{"body":"hello"}})"};
-        runtime.backfill_provider =
-            [pdu_body]([[maybe_unused]] merovingian::federation::BackfillRequest const& req)
+        runtime.backfill_provider = [pdu_body]([[maybe_unused]] merovingian::federation::BackfillRequest const& req)
             -> merovingian::federation::BackfillResult {
             return {true, 200U, {}, {pdu_body}};
         };
@@ -2408,8 +2361,7 @@ SCENARIO("backfill response contains origin, origin_server_ts, and pdus fields",
         WHEN("a signed backfill request is dispatched")
         {
             auto const target =
-                "/_matrix/federation/v1/backfill/" + std::string{room_id} +
-                "?v=$prev:local.example.org&limit=5";
+                "/_matrix/federation/v1/backfill/" + std::string{room_id} + "?v=$prev:local.example.org&limit=5";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -2420,8 +2372,7 @@ SCENARIO("backfill response contains origin, origin_server_ts, and pdus fields",
 
                 auto const parsed = merovingian::canonicaljson::parse_lossless(response.body);
                 REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
-                auto const* root =
-                    std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
                 REQUIRE(root != nullptr);
 
                 // Spec MUST: origin is a non-empty string (this server's name).
@@ -2468,17 +2419,15 @@ SCENARIO("backfill provider receives room_id, event_ids, and limit parsed from t
 
         auto captured = std::make_shared<merovingian::federation::BackfillRequest>();
         runtime.backfill_provider =
-            [captured](merovingian::federation::BackfillRequest const& req)
-            -> merovingian::federation::BackfillResult {
+            [captured](merovingian::federation::BackfillRequest const& req) -> merovingian::federation::BackfillResult {
             *captured = req;
             return {true, 200U, {}, {}};
         };
 
         WHEN("a backfill request carries two v= event IDs and limit=10")
         {
-            auto const target =
-                "/_matrix/federation/v1/backfill/" + std::string{room_id} +
-                "?v=$event_a:local.example.org&v=$event_b:local.example.org&limit=10";
+            auto const target = "/_matrix/federation/v1/backfill/" + std::string{room_id} +
+                                "?v=$event_a:local.example.org&v=$event_b:local.example.org&limit=10";
             auto const response = merovingian::federation::handle_inbound_federation_request(
                 runtime, signed_get_request(origin, key_id, key_seed, target));
 
@@ -2489,11 +2438,56 @@ SCENARIO("backfill provider receives room_id, event_ids, and limit parsed from t
                 REQUIRE(captured->room_id == std::string{room_id});
                 // Spec MUST: each v= param becomes an entry in event_ids.
                 REQUIRE(captured->event_ids.size() == 2U);
-                REQUIRE(std::ranges::find(captured->event_ids,
-                                          std::string{"$event_a:local.example.org"}) != captured->event_ids.end());
-                REQUIRE(std::ranges::find(captured->event_ids,
-                                          std::string{"$event_b:local.example.org"}) != captured->event_ids.end());
+                REQUIRE(std::ranges::find(captured->event_ids, std::string{"$event_a:local.example.org"}) !=
+                        captured->event_ids.end());
+                REQUIRE(std::ranges::find(captured->event_ids, std::string{"$event_b:local.example.org"}) !=
+                        captured->event_ids.end());
                 // Spec MUST: limit= is parsed and passed as the limit field.
+                REQUIRE(captured->limit == 10U);
+            }
+        }
+    }
+}
+
+// =============================================================================
+// backfill — URI decoding
+// =============================================================================
+// Spec: Matrix Server-Server API v1.18
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1backfillroomid
+//
+// Spec MUST: `roomId` identifies the room to backfill, and each `v` query
+// parameter identifies an event to backfill from. These are URI path/query
+// components on the wire, so the provider must receive decoded Matrix IDs.
+SCENARIO("backfill provider receives decoded room_id and event_ids from URI components",
+         "[federation][conformance][backfill]")
+{
+    GIVEN("a runtime with backfill_provider that captures decoded identifiers")
+    {
+        auto runtime = merovingian::federation::make_federation_runtime_state(runtime_config());
+        merovingian::federation::upsert_remote(runtime, remote_for(origin, key_id, key_seed));
+
+        auto captured = std::make_shared<merovingian::federation::BackfillRequest>();
+        runtime.backfill_provider =
+            [captured](merovingian::federation::BackfillRequest const& req) -> merovingian::federation::BackfillResult {
+            *captured = req;
+            return {true, 200U, {}, {}};
+        };
+
+        WHEN("a backfill request percent-encodes the room and event IDs")
+        {
+            auto const target = "/_matrix/federation/v1/backfill/%21conformance%3Alocal.example.org"
+                                "?v=%24event_a%3Alocal.example.org&limit=10";
+            auto const response = merovingian::federation::handle_inbound_federation_request(
+                runtime, signed_get_request(origin, key_id, key_seed, target));
+
+            THEN("the provider receives the decoded Matrix identifiers")
+            {
+                // Spec MUST: room_id from the path is passed to the provider.
+                REQUIRE(response.status == 200U);
+                REQUIRE(captured->room_id == std::string{room_id});
+                // Spec MUST: each v= param identifies the event to backfill from.
+                REQUIRE(captured->event_ids.size() == 1U);
+                REQUIRE(captured->event_ids.front() == "$event_a:local.example.org");
                 REQUIRE(captured->limit == 10U);
             }
         }

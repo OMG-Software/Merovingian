@@ -4,8 +4,10 @@
 
 #include "merovingian/database/persistent_store.hpp"
 
+#include <cstddef>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace merovingian::federation
 {
@@ -18,20 +20,33 @@ namespace merovingian::federation
 
 // Builds the canonical-JSON response body for an inbound federation
 // `GET /_matrix/federation/v1/state/{roomId}?event_id=...` request. Returns the
-// room's current state events in `pdus` and the transitive auth-event closure
-// of that state in `auth_chain`. Historical-state-at-event reconstruction
-// (running state resolution as of a specific event) is not yet implemented.
-// Returns an empty string when the room has no recorded state.
-[[nodiscard]] auto build_state_response(database::PersistentStore const& store, std::string_view room_id)
-    -> std::string;
+// resolved room state in `pdus` and the transitive auth-event closure of that
+// state in `auth_chain`. When `at_event_id` names an event in the room, the
+// state is reconstructed as of that event — the fully resolved state prior to
+// the changes the event itself induces (SS API §GET /state/{roomId}) — by
+// walking the event DAG backward from the event's `prev_events`. When
+// `at_event_id` is empty or unknown, the room's current state is returned.
+// Returns an empty string when the room has no resolvable state.
+[[nodiscard]] auto build_state_response(database::PersistentStore const& store, std::string_view room_id,
+                                        std::string_view at_event_id = {}) -> std::string;
 
 // Builds the canonical-JSON response body for an inbound federation
 // `GET /_matrix/federation/v1/state_ids/{roomId}?event_id=...` request. Returns
-// the current state event IDs in `pdu_ids` and the transitive auth-event
-// closure of that state in `auth_chain_ids`. Returns an empty string when the
-// room has no recorded state.
-[[nodiscard]] auto build_state_ids_response(database::PersistentStore const& store, std::string_view room_id)
-    -> std::string;
+// the resolved state event IDs in `pdu_ids` and the transitive auth-event
+// closure of that state in `auth_chain_ids`. State is reconstructed as of
+// `at_event_id` when it names an event in the room (see `build_state_response`),
+// otherwise the room's current state IDs are returned. Returns an empty string
+// when the room has no resolvable state.
+[[nodiscard]] auto build_state_ids_response(database::PersistentStore const& store, std::string_view room_id,
+                                            std::string_view at_event_id = {}) -> std::string;
+
+// Builds the PDU list for `GET /_matrix/federation/v1/backfill/{roomId}` by
+// starting at each requested event ID and walking `prev_events` until `limit`
+// PDUs have been collected. Missing events and events outside `room_id` are
+// skipped.
+[[nodiscard]] auto build_backfill_pdus(database::PersistentStore const& store, std::string_view room_id,
+                                       std::vector<std::string> const& event_ids, std::size_t limit)
+    -> std::vector<std::string>;
 
 // Builds the canonical-JSON response body for an inbound federation
 // `POST /_matrix/federation/v1/get_missing_events/{roomId}` request.

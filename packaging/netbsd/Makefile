@@ -14,6 +14,8 @@ USE_TOOLS+=     pkg-config perl bison flex gmake
 DEPENDS+=       libsodium>=1.0.18:../../security/libsodium
 DEPENDS+=       postgresql17-client>=17:../../databases/postgresql17-client
 DEPENDS+=       curl>=8:../../www/curl
+DEPENDS+=       png>=1.6:../../graphics/png
+DEPENDS+=       libjpeg-turbo>=2:../../graphics/libjpeg-turbo
 
 MESON_ARGS+=    --wrap-mode=forcefallback
 MESON_ARGS+=    -Dhardening=true

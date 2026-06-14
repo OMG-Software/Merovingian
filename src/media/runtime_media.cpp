@@ -6,6 +6,12 @@
 #include <string>
 #include <vector>
 
+// Build-time default install path of the sandboxed thumbnail worker. Mirrors the
+// MEROVINGIAN_SYSCONFDIR convention; defined by the media library's cpp_args.
+#ifndef MEROVINGIAN_THUMBNAIL_WORKER_PATH
+#define MEROVINGIAN_THUMBNAIL_WORKER_PATH ""
+#endif
+
 namespace merovingian::media
 {
 namespace
@@ -38,6 +44,8 @@ auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConf
         1U,
         64U,
         true,
+        std::string{MEROVINGIAN_THUMBNAIL_WORKER_PATH},
+        10U,
     };
 }
 

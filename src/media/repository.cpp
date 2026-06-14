@@ -182,9 +182,12 @@ namespace
         {
             return;
         }
-        // Dimensions are not decoded from the image at ingest time (no image library).
-        // Store 0×0 so clients know the dimensions are unknown; the original blob bytes
-        // are served as the thumbnail until a resampling library is integrated.
+        // Registers the media as thumbnailable. Dimensions are intentionally left
+        // 0×0: thumbnails are not produced at ingest. They are generated on demand
+        // by the sandboxed out-of-process worker (see media/thumbnailer.hpp and
+        // download_local_media_thumbnail), which decodes the original blob and
+        // resamples to the requested geometry. This entry simply records that the
+        // source is a resamplable image type.
         repository.thumbnails.push_back({record.media_id, record.storage_id, 0U, 0U,
                                          record.content_type, record.size_bytes});
         ++repository.metrics.thumbnails_generated;
@@ -282,6 +285,7 @@ auto media_repository_metrics(LocalMediaRepository const& repository) -> std::ve
         make_metric("media_remote_fetches_accepted_total", repository.metrics.remote_fetches_accepted),
         make_metric("media_processing_rejections_total", repository.metrics.processing_rejections),
         make_metric("media_thumbnails_generated_total", repository.metrics.thumbnails_generated),
+        make_metric("media_thumbnails_served_total", repository.metrics.thumbnails_served),
         make_metric("media_stored_blobs", repository.metrics.stored_blobs),
         make_metric("media_stored_bytes", repository.metrics.stored_bytes),
     };

@@ -13,6 +13,7 @@
 #include <chrono>
 #include <cstdint>
 #include <deque>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -116,6 +117,134 @@ namespace
         return ordered;
     }
 
+    // The (type, state_key) identity of a stored event, derived from its JSON.
+    // `is_state` is true only when the event carries a `state_key` member, which
+    // is what distinguishes a state event from a message event per the spec.
+    struct StateIdentity final
+    {
+        std::string type{};
+        std::string state_key{};
+        bool is_state{false};
+    };
+
+    [[nodiscard]] auto state_identity(std::string_view json) -> StateIdentity
+    {
+        auto value = parsed_value(json);
+        if (!value.has_value())
+        {
+            return {};
+        }
+        auto const* object = std::get_if<canonicaljson::Object>(&value->storage());
+        if (object == nullptr)
+        {
+            return {};
+        }
+        auto identity = StateIdentity{};
+        if (auto const* state_key = member_value(*object, "state_key"); state_key != nullptr)
+        {
+            if (auto const* text = std::get_if<std::string>(&state_key->storage()); text != nullptr)
+            {
+                identity.state_key = *text;
+                identity.is_state = true;
+            }
+        }
+        if (auto const* type = member_value(*object, "type"); type != nullptr)
+        {
+            if (auto const* text = std::get_if<std::string>(&type->storage()); text != nullptr)
+            {
+                identity.type = *text;
+            }
+        }
+        return identity;
+    }
+
+    // Reconstructs the resolved room state as of `at_event_id` — the state prior
+    // to the changes that event induces — by walking the event DAG backward from
+    // the event's prev_events (the event itself is excluded). For each
+    // (type, state_key) the ancestor with the greatest (depth, event_id) wins,
+    // which is the deterministic linearisation that state resolution yields for a
+    // conflict-free DAG. Returns the chosen state event IDs, or an empty vector
+    // when the event is unknown or belongs to another room.
+    [[nodiscard]] auto reconstruct_state_at_event(database::PersistentStore const& store, std::string_view room_id,
+                                                  std::string_view at_event_id) -> std::vector<std::string>
+    {
+        auto const* start = find_event(store, at_event_id);
+        if (start == nullptr || start->room_id != room_id)
+        {
+            return {};
+        }
+        struct Choice final
+        {
+            std::uint64_t depth{0U};
+            std::string event_id{};
+        };
+        auto chosen = std::map<std::pair<std::string, std::string>, Choice>{};
+        auto seen = std::unordered_set<std::string>{};
+        auto queue = std::deque<std::string>{};
+        for (auto const& prev_id : start->prev_event_ids)
+        {
+            if (seen.insert(prev_id).second)
+            {
+                queue.push_back(prev_id);
+            }
+        }
+        while (!queue.empty())
+        {
+            auto const id = std::move(queue.front());
+            queue.pop_front();
+            auto const* event = find_event(store, id);
+            if (event == nullptr || event->room_id != room_id || event->json.empty())
+            {
+                continue;
+            }
+            if (auto const identity = state_identity(event->json); identity.is_state)
+            {
+                auto const key = std::pair{identity.type, identity.state_key};
+                auto const existing = chosen.find(key);
+                if (existing == chosen.end() || event->depth > existing->second.depth ||
+                    (event->depth == existing->second.depth && id > existing->second.event_id))
+                {
+                    chosen[key] = Choice{event->depth, id};
+                }
+            }
+            for (auto const& prev_id : event->prev_event_ids)
+            {
+                if (seen.insert(prev_id).second)
+                {
+                    queue.push_back(prev_id);
+                }
+            }
+        }
+        auto result = std::vector<std::string>{};
+        result.reserve(chosen.size());
+        for (auto const& [key, choice] : chosen)
+        {
+            result.push_back(choice.event_id);
+        }
+        return result;
+    }
+
+    // Resolves the set of state event IDs a /state or /state_ids response should
+    // carry. When `at_event_id` names a stored event the state is reconstructed
+    // as of that event; otherwise the room's current recorded state is returned.
+    [[nodiscard]] auto resolved_state_event_ids(database::PersistentStore const& store, std::string_view room_id,
+                                                std::string_view at_event_id) -> std::vector<std::string>
+    {
+        if (!at_event_id.empty() && find_event(store, at_event_id) != nullptr)
+        {
+            return reconstruct_state_at_event(store, room_id, at_event_id);
+        }
+        auto ids = std::vector<std::string>{};
+        for (auto const& state_event : store.state)
+        {
+            if (state_event.room_id == room_id)
+            {
+                ids.push_back(state_event.event_id);
+            }
+        }
+        return ids;
+    }
+
 } // namespace
 
 auto build_event_response(database::PersistentStore const& store, std::string_view event_id,
@@ -126,39 +255,41 @@ auto build_event_response(database::PersistentStore const& store, std::string_vi
     });
     if (it == store.events.end() || it->json.empty())
     {
-        log_diagnostic("event_query.not_found", {{"event_id", std::string{event_id}, false}});
+        log_diagnostic("event_query.not_found", {
+                                                    {"event_id", std::string{event_id}, false}
+        });
         return {};
     }
     auto event_value = parsed_value(it->json);
     if (!event_value.has_value())
     {
-        log_diagnostic("event_query.parse_failed", {{"event_id", std::string{event_id}, false}});
+        log_diagnostic("event_query.parse_failed", {
+                                                       {"event_id", std::string{event_id}, false}
+        });
         return {};
     }
     auto pdus = canonicaljson::Array{};
     pdus.push_back(std::move(*event_value));
     auto response = canonicaljson::Object{};
-    response.push_back(
-        canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin_server_name}}));
+    response.push_back(canonicaljson::make_member("origin", canonicaljson::Value{std::string{origin_server_name}}));
     response.push_back(canonicaljson::make_member("origin_server_ts", canonicaljson::Value{now_ms()}));
     response.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdus)}));
-    log_diagnostic("event_query.accepted", {{"event_id", std::string{event_id}, false}});
+    log_diagnostic("event_query.accepted", {
+                                               {"event_id", std::string{event_id}, false}
+    });
     return serialize(std::move(response));
 }
 
-auto build_state_response(database::PersistentStore const& store, std::string_view room_id) -> std::string
+auto build_state_response(database::PersistentStore const& store, std::string_view room_id,
+                          std::string_view at_event_id) -> std::string
 {
     auto pdus = canonicaljson::Array{};
     // Seed IDs for the auth chain: every auth event named by a returned state
     // event. The transitive closure is computed once after the state is gathered.
     auto auth_seed_ids = std::vector<std::string>{};
-    for (auto const& state_event : store.state)
+    for (auto const& state_event_id : resolved_state_event_ids(store, room_id, at_event_id))
     {
-        if (state_event.room_id != room_id)
-        {
-            continue;
-        }
-        auto const* event = find_event(store, state_event.event_id);
+        auto const* event = find_event(store, state_event_id);
         if (event == nullptr || event->json.empty())
         {
             continue;
@@ -173,7 +304,9 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
     }
     if (pdus.empty())
     {
-        log_diagnostic("state_query.not_found", {{"room_id", std::string{room_id}, false}});
+        log_diagnostic("state_query.not_found", {
+                                                    {"room_id", std::string{room_id}, false}
+        });
         return {};
     }
     // auth_chain carries the full event bodies for the transitive auth closure
@@ -199,31 +332,32 @@ auto build_state_response(database::PersistentStore const& store, std::string_vi
     auto response = canonicaljson::Object{};
     response.push_back(canonicaljson::make_member("auth_chain", canonicaljson::Value{std::move(auth_chain)}));
     response.push_back(canonicaljson::make_member("pdus", canonicaljson::Value{std::move(pdus)}));
-    log_diagnostic("state_query.accepted", {{"room_id",    std::string{room_id},            false},
-                                            {"pdus",       std::to_string(pdu_count),       false},
-                                            {"auth_chain", std::to_string(auth_chain_count), false}});
+    log_diagnostic("state_query.accepted", {
+                                               {"room_id",    std::string{room_id},             false},
+                                               {"pdus",       std::to_string(pdu_count),        false},
+                                               {"auth_chain", std::to_string(auth_chain_count), false}
+    });
     return serialize(std::move(response));
 }
 
-auto build_state_ids_response(database::PersistentStore const& store, std::string_view room_id) -> std::string
+auto build_state_ids_response(database::PersistentStore const& store, std::string_view room_id,
+                              std::string_view at_event_id) -> std::string
 {
     auto pdu_ids = canonicaljson::Array{};
     auto auth_seed_ids = std::vector<std::string>{};
-    for (auto const& state_event : store.state)
+    for (auto const& state_event_id : resolved_state_event_ids(store, room_id, at_event_id))
     {
-        if (state_event.room_id != room_id)
-        {
-            continue;
-        }
-        if (auto const* event = find_event(store, state_event.event_id); event != nullptr)
+        if (auto const* event = find_event(store, state_event_id); event != nullptr)
         {
             auth_seed_ids.insert(auth_seed_ids.end(), event->auth_event_ids.begin(), event->auth_event_ids.end());
         }
-        pdu_ids.push_back(canonicaljson::Value{state_event.event_id});
+        pdu_ids.push_back(canonicaljson::Value{state_event_id});
     }
     if (pdu_ids.empty())
     {
-        log_diagnostic("state_ids_query.not_found", {{"room_id", std::string{room_id}, false}});
+        log_diagnostic("state_ids_query.not_found", {
+                                                        {"room_id", std::string{room_id}, false}
+        });
         return {};
     }
     auto auth_chain_ids = canonicaljson::Array{};
@@ -236,10 +370,55 @@ auto build_state_ids_response(database::PersistentStore const& store, std::strin
     auto response = canonicaljson::Object{};
     response.push_back(canonicaljson::make_member("auth_chain_ids", canonicaljson::Value{std::move(auth_chain_ids)}));
     response.push_back(canonicaljson::make_member("pdu_ids", canonicaljson::Value{std::move(pdu_ids)}));
-    log_diagnostic("state_ids_query.accepted", {{"room_id",        std::string{room_id},                false},
-                                                {"pdu_ids",        std::to_string(pdu_id_count),        false},
-                                                {"auth_chain_ids", std::to_string(auth_chain_id_count), false}});
+    log_diagnostic("state_ids_query.accepted", {
+                                                   {"room_id",        std::string{room_id},                false},
+                                                   {"pdu_ids",        std::to_string(pdu_id_count),        false},
+                                                   {"auth_chain_ids", std::to_string(auth_chain_id_count), false}
+    });
     return serialize(std::move(response));
+}
+
+auto build_backfill_pdus(database::PersistentStore const& store, std::string_view room_id,
+                         std::vector<std::string> const& event_ids, std::size_t limit) -> std::vector<std::string>
+{
+    if (limit == 0U)
+    {
+        return {};
+    }
+    auto pdus = std::vector<std::string>{};
+    auto seen = std::unordered_set<std::string>{};
+    auto queue = std::deque<std::string>{};
+    for (auto const& event_id : event_ids)
+    {
+        if (seen.insert(event_id).second)
+        {
+            queue.push_back(event_id);
+        }
+    }
+    while (!queue.empty() && pdus.size() < limit)
+    {
+        auto const event_id = std::move(queue.front());
+        queue.pop_front();
+        auto const* event = find_event(store, event_id);
+        if (event == nullptr || event->room_id != room_id || event->json.empty())
+        {
+            continue;
+        }
+        pdus.push_back(event->json);
+        for (auto const& prev_event_id : event->prev_event_ids)
+        {
+            if (seen.insert(prev_event_id).second)
+            {
+                queue.push_back(prev_event_id);
+            }
+        }
+    }
+    log_diagnostic("backfill_query.accepted", {
+                                                  {"room_id",   std::string{room_id},             false},
+                                                  {"requested", std::to_string(event_ids.size()), false},
+                                                  {"pdus",      std::to_string(pdus.size()),      false}
+    });
+    return pdus;
 }
 
 auto build_get_missing_events_response(database::PersistentStore const& store, std::string_view room_id,
@@ -294,7 +473,9 @@ auto build_get_missing_events_response(database::PersistentStore const& store, s
         }
         candidates.push_back({event.depth, event.json});
     }
-    std::ranges::sort(candidates, [](Entry const& lhs, Entry const& rhs) noexcept { return lhs.depth < rhs.depth; });
+    std::ranges::sort(candidates, [](Entry const& lhs, Entry const& rhs) noexcept {
+        return lhs.depth < rhs.depth;
+    });
     auto events = canonicaljson::Array{};
     for (auto const& entry : candidates)
     {

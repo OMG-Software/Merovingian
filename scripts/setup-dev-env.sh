@@ -151,28 +151,28 @@ detect_package_manager() {
 package_list_for() {
     case "$1" in
         apt)
-            printf '%s\n' "build-essential clang lld meson ninja-build pkg-config git python3 perl bison flex m4 libssl-dev libsodium-dev libpq-dev catch2 clang-format clang-tidy cppcheck"
+            printf '%s\n' "build-essential clang lld meson ninja-build pkg-config git python3 perl bison flex m4 libssl-dev libsodium-dev libpq-dev libpng-dev libturbojpeg0-dev catch2 clang-format clang-tidy cppcheck"
             ;;
         dnf)
-            printf '%s\n' "gcc-c++ clang lld meson ninja-build pkgconf-pkg-config git python3 perl bison flex m4 openssl-devel libsodium-devel libpq-devel catch-devel clang-tools-extra cppcheck"
+            printf '%s\n' "gcc-c++ clang lld meson ninja-build pkgconf-pkg-config git python3 perl bison flex m4 openssl-devel libsodium-devel libpq-devel libpng-devel turbojpeg-devel catch-devel clang-tools-extra cppcheck"
             ;;
         zypper)
-            printf '%s\n' "gcc-c++ clang lld meson ninja pkg-config git python3 perl bison flex m4 libopenssl-devel libsodium-devel postgresql-devel catch2-devel clang-tools cppcheck"
+            printf '%s\n' "gcc-c++ clang lld meson ninja pkg-config git python3 perl bison flex m4 libopenssl-devel libsodium-devel postgresql-devel libpng16-devel libjpeg-turbo catch2-devel clang-tools cppcheck"
             ;;
         pacman)
-            printf '%s\n' "base-devel clang lld meson ninja pkgconf git python perl bison flex m4 openssl libsodium postgresql-libs catch2 clang-tools-extra cppcheck"
+            printf '%s\n' "base-devel clang lld meson ninja pkgconf git python perl bison flex m4 openssl libsodium postgresql-libs libpng libjpeg-turbo catch2 clang-tools-extra cppcheck"
             ;;
         apk)
-            printf '%s\n' "build-base clang lld meson ninja pkgconf git python3 perl bison flex m4 openssl-dev libsodium-dev postgresql-dev catch2-dev clang-extra-tools cppcheck"
+            printf '%s\n' "build-base clang lld meson ninja pkgconf git python3 perl bison flex m4 openssl-dev libsodium-dev postgresql-dev libpng-dev libjpeg-turbo-dev catch2-dev clang-extra-tools cppcheck"
             ;;
         pkg)
-            printf '%s\n' "llvm meson ninja pkgconf git python3 perl5 bison flex gmake openssl libsodium postgresql17-client catch2 cppcheck"
+            printf '%s\n' "llvm meson ninja pkgconf git python3 perl5 bison flex gmake openssl libsodium postgresql17-client png libjpeg-turbo catch2 cppcheck"
             ;;
         pkg_add)
-            printf '%s\n' "llvm meson ninja pkgconf git perl bison flex gmake openssl libsodium postgresql-client catch2 cppcheck"
+            printf '%s\n' "llvm meson ninja pkgconf git perl bison flex gmake openssl libsodium postgresql-client png jpeg-turbo catch2 cppcheck"
             ;;
         pkgin)
-            printf '%s\n' "clang meson ninja-build pkg-config git python311 perl bison flex gmake openssl libsodium postgresql17-client catch2 cppcheck"
+            printf '%s\n' "clang meson ninja-build pkg-config git python311 perl bison flex gmake openssl libsodium postgresql17-client png libjpeg-turbo catch2 cppcheck"
             ;;
         *)
             fail "unsupported package manager: $1"

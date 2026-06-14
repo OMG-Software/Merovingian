@@ -153,8 +153,8 @@ using UserDevicesProvider = std::function<std::string(std::string_view user_id)>
 // response body, or an empty string on failure. Optional: an unset hook makes
 // the corresponding route respond 501 Not Implemented.
 using EventQueryProvider = std::function<std::string(std::string_view event_id)>;
-using StateQueryProvider = std::function<std::string(std::string_view room_id)>;
-using StateIdsQueryProvider = std::function<std::string(std::string_view room_id)>;
+using StateQueryProvider = std::function<std::string(std::string_view room_id, std::string_view event_id)>;
+using StateIdsQueryProvider = std::function<std::string(std::string_view room_id, std::string_view event_id)>;
 using MissingEventsQueryProvider =
     std::function<std::string(std::string_view room_id, std::string_view request_body)>;
 

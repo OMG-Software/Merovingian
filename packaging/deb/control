@@ -11,6 +11,8 @@ Build-Depends:
  libssl-dev,
  libsodium-dev,
  libpq-dev,
+ libpng-dev,
+ libturbojpeg0-dev,
  libcurl4-openssl-dev,
  catch2,
  python3,
@@ -28,7 +30,9 @@ Depends:
  ${misc:Depends},
  libssl3,
  libsodium23,
- libpq5
+ libpq5,
+ libpng16-16,
+ libturbojpeg0
 Recommends:
  ca-certificates
 Description: secure Matrix Protocol homeserver

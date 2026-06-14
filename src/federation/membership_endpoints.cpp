@@ -127,8 +127,7 @@ namespace
 
 } // namespace
 
-auto parse_membership_path(FederationEndpoint endpoint, std::string_view target)
-    -> std::optional<MembershipPathParams>
+auto parse_membership_path(FederationEndpoint endpoint, std::string_view target) -> std::optional<MembershipPathParams>
 {
     auto const target_path = [target] {
         auto const q = target.find('?');
@@ -153,19 +152,28 @@ auto parse_membership_path(FederationEndpoint endpoint, std::string_view target)
     }
     if (suffix.empty())
     {
-        log_diagnostic("membership_path.rejected", {{"target", std::string{target}, false},
-                                                    {"reason", "empty path suffix",  false}});
+        log_diagnostic("membership_path.rejected",
+                       {
+                           {"target", std::string{target}, false},
+                           {"reason", "empty path suffix", false}
+        });
         return std::nullopt;
     }
     auto split = split_two(suffix);
     if (!split.has_value())
     {
-        log_diagnostic("membership_path.rejected", {{"target", std::string{target}, false},
-                                                    {"reason", "malformed room/user suffix", false}});
+        log_diagnostic("membership_path.rejected",
+                       {
+                           {"target", std::string{target},          false},
+                           {"reason", "malformed room/user suffix", false}
+        });
         return std::nullopt;
     }
-    log_diagnostic("membership_path.accepted", {{"room_id", split->first,  false},
-                                                {"user_id", split->second, false}});
+    log_diagnostic("membership_path.accepted",
+                   {
+                       {"room_id", split->first,  false},
+                       {"user_id", split->second, false}
+    });
     return MembershipPathParams{std::move(split->first), std::move(split->second)};
 }
 
@@ -184,7 +192,7 @@ auto parse_backfill_query(std::string_view target) -> std::optional<BackfillRequ
         return std::nullopt;
     }
     auto request = BackfillRequest{};
-    request.room_id = std::string{path.substr(prefix.size())};
+    request.room_id = core::percent_decode_path_component(path.substr(prefix.size()));
     if (request.room_id.empty() || request.room_id.find('/') != std::string::npos)
     {
         return std::nullopt;
@@ -199,7 +207,7 @@ auto parse_backfill_query(std::string_view target) -> std::optional<BackfillRequ
         auto const value = eq == std::string_view::npos ? std::string_view{} : segment.substr(eq + 1U);
         if (key == "v" && !value.empty())
         {
-            request.event_ids.emplace_back(value);
+            request.event_ids.emplace_back(core::percent_decode_path_component(value));
         }
         else if (key == "limit" && !value.empty())
         {

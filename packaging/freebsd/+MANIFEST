@@ -1,5 +1,5 @@
 name: "merovingian"
-version: "0.8.9"
+version: "0.9.0"
 origin: net/merovingian
 comment: Secure Matrix Protocol homeserver
 desc: "Merovingian is an alpha Matrix Protocol homeserver."
@@ -9,6 +9,10 @@ prefix: /usr/local
 licenselogic: single
 licenses: [GPL3]
 flatsize: 0
+deps: {
+  png: {origin: graphics/png, version: "1.6.0"},
+  libjpeg-turbo: {origin: graphics/libjpeg-turbo, version: "2.0.0"},
+}
 scripts: {
   pre-install: <<EOD
 #!/bin/sh

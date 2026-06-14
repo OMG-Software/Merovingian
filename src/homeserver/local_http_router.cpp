@@ -523,6 +523,55 @@ namespace
         return out;
     }
 
+    struct ThumbnailParams final
+    {
+        std::uint32_t width{0U};
+        std::uint32_t height{0U};
+        media::ThumbnailMethod method{media::ThumbnailMethod::scale};
+    };
+
+    // Parses the Matrix thumbnail query parameters (`width`, `height`, `method`)
+    // from a request target. Defaults follow the CS API: method `scale`, and a
+    // zero dimension means the request is unusable (the handler then falls back
+    // to serving the original media).
+    [[nodiscard]] auto parse_thumbnail_params(std::string_view target) -> ThumbnailParams
+    {
+        auto params = ThumbnailParams{};
+        auto const query_start = target.find('?');
+        if (query_start == std::string_view::npos)
+        {
+            return params;
+        }
+        auto const parse_dimension = [](std::string_view value) -> std::uint32_t {
+            auto result = std::uint32_t{0U};
+            for (auto const ch : value)
+            {
+                if (ch < '0' || ch > '9' || result > 429496U)
+                {
+                    return 0U;
+                }
+                result = result * 10U + static_cast<std::uint32_t>(ch - '0');
+            }
+            return result;
+        };
+        for (auto const& kv : parse_audit_query_string(target.substr(query_start + 1U)))
+        {
+            if (kv.first == "width")
+            {
+                params.width = parse_dimension(kv.second);
+            }
+            else if (kv.first == "height")
+            {
+                params.height = parse_dimension(kv.second);
+            }
+            else if (kv.first == "method" && kv.second == "crop")
+            {
+                params.method = media::ThumbnailMethod::crop;
+            }
+        }
+        return params;
+    }
+
     [[nodiscard]] auto object_member_as_object(canonicaljson::Object const& object, std::string_view key)
         -> canonicaljson::Object const*
     {
@@ -1372,22 +1421,7 @@ namespace
         runtime.federation.backfill_provider =
             [rt](federation::BackfillRequest const& req) -> federation::BackfillResult {
             auto const& store = rt->database.persistent_store;
-            auto pdus = std::vector<std::string>{};
-            for (auto const& requested_id : req.event_ids)
-            {
-                for (auto const& evt : store.events)
-                {
-                    if (evt.event_id == requested_id && !evt.json.empty())
-                    {
-                        pdus.push_back(evt.json);
-                        break;
-                    }
-                }
-                if (pdus.size() >= req.limit)
-                {
-                    break;
-                }
-            }
+            auto pdus = federation::build_backfill_pdus(store, req.room_id, req.event_ids, req.limit);
             return {true, 200U, {}, std::move(pdus)};
         };
 
@@ -1421,12 +1455,14 @@ namespace
                                                     rt->config.server().server_name);
         };
 
-        runtime.federation.state_query_provider = [rt](std::string_view room_id) -> std::string {
-            return federation::build_state_response(rt->database.persistent_store, room_id);
+        runtime.federation.state_query_provider = [rt](std::string_view room_id,
+                                                       std::string_view event_id) -> std::string {
+            return federation::build_state_response(rt->database.persistent_store, room_id, event_id);
         };
 
-        runtime.federation.state_ids_query_provider = [rt](std::string_view room_id) -> std::string {
-            return federation::build_state_ids_response(rt->database.persistent_store, room_id);
+        runtime.federation.state_ids_query_provider = [rt](std::string_view room_id,
+                                                           std::string_view event_id) -> std::string {
+            return federation::build_state_ids_response(rt->database.persistent_store, room_id, event_id);
         };
 
         runtime.federation.missing_events_query_provider = [rt](std::string_view room_id,
@@ -1690,7 +1726,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         {
             return response(404U, "route not found");
         }
-        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1]);
+        auto const params = parse_thumbnail_params(request.target);
+        auto const result =
+            download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height, params.method);
         return response_from_media_operation(result);
     }
     auto constexpr v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
@@ -1701,7 +1739,9 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
         {
             return response(404U, "route not found");
         }
-        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1]);
+        auto const params = parse_thumbnail_params(request.target);
+        auto const result =
+            download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height, params.method);
         return response_from_media_operation(result);
     }
     auto constexpr v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};

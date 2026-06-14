@@ -815,7 +815,14 @@ namespace
         {
             return {400U, "state path is malformed"};
         }
-        auto body = runtime.state_query_provider(room_id);
+        // Spec: the event_id query parameter is REQUIRED — the response is the
+        // resolved state of the room as of that event.
+        auto const event_id = query_param_value(request.target, "event_id");
+        if (event_id.empty())
+        {
+            return {400U, homeserver::matrix_error("M_MISSING_PARAM", "event_id query parameter is required")};
+        }
+        auto body = runtime.state_query_provider(room_id, event_id);
         if (body.empty())
         {
             return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room state not found")};
@@ -835,7 +842,14 @@ namespace
         {
             return {400U, "state_ids path is malformed"};
         }
-        auto body = runtime.state_ids_query_provider(room_id);
+        // Spec: the event_id query parameter is REQUIRED — the response is the
+        // resolved state IDs of the room as of that event.
+        auto const event_id = query_param_value(request.target, "event_id");
+        if (event_id.empty())
+        {
+            return {400U, homeserver::matrix_error("M_MISSING_PARAM", "event_id query parameter is required")};
+        }
+        auto body = runtime.state_ids_query_provider(room_id, event_id);
         if (body.empty())
         {
             return {404U, homeserver::matrix_error("M_NOT_FOUND", "Room state not found")};
