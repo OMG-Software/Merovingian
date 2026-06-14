@@ -27,6 +27,7 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Prefer references over pointers.
 - No raw pointers, use smart pointers.
 - No calls to new/delete, malloc/free etc. 
+- Use std::ignore rather than (void) casting.
 - Format C++ code with clang-format using the .clang-format file in the project root.
 - If something is ambiguous, ask clarifying questions, never assume.
 - Prefer simple, readable solutions over clever ones.
