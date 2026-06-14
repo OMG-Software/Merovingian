@@ -9,6 +9,39 @@
 5. Auditability.
 6. Scale without bypassing checks.
 
+## System context
+
+Merovingian is designed to run behind a reverse proxy (which owns public TLS),
+bound to loopback listeners. It talks to a SQL backend, isolates untrusted image
+decoding in a sandboxed helper process, and federates with remote homeservers
+over authenticated HTTPS.
+
+```mermaid
+flowchart TB
+    client["Matrix client"]
+    remote["Remote homeserver (federation peer)"]
+    admin["Operator / admin"]
+    proxy["Reverse proxy (nginx / Caddy)<br/>owns public TLS"]
+
+    subgraph host["Merovingian host"]
+        server["merovingian-server<br/>(loopback listeners)"]
+        worker["merovingian-thumbnail-worker<br/>(sandboxed, short-lived)"]
+        db[("PostgreSQL / SQLite")]
+    end
+
+    client -->|HTTPS| proxy
+    admin -->|HTTPS| proxy
+    proxy -->|HTTP loopback| server
+    remote <-->|HTTPS + X-Matrix| server
+    server -->|spawn + pipe| worker
+    server -->|prepared statements| db
+    server -->|outbound HTTPS, pinned IPs| remote
+```
+
+Trust boundaries are explicit: every arrow crossing into `merovingian-server`
+from `client`, `remote`, or `admin` carries untrusted input and is authenticated
+and validated before it reaches state. See [threat-model.md](threat-model.md).
+
 ## Source tree
 
 Seventeen modules under `src/` and `include/merovingian/`, each compiling into a static library linked into the server and test binaries:
@@ -35,6 +68,54 @@ Seventeen modules under `src/` and `include/merovingian/`, each compiling into a
 
 Entry points: `src/main.cpp` (server) and `src/db_migrate.cpp` (standalone migration tool).
 
+### Module layering
+
+Modules form a layered dependency graph. Edge transport and routing sit at the
+top; protocol/domain services in the middle; shared foundations at the bottom.
+Dependencies point downward — foundations never depend on services.
+
+```mermaid
+flowchart TB
+    subgraph edge["Edge / transport"]
+        net["net<br/>TCP, pools, shutdown"]
+        http["http<br/>outbound client, rate limit"]
+    end
+    subgraph orchestration["Orchestration"]
+        homeserver["homeserver<br/>runtime, routing, services"]
+    end
+    subgraph services["Protocol & domain services"]
+        auth["auth"]
+        rooms["rooms"]
+        events["events"]
+        federation["federation"]
+        media["media"]
+        sync["sync"]
+        trust_safety["trust_safety"]
+    end
+    subgraph foundations["Shared foundations"]
+        database["database"]
+        crypto["crypto"]
+        canonicaljson["canonicaljson"]
+        observability["observability"]
+        platform["platform"]
+        config["config"]
+        core["core"]
+    end
+
+    net --> homeserver
+    homeserver --> auth & rooms & events & federation & media & sync & trust_safety
+    federation --> http
+    services --> database
+    events --> crypto & canonicaljson
+    federation --> crypto & canonicaljson
+    auth --> crypto
+    services --> observability
+    homeserver --> config
+```
+
+All foundation modules depend on `core` (RAII utilities, `not_null`,
+`secret_buffer`); it is the leaf of the graph.
+
 ## Runtime model
 
 ```text
@@ -60,7 +141,124 @@ Request flow:
 5. In-process requests (room creation that needs both auth and federation) go through `handle_local_http_request()`.
 6. For `/sync` long-polls: if no new data exists, `DispatchResult::needs_wait` is returned with `SyncWaitParams`. The HTTP server releases the runtime mutex, calls `SyncNotifier::wait_for_change()`, then re-acquires the lock and rebuilds the response. This offloading keeps the main pool free for real requests.
 
+```mermaid
+sequenceDiagram
+    participant L as Listener thread
+    participant P as Pool thread
+    participant R as Router
+    participant RT as HomeserverRuntime<br/>(recursive mutex)
+    participant N as SyncNotifier
+
+    L->>P: submit accepted fd
+    P->>P: read one HTTP request
+    P->>R: dispatch_local_http_request()
+    R->>RT: lock + handle (auth / federation / local)
+    alt /sync with no new data
+        RT-->>P: needs_wait + SyncWaitParams
+        P->>P: release runtime mutex
+        P->>N: wait_for_change(since)
+        N-->>P: counter advanced (or timeout)
+        P->>RT: re-lock + rebuild response
+    end
+    RT-->>P: response
+    P-->>L: write response, close/keep-alive
+```
+
 Shutdown uses the self-pipe trick: SIGINT/SIGTERM writes to a pipe watched by `poll(2)`. Both pools drain and join, listener threads are joined, and the process exits.
+
+## Data flow
+
+Data crosses three trust boundaries: the client edge, the federation edge, and
+the media-decode boundary. Untrusted bytes are authenticated, parsed with
+bounded parsers, and validated against Matrix rules **before** they reach the
+persistent store, and only validated events wake the sync notifier.
+
+### Local event write path
+
+A client sending a room event flows through authentication, the event pipeline
+(canonical JSON → content hash → Ed25519 signing → authorization rules), and
+persistence. Persisting an event publishes a sync-stream advance and queues
+outbound federation delivery to resident peers.
+
+```mermaid
+flowchart LR
+    client["Matrix client"] --> proxy["Reverse proxy<br/>(TLS)"]
+    proxy --> listener["Client TLS listener"]
+    listener --> pool["Main pool thread"]
+    pool --> auth{"Access token<br/>valid?"}
+    auth -- no --> reject["401 M_MISSING/UNKNOWN_TOKEN"]
+    auth -- yes --> room["Room service"]
+    room --> pipeline["Event pipeline<br/>canonical JSON · content hash<br/>· sign · auth rules"]
+    pipeline -- rejected --> deny["403 / error"]
+    pipeline -- authorized --> store[("Persistent store")]
+    store --> notifier["SyncNotifier.publish()"]
+    store --> outq["Outbound federation queue"]
+    notifier --> waiters["waiting /sync responses"]
+    outq --> dispatch["DispatchWorker"]
+    dispatch -->|HTTPS + X-Matrix| peers["Resident peer servers"]
+```
+
+### Inbound federation PDU path
+
+An inbound `PUT /send/{txnId}` transaction is authenticated at the transport
+(X-Matrix), then each PDU is independently verified and authorized. Per the
+Matrix spec, individual PDU failures are reported inside the response body — the
+transaction still returns 200 so the peer does not back off all federation.
+
+```mermaid
+sequenceDiagram
+    participant Peer as Remote homeserver
+    participant FL as Federation TLS listener
+    participant H as handle_inbound_federation_request
+    participant K as remote_key_resolver / key cache
+    participant V as PDU verification
+    participant A as Event authorization
+    participant S as Persistent store
+    participant N as SyncNotifier
+
+    Peer->>FL: PUT /send/{txnId} (X-Matrix auth)
+    FL->>H: parse envelope (origin, origin_server_ts, pdus[])
+    H->>K: resolve origin signing key
+    K-->>H: verify keys (TTL-checked)
+    H->>H: verify X-Matrix request signature
+    loop each PDU
+        H->>V: content-hash + sender-domain Ed25519 signature
+        V-->>H: ok / drop
+        H->>A: authorize_event_against_auth_events (resolved state)
+        A-->>H: authorized / rejected_auth
+        H->>S: persist authorized PDU
+    end
+    S->>N: publish stream advance
+    H-->>Peer: 200 with per-PDU results
+```
+
+### Media upload and thumbnail path
+
+Uploaded bytes are MIME-sniffed, policy-checked, deduplicated by content digest,
+and stored. Thumbnails are generated **on demand** by spawning the sandboxed
+worker; the server process never decodes untrusted image bytes itself.
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant M as media_service
+    participant R as Media repository
+    participant W as merovingian-thumbnail-worker<br/>(seccomp + rlimits)
+
+    C->>M: POST /media/v3/upload
+    M->>R: sniff MIME · policy · digest-dedupe · store blob
+    R-->>C: mxc:// content URI
+    C->>M: GET /thumbnail?width&height&method
+    M->>R: load original blob
+    M->>W: spawn, write framed request over pipe
+    Note over W: decode (libpng/libjpeg-turbo)<br/>→ resample → re-encode PNG
+    W-->>M: framed PNG (or status); else SIGKILL on timeout
+    alt worker ok
+        M-->>C: 200 image/png
+    else worker unavailable / unsupported / decode fail
+        M-->>C: 200 original bytes (graceful fallback)
+    end
+```
 
 ## Data types
 
@@ -136,6 +334,23 @@ Catch2 (v3, BDD-style `SCENARIO/GIVEN/WHEN/THEN`). Unit tests in `tests/unit/`, 
 Tests use in-process `ClientServerRuntime` — no real HTTP server. Requests are simulated via `handle_client_server_request(runtime, {method, target, access_token, body})`. Long-poll tests use `std::thread` producers that publish through the `SyncNotifier`.
 
 ## Security
+
+### Trust boundaries
+
+Four boundaries separate untrusted input from server state. Each has a mandatory
+gate that runs before any state mutation:
+
+| Boundary | Untrusted source | Gate enforced before state |
+|---|---|---|
+| Client edge | Matrix clients | Access-token authentication, rate limiting, bounded request parsing |
+| Federation edge | Remote homeservers | X-Matrix request-signature verification, per-PDU content-hash + Ed25519 verification, event authorization rules |
+| Media decode | Uploaded/fetched image bytes | Out-of-process sandboxed worker (seccomp + rlimits); the server never decodes image bytes in-process |
+| Persistence | All write paths | Prepared statements only; runtime/migration role separation |
+
+The full attacker model, surface inventory, and per-threat mitigations live in
+[threat-model.md](threat-model.md).
+
+### Principles and controls
 
 - All external input is hostile.
 - Every queue is bounded.
