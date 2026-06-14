@@ -128,6 +128,21 @@ topological power ordering and mainline depth.
 Event depth is persisted alongside the event row so ordering metadata survives
 a server restart.
 
+### State at a requested event
+
+The inbound federation `GET /state/{roomId}` and `/state_ids/{roomId}` endpoints
+return the room state resolved *as of* the required `event_id` query parameter —
+the state prior to the changes that event itself induces. Because the persistent
+store keeps only the current resolved state per `(type, state_key)`, historical
+state is reconstructed by walking the event DAG backward from the requested
+event's `prev_events`: state events are identified by the presence of a
+`state_key` member in the stored PDU JSON, and for each `(type, state_key)` the
+ancestor with the greatest `(depth, event_id)` wins. This is the deterministic
+linearisation that v2 state resolution produces for a conflict-free DAG, so
+superseded historical state values are recovered without a stored state group.
+When `event_id` is absent the handler rejects the request with
+`400 M_MISSING_PARAM`; an unknown `event_id` falls back to the current state.
+
 ## Redaction
 
 The redaction engine retains top-level keys and event-content keys according to

@@ -3,8 +3,11 @@
 @depend security/libsodium:libsodium-*:libsodium-*
 @depend databases/postgresql,-main:postgresql-client-*:postgresql-client-*
 @depend net/curl:curl-*:curl-*
+@depend graphics/png:png-*:png-*
+@depend graphics/jpeg:jpeg-*:jpeg-*
 @bin bin/merovingian-server
 @bin bin/merovingian-db-migrate
+@bin libexec/merovingian/merovingian-thumbnail-worker
 share/doc/merovingian/README.md
 share/doc/merovingian/configuration.md
 share/doc/merovingian/release-process.md

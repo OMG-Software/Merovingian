@@ -3,7 +3,9 @@
 #pragma once
 
 #include "merovingian/homeserver/runtime.hpp"
+#include "merovingian/media/thumbnailer.hpp"
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -16,7 +18,8 @@ namespace merovingian::homeserver
 [[nodiscard]] auto download_local_media(HomeserverRuntime& runtime, std::string_view server_name,
                                         std::string_view media_id) -> OperationResult;
 [[nodiscard]] auto download_local_media_thumbnail(HomeserverRuntime& runtime, std::string_view server_name,
-                                                  std::string_view media_id) -> OperationResult;
+                                                  std::string_view media_id, std::uint32_t width, std::uint32_t height,
+                                                  media::ThumbnailMethod method) -> OperationResult;
 [[nodiscard]] auto admin_quarantine_local_media(HomeserverRuntime& runtime, std::string_view access_token,
                                                 std::string_view media_id, std::string_view reason) -> OperationResult;
 [[nodiscard]] auto admin_release_local_media(HomeserverRuntime& runtime, std::string_view access_token,

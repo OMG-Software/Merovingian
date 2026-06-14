@@ -22,13 +22,49 @@ current in-process runtime path.
 - Admin quarantine, release, and remove actions update repository state, persistent metadata, admin actions, and audit events.
 - Media metrics expose accepted uploads, rejected uploads, quarantines,
   releases, removals, remote fetch accept/reject counts, processing rejections,
-  thumbnail generation, stored blobs, and stored bytes.
-- Thumbnail records store the actual content type and size from the ingested
-  blob; dimensions are recorded as 0×0 because no image decoder is linked.
-  Clients that need pixel dimensions must decode the blob themselves.
-- The media repository is runtime-wired, but still partial against Matrix
-  v1.18 because multipart upload handling and real image resampling remain
-  production gaps.
+  thumbnail registration (`media_thumbnails_generated_total`), on-demand
+  thumbnail resamples (`media_thumbnails_served_total`), stored blobs, and
+  stored bytes.
+- Thumbnail records mark an ingested image as resamplable; their dimensions stay
+  0×0 because no thumbnail is produced at ingest. Thumbnails are generated on
+  demand (see below), so a client requesting one always receives a freshly
+  resampled image rather than the stored placeholder.
+- The media repository is runtime-wired; multipart upload handling remains the
+  main outstanding Matrix v1.18 gap.
+
+## Thumbnailing
+
+`GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}` and the authenticated
+`GET /_matrix/client/v1/media/thumbnail/...` honour the `width`, `height`, and
+`method` (`scale` or `crop`) query parameters and return a resampled
+`image/png`.
+
+Untrusted image bytes are **never decoded in the homeserver process**. Decoding
+is the highest-risk media operation (libpng/libjpeg parsers are a historic CVE
+surface), so it runs in a short-lived, sandboxed child process:
+
+- `merovingian-thumbnail-worker` (installed under `libexecdir/merovingian`)
+  reads a single framed request on stdin, decodes PNG (libpng) or JPEG
+  (libjpeg-turbo) into RGBA, resamples (bilinear `scale` to fit, or `scale`
+  then centre-`crop` to fill), re-encodes PNG, and writes a framed response on
+  stdout. It holds no secrets, sockets, or filesystem access beyond the inherited
+  stdio pipes.
+- Before reading any input the worker clamps its own address space, CPU time,
+  output file size, and descriptor count via `setrlimit`, sets
+  `PR_SET_NO_NEW_PRIVS`/`PR_SET_DUMPABLE=0`, and installs the seccomp-bpf filter
+  (`platform::apply_seccomp_filter`).
+- The parent (`media::generate_thumbnail`) enforces a wall-clock timeout, an
+  input-size limit, an output-size cap, and a pixel-count decode-bomb guard, and
+  SIGKILLs a worker that overruns.
+- The worker path defaults to the build-time install location
+  (`-DMEROVINGIAN_THUMBNAIL_WORKER_PATH`, mirroring `MEROVINGIAN_SYSCONFDIR`).
+  When the worker is missing, the content type is unsupported (only PNG and JPEG
+  are resampled), or decoding fails, the request **degrades to serving the
+  original media bytes** rather than returning an error.
+
+The worker requires the system `libpng` and `libjpeg-turbo` libraries. When they
+are not present at build time the worker is not built and every thumbnail request
+falls back to the original bytes.
 
 ## Status Codes
 

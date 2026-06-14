@@ -58,9 +58,11 @@ jobs:
             clang \
             catch2 \
             flex \
+            libpng-dev \
             libpq-dev \
             libsodium-dev \
             libssl-dev \
+            libturbojpeg0-dev \
             m4 \
             perl \
             pkg-config \

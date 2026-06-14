@@ -122,6 +122,7 @@ if get_option ('build_tests')
       'unit/test_local_database_scope.cpp',
       'unit/test_media_repository.cpp',
       'unit/test_media_security.cpp',
+      'unit/test_media_thumbnailer.cpp',
       'unit/test_not_null.cpp',
       'unit/test_observability.cpp',
       'unit/test_outbound_client.cpp',
@@ -188,6 +189,13 @@ if get_option ('build_tests')
 
   test('conformance-tests', conformance_tests, timeout: 120)
 
+  # The thumbnail integration test spawns the real sandboxed worker; pass its
+  # build-tree path when it was built (system image codecs available).
+  thumbnail_test_args = []
+  if thumbnail_worker_available
+    thumbnail_test_args = ['-DMEROVINGIAN_TEST_THUMBNAIL_WORKER="' + thumbnail_worker_exe.full_path() + '"']
+  endif
+
   integration_tests = executable(
     'merovingian-integration-tests',
     sources: files(
@@ -198,6 +206,7 @@ if get_option ('build_tests')
       'integration/test_homeserver_vertical_slice_flow.cpp',
       'integration/test_http_server_listener_flow.cpp',
       'integration/test_media_repository_security.cpp',
+      'integration/test_media_thumbnail_flow.cpp',
       'integration/test_observability_flow.cpp',
       'integration/test_persistent_homeserver_flow.cpp',
       'integration/test_postgresql_persistence_flow.cpp',
@@ -208,6 +217,7 @@ if get_option ('build_tests')
     include_directories: inc,
     dependencies: [catch2_dep, thread_dep, libsodium_dep, openssl_dep, libpq_dep, sqlite_dep, libcurl_dep, resolv_dep],
     link_with: [auth_lib, canonicaljson_lib, core_lib, config_lib, crypto_lib, database_lib, events_lib, federation_lib, homeserver_lib, http_lib, media_lib, net_lib, observability_lib, platform_lib, rooms_lib, sync_lib, trust_safety_lib],
+    cpp_args: thumbnail_test_args,
   )
 
   test('integration-tests', integration_tests)

@@ -28,6 +28,11 @@ struct RuntimeMediaConfig final
     std::uint64_t max_animation_frames{1U};
     std::uint64_t max_decompression_ratio{64U};
     bool thumbnailing_enabled{true};
+    // Absolute path to the out-of-process thumbnail worker. Empty disables
+    // resampling (the original media bytes are served instead). Defaults to the
+    // build-time install location; see make_runtime_media_config.
+    std::string thumbnail_worker_path{};
+    std::uint32_t thumbnail_timeout_seconds{10U};
 };
 
 [[nodiscard]] auto make_runtime_media_config(config::Config const& config) -> RuntimeMediaConfig;

@@ -2,12 +2,18 @@
 
 ## Scheme
 
-Merovingian uses **`0.MINOR.PATCH`** during the alpha phase.
+Merovingian uses **`0.MINOR.PATCH`** before `1.0`.
 
-- `MINOR` increments for any user-visible functional change (new behaviour,
-  changed defaults, new config keys, packaging changes).
-- `PATCH` increments for fixes that do not add or change behaviour.
-- There is no `1.0` until federation is complete and the project exits alpha.
+The `MINOR` digit is a **phase marker**, not a per-change counter:
+
+- `0.8.PATCH` — current pre-beta phase. **All** changes (features, fixes,
+  packaging) bump only `PATCH` while in this phase.
+- `0.9.0` — cut when the project reaches **beta**.
+- `1.0.0` — cut when the project reaches **production**.
+
+So within the 0.8 phase a branch increments `PATCH` (e.g. `0.8.9` → `0.8.10`)
+regardless of whether it adds behaviour; do not advance `MINOR` for a feature.
+`MINOR` only moves at the beta and production milestones.
 
 The version is a plain string — there is no pre-release suffix, build metadata,
 or epoch. All three numbers are always present (e.g. `0.2.6`, never `0.2`).

@@ -45,9 +45,11 @@ jobs:
             clang-tidy \
             catch2 \
             flex \
+            libpng-dev \
             libpq-dev \
             libsodium-dev \
             libssl-dev \
+            libturbojpeg0-dev \
             m4 \
             perl \
             pkg-config
@@ -114,10 +116,12 @@ jobs:
             m4 \
             meson \
             ninja-build \
+            libpng-devel \
             libpq-devel \
             libsodium-devel \
             openssl-devel \
             perl \
+            turbojpeg-devel \
             pkgconf-pkg-config \
             python3
 
@@ -159,7 +163,7 @@ jobs:
         with:
           usesh: true
           run: |
-            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client
+            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client png libjpeg-turbo
             sh scripts/build-bsd.sh --builddir build
             mkdir -p artifacts/bin artifacts/config artifacts/docs
             cp build/src/merovingian-server artifacts/bin/

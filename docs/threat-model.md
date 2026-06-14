@@ -67,6 +67,19 @@
   persist events that violate the room's power-level and membership rules. Fixed by running
   full event-authorization against the room's current resolved state before persistence.
 
+- **Untrusted image decoding in-process:** generating thumbnails requires
+  decoding attacker-supplied PNG/JPEG bytes, and the C image parsers
+  (libpng/libjpeg-turbo) are a historic memory-corruption surface. Decoding now
+  happens in a short-lived, sandboxed `merovingian-thumbnail-worker` child
+  process that — before reading any input — clamps its address space, CPU time,
+  output size, and descriptor count via `setrlimit`, sets
+  `PR_SET_NO_NEW_PRIVS`, disables core dumps, and installs the seccomp-bpf
+  filter. The worker holds no secrets, sockets, or filesystem access beyond its
+  stdio pipes, so a decoder exploit is contained. The parent enforces a
+  wall-clock timeout, input/output size caps, and a pixel-count decode-bomb
+  guard, and SIGKILLs a worker that overruns. See `media/thumbnailer.hpp` and
+  [media-repository.md](media-repository.md).
+
 ## Security principles
 
 - Fail closed.

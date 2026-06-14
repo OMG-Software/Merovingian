@@ -34,9 +34,11 @@ jobs:
             clang \
             flex \
             gcovr \
+            libpng-dev \
             libpq-dev \
             libsodium-dev \
             libssl-dev \
+            libturbojpeg0-dev \
             llvm \
             m4 \
             perl \
