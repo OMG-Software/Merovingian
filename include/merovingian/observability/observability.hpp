@@ -7,6 +7,7 @@
 #include "merovingian/platform/hardening_self_check.hpp"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -97,11 +98,27 @@ struct StructuredLogEvent final
     std::vector<StructuredLogField> fields{};
 };
 
+enum class MetricType
+{
+    counter,
+    gauge,
+};
+
+struct MetricLabel final
+{
+    std::string key{};
+    std::string value{};
+    bool secret_safe{true};
+};
+
 struct MetricSample final
 {
     std::string name{};
     std::int64_t value{0};
     bool secret_safe{true};
+    MetricType type{MetricType::gauge};
+    std::string help{};
+    std::vector<MetricLabel> labels{};
 };
 
 struct HealthCheckComponent final
@@ -124,11 +141,33 @@ struct ObservabilitySnapshot final
     std::vector<std::string> hardening_summaries{};
 };
 
+struct CorrelationContext final
+{
+    std::string request_id{};
+    std::string trace_id{};
+    std::string span_id{};
+};
+
+class CorrelationScope final
+{
+public:
+    explicit CorrelationScope(CorrelationContext const& context) noexcept;
+    CorrelationScope(CorrelationScope const& other) = delete;
+    auto operator=(CorrelationScope const& other) -> CorrelationScope& = delete;
+    CorrelationScope(CorrelationScope&& other) = delete;
+    auto operator=(CorrelationScope&& other) -> CorrelationScope& = delete;
+    ~CorrelationScope();
+
+private:
+    CorrelationContext const* previous_{nullptr};
+};
+
 [[nodiscard]] auto admin_surface_name(AdminSurface surface) noexcept -> char const*;
 [[nodiscard]] auto admin_operation_name(AdminOperation operation) noexcept -> char const*;
 [[nodiscard]] auto audit_category_name(AuditCategory category) noexcept -> char const*;
 [[nodiscard]] auto audit_category_from_name(std::string_view name) noexcept -> std::optional<AuditCategory>;
 [[nodiscard]] auto health_status_name(HealthStatus status) noexcept -> char const*;
+[[nodiscard]] auto metric_type_name(MetricType type) noexcept -> char const*;
 [[nodiscard]] auto admin_surface_is_safe(AdminControlSurface const& surface) noexcept -> bool;
 [[nodiscard]] auto admin_routes() -> std::vector<AdminRoute>;
 [[nodiscard]] auto match_admin_route(std::string_view method, std::string_view target) -> AdminRouteMatch;
@@ -143,8 +182,13 @@ struct ObservabilitySnapshot final
 [[nodiscard]] auto structured_log_summary(StructuredLogEvent const& event) -> std::string;
 [[nodiscard]] auto diagnostic_log_summary(std::string_view logger, std::string_view event,
                                           std::vector<StructuredLogField> fields) -> std::string;
+[[nodiscard]] auto make_correlation_context(std::uint64_t sequence) -> CorrelationContext;
+[[nodiscard]] auto current_correlation_context() noexcept -> CorrelationContext const*;
+[[nodiscard]] auto with_correlation_fields(CorrelationContext const& context, std::vector<StructuredLogField> fields)
+    -> std::vector<StructuredLogField>;
 [[nodiscard]] auto logging_boundary_notes() -> std::vector<std::string>;
 [[nodiscard]] auto metrics_are_safe(std::vector<MetricSample> const& metrics) noexcept -> bool;
+[[nodiscard]] auto prometheus_metrics_summary(std::vector<MetricSample> const& metrics) -> std::string;
 [[nodiscard]] auto health_snapshot_summary(HealthCheckSnapshot const& snapshot) -> std::string;
 [[nodiscard]] auto hardening_observability_summary(platform::HardeningSelfCheck const& check)
     -> std::vector<std::string>;

@@ -50,12 +50,9 @@ SCENARIO("Config validation rejects TLS listeners without configured certificate
         WHEN("the config is constructed and validated")
         {
             auto const config = merovingian::config::Config{
-                merovingian::config::ServerConfig{},
-                listeners,
-                merovingian::config::DatabaseConfig{},
-                merovingian::config::SecurityConfig{},
-                merovingian::config::ClientRateLimitsConfig{},
-                merovingian::config::LogModulesConfig{},
+                merovingian::config::ServerConfig{},           listeners,
+                merovingian::config::DatabaseConfig{},         merovingian::config::SecurityConfig{},
+                merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
@@ -147,6 +144,7 @@ SCENARIO("Config enables media and logging protections by default", "[config][se
         WHEN("media and logging defaults are inspected")
         {
             auto const& media = config.security().media;
+            auto const& trust_safety = config.security().trust_safety;
             auto const& logging = config.security().logging;
 
             THEN("protective defaults are enabled")
@@ -157,6 +155,10 @@ SCENARIO("Config enables media and logging protections by default", "[config][se
                 REQUIRE(media.block_private_ip_fetches);
                 REQUIRE_FALSE(media.remote_fetch_enabled);
                 REQUIRE(media.decode_in_sandbox);
+                REQUIRE_FALSE(trust_safety.enabled);
+                REQUIRE(trust_safety.policy_server_url.empty());
+                REQUIRE(trust_safety.policy_server_timeout == "5s");
+                REQUIRE_FALSE(trust_safety.policy_server_allow_without_result);
                 REQUIRE(logging.redact_tokens);
                 REQUIRE(logging.redact_event_content);
                 REQUIRE(logging.structured);
@@ -441,12 +443,9 @@ SCENARIO("Config validation rejects unsafe registration policy", "[config][valid
         WHEN("the config is constructed and validated")
         {
             auto const config = merovingian::config::Config{
-                merovingian::config::ServerConfig{},
-                merovingian::config::ListenersConfig{},
-                merovingian::config::DatabaseConfig{},
-                security,
-                merovingian::config::ClientRateLimitsConfig{},
-                merovingian::config::LogModulesConfig{},
+                merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+                merovingian::config::DatabaseConfig{},         security,
+                merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
@@ -471,12 +470,9 @@ SCENARIO("Config validation rejects token-protected registration without token f
         WHEN("the config is constructed and validated")
         {
             auto const config = merovingian::config::Config{
-                merovingian::config::ServerConfig{},
-                merovingian::config::ListenersConfig{},
-                merovingian::config::DatabaseConfig{},
-                security,
-                merovingian::config::ClientRateLimitsConfig{},
-                merovingian::config::LogModulesConfig{},
+                merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+                merovingian::config::DatabaseConfig{},         security,
+                merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
 
@@ -501,12 +497,9 @@ SCENARIO("Config validation rejects invalid media upload size", "[config][valida
         WHEN("the config is constructed and validated")
         {
             auto const config = merovingian::config::Config{
-                merovingian::config::ServerConfig{},
-                merovingian::config::ListenersConfig{},
-                merovingian::config::DatabaseConfig{},
-                security,
-                merovingian::config::ClientRateLimitsConfig{},
-                merovingian::config::LogModulesConfig{},
+                merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+                merovingian::config::DatabaseConfig{},         security,
+                merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
@@ -531,12 +524,9 @@ SCENARIO("Config validation rejects invalid federation transaction limits", "[co
         WHEN("the config is constructed and validated")
         {
             auto const config = merovingian::config::Config{
-                merovingian::config::ServerConfig{},
-                merovingian::config::ListenersConfig{},
-                merovingian::config::DatabaseConfig{},
-                security,
-                merovingian::config::ClientRateLimitsConfig{},
-                merovingian::config::LogModulesConfig{},
+                merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+                merovingian::config::DatabaseConfig{},         security,
+                merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);
@@ -622,12 +612,9 @@ SCENARIO("Config validation rejects weakened Matrix security defaults", "[config
         WHEN("the config is constructed and validated")
         {
             auto const config = merovingian::config::Config{
-                merovingian::config::ServerConfig{},
-                merovingian::config::ListenersConfig{},
-                merovingian::config::DatabaseConfig{},
-                security,
-                merovingian::config::ClientRateLimitsConfig{},
-                merovingian::config::LogModulesConfig{},
+                merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+                merovingian::config::DatabaseConfig{},         security,
+                merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
             };
             auto const findings = merovingian::config::validate(config);
             auto const valid = merovingian::config::is_valid(config);

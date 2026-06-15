@@ -66,6 +66,34 @@ SCENARIO("Policy server hooks fail closed when unavailable", "[trust-safety][pol
     }
 }
 
+SCENARIO("Policy server hooks apply explicit remote moderation decisions", "[trust-safety][policy-server]")
+{
+    GIVEN("a policy server hook with an explicit quarantine decision")
+    {
+        auto hook = merovingian::trust_safety::PolicyServerHook{};
+        hook.enabled = true;
+        hook.reachable = true;
+        hook.decision_received = true;
+        hook.action = merovingian::trust_safety::PolicyAction::quarantine;
+        hook.rule_id = "remote-media-rule";
+        hook.reason = merovingian::trust_safety::enforcement_reason("remote_quarantine", "media held for review",
+                                                                    "policy server requested quarantine");
+
+        WHEN("the hook is evaluated")
+        {
+            auto const decision = merovingian::trust_safety::policy_server_hook_allows(hook);
+
+            THEN("the remote action is enforced and the rule id is preserved")
+            {
+                REQUIRE_FALSE(decision.allowed);
+                REQUIRE(decision.action == merovingian::trust_safety::PolicyAction::quarantine);
+                REQUIRE(decision.policy_server_rule_id == "remote-media-rule");
+                REQUIRE(decision.reason.code == "remote_quarantine");
+            }
+        }
+    }
+}
+
 SCENARIO("Invite and registration policies block local denials and malformed input", "[trust-safety][policy]")
 {
     GIVEN("invite and registration requests")

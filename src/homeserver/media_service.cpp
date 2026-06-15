@@ -1,15 +1,17 @@
 // SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-#include "merovingian/homeserver/local_services.hpp"
+#include "merovingian/homeserver/media_service.hpp"
+
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/server_discovery.hpp"
 #include "merovingian/homeserver/auth_service.hpp"
-#include "merovingian/homeserver/media_service.hpp"
+#include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/http/outbound_client.hpp"
 #include "merovingian/media/repository.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <cctype>
 #include <cstddef>
@@ -52,6 +54,18 @@ namespace
             {blob->storage_id, blob->hash_algorithm, blob->digest, blob->size_bytes, blob->bytes, blob->ref_count});
     }
 
+    [[nodiscard]] auto media_policy_decision(HomeserverRuntime& runtime, std::string_view media_id)
+        -> trust_safety::PolicyDecision
+    {
+        auto const local_rule = find_policy_rule(runtime, "media", media_id);
+        auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
+        auto const blocked_by_local_policy =
+            local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
+        return trust_safety::evaluate_media_policy(
+            {std::string{media_id}, held_for_review, blocked_by_local_policy,
+             resolve_policy_server_hook(runtime, trust_safety::PolicySurface::media, media_id)});
+    }
+
     // Fetch remote media via server discovery + HTTPS GET to /_matrix/media/v3/download/.
     // On success the media is stored locally and the result contains the bytes. Falls back
     // to remote_media_fetch_disabled() when federation infrastructure is unavailable.
@@ -62,9 +76,10 @@ namespace
         auto* const discovery_network = runtime.discovery_network.get();
         if (outbound_client == nullptr || discovery_network == nullptr)
         {
-            log_diagnostic("remote_fetch.no_federation",
-                           {{"origin_server", std::string{origin_server}, false},
-                            {"media_id",      std::string{media_id},      false}});
+            log_diagnostic("remote_fetch.no_federation", {
+                                                             {"origin_server", std::string{origin_server}, false},
+                                                             {"media_id",      std::string{media_id},      false}
+            });
             return remote_media_fetch_disabled(runtime, origin_server, media_id);
         }
 
@@ -72,9 +87,10 @@ namespace
         auto const resolution = federation::discover_server(origin_server, *discovery_network, discovery_timeout);
         if (!resolution.discovery_allowed)
         {
-            log_diagnostic("remote_fetch.discovery_failed",
-                           {{"origin_server", std::string{origin_server}, false},
-                            {"reason",        resolution.reason,          false}});
+            log_diagnostic("remote_fetch.discovery_failed", {
+                                                                {"origin_server", std::string{origin_server}, false},
+                                                                {"reason",        resolution.reason,          false}
+            });
             ++runtime.media_repository.metrics.remote_fetch_rejections;
             append_local_audit(runtime.database, observability::AuditCategory::moderation,
                                "media.remote_fetch_rejected", "server",
@@ -103,8 +119,10 @@ namespace
                                     ? "remote returned " + std::to_string(out_result.response.status)
                                     : out_result.error_detail;
             log_diagnostic("remote_fetch.http_failed",
-                           {{"origin_server", std::string{origin_server}, false},
-                            {"reason",        reason,                     false}});
+                           {
+                               {"origin_server", std::string{origin_server}, false},
+                               {"reason",        reason,                     false}
+            });
             ++runtime.media_repository.metrics.remote_fetch_rejections;
             append_local_audit(runtime.database, observability::AuditCategory::moderation,
                                "media.remote_fetch_rejected", "server",
@@ -158,24 +176,27 @@ namespace
         auto const fetch_result = media::fetch_remote_media(runtime.media_repository, remote_req);
         if (!fetch_result.ok)
         {
-            log_diagnostic("remote_fetch.store_failed",
-                           {{"origin_server", std::string{origin_server}, false},
-                            {"reason",        fetch_result.reason,        false}});
+            log_diagnostic("remote_fetch.store_failed", {
+                                                            {"origin_server", std::string{origin_server}, false},
+                                                            {"reason",        fetch_result.reason,        false}
+            });
             append_local_audit(runtime.database, observability::AuditCategory::moderation,
                                "media.remote_fetch_rejected", "server",
                                std::string{origin_server} + '/' + std::string{media_id}, fetch_result.reason);
             return make_operation_result(false, {}, fetch_result.reason, fetch_result.status);
         }
 
-        log_diagnostic("remote_fetch.accepted",
-                       {{"origin_server", std::string{origin_server},                    false},
-                        {"media_id",      std::string{media_id},                          false},
-                        {"content_type",  fetch_result.content_type,                      false},
-                        {"size_bytes",    std::to_string(fetch_result.size_bytes),         false}});
-        append_local_audit(runtime.database, observability::AuditCategory::moderation,
-                           "media.remote_fetch_accepted", "server",
-                           std::string{origin_server} + '/' + std::string{media_id}, fetch_result.content_type);
-        return make_operation_result(true, fetch_result.content_type + "|" + fetch_result.bytes, {}, fetch_result.status);
+        log_diagnostic("remote_fetch.accepted", {
+                                                    {"origin_server", std::string{origin_server},              false},
+                                                    {"media_id",      std::string{media_id},                   false},
+                                                    {"content_type",  fetch_result.content_type,               false},
+                                                    {"size_bytes",    std::to_string(fetch_result.size_bytes), false}
+        });
+        append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.remote_fetch_accepted",
+                           "server", std::string{origin_server} + '/' + std::string{media_id},
+                           fetch_result.content_type);
+        return make_operation_result(true, fetch_result.content_type + "|" + fetch_result.bytes, {},
+                                     fetch_result.status);
     }
 
 } // namespace
@@ -187,7 +208,9 @@ namespace
     auto const user_id = authenticated_user(runtime, access_token);
     if (!user_id.has_value())
     {
-        log_diagnostic("upload.rejected", {{"reason", "unauthenticated", false}});
+        log_diagnostic("upload.rejected", {
+                                              {"reason", "unauthenticated", false}
+        });
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
 
@@ -196,11 +219,12 @@ namespace
         {*user_id, std::string{declared_mime_type}, std::string{sniffed_mime_type}, std::string{bytes}, scanner_clean});
     if (!result.ok)
     {
-        log_diagnostic("upload.rejected",
-                       {{"actor",     *user_id,                              false},
-                        {"mime_type", std::string{declared_mime_type},       false},
-                        {"reason",    result.reason,                         false},
-                        {"status",    std::to_string(result.status),         false}});
+        log_diagnostic("upload.rejected", {
+                                              {"actor",     *user_id,                        false},
+                                              {"mime_type", std::string{declared_mime_type}, false},
+                                              {"reason",    result.reason,                   false},
+                                              {"status",    std::to_string(result.status),   false}
+        });
         append_local_audit(runtime.database, observability::AuditCategory::moderation, "media.upload_rejected",
                            *user_id, "local-media", result.reason);
         return make_operation_result(false, {}, result.reason, result.status);
@@ -218,12 +242,14 @@ namespace
                                                                                  });
     persist_blob_for_media(runtime, result.media_id);
     log_diagnostic(result.quarantined ? "upload.quarantined" : "upload.accepted",
-                   {{"actor",        *user_id,                                                        false},
-                    {"media_id",     result.media_id,                                                 false},
-                    {"content_type", result.content_type,                                             false},
-                    {"size_bytes",   std::to_string(result.size_bytes),                               false},
-                    {"deduplicated", std::string{result.deduplicated ? "true" : "false"},             false},
-                    {"quarantined",  std::string{result.quarantined  ? "true" : "false"},             false}});
+                   {
+                       {"actor",        *user_id,                                            false},
+                       {"media_id",     result.media_id,                                     false},
+                       {"content_type", result.content_type,                                 false},
+                       {"size_bytes",   std::to_string(result.size_bytes),                   false},
+                       {"deduplicated", std::string{result.deduplicated ? "true" : "false"}, false},
+                       {"quarantined",  std::string{result.quarantined ? "true" : "false"},  false}
+    });
     append_local_audit(runtime.database, observability::AuditCategory::moderation,
                        result.quarantined ? "media.upload_quarantined" : "media.upload_accepted", *user_id,
                        result.media_id,
@@ -239,26 +265,36 @@ namespace
 [[nodiscard]] auto download_local_media(HomeserverRuntime& runtime, std::string_view server_name,
                                         std::string_view media_id) -> OperationResult
 {
+    auto const policy = media_policy_decision(runtime, media_id);
+    if (!policy.allowed)
+    {
+        return make_operation_result(false, {}, policy.reason.code, 403U);
+    }
+
     if (server_name != runtime.config.server().server_name)
     {
-        log_diagnostic("download.remote",
-                       {{"origin_server", std::string{server_name}, false},
-                        {"media_id",      std::string{media_id},    false}});
+        log_diagnostic("download.remote", {
+                                              {"origin_server", std::string{server_name}, false},
+                                              {"media_id",      std::string{media_id},    false}
+        });
         return fetch_remote_media_live(runtime, server_name, media_id);
     }
 
     auto const result = media::download_local_media(runtime.media_repository, server_name, media_id);
     if (!result.ok)
     {
-        log_diagnostic("download.rejected",
-                       {{"media_id", std::string{media_id}, false},
-                        {"reason",   result.reason,          false},
-                        {"status",   std::to_string(result.status), false}});
+        log_diagnostic("download.rejected", {
+                                                {"media_id", std::string{media_id},         false},
+                                                {"reason",   result.reason,                 false},
+                                                {"status",   std::to_string(result.status), false}
+        });
         return make_operation_result(false, {}, result.reason, result.status);
     }
     log_diagnostic("download.accepted",
-                   {{"media_id",     std::string{media_id},    false},
-                    {"content_type", result.content_type,      false}});
+                   {
+                       {"media_id",     std::string{media_id}, false},
+                       {"content_type", result.content_type,   false}
+    });
     return make_operation_result(true, result.content_type + "|" + result.bytes, {}, result.status);
 }
 
@@ -266,11 +302,18 @@ namespace
                                                   std::string_view media_id, std::uint32_t width, std::uint32_t height,
                                                   media::ThumbnailMethod method) -> OperationResult
 {
+    auto const policy = media_policy_decision(runtime, media_id);
+    if (!policy.allowed)
+    {
+        return make_operation_result(false, {}, policy.reason.code, 403U);
+    }
+
     if (server_name != runtime.config.server().server_name)
     {
-        log_diagnostic("thumbnail.remote",
-                       {{"origin_server", std::string{server_name}, false},
-                        {"media_id",      std::string{media_id},    false}});
+        log_diagnostic("thumbnail.remote", {
+                                               {"origin_server", std::string{server_name}, false},
+                                               {"media_id",      std::string{media_id},    false}
+        });
         // Remote thumbnailing is not yet performed locally; serve the fetched
         // remote media as-is.
         return fetch_remote_media_live(runtime, server_name, media_id);
@@ -279,17 +322,21 @@ namespace
     auto const* record = media::find_local_media_record(runtime.media_repository, media_id);
     if (record == nullptr || record->state != media::LocalMediaState::available)
     {
-        log_diagnostic("thumbnail.not_found", {
-                                                  {"media_id", std::string{media_id}, false},
-                                                  {"reason",   "record unavailable", false}});
+        log_diagnostic("thumbnail.not_found",
+                       {
+                           {"media_id", std::string{media_id}, false},
+                           {"reason",   "record unavailable",  false}
+        });
         return make_operation_result(false, {}, "thumbnail not found", 404U);
     }
     auto const* blob = media::find_local_media_blob(runtime.media_repository, record->storage_id);
     if (blob == nullptr)
     {
-        log_diagnostic("thumbnail.blob_missing", {
-                                                     {"media_id",   std::string{media_id},      false},
-                                                     {"storage_id", record->storage_id,         false}});
+        log_diagnostic("thumbnail.blob_missing",
+                       {
+                           {"media_id",   std::string{media_id}, false},
+                           {"storage_id", record->storage_id,    false}
+        });
         return make_operation_result(false, {}, "thumbnail data not found", 404U);
     }
 
@@ -318,21 +365,25 @@ namespace
         {
             ++runtime.media_repository.metrics.thumbnails_served;
             log_diagnostic("thumbnail.resampled", {
-                                                      {"media_id", std::string{media_id},          false},
-                                                      {"width",    std::to_string(result.width),   false},
-                                                      {"height",   std::to_string(result.height),  false}});
+                                                      {"media_id", std::string{media_id},         false},
+                                                      {"width",    std::to_string(result.width),  false},
+                                                      {"height",   std::to_string(result.height), false}
+            });
             return make_operation_result(true, result.content_type + "|" + result.bytes, {}, 200U);
         }
         log_diagnostic("thumbnail.fallback_original", {
-                                                          {"media_id", std::string{media_id}, false},
-                                                          {"reason",   result.reason,          false},
-                                                          {"status",   std::to_string(result.status), false}});
+                                                          {"media_id", std::string{media_id},         false},
+                                                          {"reason",   result.reason,                 false},
+                                                          {"status",   std::to_string(result.status), false}
+        });
     }
 
     // Fallback: serve the original media bytes with their own content type.
-    log_diagnostic("thumbnail.accepted_original", {
-                                                      {"media_id",     std::string{media_id},  false},
-                                                      {"content_type", record->content_type,   false}});
+    log_diagnostic("thumbnail.accepted_original",
+                   {
+                       {"media_id",     std::string{media_id}, false},
+                       {"content_type", record->content_type,  false}
+    });
     return make_operation_result(true, record->content_type + "|" + blob->bytes, {}, 200U);
 }
 

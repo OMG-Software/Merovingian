@@ -141,6 +141,36 @@ SCENARIO("Structured log summaries redact sensitive values and document boundari
                 REQUIRE(notes.size() == 3U);
                 REQUIRE(notes[1].find("access tokens") != std::string::npos);
                 REQUIRE(notes[1].find("event content") != std::string::npos);
+                REQUIRE(notes[0].find("trace identifiers") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Correlation contexts produce stable request trace and span fields", "[observability][logging][correlation]")
+{
+    GIVEN("a generated correlation context")
+    {
+        auto const correlation = merovingian::observability::make_correlation_context(42U);
+
+        WHEN("correlation fields are attached to a diagnostic event")
+        {
+            auto fields = merovingian::observability::with_correlation_fields(
+                correlation, {
+                                 {"method", "GET",                         false},
+                                 {"target", "/_merovingian/admin/metrics", false}
+            });
+            auto const summary = merovingian::observability::diagnostic_log_summary("local_router", "request.received",
+                                                                                    std::move(fields));
+
+            THEN("the request id, trace id, and span id are exposed in the log-safe format")
+            {
+                REQUIRE(correlation.request_id == "req-000000000000002a");
+                REQUIRE(correlation.trace_id.size() == 32U);
+                REQUIRE(correlation.span_id.size() == 16U);
+                REQUIRE(summary.find("request_id=req-000000000000002a") != std::string::npos);
+                REQUIRE(summary.find("trace_id=") != std::string::npos);
+                REQUIRE(summary.find("span_id=") != std::string::npos);
             }
         }
     }
@@ -189,8 +219,7 @@ SCENARIO("Low-severity logging flushes after one second or one hundred messages"
         WHEN("a high-severity message arrives while low-severity data is pending")
         {
             REQUIRE_FALSE(policy.observe_message(false, start));
-            auto const flush_requested =
-                policy.observe_message(true, start + std::chrono::milliseconds{250});
+            auto const flush_requested = policy.observe_message(true, start + std::chrono::milliseconds{250});
 
             THEN("the flush happens immediately and clears the pending low-severity state")
             {
@@ -270,6 +299,44 @@ SCENARIO("Metrics and health-check summaries avoid secrets and event contents", 
                 REQUIRE_FALSE(merovingian::observability::metrics_are_safe(unsafe_metrics));
                 REQUIRE(health_summary.find("database:ok") != std::string::npos);
                 REQUIRE(health_summary.find("federation:degraded") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Prometheus metrics summaries keep stable help type and safe labels", "[observability][metrics]")
+{
+    GIVEN("documented safe metrics with labels and an unsafe metric")
+    {
+        auto metrics = std::vector<merovingian::observability::MetricSample>{
+            {"merovingian_server_identity",
+             1, true,
+             merovingian::observability::MetricType::gauge,
+             "Identity labels for the running homeserver process.",                                {{"server_name", "example.org", true}}},
+            {"audit_events_appended_total",
+             2, true,
+             merovingian::observability::MetricType::counter,
+             "Total number of durable audit events appended since the current store was created.", {}                                    },
+            {"access_token_debug_total",
+             1, false,
+             merovingian::observability::MetricType::counter,
+             "Unsafe debug metric that must never be exported.",                                   {}                                    },
+        };
+
+        WHEN("the metrics are rendered for scrape/export")
+        {
+            auto const summary = merovingian::observability::prometheus_metrics_summary(metrics);
+
+            THEN("safe metric families render with HELP TYPE and labels, while unsafe metrics are excluded")
+            {
+                REQUIRE(summary.find("# HELP merovingian_server_identity Identity labels for the running homeserver "
+                                     "process.") != std::string::npos);
+                REQUIRE(summary.find("# TYPE merovingian_server_identity gauge") != std::string::npos);
+                REQUIRE(summary.find("merovingian_server_identity{server_name=\"example.org\"} 1") !=
+                        std::string::npos);
+                REQUIRE(summary.find("# TYPE audit_events_appended_total counter") != std::string::npos);
+                REQUIRE(summary.find("audit_events_appended_total 2") != std::string::npos);
+                REQUIRE(summary.find("access_token_debug_total") == std::string::npos);
             }
         }
     }

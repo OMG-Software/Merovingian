@@ -73,6 +73,10 @@ SCENARIO("Key-value config parser applies booleans and lists", "[config][parser]
                                        "listeners.client.tls_private_key_file=/etc/merovingian/client.key\n"
                                        "security.media.enable_av_scanner=false\n"
                                        "security.media.remote_fetch_enabled=true\n"
+                                       "security.trust_safety.enabled=true\n"
+                                       "security.trust_safety.policy_server_url=https://policy.example.org/check\n"
+                                       "security.trust_safety.policy_server_timeout=7s\n"
+                                       "security.trust_safety.policy_server_allow_without_result=true\n"
                                        "security.federation.allowed_servers=matrix.org, example.net\n"
                                        "security.federation.denied_servers=bad.example, abuse.example\n"
                                        "security.federation.deny_ip_ranges=127.0.0.0/8, ::1/128\n"};
@@ -90,6 +94,10 @@ SCENARIO("Key-value config parser applies booleans and lists", "[config][parser]
                 REQUIRE(result.config.listeners().client.tls_private_key_file == "/etc/merovingian/client.key");
                 REQUIRE_FALSE(result.config.security().media.enable_av_scanner);
                 REQUIRE(result.config.security().media.remote_fetch_enabled);
+                REQUIRE(result.config.security().trust_safety.enabled);
+                REQUIRE(result.config.security().trust_safety.policy_server_url == "https://policy.example.org/check");
+                REQUIRE(result.config.security().trust_safety.policy_server_timeout == "7s");
+                REQUIRE(result.config.security().trust_safety.policy_server_allow_without_result);
                 REQUIRE(result.config.security().federation.allowed_servers.size() == 2U);
                 REQUIRE(result.config.security().federation.denied_servers.size() == 2U);
                 REQUIRE(result.config.security().federation.deny_ip_ranges.size() == 2U);
@@ -332,13 +340,14 @@ SCENARIO("Key-value config parser applies CORS policy keys", "[config][parser][c
 {
     GIVEN("a config with the CORS keys set to non-default values")
     {
-        auto const input = std::string{"server.name=example.org\n"
-                                       "server.public_baseurl=https://matrix.example.org\n"
-                                       "server.cors.allowed_origins=https://app.example.com, https://other.example.com\n"
-                                       "server.cors.allow_methods=GET, POST, PUT, DELETE, OPTIONS\n"
-                                       "server.cors.allow_headers=authorization, content-type\n"
-                                       "server.cors.allow_credentials=false\n"
-                                       "server.cors.max_age=3600\n"};
+        auto const input =
+            std::string{"server.name=example.org\n"
+                        "server.public_baseurl=https://matrix.example.org\n"
+                        "server.cors.allowed_origins=https://app.example.com, https://other.example.com\n"
+                        "server.cors.allow_methods=GET, POST, PUT, DELETE, OPTIONS\n"
+                        "server.cors.allow_headers=authorization, content-type\n"
+                        "server.cors.allow_credentials=false\n"
+                        "server.cors.max_age=3600\n"};
         WHEN("the config is parsed and validated")
         {
             auto const result = merovingian::config::parse_key_value_config(input);
@@ -348,8 +357,7 @@ SCENARIO("Key-value config parser applies CORS policy keys", "[config][parser][c
             {
                 REQUIRE(result.config.server().cors.allowed_origins.size() == 2U);
                 REQUIRE(result.config.server().cors.allowed_origins.front() == "https://app.example.com");
-                REQUIRE(result.config.server().cors.allow_methods ==
-                        "GET, POST, PUT, DELETE, OPTIONS");
+                REQUIRE(result.config.server().cors.allow_methods == "GET, POST, PUT, DELETE, OPTIONS");
                 REQUIRE(result.config.server().cors.allow_headers == "authorization, content-type");
                 REQUIRE(result.config.server().cors.allow_credentials == false);
                 REQUIRE(result.config.server().cors.max_age == 3600U);
@@ -358,8 +366,7 @@ SCENARIO("Key-value config parser applies CORS policy keys", "[config][parser][c
     }
 }
 
-SCENARIO("Key-value config parser rejects wildcard origin with credentials enabled",
-         "[config][parser][cors]")
+SCENARIO("Key-value config parser rejects wildcard origin with credentials enabled", "[config][parser][cors]")
 {
     GIVEN("a config combining wildcard '*' with allow_credentials=true")
     {

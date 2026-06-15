@@ -9,7 +9,10 @@ This capability note describes runtime-wired observability and audit behavior.
 - Admin audit summaries through `/_merovingian/admin/audit` (with
   `?category=` and `?event_type=` query-string filters).
 - Structured log redaction helpers.
+- Stable request-correlation fields (`request_id`, `trace_id`, `span_id`) for
+  local HTTP router diagnostics.
 - Health, metric, and hardening snapshot helpers.
+- Prometheus text exposition for `GET /_merovingian/admin/metrics`.
 - Durable audit rows for runtime startup, authentication, session, device, key
   API, room, media, federation, and trust-and-safety actions.
 - Durable admin action rows for moderation and trust-and-safety review actions.
@@ -58,9 +61,50 @@ Runtime metrics and audit summaries are bounded operational summaries. They
 report counts, event types, actors, targets, and reason codes, but do not expose
 plaintext passwords, bearer tokens, key payloads, media bytes, or event content.
 
+## Scrape/export contract
+
+`GET /_merovingian/admin/metrics` is the stable scrape endpoint for operators.
+It returns `200 OK` with `Content-Type: text/plain; version=0.0.4; charset=utf-8`
+and two correlation headers:
+
+- `X-Merovingian-Request-Id: req-...`
+- `Traceparent: 00-<trace_id>-<span_id>-01`
+
+The body uses Prometheus text exposition with stable `# HELP` and `# TYPE`
+metadata ahead of each metric family. Core families currently exported are:
+
+- `merovingian_server_identity{server_name="..."} 1`
+- `merovingian_runtime_started`
+- `merovingian_database_schema_version`
+- `users_total`
+- `sessions_total`
+- `rooms_total`
+- `events_total`
+- `audit_events_appended_total`
+- `admin_actions_total`
+- `merovingian_health_status{component="...",status="ok|degraded|failed"}`
+- all `media_*` repository counters and gauges already tracked by the runtime
+
+Metric names and label keys are ASCII-safe, payload-free operator fields. New
+families must carry a `# HELP` line, a `# TYPE` line, and must not encode secret
+material in either names or label values.
+
+## Trace correlation contract
+
+Structured diagnostics for local HTTP router request handling now carry these
+fields in the log line itself:
+
+- `request_id=req-...`
+- `trace_id=<32 lowercase hex chars>`
+- `span_id=<16 lowercase hex chars>`
+
+The contract is intentionally narrow: the correlation identifiers exist to join
+an operator's scrape or admin query to the structured request diagnostics that
+served it. They are not a distributed tracing system and are not yet persisted
+into the durable audit rows.
+
 ## Deliberately not included
 
-- Prometheus/OpenMetrics scrape contract.
-- Distributed tracing and request correlation beyond current request IDs.
+- Distributed tracing beyond the local request-correlation contract above.
 - Operator dashboards.
 - Retention and export policy for production audit archives.

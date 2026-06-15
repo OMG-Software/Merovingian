@@ -1771,6 +1771,28 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto delete_policy_rule(PersistentStore& store, std::string_view rule_id) -> bool
+{
+    if (rule_id.empty())
+    {
+        return false;
+    }
+    auto const existing = std::ranges::find_if(store.policy_rules, [rule_id](PersistentPolicyRule const& current) {
+        return current.rule_id == rule_id;
+    });
+    if (existing == store.policy_rules.end())
+    {
+        return false;
+    }
+    if (!record_and_persist(store, record_statement("delete_policy_rule", "DELETE FROM policy_rules WHERE rule_id = $1",
+                                                    {public_value(rule_id)})))
+    {
+        return false;
+    }
+    store.policy_rules.erase(existing);
+    return true;
+}
+
 [[nodiscard]] auto store_account_data(PersistentStore& store, PersistentAccountData data) -> bool
 {
     if (data.user_id.empty() || data.event_type.empty())

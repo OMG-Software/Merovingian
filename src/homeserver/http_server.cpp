@@ -370,6 +370,7 @@ namespace
         // the browser sees them before Content-Length/Content-Type. Defaulted
         // to empty for the few synthetic responses that carry no metadata.
         auto has_nosniff = false;
+        auto content_type = std::string{"application/json"};
         for (auto const& header : headers)
         {
             if (!http::header_name_is_valid(header.first) || !http::header_value_is_valid(header.second))
@@ -379,6 +380,11 @@ namespace
             if (header.first == "X-Content-Type-Options" && header.second == "nosniff")
             {
                 has_nosniff = true;
+            }
+            if (header.first == "Content-Type")
+            {
+                content_type = header.second;
+                continue;
             }
             response.append("\r\n");
             response.append(header.first);
@@ -391,7 +397,13 @@ namespace
         }
         response.append("\r\nContent-Length: ");
         response.append(std::to_string(body.size()));
-        response.append("\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n");
+        if (content_type.empty())
+        {
+            content_type = "application/json";
+        }
+        response.append("\r\nContent-Type: ");
+        response.append(content_type);
+        response.append("\r\nConnection: close\r\n\r\n");
         response.append(body);
         return response;
     }

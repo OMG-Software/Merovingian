@@ -439,8 +439,7 @@ namespace
 
     // Validates the make_leave response body. Mirrors validate_make_join_event
     // but checks content.membership == "leave".
-    [[nodiscard]] auto validate_make_leave_event(std::string_view requested_room_id,
-                                                 std::string_view requested_user_id,
+    [[nodiscard]] auto validate_make_leave_event(std::string_view requested_room_id, std::string_view requested_user_id,
                                                  canonicaljson::Object const& response_object)
         -> ValidatedMakeLeaveResponse
     {
@@ -1186,23 +1185,23 @@ namespace
 
 namespace
 {
-// Derives an "ed25519:<hex>" key_id from the first four bytes of a public key.
-// Tying the id to the key material gives every generated key a unique id, so a
-// stale federation notary cache for a previous id becomes irrelevant after a
-// rotation. Shared by key generation and key rotation.
-[[nodiscard]] auto derive_ed25519_key_id(std::array<unsigned char, crypto_sign_PUBLICKEYBYTES> const& public_key)
-    -> std::string
-{
-    static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
-    auto key_version = std::string{};
-    key_version.reserve(8U);
-    for (auto i = 0U; i < 4U; ++i)
+    // Derives an "ed25519:<hex>" key_id from the first four bytes of a public key.
+    // Tying the id to the key material gives every generated key a unique id, so a
+    // stale federation notary cache for a previous id becomes irrelevant after a
+    // rotation. Shared by key generation and key rotation.
+    [[nodiscard]] auto derive_ed25519_key_id(std::array<unsigned char, crypto_sign_PUBLICKEYBYTES> const& public_key)
+        -> std::string
     {
-        key_version += hex_digits[(public_key[i] >> 4U) & 0x0fU];
-        key_version += hex_digits[public_key[i] & 0x0fU];
+        static constexpr auto hex_digits = std::string_view{"0123456789abcdef"};
+        auto key_version = std::string{};
+        key_version.reserve(8U);
+        for (auto i = 0U; i < 4U; ++i)
+        {
+            key_version += hex_digits[(public_key[i] >> 4U) & 0x0fU];
+            key_version += hex_digits[public_key[i] & 0x0fU];
+        }
+        return "ed25519:" + key_version;
     }
-    return "ed25519:" + key_version;
-}
 } // namespace
 
 [[nodiscard]] auto ensure_runtime_server_signing_key(HomeserverRuntime& runtime)
@@ -1587,7 +1586,13 @@ namespace
         room_id =
             "!room" + std::to_string(runtime.database.rooms.size() + 1U) + ":" + runtime.config.server().server_name;
     }
-    auto const room_decision = trust_safety::evaluate_room_policy({room_id, false, false, {}});
+    auto const local_rule = find_policy_rule(runtime, "room", room_id);
+    auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
+    auto const blocked_by_local_policy =
+        local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
+    auto const room_decision = trust_safety::evaluate_room_policy(
+        {room_id, held_for_review, blocked_by_local_policy,
+         resolve_policy_server_hook(runtime, trust_safety::PolicySurface::room, room_id)});
     if (!room_decision.allowed)
     {
         log_diagnostic(
@@ -1597,7 +1602,7 @@ namespace
                 {"room_id", room_id,                   false},
                 {"reason",  room_decision.reason.code, false}
         });
-        return make_operation_result(false, {}, room_decision.reason.code);
+        return make_operation_result(false, {}, room_decision.reason.code, 403U);
     }
 
     auto const alias = options.room_alias_name.empty()
@@ -2026,10 +2031,8 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
 // that state events with empty state_key (m.room.encryption, m.room.create, etc.)
 // are correctly persisted. Do NOT change the state-key check without updating the
 // corresponding test in tests/unit/test_federation_invite_join.cpp.
-[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime,
-                                          canonicaljson::Array const& state_arr,
-                                          rooms::RoomVersionPolicy const& policy)
-    -> std::vector<std::string>
+[[nodiscard]] auto ingest_send_join_state(HomeserverRuntime& runtime, canonicaljson::Array const& state_arr,
+                                          rooms::RoomVersionPolicy const& policy) -> std::vector<std::string>
 {
     auto joined_members = std::vector<std::string>{};
     for (auto const& state_entry : state_arr)
@@ -2090,18 +2093,22 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                 // PersistentStateEvent is stored with the correct room_id and can be
                 // found later by build_pdu_auth_event_map.
                 auto const effective_room_id = [&]() -> std::string {
-                    if (!parsed.event.room_id.empty()) { return parsed.event.room_id; }
-                    if (policy.create_event_is_room_id && !event_id.empty()) { return "!" + event_id.substr(1); }
+                    if (!parsed.event.room_id.empty())
+                    {
+                        return parsed.event.room_id;
+                    }
+                    if (policy.create_event_is_room_id && !event_id.empty())
+                    {
+                        return "!" + event_id.substr(1);
+                    }
                     return {};
                 }();
                 auto state = std::optional<database::PersistentStateEvent>{};
                 if (entry_obj != nullptr)
                 {
-                    if (auto const* raw_sk = json_string_member(*entry_obj, "state_key");
-                        raw_sk != nullptr)
+                    if (auto const* raw_sk = json_string_member(*entry_obj, "state_key"); raw_sk != nullptr)
                     {
-                        state = database::PersistentStateEvent{effective_room_id,
-                                                               parsed.event.event_type, *raw_sk,
+                        state = database::PersistentStateEvent{effective_room_id, parsed.event.event_type, *raw_sk,
                                                                event_id};
                     }
                 }
@@ -2115,12 +2122,10 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                 pe.prev_event_ids = std::move(prev_ids);
                 pe.auth_event_ids = std::move(auth_ids);
                 pe.signatures = parsed.event.signatures;
-                std::ignore = database::store_event_with_state(runtime.database.persistent_store,
-                                                               std::move(pe), state);
+                std::ignore = database::store_event_with_state(runtime.database.persistent_store, std::move(pe), state);
                 // Track joined members for the in-memory LocalRoom population step.
                 // state_key is non-empty for membership events (it holds the user ID).
-                if (parsed.event.event_type == "m.room.member" &&
-                    !parsed.event.state_key.empty() &&
+                if (parsed.event.event_type == "m.room.member" && !parsed.event.state_key.empty() &&
                     events::extract_content_membership(state_entry) == "join")
                 {
                     append_unique_member(joined_members, parsed.event.state_key);
@@ -2167,37 +2172,35 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     //   5. Sync: room suppressed from rooms.join; shows as empty invite → loop
     {
         auto const our_server_name = runtime.config.server().server_name;
-        auto const room_domain     = server_name_from_room_id(room_id);
-        auto const is_remote_room  = !room_domain.empty() && room_domain != our_server_name;
+        auto const room_domain = server_name_from_room_id(room_id);
+        auto const is_remote_room = !room_domain.empty() && room_domain != our_server_name;
         if (room != nullptr && is_remote_room && room_has_member(*room, *user_id))
         {
-            auto const mem_it = std::ranges::find_if(
-                runtime.database.persistent_store.memberships,
-                [&](database::PersistentMembership const& m) {
-                    return m.room_id == room_id && m.user_id == *user_id;
-                });
+            auto const mem_it = std::ranges::find_if(runtime.database.persistent_store.memberships,
+                                                     [&](database::PersistentMembership const& m) {
+                                                         return m.room_id == room_id && m.user_id == *user_id;
+                                                     });
             auto const persistently_joined =
-                mem_it != runtime.database.persistent_store.memberships.end() &&
-                mem_it->membership == "join";
+                mem_it != runtime.database.persistent_store.memberships.end() && mem_it->membership == "join";
             if (!persistently_joined)
             {
                 // Remove the stale in-memory record. The persistent event store
                 // retains all previously stored events, so the federation join
                 // path below can populate a fresh LocalRoom on success.
-                auto erase_it = std::ranges::find_if(runtime.database.rooms,
-                                                     [room_id](LocalRoom const& r) {
-                                                         return r.room_id == room_id;
-                                                     });
+                auto erase_it = std::ranges::find_if(runtime.database.rooms, [room_id](LocalRoom const& r) {
+                    return r.room_id == room_id;
+                });
                 if (erase_it != runtime.database.rooms.end())
                 {
                     runtime.database.rooms.erase(erase_it);
                 }
                 log_diagnostic("room.join.stale_membership_cleared",
                                {
-                                   {"actor",        *user_id,             false},
-                                   {"room_id",      std::string{room_id}, false},
-                                   {"reason",       "in-memory join but persistent membership is not join; "
-                                                    "retrying federation",           false}
+                                   {"actor",   *user_id,             false},
+                                   {"room_id", std::string{room_id}, false},
+                                   {"reason",
+                                    "in-memory join but persistent membership is not join; "
+                                    "retrying federation",           false}
                 });
                 room = nullptr; // triggers the federation join path below
             }
@@ -2495,7 +2498,10 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                             // state_key field exists even when "" (e.g. m.room.create).
                             // v12 (MSC4291): m.room.create has no room_id field; derive it.
                             auto const auth_effective_room_id = [&]() -> std::string {
-                                if (!parsed.event.room_id.empty()) { return parsed.event.room_id; }
+                                if (!parsed.event.room_id.empty())
+                                {
+                                    return parsed.event.room_id;
+                                }
                                 if (policy != nullptr && policy->create_event_is_room_id && !event_id.empty())
                                 {
                                     return "!" + event_id.substr(1);
@@ -2560,11 +2566,10 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         // with a remote federation server; covered by the sync regression test that
         // directly exercises the underlying store functions.
         {
-            auto join_depth    = std::uint64_t{0U};
+            auto join_depth = std::uint64_t{0U};
             auto join_prev_ids = std::vector<std::string>{};
             auto join_auth_ids = std::vector<std::string>{};
-            if (auto const* obj =
-                    std::get_if<canonicaljson::Object>(&signed_value.value.storage()))
+            if (auto const* obj = std::get_if<canonicaljson::Object>(&signed_value.value.storage()))
             {
                 if (auto const* d = json_integer_member(*obj, "depth"); d != nullptr && *d >= 0)
                 {
@@ -2579,24 +2584,25 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                     join_auth_ids = json_string_array(*av);
                 }
             }
-            auto join_pe             = database::PersistentEvent{};
-            join_pe.event_id         = event_id_result.event_id;
-            join_pe.room_id          = std::string{room_id};
-            join_pe.sender_user_id   = *user_id;
-            join_pe.json             = signed_event.event_json;
-            join_pe.depth            = join_depth;
-            join_pe.stream_ordering  = membership_stream;
-            join_pe.prev_event_ids   = std::move(join_prev_ids);
-            join_pe.auth_event_ids   = std::move(join_auth_ids);
-            auto const join_state    = std::optional<database::PersistentStateEvent>{
-                database::PersistentStateEvent{std::string{room_id}, "m.room.member",
-                                               *user_id, event_id_result.event_id}};
+            auto join_pe = database::PersistentEvent{};
+            join_pe.event_id = event_id_result.event_id;
+            join_pe.room_id = std::string{room_id};
+            join_pe.sender_user_id = *user_id;
+            join_pe.json = signed_event.event_json;
+            join_pe.depth = join_depth;
+            join_pe.stream_ordering = membership_stream;
+            join_pe.prev_event_ids = std::move(join_prev_ids);
+            join_pe.auth_event_ids = std::move(join_auth_ids);
+            auto const join_state = std::optional<database::PersistentStateEvent>{
+                database::PersistentStateEvent{std::string{room_id}, "m.room.member", *user_id,
+                                               event_id_result.event_id}
+            };
             // store_event_with_state either inserts a new state row or UPDATEs the
             // existing one (invite → join).  Either path leaves current_state pointing
             // at the join event at membership_stream, which joined_membership_changed_since
             // then detects correctly.
-            std::ignore = database::store_event_with_state(
-                runtime.database.persistent_store, std::move(join_pe), join_state);
+            std::ignore =
+                database::store_event_with_state(runtime.database.persistent_store, std::move(join_pe), join_state);
         }
         // GCOVR_EXCL_STOP
 
@@ -2841,47 +2847,46 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     // join) can leave the room known but the membership row absent. If current_state
     // holds an m.room.member event confirming membership:join we synthesise the row
     // so the leave can proceed without manual intervention.
-    auto membership_it = std::ranges::find_if(
-        runtime.database.persistent_store.memberships,
-        [&](database::PersistentMembership const& current) {
-            return current.room_id == room_id && current.user_id == *user_id;
-        });
+    auto membership_it = std::ranges::find_if(runtime.database.persistent_store.memberships,
+                                              [&](database::PersistentMembership const& current) {
+                                                  return current.room_id == room_id && current.user_id == *user_id;
+                                              });
 
     if (membership_it == runtime.database.persistent_store.memberships.end())
     {
-        auto const state_it = std::ranges::find_if(
-            runtime.database.persistent_store.state,
-            [&](database::PersistentStateEvent const& s) {
-                return s.room_id == room_id && s.event_type == "m.room.member" &&
-                       s.state_key == *user_id;
+        auto const state_it =
+            std::ranges::find_if(runtime.database.persistent_store.state, [&](database::PersistentStateEvent const& s) {
+                return s.room_id == room_id && s.event_type == "m.room.member" && s.state_key == *user_id;
             });
         if (state_it != runtime.database.persistent_store.state.end())
         {
-            auto const event_it = std::ranges::find_if(
-                runtime.database.persistent_store.events,
-                [&](database::PersistentEvent const& e) { return e.event_id == state_it->event_id; });
+            auto const event_it =
+                std::ranges::find_if(runtime.database.persistent_store.events, [&](database::PersistentEvent const& e) {
+                    return e.event_id == state_it->event_id;
+                });
             if (event_it != runtime.database.persistent_store.events.end())
             {
-                auto const parsed   = canonicaljson::parse_lossless(event_it->json);
-                auto const* obj     = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+                auto const parsed = canonicaljson::parse_lossless(event_it->json);
+                auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
                 auto const* content = obj == nullptr ? nullptr : object_member_as_object(*obj, "content");
-                auto const* mem     = content == nullptr ? nullptr : string_member(*content, "membership");
+                auto const* mem = content == nullptr ? nullptr : string_member(*content, "membership");
                 if (mem != nullptr && *mem == "join")
                 {
                     // Re-create the missing membership row so the leave path can proceed.
                     auto const recovered_stream = runtime.database.next_stream_ordering++;
-                    std::ignore = store_or_update_membership(
-                        runtime.database.persistent_store, room_id, *user_id, "join", recovered_stream);
-                    log_diagnostic("room.leave.membership_recovered", {
-                                                                          {"actor",   *user_id,             false},
-                                                                          {"room_id", std::string{room_id}, false}
+                    std::ignore = store_or_update_membership(runtime.database.persistent_store, room_id, *user_id,
+                                                             "join", recovered_stream);
+                    log_diagnostic("room.leave.membership_recovered",
+                                   {
+                                       {"actor",   *user_id,             false},
+                                       {"room_id", std::string{room_id}, false}
                     });
                     // Re-find: push_back may have reallocated the vector.
-                    membership_it = std::ranges::find_if(
-                        runtime.database.persistent_store.memberships,
-                        [&](database::PersistentMembership const& current) {
-                            return current.room_id == room_id && current.user_id == *user_id;
-                        });
+                    membership_it =
+                        std::ranges::find_if(runtime.database.persistent_store.memberships,
+                                             [&](database::PersistentMembership const& current) {
+                                                 return current.room_id == room_id && current.user_id == *user_id;
+                                             });
                 }
             }
         }
@@ -2912,21 +2917,20 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
 
     // For rooms hosted on a remote server, perform a federated leave:
     // make_leave (get a signed template) → sign → send_leave.
-    auto const our_server  = runtime.config.server().server_name;
+    auto const our_server = runtime.config.server().server_name;
     auto const room_domain = server_name_from_room_id(room_id);
-    auto const is_remote   = !room_domain.empty() && room_domain != our_server;
+    auto const is_remote = !room_domain.empty() && room_domain != our_server;
 
     if (is_remote)
     {
         wire_federation_callbacks(runtime);
-        auto* outbound_client    = runtime.outbound_client.get();
-        auto* discovery_network  = runtime.discovery_network.get();
+        auto* outbound_client = runtime.outbound_client.get();
+        auto* discovery_network = runtime.discovery_network.get();
         auto const remote_server = std::string{room_domain};
-        auto const signing_key   = ensure_runtime_server_signing_key(runtime);
-        auto const key_id        = signing_key.has_value() ? signing_key->key_id : std::string{};
-        auto const secret_key    = std::string{
-            reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
-            runtime.database.signing_secret_key.size()};
+        auto const signing_key = ensure_runtime_server_signing_key(runtime);
+        auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+        auto const secret_key = std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
+                                            runtime.database.signing_secret_key.size()};
 
         guard.unlock();
 
@@ -2938,9 +2942,9 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                                                            {"room_id",       std::string{room_id}, false},
                                                            {"remote_server", remote_server,        false}
         });
-        auto const [make_ok, make_body] = perform_sync_outbound_call(outbound_client, discovery_network,
-                                                                     make_leave_tx, key_id, secret_key,
-                                                                     "room.leave.remote.make_leave_failed");
+        auto const [make_ok, make_body] =
+            perform_sync_outbound_call(outbound_client, discovery_network, make_leave_tx, key_id, secret_key,
+                                       "room.leave.remote.make_leave_failed");
         if (!make_ok)
         {
             guard.lock();
@@ -2955,16 +2959,15 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
 
         // Step 2: validate the leave event template.
         auto const make_response = canonicaljson::parse_lossless(make_body);
-        auto const* make_obj =
-            std::get_if<canonicaljson::Object>(&make_response.value.storage());
+        auto const* make_obj = std::get_if<canonicaljson::Object>(&make_response.value.storage());
         if (make_obj == nullptr)
         {
             guard.lock();
             log_diagnostic("room.leave.rejected", {
-                                                      {"actor",   *user_id,                     false},
-                                                      {"room_id", std::string{room_id},         false},
-                                                      {"status",  "502",                        false},
-                                                      {"reason",  "malformed make_leave body",  false}
+                                                      {"actor",   *user_id,                    false},
+                                                      {"room_id", std::string{room_id},        false},
+                                                      {"status",  "502",                       false},
+                                                      {"reason",  "malformed make_leave body", false}
             });
             return make_operation_result(false, {}, "malformed make_leave response", 502U);
         }
@@ -2981,7 +2984,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             return make_operation_result(false, {}, validated.reason, 502U);
         }
         auto const room_version = validated.room_version;
-        auto event_object       = validated.event;
+        auto event_object = validated.event;
 
         // Step 3: add content hash and sign the leave event.
         auto const content_hash = events::make_content_hash(canonicaljson::Value{event_object});
@@ -2997,13 +3000,11 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             return make_operation_result(false, {}, "leave event content hash failed", 500U);
         }
         auto hashes_obj = canonicaljson::Object{};
-        hashes_obj.push_back(
-            canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
-        event_object.push_back(
-            canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes_obj)}));
+        hashes_obj.push_back(canonicaljson::make_member("sha256", canonicaljson::Value{content_hash.sha256}));
+        event_object.push_back(canonicaljson::make_member("hashes", canonicaljson::Value{std::move(hashes_obj)}));
 
-        auto event_to_sign      = canonicaljson::Value{event_object};
-        auto const* policy      = rooms::find_room_version_policy(room_version);
+        auto event_to_sign = canonicaljson::Value{event_object};
+        auto const* policy = rooms::find_room_version_policy(room_version);
         if (policy == nullptr)
         {
             guard.lock();
@@ -3021,7 +3022,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
         {
             std::copy(secret_key.begin(), secret_key.end(), secret_key_array.begin());
         }
-        auto provider      = RuntimeEd25519Provider{std::move(secret_key_array)};
+        auto provider = RuntimeEd25519Provider{std::move(secret_key_array)};
         auto const signed_event =
             events::sign_event_for_server(event_to_sign, *policy, key_store, provider, our_server);
         if (!signed_event.error.empty())
@@ -3035,7 +3036,7 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             });
             return make_operation_result(false, {}, "event signing failed", 500U);
         }
-        auto const signed_value    = canonicaljson::parse_lossless(signed_event.event_json);
+        auto const signed_value = canonicaljson::parse_lossless(signed_event.event_json);
         auto const event_id_result = events::make_reference_hash_event_id(signed_value.value, *policy);
         if (!event_id_result.error.empty() || event_id_result.event_id.empty())
         {
@@ -3051,17 +3052,17 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
 
         // Step 4: send_leave — deliver the signed leave event to the remote server.
         auto send_leave_tx = federation::make_outbound_send_membership(
-            federation::FederationEndpoint::send_leave, remote_server, our_server, room_id,
-            event_id_result.event_id, signed_event.event_json);
+            federation::FederationEndpoint::send_leave, remote_server, our_server, room_id, event_id_result.event_id,
+            signed_event.event_json);
         log_diagnostic("room.leave.remote.send_leave", {
-                                                           {"actor",         *user_id,                   false},
-                                                           {"room_id",       std::string{room_id},       false},
-                                                           {"remote_server", remote_server,              false},
-                                                           {"event_id",      event_id_result.event_id,  false}
+                                                           {"actor",         *user_id,                 false},
+                                                           {"room_id",       std::string{room_id},     false},
+                                                           {"remote_server", remote_server,            false},
+                                                           {"event_id",      event_id_result.event_id, false}
         });
-        auto const [send_ok, send_body] = perform_sync_outbound_call(outbound_client, discovery_network,
-                                                                     send_leave_tx, key_id, secret_key,
-                                                                     "room.leave.remote.send_leave_failed");
+        auto const [send_ok, send_body] =
+            perform_sync_outbound_call(outbound_client, discovery_network, send_leave_tx, key_id, secret_key,
+                                       "room.leave.remote.send_leave_failed");
 
         guard.lock();
 
@@ -3107,11 +3108,12 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
             runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
                                            runtime.database.persistent_store.next_sync_stream_id);
         }
-        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.left_remote",
-                           *user_id, room_id, "left via federation");
-        log_diagnostic("room.leave.accepted", {
-                                                  {"actor",   *user_id,             false},
-                                                  {"room_id", std::string{room_id}, false}
+        append_local_audit(runtime.database, observability::AuditCategory::admin, "room.left_remote", *user_id, room_id,
+                           "left via federation");
+        log_diagnostic("room.leave.accepted",
+                       {
+                           {"actor",   *user_id,             false},
+                           {"room_id", std::string{room_id}, false}
         });
         return make_operation_result(true, std::string{room_id});
     }

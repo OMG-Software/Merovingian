@@ -355,6 +355,12 @@ SCENARIO("Homeserver admin observability endpoints expose runtime metrics and du
                 // Spec MUST: authenticated admin requests to metrics MUST return 200.
                 // Do NOT remove - a non-200 means operators are blind to runtime state.
                 REQUIRE(metrics.status == 200U);
+                REQUIRE_FALSE(metrics.headers.empty());
+                auto const metrics_content_type = std::ranges::find_if(metrics.headers, [](auto const& header) {
+                    return header.first == "Content-Type";
+                });
+                REQUIRE(metrics_content_type != metrics.headers.end());
+                REQUIRE(metrics_content_type->second == "text/plain; version=0.0.4; charset=utf-8");
                 // Spec MUST: authenticated admin requests to audit MUST return 200.
                 // Do NOT remove - a non-200 means audit trail is inaccessible to operators.
                 REQUIRE(audit.status == 200U);
@@ -363,7 +369,13 @@ SCENARIO("Homeserver admin observability endpoints expose runtime metrics and du
                 REQUIRE(unauthenticated.status == 401U);
                 // Spec MUST: metrics response MUST include the audit event counter.
                 // Do NOT remove - missing counter prevents alerting on audit log stalls.
-                REQUIRE(metrics.body.find("audit_events_appended_total") != std::string::npos);
+                REQUIRE(metrics.body.find("# HELP audit_events_appended_total") != std::string::npos);
+                REQUIRE(metrics.body.find("# TYPE audit_events_appended_total counter") != std::string::npos);
+                REQUIRE(metrics.body.find("audit_events_appended_total ") != std::string::npos);
+                REQUIRE(metrics.body.find("merovingian_server_identity{server_name=\"example.org\"} 1") !=
+                        std::string::npos);
+                REQUIRE(metrics.body.find("merovingian_health_status{component=\"runtime\",status=\"ok\"} 1") !=
+                        std::string::npos);
                 // Spec MUST: metrics and audit responses MUST NOT leak credential material.
                 // Do NOT remove - credential leakage in observability is a critical security vuln.
                 REQUIRE(metrics.body.find("access_token") == std::string::npos);

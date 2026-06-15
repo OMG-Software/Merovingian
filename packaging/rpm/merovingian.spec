@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.10
+Version:        0.8.11
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -93,6 +93,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.11-1
+- feat: define the observability scrape/export contract and admin correlation headers
+- feat: render admin metrics as Prometheus text exposition with stable HELP/TYPE metadata
 * Sun Jun 14 2026 James Chapman <claude@ping.me.uk> - 0.8.10-1
 - feat: real image thumbnails via a sandboxed out-of-process worker (libpng/libjpeg-turbo)
 - feat: reconstruct federation /state and /state_ids as of a requested event

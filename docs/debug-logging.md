@@ -59,6 +59,11 @@ the formatter redacts fields whose names indicate secrets or payloads:
 - Query-string values with sensitive token-like names, such as
   `access_token=<redacted>`.
 
+Local HTTP router diagnostics now also include `request_id`, `trace_id`, and
+`span_id` fields. These are safe correlation identifiers only: they exist so an
+operator can join an admin scrape or audit query to the log lines that handled
+it, and they must not be repurposed to carry user payloads or secret material.
+
 Do not add raw request bodies, Matrix event `content`, media bytes, passwords, or
 token values to diagnostic fields. Prefer metadata such as `body_bytes`,
 `event_type`, `room_id`, `event_id`, `status`, and failure `reason`.
