@@ -2843,10 +2843,10 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
     }
 
     // Look up the membership row. If missing, attempt recovery from current_state:
-    // a server restart between store_room and store_membership (during a federated
-    // join) can leave the room known but the membership row absent. If current_state
-    // holds an m.room.member event confirming membership:join we synthesise the row
-    // so the leave can proceed without manual intervention.
+    // a server restart or partial persistence can leave the room known but the
+    // membership row absent. If current_state still carries an m.room.member event
+    // for this user, synthesise the matching membership row so `/leave` can behave
+    // idempotently and later `/forget` can still observe the terminal state.
     auto membership_it = std::ranges::find_if(runtime.database.persistent_store.memberships,
                                               [&](database::PersistentMembership const& current) {
                                                   return current.room_id == room_id && current.user_id == *user_id;
@@ -2870,12 +2870,13 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
                 auto const* obj = std::get_if<canonicaljson::Object>(&parsed.value.storage());
                 auto const* content = obj == nullptr ? nullptr : object_member_as_object(*obj, "content");
                 auto const* mem = content == nullptr ? nullptr : string_member(*content, "membership");
-                if (mem != nullptr && *mem == "join")
+                if (mem != nullptr)
                 {
-                    // Re-create the missing membership row so the leave path can proceed.
+                    // Re-create the missing membership row so the leave path can proceed
+                    // or observe that the user has already left.
                     auto const recovered_stream = runtime.database.next_stream_ordering++;
-                    std::ignore = store_or_update_membership(runtime.database.persistent_store, room_id, *user_id,
-                                                             "join", recovered_stream);
+                    std::ignore = store_or_update_membership(runtime.database.persistent_store, room_id, *user_id, *mem,
+                                                             recovered_stream);
                     log_diagnostic("room.leave.membership_recovered",
                                    {
                                        {"actor",   *user_id,             false},
@@ -2894,25 +2895,21 @@ auto join_candidate_servers(std::vector<std::string> const& via_servers, std::st
 
     if (membership_it == runtime.database.persistent_store.memberships.end())
     {
-        auto const status = static_cast<std::uint16_t>(room_exists(runtime, room_id) ? 403U : 404U);
-        auto const reason = status == 403U ? "user is not joined or invited" : "room not found";
-        log_diagnostic("room.leave.rejected", {
-                                                  {"actor",   *user_id,               false},
-                                                  {"room_id", std::string{room_id},   false},
-                                                  {"status",  std::to_string(status), false},
-                                                  {"reason",  reason,                 false}
+        log_diagnostic("room.leave.accepted",
+                       {
+                           {"actor",   *user_id,             false},
+                           {"room_id", std::string{room_id}, false}
         });
-        return make_operation_result(false, {}, reason, status);
+        return make_operation_result(true, std::string{room_id});
     }
     if (membership_it->membership != "join" && membership_it->membership != "invite")
     {
-        log_diagnostic("room.leave.rejected", {
-                                                  {"actor",   *user_id,                        false},
-                                                  {"room_id", std::string{room_id},            false},
-                                                  {"status",  "403",                           false},
-                                                  {"reason",  "user is not joined or invited", false}
+        log_diagnostic("room.leave.accepted",
+                       {
+                           {"actor",   *user_id,             false},
+                           {"room_id", std::string{room_id}, false}
         });
-        return make_operation_result(false, {}, "user is not joined or invited", 403U);
+        return make_operation_result(true, std::string{room_id});
     }
 
     // For rooms hosted on a remote server, perform a federated leave:

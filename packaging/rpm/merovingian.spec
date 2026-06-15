@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.11
+Version:        0.8.12
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -93,6 +93,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.12-1
+- fix: make client /rooms/{roomId}/leave idempotent for stale or already-left membership
+- test: cover leave retries after the membership row has gone missing
 * Mon Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.11-1
 - feat: define the observability scrape/export contract and admin correlation headers
 - feat: render admin metrics as Prometheus text exposition with stable HELP/TYPE metadata
