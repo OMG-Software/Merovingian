@@ -34,6 +34,13 @@ BuildRequires:  flex
 BuildRequires:  m4
 BuildRequires:  systemd-rpm-macros
 
+Requires:       libopenssl3
+Requires:       libsodium23
+Requires:       libpq5
+Requires:       libcurl4
+Requires:       libpng16-16
+Requires:       libjpeg62-turbo
+
 %description
 Merovingian is an alpha Matrix Protocol homeserver focused on secure
 implementation, runtime hardening, and auditable dependency boundaries.
