@@ -61,6 +61,7 @@ pkg_create \
     -d "${STAGE}/+DESC" \
     -D COMMENT="Secure Matrix Protocol homeserver" \
     -f "${PLIST}" \
+    -p "${PREFIX}" \
     "merovingian-${VERSION}.tgz"
 
 echo "Built OpenBSD package for merovingian-${VERSION}"

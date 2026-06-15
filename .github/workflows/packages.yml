@@ -187,7 +187,7 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client png jpeg-turbo
+            pkg_add -I meson ninja pkgconf git bison flex gmake png jpeg-turbo
           run: sh scripts/build-openbsd-pkg.sh
       - name: Attest OpenBSD package
         uses: actions/attest-build-provenance@v2

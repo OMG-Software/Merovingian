@@ -12,6 +12,11 @@ VERSION="0.8.11"
 STAGE="staging-netbsd"
 PREFIX=/usr/pkg
 
+# NetBSD's base compiler is GCC, which here predates C++26. Build with the
+# pkgsrc clang toolchain unless the caller overrides CC/CXX.
+export CC="${CC:-clang}"
+export CXX="${CXX:-clang++}"
+
 rm -rf "${STAGE}" build-netbsd-pkg pkg-plist-netbsd "merovingian-${VERSION}.tgz"
 
 # 1. Configure + build with NetBSD/pkgsrc prefix conventions.

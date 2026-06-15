@@ -194,7 +194,7 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg_add -I llvm meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client png jpeg-turbo
+            pkg_add -I meson ninja pkgconf git bison flex gmake png jpeg-turbo
           run: |
             sh scripts/build-bsd.sh --builddir build
             mkdir -p artifacts/bin artifacts/config artifacts/docs

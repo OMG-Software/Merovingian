@@ -222,9 +222,15 @@ check_command "$cxx"
 check_command meson
 check_command ninja
 check_command "$pkg_config"
-check_pkg_config_module libsodium
-check_pkg_config_module openssl
-check_pkg_config_module libpq
+# Under forcefallback the core libraries are built from vendored subprojects, so
+# they are not required from the system — and on some platforms (OpenBSD ships
+# LibreSSL) a system openssl would shadow the vendored OpenSSL headers. Only
+# require system copies when the build may actually use them.
+if [ "$wrap_mode" != "forcefallback" ]; then
+    check_pkg_config_module libsodium
+    check_pkg_config_module openssl
+    check_pkg_config_module libpq
+fi
 
 meson_options="-Dbuild_tests=$build_tests -Dbuild_fuzz=$build_fuzz --wrap-mode=$wrap_mode"
 [ -z "$buildtype" ] || meson_options="$meson_options --buildtype=$buildtype"
