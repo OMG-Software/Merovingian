@@ -215,7 +215,7 @@ jobs:
 
   # ── NetBSD ─────────────────────────────────────────────────────────────────
   # Tier 1 platform. Same full build+test path as the other BSDs.
-  netbsd:
+  netbsd-build-and-test:
     runs-on: ubuntu-latest
 
     steps:
