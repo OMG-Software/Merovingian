@@ -79,7 +79,6 @@ jobs:
             nghttp2-static \
             brotli-static \
             zstd-static \
-            c-ares-static \
             libsodium-dev \
             libsodium-static \
             linux-headers \

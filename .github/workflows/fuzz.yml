@@ -38,6 +38,7 @@ jobs:
             clang \
             flex \
             llvm \
+            libcurl4-openssl-dev \
             libpq-dev \
             libsodium-dev \
             libssl-dev \

@@ -59,12 +59,11 @@ EOF
     echo "OS_VERSION=$(uname -r)"
 } > "${BUILD_INFO}"
 
-# 4. Packing list (+CONTENTS) generated from the staged tree.
+# 4. Packing list (+CONTENTS) generated from the staged tree. Paths are relative
+#    to the staging prefix; pkg_create reads them from -p (the staging tree) and
+#    records them under -I (the real install prefix).
 PLIST="${PWD}/pkg-plist-netbsd"
-{
-    echo "@cwd ${PREFIX}"
-    ( cd "${STAGE}${PREFIX}" && find . -type f | sed 's|^\./||' | sort )
-} > "${PLIST}"
+( cd "${STAGE}${PREFIX}" && find . -type f | sed 's|^\./||' | sort ) > "${PLIST}"
 
 echo "[debug] staged tree under ${STAGE}:"
 ls -lR "${STAGE}" || true
@@ -72,7 +71,8 @@ echo "[debug] packing list:"
 cat "${PLIST}"
 
 pkg_create \
-    -p "${PREFIX}" \
+    -p "${PWD}/${STAGE}${PREFIX}" \
+    -I "${PREFIX}" \
     -c "${COMMENT}" \
     -d "${DESC}" \
     -B "${BUILD_INFO}" \
