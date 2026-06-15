@@ -10,6 +10,9 @@ licenselogic: single
 licenses: [GPL3]
 flatsize: 0
 deps: {
+  openssl: {origin: security/openssl, version: "3.0.0"},
+  libsodium: {origin: security/libsodium, version: "1.0.18"},
+  postgresql17-client: {origin: databases/postgresql17-client, version: "17.0"},
   curl: {origin: ftp/curl, version: "8.0.0"},
   png: {origin: graphics/png, version: "1.6.0"},
   libjpeg-turbo: {origin: graphics/libjpeg-turbo, version: "2.0.0"},

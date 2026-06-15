@@ -373,23 +373,25 @@ class DependencyWrapTests(unittest.TestCase):
         for token in ("openssl-devel", "libsodium-devel", "libpq-devel"):
             self.assertIn(token, rpm_spec)
 
-        # THEN all three platforms declare security libraries as dynamic runtime
+        # THEN all platforms declare security libraries as explicit runtime
         # dependencies so OS package updates (apt upgrade libssl3 etc.) patch
         # the binary without rebuilding the package. SQLite and yyjson remain
-        # statically linked via Meson wraps; libcurl is now system-provided
-        # (allow_fallback: false) and declared as a runtime dependency.
+        # statically linked via Meson wraps.
         for token in ("libsodium23", "libpq5", "libssl3", "libcurl4"):
             self.assertIn(token, deb_control)
-        for token in ("Requires:       libsodium", "Requires:       libpq"):
-            self.assertNotIn(token, rpm_spec)
+        for token in (
+            "Requires:       openssl-libs",
+            "Requires:       libsodium",
+            "Requires:       libpq",
+            "Requires:       libcurl",
+        ):
+            self.assertIn(token, rpm_spec)
         # Only inspect the dependency-declaration section, not post-install
-        # scripts: the scripts block may invoke openssl as a shell tool without
-        # it being a package-level runtime dependency.
+        # scripts: the scripts block invokes openssl as a shell tool independently
+        # of the package-level runtime dependency declaration.
         freebsd_manifest_deps = freebsd_manifest.split("scripts:")[0]
-        for token in ("openssl", "libsodium", "postgresql17-client"):
-            self.assertNotIn(token, freebsd_manifest_deps)
-        # libcurl is dynamically linked from the system, so it is a declared dep.
-        self.assertIn("curl", freebsd_manifest_deps)
+        for token in ("openssl", "libsodium", "postgresql17-client", "curl"):
+            self.assertIn(token, freebsd_manifest_deps)
 
         # THEN NetBSD and OpenBSD scaffolds declare their OS-supplied runtime deps.
         for token in ("openssl", "libsodium", "postgresql17-client", "curl"):
