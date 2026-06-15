@@ -138,11 +138,6 @@ namespace
         media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
     }
 
-    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
-    {
-        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
-    }
-
     [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> canonicaljson::Value const*
     {
