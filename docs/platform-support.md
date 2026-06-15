@@ -6,10 +6,13 @@ states what is *guaranteed by CI*, not whether it happens to work elsewhere.
 
 ## Build toolchain and minimum platform versions
 
-Merovingian is C++26 (`cpp_std=c++26` in `meson.build`). That is the hard
-constraint on which platform versions can build it: the C++26 compiler **and** a
-matching C++ standard library only ship in recent OS releases. Older releases
-cannot build from source — use the portable static tarball (see Tier 2) instead.
+Merovingian is C++26 (`cpp_std=c++26` in `meson.build`). Two *independent*
+constraints decide which platform versions work, and on Linux they are not the
+same thing:
+
+1. **Compiler + C++ standard library** — building needs a C++26 toolchain.
+2. **System C library (glibc) version** — on Linux the produced binary links
+   against the build host's glibc, which decides where it can *run*.
 
 **Toolchain floor (all platforms):**
 
@@ -20,20 +23,42 @@ cannot build from source — use the portable static tarball (see Tier 2) instea
   (`--wrap-mode=forcefallback`); only the base toolchain and the optional image
   codecs (`libpng`, `libjpeg-turbo`) come from the OS.
 
-**Minimum OS versions that ship a C++26 toolchain:**
+### The glibc constraint (Linux)
 
-| Platform | Minimum version | Toolchain source | CI image |
-|---|---|---|---|
-| Ubuntu / Debian | Ubuntu 24.04 LTS · Debian 13 (trixie) | distro clang 18+ | `ubuntu-latest` (24.04) |
-| Fedora / RHEL family | Fedora 40+ (RHEL 10, or clang module on 9) | dnf clang 18+ | `fedora:latest` |
-| FreeBSD | 14.1+ (base clang ≥ 18) | base clang | `vmactions/freebsd-vm@v1` (14.x) |
-| OpenBSD | 7.6+ with the `llvm` package (clang ≥ 18) | `llvm` package, not base | `vmactions/openbsd-vm@v1` (7.x) |
-| NetBSD | 10+ with pkgsrc `clang` (≥ 18) | pkgsrc clang | `vmactions/netbsd-vm@v1` (10.x) |
+On Linux the compiler is necessary but **not sufficient**. glibc is *backward*-
+but **not forward-compatible**: a binary linked against glibc 2.39 (Ubuntu 24.04)
+requires glibc ≥ 2.39 at runtime and will fail to start on an older system with
+a diagnostic like `version 'GLIBC_2.39' not found`. Critically:
+
+- **Installing a newer Clang on an old distro does not help.** The compiler is
+  separate from the C library. An old release (e.g. Ubuntu 22.04 / glibc 2.35,
+  Debian 12 / glibc 2.36, RHEL 9 / glibc 2.34) ships an old glibc that the C++26
+  build links against, and **glibc is not safely upgradable in place** — it is
+  the foundation the whole userland is built on.
+- Therefore a distro package built on the CI image targets *that image's glibc
+  and newer only*. There is no single glibc-dynamic build that runs on both new
+  and old Linux.
+
+The escape hatch for old or minimal Linux is the **static musl tarball**
+(Tier 2), which has no glibc dependency at all — see below.
+
+**Minimum OS versions (compiler available *and* glibc new enough):**
+
+| Platform | Minimum version | glibc (Linux) | Toolchain source | CI image |
+|---|---|---|---|---|
+| Ubuntu / Debian | Ubuntu 24.04 LTS · Debian 13 (trixie) | ≥ 2.39 / 2.39 | distro clang 18+ | `ubuntu-latest` (24.04) |
+| Fedora / RHEL family | Fedora 40+ (RHEL 10) | ≥ 2.39 / 2.39 | dnf clang 18+ | `fedora:latest` |
+| FreeBSD | 14.1+ (base clang ≥ 18) | n/a (no glibc) | base clang | `vmactions/freebsd-vm@v1` (14.x) |
+| OpenBSD | 7.6+ with the `llvm` package (clang ≥ 18) | n/a | `llvm` package, not base | `vmactions/openbsd-vm@v1` (7.x) |
+| NetBSD | 10+ with pkgsrc `clang` (≥ 18) | n/a | pkgsrc clang | `vmactions/netbsd-vm@v1` (10.x) |
 
 The CI VM/runner images track the current stable release of each platform, so
-"build on" is the latest stable and "build for" is the minimum version in the
-table above. Earlier releases (e.g. Ubuntu 22.04, Debian 12, FreeBSD 13,
-OpenBSD ≤ 7.5) ship a pre-C++26 toolchain and are **not** buildable from source.
+"build on" is the latest stable and "build for" is the minimum version above.
+Earlier Linux releases (Ubuntu 22.04, Debian 12, RHEL 9) fail on **both** counts
+— pre-C++26 toolchain and too-old glibc — and even after installing a newer
+Clang the glibc remains too old, so they are not buildable or runnable from a
+glibc-dynamic build. Use the static tarball there. (On the BSDs there is no
+glibc; the only floor is a base/packaged clang ≥ 18.)
 
 ## Tier 1 — Supported (CI-gated per pull request)
 
