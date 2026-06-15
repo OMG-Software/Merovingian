@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build a NetBSD binary package (.tgz) for merovingian 0.8.11.
+# Build a NetBSD binary package (.tgz) for merovingian 0.8.12.
 #
 # Standalone pkg_create(1) from pkgtools/pkg_install — no pkgsrc tree. The
 # checked-in packaging/netbsd/Makefile is the pkgsrc recipe kept for downstream;
@@ -8,7 +8,7 @@
 # installable artifact on every run.
 set -e
 
-VERSION="0.8.11"
+VERSION="0.8.12"
 STAGE="staging-netbsd"
 PREFIX=/usr/pkg
 
@@ -20,10 +20,13 @@ export CXX="${CXX:-clang++}"
 rm -rf "${STAGE}" build-netbsd-pkg pkg-plist-netbsd "merovingian-${VERSION}.tgz"
 
 # 1. Configure + build with NetBSD/pkgsrc prefix conventions.
+#    --wrap-mode=default (not forcefallback): the vendored curl autotools build
+#    hits a GNU make readdir bug on NetBSD, so use the system libcurl. sqlite/
+#    yyjson still fall back to vendored subprojects when no system copy exists.
 meson setup build-netbsd-pkg \
     --prefix="${PREFIX}" \
     --sysconfdir="${PREFIX}/etc" \
-    --wrap-mode=forcefallback \
+    --wrap-mode=default \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false

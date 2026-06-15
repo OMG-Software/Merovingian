@@ -222,14 +222,18 @@ check_command "$cxx"
 check_command meson
 check_command ninja
 check_command "$pkg_config"
-# Under forcefallback the core libraries are built from vendored subprojects, so
-# they are not required from the system — and on some platforms (OpenBSD ships
-# LibreSSL) a system openssl would shadow the vendored OpenSSL headers. Only
-# require system copies when the build may actually use them.
-if [ "$wrap_mode" != "forcefallback" ]; then
-    check_pkg_config_module libsodium
-    check_pkg_config_module openssl
-    check_pkg_config_module libpq
+# libsodium, openssl, and libpq are always linked from the system (the meson
+# dependencies use allow_fallback: false), regardless of wrap mode.
+check_pkg_config_module libsodium
+check_pkg_config_module openssl
+check_pkg_config_module libpq
+
+# NetBSD: the vendored curl autotools build hits a GNU make "readdir: Invalid
+# argument" bug on the CI VM filesystem. Use the system libcurl there instead.
+# Everything else stays vendored (sqlite/yyjson) or system (libsodium/openssl/
+# libpq), so this is a curl-only exception on NetBSD.
+if [ "$(uname -s)" = "NetBSD" ] && [ "$wrap_mode" = "forcefallback" ]; then
+    wrap_mode=default
 fi
 
 meson_options="-Dbuild_tests=$build_tests -Dbuild_fuzz=$build_fuzz --wrap-mode=$wrap_mode"

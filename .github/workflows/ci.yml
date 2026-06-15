@@ -194,7 +194,7 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg_add -I meson ninja pkgconf git bison flex gmake png jpeg-turbo
+            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client png jpeg-turbo
           run: |
             sh scripts/build-bsd.sh --builddir build
             mkdir -p artifacts/bin artifacts/config artifacts/docs
@@ -225,7 +225,7 @@ jobs:
           usesh: true
           prepare: |
             /usr/sbin/pkg_add -U pkgin || true
-            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client png libjpeg-turbo
+            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
           run: |
             sh scripts/build-bsd.sh --builddir build
             mkdir -p artifacts/bin artifacts/config artifacts/docs

@@ -28,6 +28,7 @@
 #include <netinet/in.h>
 #include <openssl/evp.h>
 #include <openssl/pem.h>
+#include <openssl/rsa.h>
 #include <openssl/ssl.h>
 #include <openssl/x509.h>
 #include <sys/socket.h>
@@ -199,6 +200,24 @@ struct FileDeleter final
     }
 };
 
+// Generates an RSA key portably across OpenSSL 3 and LibreSSL (OpenBSD ships
+// LibreSSL, which lacks the OpenSSL-3-only EVP_RSA_gen wrapper).
+[[nodiscard]] auto generate_rsa_key(int bits) -> EVP_PKEY*
+{
+    auto* const context = EVP_PKEY_CTX_new_id(EVP_PKEY_RSA, nullptr);
+    if (context == nullptr)
+    {
+        return nullptr;
+    }
+    EVP_PKEY* key = nullptr;
+    if (EVP_PKEY_keygen_init(context) > 0 && EVP_PKEY_CTX_set_rsa_keygen_bits(context, bits) > 0)
+    {
+        EVP_PKEY_keygen(context, &key);
+    }
+    EVP_PKEY_CTX_free(context);
+    return key;
+}
+
 [[nodiscard]] auto write_test_tls_certificate() -> TlsTestCertificate
 {
     static auto counter = std::uint32_t{0U};
@@ -206,7 +225,7 @@ struct FileDeleter final
                            ("merovingian-tls-" + std::to_string(::getpid()) + "-" + std::to_string(++counter));
     std::filesystem::create_directories(directory);
 
-    auto key = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>{EVP_RSA_gen(2048U)};
+    auto key = std::unique_ptr<EVP_PKEY, EvpPkeyDeleter>{generate_rsa_key(2048)};
     REQUIRE(key != nullptr);
 
     auto certificate = std::unique_ptr<X509, X509Deleter>{X509_new()};
