@@ -96,6 +96,6 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Sun Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.12-1
-- Initial RHEL-compatible (AlmaLinux 10) package
+* Mon Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.12-1
+- Initial OpenSUSE Tumbleweed package
 - ci: add Debian trixie, RHEL-compatible, and OpenSUSE Tumbleweed CI and packaging jobs
