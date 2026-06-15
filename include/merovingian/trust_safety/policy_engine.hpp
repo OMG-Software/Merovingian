@@ -63,6 +63,9 @@ struct PolicyServerHook final
     bool enabled{false};
     bool reachable{true};
     bool allow_without_result{false};
+    bool decision_received{false};
+    PolicyAction action{PolicyAction::allow};
+    EnforcementReason reason{};
     std::string rule_id{};
     std::uint32_t timeout_milliseconds{250U};
 };

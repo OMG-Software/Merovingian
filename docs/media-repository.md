@@ -15,10 +15,14 @@ current in-process runtime path.
   `GET /_matrix/media/v3/download/{server}/{mediaId}` against the resolved
   host, and ingests the response bytes through the local blob store. Remote
   host/IP policy is checked before bytes enter the store; rejected fetches are
-  counted and audited.
+  counted and audited. `security.media.remote_fetch_timeout` is parsed today,
+  but the live fetch path still uses hard-coded discovery/HTTP timeout values.
 - Upload and remote-ingest bytes pass through the same hardened processing
-  boundary: AV scanner result, sandboxed worker requirement, decoder safety,
-  decompression expansion limits, and thumbnail metadata generation.
+  boundary: upstream-supplied AV scanner result, sandboxed worker requirement,
+  decoder safety, decompression expansion limits, and thumbnail metadata
+  generation. Merovingian currently does not launch or configure an AV engine
+  itself; `security.media.enable_av_scanner` only controls whether the policy
+  honors the supplied scanner verdict.
 - Admin quarantine, release, and remove actions update repository state, persistent metadata, admin actions, and audit events.
 - Media metrics expose accepted uploads, rejected uploads, quarantines,
   releases, removals, remote fetch accept/reject counts, processing rejections,

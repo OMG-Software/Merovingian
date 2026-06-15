@@ -1747,8 +1747,107 @@ SCENARIO("Client-server runtime wires trust and safety report and admin review r
                 REQUIRE(reports.response.body.find("trust_safety.room.accept_report") != std::string::npos);
                 REQUIRE(runtime.homeserver.database.persistent_store.audit_log.size() >= 4U);
                 REQUIRE(runtime.homeserver.database.persistent_store.admin_actions.size() == 1U);
+                REQUIRE(runtime.homeserver.database.persistent_store.policy_rules.size() == 1U);
                 REQUIRE(runtime.homeserver.database.persistent_store.admin_actions.front().action ==
                         "trust_safety.media.quarantine");
+                REQUIRE(runtime.homeserver.database.persistent_store.policy_rules.front().scope == "media");
+                REQUIRE(runtime.homeserver.database.persistent_store.policy_rules.front().entity == "media123");
+                REQUIRE(runtime.homeserver.database.persistent_store.policy_rules.front().action == "quarantine");
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server admin safety routes manage persisted policy rules", "[homeserver][client-server][trust-safety]")
+{
+    GIVEN("a logged-in admin client-server user and a local media upload")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const admin = merovingian::homeserver::bootstrap_admin_user(runtime.homeserver, "alice", "CorrectHorse7!");
+        REQUIRE(admin.ok);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+        auto const upload = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/media/v3/upload", token,
+                      "application/octet-stream|application/octet-stream|clean|hello"});
+        REQUIRE(upload.response.status == 200U);
+        auto const content_uri = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
+        REQUIRE(!content_uri.empty());
+
+        WHEN("the admin stores, lists, and deletes a media policy rule")
+        {
+            auto const put = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/admin/safety/policy_rules/media/" + content_uri, token,
+                          R"({"action":"deny","reason":"manual_block"})"});
+            auto const list = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/admin/safety/policy_rules", token, {}});
+            auto const blocked_download = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + content_uri, token, {}});
+            auto const del = merovingian::homeserver::handle_client_server_request(
+                runtime, {"DELETE", "/_matrix/client/v3/admin/safety/policy_rules/media/" + content_uri, token, {}});
+            auto const unblocked_download = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/media/v3/download/example.org/" + content_uri, token, {}});
+
+            THEN("the rule is durable and immediately changes the media workflow")
+            {
+                REQUIRE(put.response.status == 200U);
+                REQUIRE(list.response.status == 200U);
+                REQUIRE(list.response.body.find("\"scope\":\"media\"") != std::string::npos);
+                REQUIRE(list.response.body.find(content_uri) != std::string::npos);
+                REQUIRE(blocked_download.response.status == 403U);
+                REQUIRE(del.response.status == 200U);
+                REQUIRE(unblocked_download.response.status == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("Client-server registration enforces trust-safety policy server decisions",
+         "[homeserver][client-server][trust-safety]")
+{
+    GIVEN("a runtime with trust-safety transport enabled")
+    {
+        auto config = registration_enabled_config();
+        config.security().trust_safety.enabled = true;
+        config.security().trust_safety.policy_server_url = "https://policy.example.org/check";
+        auto started = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.trust_safety_policy_server = [](merovingian::trust_safety::PolicySurface surface,
+                                                           std::string_view entity) {
+            auto hook = merovingian::trust_safety::PolicyServerHook{};
+            hook.enabled = true;
+            hook.reachable = true;
+            hook.allow_without_result = false;
+            hook.decision_received = surface == merovingian::trust_safety::PolicySurface::registration;
+            hook.action = merovingian::trust_safety::PolicyAction::deny;
+            hook.rule_id = "remote-registration-rule";
+            hook.reason =
+                merovingian::trust_safety::enforcement_reason("remote_registration_block", "registration blocked",
+                                                              std::string{"blocked user "} + std::string{entity});
+            return hook;
+        };
+
+        WHEN("a client attempts to register")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+
+            THEN("the remote policy server decision fails registration closed")
+            {
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("remote_registration_block") != std::string::npos);
             }
         }
     }

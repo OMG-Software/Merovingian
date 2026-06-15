@@ -13,8 +13,10 @@
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -158,11 +160,14 @@ struct HomeserverRuntime final
     platform::HardeningSelfCheck hardening{};
     bool started{false};
     std::unique_ptr<http::OutboundClient> outbound_client{};
+    std::function<trust_safety::PolicyServerHook(trust_safety::PolicySurface, std::string_view)>
+        trust_safety_policy_server{};
     std::unique_ptr<federation::ServerDiscoveryNetwork> discovery_network{};
     std::unique_ptr<federation::DispatchWorker> dispatch_worker{};
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};
+    std::uint64_t next_request_sequence{1U};
     // Guards mutable runtime state when requests are handled concurrently.
     // Handlers must release it before outbound network I/O so unrelated
     // requests can continue while a federation round-trip is in flight.
@@ -208,6 +213,10 @@ struct SessionRefreshResult final
 [[nodiscard]] auto admin_audit_summary(HomeserverRuntime const& runtime,
                                        std::optional<observability::AuditCategory> category = std::nullopt,
                                        std::optional<std::string_view> event_type = std::nullopt) -> std::string;
+[[nodiscard]] auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, std::string_view entity)
+    -> std::optional<database::PersistentPolicyRule>;
+[[nodiscard]] auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::PolicySurface surface,
+                                              std::string_view entity) -> trust_safety::PolicyServerHook;
 auto apply_runtime_membership(LocalDatabase& database, std::string_view room_id, std::string_view user_id,
                               std::string_view membership) -> void;
 

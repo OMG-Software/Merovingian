@@ -15,9 +15,9 @@
 #   server.trusted_proxies=127.0.0.1
 # The proxy MUST overwrite X-Forwarded-For with the direct peer IP it
 # received — never append to client-supplied values (see docs/configuration.md).
-server.name=example.org
+server.name=matrix.example.org
 server.public_baseurl=https://matrix.example.org
-server.trusted_proxies=
+server.trusted_proxies=127.0.0.1
 
 # CORS policy (preflight + actual responses).
 # allowed_origins is a comma-separated list of origins allowed to make
@@ -123,10 +123,24 @@ security.federation.remote_timeout=30s
 # treated as sandbox-only work.
 security.media.max_upload_size=50MiB
 security.media.quarantine_unknown_mime=true
-security.media.enable_av_scanner=true
+# Commented out: no AV engine integration is wired yet. This flag only changes
+# how Merovingian treats a scanner verdict supplied by an upstream caller/test
+# harness; it does not invoke or configure an antivirus scanner itself.
+# security.media.enable_av_scanner=true
 security.media.block_private_ip_fetches=true
-security.media.remote_fetch_timeout=30s
+# Commented out: the config parser accepts this, but the live remote-fetch path
+# still uses hard-coded discovery/HTTP timeouts instead of this value.
+# security.media.remote_fetch_timeout=30s
 security.media.decode_in_sandbox=true
+
+# Trust and safety policy transport
+# Commented out by default: enabling this makes registration, room-creation,
+# federation-inbound, and media-download checks consult a remote HTTPS policy
+# service. The endpoint is fail-closed unless allow_without_result is set.
+# security.trust_safety.enabled=true
+# security.trust_safety.policy_server_url=https://policy.example.org/check
+# security.trust_safety.policy_server_timeout=5s
+# security.trust_safety.policy_server_allow_without_result=false
 
 # Logging redaction
 # Structured logs are enabled, but token values and event content stay redacted
@@ -135,21 +149,65 @@ security.logging.redact_tokens=true
 security.logging.redact_event_content=true
 security.logging.structured=true
 
-# Client-server rate limits (0.5.0)
+# Client-server rate limits
 # Wall-clock per-IP and per-user caps keyed by request target prefix. The
 # default_per_ip fallback applies to every target not matched by per_ip.*
 # below. Format is "<max_requests>/<window_seconds>s". Changes take effect
 # on the next server restart — see docs/configuration.md#client-rate-limits.
-client_rate_limits.per_ip./_matrix/client/v3/login=20/60s
-client_rate_limits.per_ip./_matrix/client/v3/register=20/60s
-client_rate_limits.per_user./_matrix/client/v3/login=5/60s
-client_rate_limits.default_per_ip=90/60s
+client_rate_limits.per_ip./_matrix/client/v3/login=30/60s
+client_rate_limits.per_ip./_matrix/client/v3/register=30/60s
+client_rate_limits.per_user./_matrix/client/v3/login=20/60s
+client_rate_limits.default_per_ip=300/60s
 
-# Per-module log level overrides (0.5.0)
+# Per-module log level overrides
 # Each entry maps a logger name to a level (trace|debug|info|notice|
 # warning|error|critical|off). The wildcard `*` sets the default level
-# every other module sees. Restart is required for changes to take effect
+# every other module sees. Restart is required for changes to take effect.
+# Merovingian needs to run with the --debug parameter to enable debug logging.
 # — see docs/log-filtering.md.
-# log_modules.http_server=info
 # log_modules.auth=debug
-# log_modules.*=info
+# log_modules.client_server=debug
+# log_modules.dispatch_worker=info
+# log_modules.event=info
+# log_modules.event_auth=info
+# log_modules.event_query=info
+# log_modules.event_signer=info
+# log_modules.federation=info
+# log_modules.federation_policy=info
+# log_modules.federation_security=info
+# log_modules.hardening_self_check=info
+# log_modules.http_server=info
+# log_modules.identity=info
+# log_modules.inbound_ingestion=info
+# log_modules.key_query=info
+# log_modules.local_router=info
+# log_modules.local_services=info
+# log_modules.media_repository=info
+# log_modules.media_security=info
+# log_modules.media_service=info
+# log_modules.membership_endpoints=info
+# log_modules.migration=info
+# log_modules.outbound_client=info
+# log_modules.outbound_transaction=info
+# log_modules.persistent_store=info
+# log_modules.policy_engine=info
+# log_modules.postgresql_store=info
+# log_modules.rate_limit=debug
+# log_modules.remote_key_resolver=info
+# log_modules.rooms=info
+# log_modules.runtime=info
+# log_modules.runtime_hardening=info
+# log_modules.server_discovery=info
+# log_modules.session=info
+# log_modules.signing_service=info
+# log_modules.sqlite_store=info
+# log_modules.state_resolution=info
+# log_modules.sync_filter=info
+# log_modules.sync_notifier=info
+# log_modules.thread_pool=info
+# log_modules.tls=info
+# log_modules.token=info
+# log_modules.transactions=info
+
+# All log module config
+log_modules.*=debug

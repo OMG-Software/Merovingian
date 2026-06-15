@@ -103,6 +103,9 @@ Rejected cases include:
 - invalid media upload size
 - disabled private-IP blocking for remote media fetches
 - invalid media remote fetch timeout
+- trust-safety transport enabled without a policy server URL
+- non-HTTPS trust-safety policy server URL
+- invalid trust-safety policy server timeout
 - disabled sandboxed media decoding
 - disabled token or event-content log redaction
 
@@ -989,6 +992,49 @@ Remote media fetching is opt-in. `security.media.remote_fetch_enabled=false`
 is the default; setting it to `true` enables the repository remote-ingest
 boundary, while private and loopback resolved addresses remain blocked when
 `security.media.block_private_ip_fetches=true`.
+
+Two `security.media.*` keys are not fully wired end to end yet:
+
+- `security.media.enable_av_scanner` is parsed, but it does **not** configure
+  or launch an antivirus engine. It only changes how the media policy treats a
+  scanner verdict supplied by an upstream caller.
+- `security.media.remote_fetch_timeout` is parsed and validated, but the live
+  remote-fetch path still uses hard-coded discovery and outbound HTTP timeouts.
+
+## Trust and safety policy transport
+
+The trust-safety transport is opt-in and fail-closed by default:
+
+```text
+security.trust_safety.enabled=true
+security.trust_safety.policy_server_url=https://policy.example.org/check
+security.trust_safety.policy_server_timeout=5s
+security.trust_safety.policy_server_allow_without_result=false
+```
+
+When enabled, Merovingian POSTs a small JSON decision request to the configured
+HTTPS endpoint for registration, room creation, inbound federation, and media
+download checks. The request includes:
+
+- `surface`
+- `entity`
+- `server_name`
+
+The response body is expected to be JSON with at least:
+
+- `action`
+  Allowed values: `allow`, `deny`, `quarantine`, `lock_account`,
+  `suspend_account`.
+- `rule_id`
+  Optional but recommended for audit correlation.
+- `summary`
+  Optional operator-facing summary.
+- `reason`
+  Optional detailed reason string.
+
+If the policy server is unreachable, returns a non-2xx status, omits a usable
+decision, or sends malformed JSON, the guarded workflow is rejected unless
+`security.trust_safety.policy_server_allow_without_result=true`.
 
 ## Reloadability policy
 

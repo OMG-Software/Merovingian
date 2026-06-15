@@ -22,6 +22,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
+#include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <algorithm>
 #include <array>
@@ -47,7 +48,27 @@ namespace
 
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
     {
+        if (auto const* correlation = observability::current_correlation_context(); correlation != nullptr)
+        {
+            fields = observability::with_correlation_fields(*correlation, std::move(fields));
+        }
         LOG_DEBUG(observability::diagnostic_log_summary("local_router", event, std::move(fields)));
+    }
+
+    [[nodiscard]] auto traceparent(observability::CorrelationContext const& correlation) -> std::string
+    {
+        return "00-" + correlation.trace_id + '-' + correlation.span_id + "-01";
+    }
+
+    [[nodiscard]] auto observability_headers(observability::CorrelationContext const& correlation,
+                                             std::string_view content_type)
+        -> std::vector<std::pair<std::string, std::string>>
+    {
+        return {
+            {"Content-Type",             std::string{content_type}},
+            {"X-Merovingian-Request-Id", correlation.request_id   },
+            {"Traceparent",              traceparent(correlation) },
+        };
     }
 
     // Builds the auth-event map for an inbound federated PDU from the room's
@@ -105,9 +126,10 @@ namespace
         return result;
     }
 
-    [[nodiscard]] auto response(std::uint16_t status, std::string body) -> LocalHttpResponse
+    [[nodiscard]] auto response(std::uint16_t status, std::string body,
+                                std::vector<std::pair<std::string, std::string>> headers = {}) -> LocalHttpResponse
     {
-        return {status, std::move(body)};
+        return {status, std::move(body), std::move(headers)};
     }
 
     [[nodiscard]] auto response_from_operation(OperationResult const& result, std::uint16_t ok_status = 200U)
@@ -1565,6 +1587,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     -> LocalHttpResponse
 {
     auto guard = std::unique_lock<std::recursive_mutex>{runtime.mutex};
+    auto const correlation = observability::make_correlation_context(runtime.next_request_sequence++);
+    [[maybe_unused]] auto const correlation_scope = observability::CorrelationScope{correlation};
     log_diagnostic("request.received",
                    {
                        {"method",           request.method,                                       false},
@@ -1585,20 +1609,26 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
     if (request.method == "GET" && request.target == "/_merovingian/admin/health")
     {
         return authenticated_admin_user(runtime, request.access_token).has_value()
-                   ? response(200U, admin_health_summary(runtime))
-                   : response(401U, "admin authentication required");
+                   ? response(200U, admin_health_summary(runtime),
+                              observability_headers(correlation, "text/plain; charset=utf-8"))
+                   : response(401U, "admin authentication required",
+                              observability_headers(correlation, "text/plain; charset=utf-8"));
     }
     if (request.method == "GET" && request.target == "/_merovingian/admin/media/metrics")
     {
         return authenticated_admin_user(runtime, request.access_token).has_value()
-                   ? response(200U, media_metrics_summary(runtime))
-                   : response(401U, "admin authentication required");
+                   ? response(200U, media_metrics_summary(runtime),
+                              observability_headers(correlation, "text/plain; charset=utf-8"))
+                   : response(401U, "admin authentication required",
+                              observability_headers(correlation, "text/plain; charset=utf-8"));
     }
     if (request.method == "GET" && request.target == "/_merovingian/admin/metrics")
     {
         return authenticated_admin_user(runtime, request.access_token).has_value()
-                   ? response(200U, admin_metrics_summary(runtime))
-                   : response(401U, "admin authentication required");
+                   ? response(200U, admin_metrics_summary(runtime),
+                              observability_headers(correlation, "text/plain; version=0.0.4; charset=utf-8"))
+                   : response(401U, "admin authentication required",
+                              observability_headers(correlation, "text/plain; version=0.0.4; charset=utf-8"));
     }
     if (request.method == "GET" && starts_with(request.target, "/_merovingian/admin/audit"))
     {
@@ -1621,7 +1651,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
                     auto const parsed = observability::audit_category_from_name(kv.second);
                     if (!parsed.has_value())
                     {
-                        return response(400U, std::string{"unknown audit category: "} + std::string{kv.second});
+                        return response(400U, std::string{"unknown audit category: "} + std::string{kv.second},
+                                        observability_headers(correlation, "text/plain; charset=utf-8"));
                     }
                     category_filter = *parsed;
                 }
@@ -1632,8 +1663,10 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             }
         }
         return authenticated_admin_user(runtime, request.access_token).has_value()
-                   ? response(200U, admin_audit_summary(runtime, category_filter, event_type_filter))
-                   : response(401U, "admin authentication required");
+                   ? response(200U, admin_audit_summary(runtime, category_filter, event_type_filter),
+                              observability_headers(correlation, "text/plain; charset=utf-8"))
+                   : response(401U, "admin authentication required",
+                              observability_headers(correlation, "text/plain; charset=utf-8"));
     }
     if (request.method == "GET" && request.target == "/_matrix/key/v2/server")
     {
@@ -1656,8 +1689,21 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             // 502 signals a server-side failure instead.
             return response(502U, "malformed federation authorization");
         }
-        auto const federation_response =
-            federation::handle_inbound_federation_request(runtime.federation, *signed_request);
+        auto const federation_response = [&]() -> federation::FederationResponse {
+            auto const local_rule = find_policy_rule(runtime, "federation", signed_request->origin);
+            auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
+            auto const blocked_by_local_policy =
+                local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
+            auto const decision = trust_safety::evaluate_federation_policy(
+                {signed_request->origin, held_for_review, blocked_by_local_policy,
+                 resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation, signed_request->origin)});
+            if (!decision.allowed)
+            {
+                return {403U,
+                        decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary};
+            }
+            return federation::handle_inbound_federation_request(runtime.federation, *signed_request);
+        }();
         log_diagnostic("federation.dispatched",
                        {
                            {"method", request.method,                                       false},
@@ -1727,8 +1773,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(404U, "route not found");
         }
         auto const params = parse_thumbnail_params(request.target);
-        auto const result =
-            download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height, params.method);
+        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width,
+                                                           params.height, params.method);
         return response_from_media_operation(result);
     }
     auto constexpr v1_thumbnail_prefix = std::string_view{"/_matrix/client/v1/media/thumbnail/"};
@@ -1740,8 +1786,8 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             return response(404U, "route not found");
         }
         auto const params = parse_thumbnail_params(request.target);
-        auto const result =
-            download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width, params.height, params.method);
+        auto const result = download_local_media_thumbnail(runtime, (*parts)[0], (*parts)[1], params.width,
+                                                           params.height, params.method);
         return response_from_media_operation(result);
     }
     auto constexpr v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
@@ -1909,8 +1955,22 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             // 502 signals a server-side failure instead.
             return response(502U, "malformed federation authorization");
         }
-        auto const federation_response =
-            federation::handle_inbound_federation_request(runtime.federation, *signed_request_opt);
+        auto const federation_response = [&]() -> federation::FederationResponse {
+            auto const local_rule = find_policy_rule(runtime, "federation", signed_request_opt->origin);
+            auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";
+            auto const blocked_by_local_policy =
+                local_rule.has_value() && local_rule->action != "allow" && local_rule->action != "quarantine";
+            auto const decision = trust_safety::evaluate_federation_policy(
+                {signed_request_opt->origin, held_for_review, blocked_by_local_policy,
+                 resolve_policy_server_hook(runtime, trust_safety::PolicySurface::federation,
+                                            signed_request_opt->origin)});
+            if (!decision.allowed)
+            {
+                return {403U,
+                        decision.reason.public_summary.empty() ? decision.reason.code : decision.reason.public_summary};
+            }
+            return federation::handle_inbound_federation_request(runtime.federation, *signed_request_opt);
+        }();
         return response(federation_response.status, federation_response.body);
     }
     return response(404U, "route not found");

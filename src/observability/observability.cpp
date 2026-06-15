@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <string>
 #include <utility>
 #include <vector>
@@ -86,6 +87,65 @@ namespace
             }
         }
         return false;
+    }
+
+    [[nodiscard]] auto hex_encode(std::uint64_t value, std::size_t width) -> std::string
+    {
+        auto output = std::string(width, '0');
+        for (auto index = std::size_t{0U}; index < width; ++index)
+        {
+            auto const nibble = static_cast<unsigned>(value & 0xFU);
+            output[width - 1U - index] = static_cast<char>(nibble < 10U ? '0' + nibble : 'a' + (nibble - 10U));
+            value >>= 4U;
+        }
+        return output;
+    }
+
+    [[nodiscard]] auto escape_prometheus(std::string_view value) -> std::string
+    {
+        auto escaped = std::string{};
+        escaped.reserve(value.size());
+        for (auto const character : value)
+        {
+            switch (character)
+            {
+            case '\\':
+                escaped += "\\\\";
+                break;
+            case '"':
+                escaped += "\\\"";
+                break;
+            case '\n':
+                escaped += "\\n";
+                break;
+            default:
+                escaped.push_back(character);
+                break;
+            }
+        }
+        return escaped;
+    }
+
+    [[nodiscard]] auto label_name_is_safe(std::string_view value) noexcept -> bool
+    {
+        if (value.empty())
+        {
+            return false;
+        }
+        return std::ranges::all_of(value, [](char const character) {
+            return std::isalnum(static_cast<unsigned char>(character)) != 0 || character == '_' || character == ':';
+        });
+    }
+
+    [[nodiscard]] auto metric_name_is_safe(std::string_view value) noexcept -> bool
+    {
+        return label_name_is_safe(value);
+    }
+
+    auto correlation_slot() noexcept -> CorrelationContext const*&
+    {
+        thread_local auto* context = static_cast<CorrelationContext const*>(nullptr);
+        return context;
     }
 
     [[nodiscard]] auto sanitize_query(std::string_view query) -> std::string
@@ -218,6 +278,19 @@ auto health_status_name(HealthStatus status) noexcept -> char const*
     }
 
     return "unknown";
+}
+
+auto metric_type_name(MetricType type) noexcept -> char const*
+{
+    switch (type)
+    {
+    case MetricType::counter:
+        return "counter";
+    case MetricType::gauge:
+        return "gauge";
+    }
+
+    return "gauge";
 }
 
 auto admin_surface_is_safe(AdminControlSurface const& surface) noexcept -> bool
@@ -362,10 +435,39 @@ auto diagnostic_log_summary(std::string_view logger, std::string_view event, std
     return structured_log_summary({std::string{logger}, "debug", std::move(fields)});
 }
 
+auto make_correlation_context(std::uint64_t sequence) -> CorrelationContext
+{
+    auto const request = hex_encode(sequence, 16U);
+    auto const trace = hex_encode(sequence, 16U) + hex_encode(sequence ^ 0x9e3779b97f4a7c15ULL, 16U);
+    auto const span = hex_encode(sequence ^ 0xa5a5a5a5a5a5a5a5ULL, 16U);
+    return {
+        "req-" + request,
+        std::move(trace),
+        std::move(span),
+    };
+}
+
+auto current_correlation_context() noexcept -> CorrelationContext const*
+{
+    return correlation_slot();
+}
+
+auto with_correlation_fields(CorrelationContext const& context, std::vector<StructuredLogField> fields)
+    -> std::vector<StructuredLogField>
+{
+    fields.insert(fields.begin(), {
+                                      {"span_id",    context.span_id,    false},
+                                      {"trace_id",   context.trace_id,   false},
+                                      {"request_id", context.request_id, false},
+    });
+    return fields;
+}
+
 auto logging_boundary_notes() -> std::vector<std::string>
 {
     return {
-        "Structured logs include request identifiers, actor identifiers, route names, and result codes.",
+        "Structured logs include request identifiers, trace identifiers, span identifiers, actor identifiers, route "
+        "names, and result codes.",
         "Structured logs must not include access tokens, refresh tokens, device keys, signing keys, event content, "
         "media bytes, request bodies, signatures, authorization headers, or plaintext passwords.",
         "Sensitive structured fields are rendered as <redacted> before they leave the logging boundary.",
@@ -375,8 +477,60 @@ auto logging_boundary_notes() -> std::vector<std::string>
 auto metrics_are_safe(std::vector<MetricSample> const& metrics) noexcept -> bool
 {
     return std::ranges::all_of(metrics, [](MetricSample const& metric) {
-        return metric.secret_safe && !metric.name.empty();
+        if (!metric.secret_safe || !metric_name_is_safe(metric.name))
+        {
+            return false;
+        }
+        return std::ranges::all_of(metric.labels, [](MetricLabel const& label) {
+            return label.secret_safe && label_name_is_safe(label.key);
+        });
     });
+}
+
+auto prometheus_metrics_summary(std::vector<MetricSample> const& metrics) -> std::string
+{
+    auto output = std::string{};
+    auto documented = std::vector<std::string>{};
+    for (auto const& metric : metrics)
+    {
+        if (!metric.secret_safe || !metric_name_is_safe(metric.name))
+        {
+            continue;
+        }
+
+        if (!std::ranges::any_of(documented, [&metric](std::string const& name) {
+                return name == metric.name;
+            }))
+        {
+            documented.push_back(metric.name);
+            if (!metric.help.empty())
+            {
+                output += "# HELP " + metric.name + ' ' + escape_prometheus(metric.help) + '\n';
+            }
+            output += "# TYPE " + metric.name + ' ' + std::string{metric_type_name(metric.type)} + '\n';
+        }
+
+        output += metric.name;
+        auto first_label = true;
+        for (auto const& label : metric.labels)
+        {
+            if (!label.secret_safe || !label_name_is_safe(label.key))
+            {
+                continue;
+            }
+            output += first_label ? "{" : ",";
+            first_label = false;
+            output += label.key + "=\"" + escape_prometheus(label.value) + "\"";
+        }
+        if (!first_label)
+        {
+            output.push_back('}');
+        }
+        output += ' ';
+        output += std::to_string(metric.value);
+        output.push_back('\n');
+    }
+    return output;
 }
 
 auto health_snapshot_summary(HealthCheckSnapshot const& snapshot) -> std::string
@@ -418,6 +572,17 @@ auto observability_snapshot_is_safe(ObservabilitySnapshot const& snapshot) noexc
            std::ranges::all_of(snapshot.hardening_summaries, [](std::string const& summary) {
                return !summary.empty();
            });
+}
+
+CorrelationScope::CorrelationScope(CorrelationContext const& context) noexcept
+    : previous_{correlation_slot()}
+{
+    correlation_slot() = &context;
+}
+
+CorrelationScope::~CorrelationScope()
+{
+    correlation_slot() = previous_;
 }
 
 } // namespace merovingian::observability

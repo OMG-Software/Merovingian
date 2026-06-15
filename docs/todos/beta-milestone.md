@@ -23,16 +23,21 @@ a non-production environment.
   sandboxed, out-of-process `merovingian-thumbnail-worker` (PNG/JPEG via
   libpng/libjpeg-turbo), with graceful fallback to original bytes when codecs
   are unavailable.
+- ~~Define the production scrape/export contract, log format contract, trace
+  correlation, and operator docs for observability.~~ `GET
+  /_merovingian/admin/metrics` now emits Prometheus text exposition with stable
+  `# HELP` / `# TYPE` metadata and bounded runtime counters/gauges; admin
+  observability endpoints return `X-Merovingian-Request-Id` and `Traceparent`
+  headers; local request diagnostics carry `request_id`, `trace_id`, and
+  `span_id`; and the contract is documented in `docs/observability-audit.md`.
+- ~~Add policy server transport integration and richer moderation workflows.~~
+  Trust-safety policy transport is now driven by
+  `security.trust_safety.policy_server_*`; admin review decisions persist live
+  `policy_rules`; and admins can list, upsert, and delete policy rules through
+  the client-server admin safety routes.
 
 ## Remaining
 
-- Define the production scrape/export contract, log format contract, trace
-  correlation, and operator docs for observability. (Only a `/admin/metrics`
-  endpoint exists today; no trace/span correlation.)
-- Add policy server transport integration and richer moderation workflows.
-  (Durable policy-rule persistence via the `policy_rules` table already exists;
-  the policy engine still evaluates a pre-populated `PolicyServerHook` with no
-  HTTP transport that contacts a remote policy server.)
 - Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and
   documented support tiers. (Only Linux, Fedora, and FreeBSD CI jobs exist;
   OpenBSD/NetBSD appear only as release packaging artifacts.)

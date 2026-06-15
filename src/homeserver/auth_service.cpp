@@ -333,11 +333,14 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
         return make_operation_result(false, {}, reason, static_cast<std::uint16_t>(status));
     }
 
+    auto const local_rule = find_policy_rule(runtime, "registration", user_id);
+    auto const blocked_by_local_policy = local_rule.has_value() && local_rule->action != "allow";
     auto const decision = trust_safety::evaluate_registration_policy(
-        {user_id, "127.0.0.1", runtime.config.security().registration.enabled, false, {}});
+        {user_id, "127.0.0.1", runtime.config.security().registration.enabled, blocked_by_local_policy,
+         resolve_policy_server_hook(runtime, trust_safety::PolicySurface::registration, user_id)});
     if (!decision.allowed)
     {
-        return make_operation_result(false, {}, decision.reason.code);
+        return make_operation_result(false, {}, decision.reason.code, 403U);
     }
 
     if (registration.require_token)

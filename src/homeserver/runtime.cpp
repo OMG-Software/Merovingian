@@ -3,6 +3,8 @@
 
 #include "merovingian/homeserver/runtime.hpp"
 
+#include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/database/postgresql_store.hpp"
 #include "merovingian/database/schema.hpp"
 #include "merovingian/federation/runtime_federation.hpp"
@@ -18,9 +20,11 @@
 #include <cstddef>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace merovingian::homeserver
@@ -31,6 +35,63 @@ namespace
     auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
     {
         LOG_DEBUG(observability::diagnostic_log_summary("runtime", event, std::move(fields)));
+    }
+
+    [[nodiscard]] auto make_metric(std::string name, std::int64_t value, observability::MetricType type,
+                                   std::string help, std::vector<observability::MetricLabel> labels = {})
+        -> observability::MetricSample
+    {
+        return {std::move(name), value, true, type, std::move(help), std::move(labels)};
+    }
+
+    [[nodiscard]] auto admin_metrics(HomeserverRuntime const& runtime) -> std::vector<observability::MetricSample>
+    {
+        auto const& store = runtime.database.persistent_store;
+        auto metrics = std::vector<observability::MetricSample>{
+            make_metric("merovingian_server_identity", 1, observability::MetricType::gauge,
+                        "Identity labels for the running homeserver process.",
+                        {{"server_name", runtime.config.server().server_name, true}}
+                        ),
+            make_metric("merovingian_runtime_started", runtime.started ? 1 : 0, observability::MetricType::gauge,
+                        "Whether the homeserver runtime has completed startup."),
+            make_metric("merovingian_database_schema_version",
+                        static_cast<std::int64_t>(runtime.database.schema_version), observability::MetricType::gauge,
+                        "Current validated database schema version."),
+            make_metric("users_total", static_cast<std::int64_t>(store.users.size()), observability::MetricType::gauge,
+                        "Number of local users currently present in the persistent store."),
+            make_metric("sessions_total", static_cast<std::int64_t>(store.access_tokens.size()),
+                        observability::MetricType::gauge,
+                        "Number of persisted access-token sessions currently known to the runtime."),
+            make_metric("rooms_total", static_cast<std::int64_t>(store.rooms.size()), observability::MetricType::gauge,
+                        "Number of persisted rooms currently known to the runtime."),
+            make_metric("events_total", static_cast<std::int64_t>(store.events.size()),
+                        observability::MetricType::gauge, "Number of persisted events currently known to the runtime."),
+            make_metric("audit_events_appended_total", static_cast<std::int64_t>(store.audit_log.size()),
+                        observability::MetricType::counter,
+                        "Total number of durable audit events appended since the current store was created."),
+            make_metric("admin_actions_total", static_cast<std::int64_t>(store.admin_actions.size()),
+                        observability::MetricType::counter,
+                        "Total number of durable admin actions appended since the current store was created."),
+        };
+
+        auto const health = admin_health(runtime);
+        for (auto const& component : health.components)
+        {
+            metrics.push_back(make_metric("merovingian_health_status",
+                                          component.status == observability::HealthStatus::ok
+                                              ? 1
+                                              : (component.status == observability::HealthStatus::degraded ? 0 : -1),
+                                          observability::MetricType::gauge,
+                                          "Current status of a named runtime health component.",
+                                          {
+                                              {"component", component.name,                                      true},
+                                              {"status",    observability::health_status_name(component.status), true}
+            }));
+        }
+
+        auto const media_metrics = media::media_repository_metrics(runtime.media_repository);
+        metrics.insert(metrics.end(), media_metrics.begin(), media_metrics.end());
+        return metrics;
     }
 
     [[nodiscard]] auto read_database_uri_file(std::string const& path) -> std::string
@@ -77,6 +138,110 @@ namespace
         media::restore_local_media_repository(repository, std::move(records), std::move(blobs));
     }
 
+    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
+    {
+        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
+    }
+
+    [[nodiscard]] auto object_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> canonicaljson::Value const*
+    {
+        for (auto const& member : object)
+        {
+            if (member.key == key)
+            {
+                return member.value.get();
+            }
+        }
+        return nullptr;
+    }
+
+    [[nodiscard]] auto string_member(canonicaljson::Object const& object, std::string_view key) noexcept
+        -> std::string const*
+    {
+        auto const* value = object_member(object, key);
+        return value == nullptr ? nullptr : std::get_if<std::string>(&value->storage());
+    }
+
+    [[nodiscard]] auto parse_policy_server_action(std::string_view value) noexcept
+        -> std::optional<trust_safety::PolicyAction>
+    {
+        using trust_safety::PolicyAction;
+        if (value == "allow")
+        {
+            return PolicyAction::allow;
+        }
+        if (value == "deny")
+        {
+            return PolicyAction::deny;
+        }
+        if (value == "quarantine")
+        {
+            return PolicyAction::quarantine;
+        }
+        if (value == "lock_account")
+        {
+            return PolicyAction::lock_account;
+        }
+        if (value == "suspend_account")
+        {
+            return PolicyAction::suspend_account;
+        }
+        return std::nullopt;
+    }
+
+    [[nodiscard]] auto parse_policy_server_response(std::string_view body, trust_safety::PolicyServerHook hook)
+        -> trust_safety::PolicyServerHook
+    {
+        if (body.empty())
+        {
+            return hook;
+        }
+        auto const parsed = canonicaljson::parse_lossless(body);
+        if (parsed.error != canonicaljson::ParseError::none)
+        {
+            return hook;
+        }
+        auto const* object = std::get_if<canonicaljson::Object>(&parsed.value.storage());
+        if (object == nullptr)
+        {
+            return hook;
+        }
+
+        auto const* action = string_member(*object, "action");
+        if (action == nullptr)
+        {
+            return hook;
+        }
+        auto const parsed_action = parse_policy_server_action(*action);
+        if (!parsed_action.has_value())
+        {
+            return hook;
+        }
+
+        hook.decision_received = true;
+        hook.action = *parsed_action;
+        if (auto const* rule_id = string_member(*object, "rule_id"); rule_id != nullptr)
+        {
+            hook.rule_id = *rule_id;
+        }
+        auto code = std::string{"policy_server_"};
+        code += *action;
+        auto summary = std::string{"policy server decision"};
+        if (auto const* response_summary = string_member(*object, "summary");
+            response_summary != nullptr && !response_summary->empty())
+        {
+            summary = *response_summary;
+        }
+        auto detail = summary;
+        if (auto const* response_reason = string_member(*object, "reason"); response_reason != nullptr)
+        {
+            detail = *response_reason;
+        }
+        hook.reason = trust_safety::enforcement_reason(code, summary, detail);
+        return hook;
+    }
+
 } // namespace
 
 HomeserverRuntime::HomeserverRuntime()
@@ -103,6 +268,7 @@ HomeserverRuntime::HomeserverRuntime(HomeserverRuntime&& other) noexcept
     , hardening(std::move(other.hardening))
     , started(other.started)
     , outbound_client(std::move(other.outbound_client))
+    , trust_safety_policy_server(std::move(other.trust_safety_policy_server))
     , discovery_network(std::move(other.discovery_network))
     , dispatch_worker(std::move(other.dispatch_worker))
     , sync_notifier(std::exchange(other.sync_notifier, nullptr))
@@ -133,6 +299,7 @@ auto HomeserverRuntime::operator=(HomeserverRuntime&& other) noexcept -> Homeser
     hardening = std::move(other.hardening);
     started = other.started;
     outbound_client = std::move(other.outbound_client);
+    trust_safety_policy_server = std::move(other.trust_safety_policy_server);
     discovery_network = std::move(other.discovery_network);
     dispatch_worker = std::move(other.dispatch_worker);
     sync_notifier = std::exchange(other.sync_notifier, nullptr);
@@ -212,8 +379,10 @@ auto hydrate_local_database(LocalDatabase& database) -> void
     auto const repaired = database::repair_missing_state_entries(database.persistent_store);
     if (repaired > 0U)
     {
-        LOG_WARNING(observability::diagnostic_log_summary(
-            "runtime", "database.state.repaired", {{"count", std::to_string(repaired), false}}));
+        LOG_WARNING(observability::diagnostic_log_summary("runtime", "database.state.repaired",
+                                                          {
+                                                              {"count", std::to_string(repaired), false}
+        }));
     }
 }
 
@@ -406,13 +575,7 @@ auto admin_health_summary(HomeserverRuntime const& runtime) -> std::string
 
 auto admin_metrics_summary(HomeserverRuntime const& runtime) -> std::string
 {
-    auto const& store = runtime.database.persistent_store;
-    return "metrics users_total=" + std::to_string(store.users.size()) +
-           " sessions_total=" + std::to_string(store.access_tokens.size()) +
-           " rooms_total=" + std::to_string(store.rooms.size()) +
-           " events_total=" + std::to_string(store.events.size()) +
-           " audit_events_appended_total=" + std::to_string(store.audit_log.size()) +
-           " admin_actions_total=" + std::to_string(store.admin_actions.size());
+    return observability::prometheus_metrics_summary(admin_metrics(runtime));
 }
 
 auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observability::AuditCategory> category,
@@ -446,6 +609,85 @@ auto admin_audit_summary(HomeserverRuntime const& runtime, std::optional<observa
                    event.reason;
     }
     return summary;
+}
+
+auto find_policy_rule(HomeserverRuntime const& runtime, std::string_view scope, std::string_view entity)
+    -> std::optional<database::PersistentPolicyRule>
+{
+    auto const& rules = runtime.database.persistent_store.policy_rules;
+    auto const exact = std::ranges::find_if(rules, [scope, entity](database::PersistentPolicyRule const& rule) {
+        return rule.scope == scope && rule.entity == entity;
+    });
+    if (exact != rules.end())
+    {
+        return *exact;
+    }
+    auto const wildcard = std::ranges::find_if(rules, [scope](database::PersistentPolicyRule const& rule) {
+        return rule.scope == scope && rule.entity == "*";
+    });
+    return wildcard == rules.end() ? std::nullopt : std::optional<database::PersistentPolicyRule>{*wildcard};
+}
+
+auto resolve_policy_server_hook(HomeserverRuntime& runtime, trust_safety::PolicySurface surface,
+                                std::string_view entity) -> trust_safety::PolicyServerHook
+{
+    auto const& trust_safety_config = runtime.config.security().trust_safety;
+    if (!trust_safety_config.enabled || trust_safety_config.policy_server_url.empty())
+    {
+        return {};
+    }
+
+    auto hook = trust_safety::PolicyServerHook{};
+    hook.enabled = true;
+    hook.reachable = false;
+    hook.allow_without_result = trust_safety_config.policy_server_allow_without_result;
+    auto const timeout = config::parse_duration_seconds(trust_safety_config.policy_server_timeout);
+    hook.timeout_milliseconds = timeout.valid ? timeout.seconds * 1000U : 0U;
+
+    if (runtime.trust_safety_policy_server)
+    {
+        return runtime.trust_safety_policy_server(surface, entity);
+    }
+
+    if (runtime.outbound_client == nullptr || hook.timeout_milliseconds == 0U)
+    {
+        return hook;
+    }
+
+    auto payload = canonicaljson::Object{};
+    payload.push_back(canonicaljson::make_member(
+        "surface", canonicaljson::Value{std::string{trust_safety::policy_surface_name(surface)}}));
+    payload.push_back(canonicaljson::make_member("entity", canonicaljson::Value{std::string{entity}}));
+    payload.push_back(
+        canonicaljson::make_member("server_name", canonicaljson::Value{runtime.config.server().server_name}));
+    auto const serialized = canonicaljson::serialize_canonical(canonicaljson::Value{std::move(payload)});
+    if (serialized.error != canonicaljson::CanonicalJsonError::none)
+    {
+        return hook;
+    }
+
+    auto request = http::OutboundRequest{};
+    request.method = "POST";
+    request.url = trust_safety_config.policy_server_url;
+    request.connect_timeout_seconds = timeout.valid ? timeout.seconds : 0U;
+    request.total_timeout_seconds = timeout.valid ? timeout.seconds : 0U;
+    request.headers = {
+        {"Content-Type", "application/json"}
+    };
+    request.body = serialized.output;
+    auto const result = runtime.outbound_client->perform(request);
+    if (!result.ok)
+    {
+        return hook;
+    }
+    if (result.response.status < 200U || result.response.status >= 300U)
+    {
+        hook.reachable = true;
+        return hook;
+    }
+
+    hook.reachable = true;
+    return parse_policy_server_response(result.response.body, std::move(hook));
 }
 
 } // namespace merovingian::homeserver

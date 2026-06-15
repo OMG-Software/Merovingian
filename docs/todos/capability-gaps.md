@@ -19,8 +19,8 @@ Open work per capability area. Status column reflects the current level in the
 | Federation | `runtime-wired` | Room-version-specific PDU verification, simultaneously-active multiple signing keys, and broader Matrix federation conformance coverage. Key-rotation publication with `old_verify_keys` landed in 0.8.6. |
 | Media repository | `runtime-wired` | Live remote media transport and server discovery wired in v0.7.2. Real image resampling landed in 0.8.10 via the sandboxed out-of-process `merovingian-thumbnail-worker` (libpng/libjpeg-turbo), generated on demand per requested geometry. Remaining: multipart upload handling and Matrix v1.18 remote-thumbnail conformance fixtures. |
 | Database persistence | `runtime-wired` | Enforce runtime/migration grants through separate PostgreSQL users in deployment packaging. Transaction-rollback, migration-ordering, and role-grant durability tests landed in 0.8.6; savepoint isolation and cross-connection isolation/visibility/uniqueness durability tests landed in 0.8.9. |
-| Observability and audit | `runtime-wired` | Add production scrape/export contract, log format contract, trace correlation, and operator docs. |
-| Trust and safety | `runtime-wired` | Durable policy-rule storage exists (`policy_rules` table + persistent store). Remaining: remote policy-server transport (the engine evaluates a pre-populated `PolicyServerHook` with no HTTP caller), admin policy-rule management workflows, Matrix v1.18 conformance fixtures, and richer moderation workflows. |
+| Observability and audit | `production-gated` | Prometheus text exposition, bounded admin correlation headers, and structured request correlation landed in 0.8.11. Remaining: operator dashboards and retention/export policy for long-term audit archives. |
+| Trust and safety | `runtime-wired` | Remote HTTPS policy-server transport and admin policy-rule management workflows are now wired into registration, room creation, inbound federation, media download, and admin review flows. Remaining: Matrix v1.18 conformance fixtures, moderator queues, and broader workflow coverage. |
 | Runtime hardening | `integrated` | ELF program-header probe (linker/RELRO) retired in v0.7.2; seccomp-bpf allowlist applied and probe retired in v0.7.2. Remaining: harden default action to `SECCOMP_RET_KILL_PROCESS` after allowlist validation, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `integrated` | Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and documented support tiers. |
 | Fuzzing and conformance | `integrated` | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
@@ -76,6 +76,6 @@ Open work per capability area. Status column reflects the current level in the
 | --- | --- | --- |
 | `GET /_merovingian/admin/health` | `partial` | Real admin auth model, JSON response shape, deployment checks. |
 | Admin media moderation | `partial` | Richer authorization model, operator docs. |
-| Admin trust and safety review | `partial` | Policy rule management, Matrix v1.18 fixtures, policy server transport. |
+| Admin trust and safety review | `runtime-wired` | Matrix v1.18 fixtures, moderator queues, and broader workflow coverage. |
 | Exported metrics | `partial` | Production scrape/export contract, trace correlation. |
 | Debug logging | `partial` | Production log-format contract, request trace correlation IDs. |

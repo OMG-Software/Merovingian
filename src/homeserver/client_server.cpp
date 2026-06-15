@@ -865,6 +865,12 @@ namespace
         std::string reason{"manual_review"};
     };
 
+    struct MatrixAdminPolicyRuleBody final
+    {
+        std::string action{"deny"};
+        std::string reason{"manual_review"};
+    };
+
     struct ReportPathParts final
     {
         std::string room_id{};
@@ -895,6 +901,12 @@ namespace
     {
         trust_safety::ReviewTarget target{trust_safety::ReviewTarget::media};
         std::string target_id{};
+    };
+
+    struct AdminPolicyRulePathParts final
+    {
+        std::string scope{};
+        std::string entity{};
     };
 
     struct SendToDevicePathParts final
@@ -1622,6 +1634,25 @@ namespace
             return MatrixAdminReviewBody{};
         }
         return MatrixAdminReviewBody{*reason};
+    }
+
+    [[nodiscard]] auto parse_admin_policy_rule_body(std::string_view body) -> std::optional<MatrixAdminPolicyRuleBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto parsed = MatrixAdminPolicyRuleBody{};
+        if (auto const* action = string_member(*object, "action"); action != nullptr && !action->empty())
+        {
+            parsed.action = *action;
+        }
+        if (auto const* reason = string_member(*object, "reason"); reason != nullptr && !reason->empty())
+        {
+            parsed.reason = *reason;
+        }
+        return parsed;
     }
 
     [[nodiscard]] auto json_value(std::string_view body, std::string_view key) -> std::string
@@ -4353,10 +4384,45 @@ namespace
         return AdminReviewPathParts{*review_target, std::string{suffix.substr(separator + 1U)}};
     }
 
+    [[nodiscard]] auto admin_policy_rule_path_parts(std::string_view target) -> std::optional<AdminPolicyRulePathParts>
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/admin/safety/policy_rules/"};
+        auto const suffix = route_suffix(target, prefix);
+        auto const separator = suffix.find('/');
+        if (suffix.empty() || separator == std::string_view::npos || separator == 0U || separator + 1U >= suffix.size())
+        {
+            return std::nullopt;
+        }
+        return AdminPolicyRulePathParts{std::string{suffix.substr(0U, separator)},
+                                        std::string{suffix.substr(separator + 1U)}};
+    }
+
+    [[nodiscard]] auto is_valid_policy_rule_action(std::string_view action) noexcept -> bool
+    {
+        return action == "allow" || action == "deny" || action == "quarantine" || action == "lock_account" ||
+               action == "suspend_account";
+    }
+
     auto append_policy_audit(ClientServerRuntime& rt, trust_safety::SafetyAuditEvent const& event) -> void
     {
         append_local_audit(rt.homeserver.database, observability::AuditCategory::policy, event.event_type, event.actor,
                            event.entity, event.reason.code);
+    }
+
+    [[nodiscard]] auto policy_rules_json(ClientServerRuntime const& rt) -> std::string
+    {
+        auto rules = canonicaljson::Array{};
+        for (auto const& rule : rt.homeserver.database.persistent_store.policy_rules)
+        {
+            rules.push_back(json_obj({
+                json_member("rule_id", json_str(rule.rule_id)),
+                json_member("scope", json_str(rule.scope)),
+                json_member("entity", json_str(rule.entity)),
+                json_member("action", json_str(rule.action)),
+                json_member("reason", json_str(rule.reason)),
+            }));
+        }
+        return json_serialize(json_obj({json_member("policy_rules", json_arr(std::move(rules)))}));
     }
 
     [[nodiscard]] auto store_key_api_payload(ClientServerRuntime& rt, auth::KeyApiEndpoint endpoint,
@@ -4912,6 +4978,61 @@ namespace
         {
             return resp(200U, safety_reports_json(rt));
         }
+        if (req.method == "GET" && req.target == "/_matrix/client/v3/admin/safety/policy_rules")
+        {
+            return resp(200U, policy_rules_json(rt));
+        }
+        if (req.method == "PUT")
+        {
+            auto const path = admin_policy_rule_path_parts(req.target);
+            auto const body = parse_admin_policy_rule_body(req.body);
+            if (!path.has_value() || !body.has_value())
+            {
+                return err(400U, "M_BAD_JSON", "policy rule body must be Matrix JSON");
+            }
+            if (!is_valid_policy_rule_action(body->action))
+            {
+                return err(400U, "M_BAD_JSON",
+                           "policy rule action must be allow, deny, quarantine, lock_account, or suspend_account");
+            }
+            auto const rule = database::PersistentPolicyRule{
+                path->scope + ':' + path->entity, path->scope, path->entity, body->action, body->reason,
+            };
+            if (!database::store_policy_rule(rt.homeserver.database.persistent_store, rule))
+            {
+                return err(500U, "M_UNKNOWN", "policy rule persistence failed");
+            }
+            if (!database::append_admin_action(
+                    rt.homeserver.database.persistent_store,
+                    {std::string{admin_user}, "trust_safety.policy_rule.upsert", rule.rule_id}))
+            {
+                return err(500U, "M_UNKNOWN", "admin action persistence failed");
+            }
+            append_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
+                               "trust_safety.policy_rule.upsert", admin_user, rule.rule_id, rule.action);
+            return resp(200U, "{}");
+        }
+        if (req.method == "DELETE")
+        {
+            auto const path = admin_policy_rule_path_parts(req.target);
+            if (!path.has_value())
+            {
+                return err(400U, "M_BAD_JSON", "policy rule path must include scope and entity");
+            }
+            auto const rule_id = path->scope + ':' + path->entity;
+            if (!database::delete_policy_rule(rt.homeserver.database.persistent_store, rule_id))
+            {
+                return err(404U, "M_NOT_FOUND", "policy rule not found");
+            }
+            if (!database::append_admin_action(rt.homeserver.database.persistent_store,
+                                               {std::string{admin_user}, "trust_safety.policy_rule.delete", rule_id}))
+            {
+                return err(500U, "M_UNKNOWN", "admin action persistence failed");
+            }
+            append_local_audit(rt.homeserver.database, observability::AuditCategory::policy,
+                               "trust_safety.policy_rule.delete", admin_user, rule_id, "deleted");
+            return resp(200U, "{}");
+        }
 
         auto const path = admin_review_path_parts(req.target);
         auto const body = parse_admin_review_body(req.body);
@@ -4925,6 +5046,14 @@ namespace
         auto const decision = trust_safety::review_policy(record);
         auto const audit = trust_safety::make_safety_audit_event(admin_user, path->target_id, decision);
         append_policy_audit(rt, audit);
+        auto const scope = std::string{trust_safety::policy_surface_name(decision.surface)};
+        if (!database::store_policy_rule(rt.homeserver.database.persistent_store,
+                                         {scope + ':' + path->target_id, scope, path->target_id,
+                                          std::string{trust_safety::policy_action_name(decision.action)},
+                                          body->reason}))
+        {
+            return err(500U, "M_UNKNOWN", "policy rule persistence failed");
+        }
         if (!database::append_admin_action(rt.homeserver.database.persistent_store,
                                            {std::string{admin_user}, audit.event_type, path->target_id}))
         {

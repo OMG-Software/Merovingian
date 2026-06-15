@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/config/config.hpp"
+
 #include "merovingian/config/config_parser.hpp"
 
 #include <limits>
@@ -39,7 +40,7 @@ namespace
 } // namespace
 
 Config::Config(ServerConfig server, ListenersConfig listeners, DatabaseConfig database, SecurityConfig security,
-                 ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules)
+               ClientRateLimitsConfig client_rate_limits, LogModulesConfig log_modules)
     : m_server{std::move(server)}
     , m_listeners{std::move(listeners)}
     , m_database{std::move(database)}
@@ -493,10 +494,9 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         {
             if (origin == "*")
             {
-                findings.push_back(
-                    {"server.cors.allowed_origins",
-                     "wildcard '*' is incompatible with server.cors.allow_credentials=true "
-                     "(CORS spec violation; list explicit origins instead)"});
+                findings.push_back({"server.cors.allowed_origins",
+                                    "wildcard '*' is incompatible with server.cors.allow_credentials=true "
+                                    "(CORS spec violation; list explicit origins instead)"});
                 break;
             }
         }
@@ -649,6 +649,29 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         findings.push_back({"security.media.decode_in_sandbox", "media decoding must happen in a sandbox"});
     }
 
+    if (config.security().trust_safety.enabled && config.security().trust_safety.policy_server_url.empty())
+    {
+        findings.push_back(
+            {"security.trust_safety.policy_server_url", "trust-safety transport requires a policy server URL"});
+    }
+
+    if (!config.security().trust_safety.policy_server_url.empty() &&
+        !starts_with(config.security().trust_safety.policy_server_url, "https://"))
+    {
+        findings.push_back(
+            {"security.trust_safety.policy_server_url", "trust-safety policy server URL must use HTTPS"});
+    }
+
+    if (!config.security().trust_safety.policy_server_timeout.empty())
+    {
+        auto const trust_safety_timeout = parse_duration_seconds(config.security().trust_safety.policy_server_timeout);
+        if (!trust_safety_timeout.valid)
+        {
+            findings.push_back({"security.trust_safety.policy_server_timeout",
+                                "trust-safety policy server timeout must be a positive bounded duration"});
+        }
+    }
+
     if (!config.security().logging.redact_tokens)
     {
         findings.push_back({"security.logging.redact_tokens", "tokens must be redacted from logs"});
@@ -674,8 +697,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         }
         if (policy.max_requests == 0U || policy.window_seconds == 0U)
         {
-            findings.push_back(
-                {"client_rate_limits.per_ip." + target, "rate-limit policy must be N>0 per Ws>0"});
+            findings.push_back({"client_rate_limits.per_ip." + target, "rate-limit policy must be N>0 per Ws>0"});
         }
     }
     for (auto const& [target, policy] : config.client_rate_limits().per_user)
@@ -687,8 +709,7 @@ auto validate(Config const& config) -> std::vector<ConfigValidationFinding>
         }
         if (policy.max_requests == 0U || policy.window_seconds == 0U)
         {
-            findings.push_back(
-                {"client_rate_limits.per_user." + target, "rate-limit policy must be N>0 per Ws>0"});
+            findings.push_back({"client_rate_limits.per_user." + target, "rate-limit policy must be N>0 per Ws>0"});
         }
     }
     if (config.client_rate_limits().default_per_ip.max_requests == 0U ||

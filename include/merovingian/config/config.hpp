@@ -2,15 +2,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/http/rate_limit.hpp"
+#include "merovingian/observability/logger.hpp"
+
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
 #include <vector>
-
-#include "merovingian/http/rate_limit.hpp"
-#include "merovingian/observability/logger.hpp"
 
 namespace merovingian::config
 {
@@ -126,6 +126,14 @@ struct MediaSecurityConfig final
     bool decode_in_sandbox{true};
 };
 
+struct TrustSafetySecurityConfig final
+{
+    bool enabled{false};
+    std::string policy_server_url{};
+    std::string policy_server_timeout{"5s"};
+    bool policy_server_allow_without_result{false};
+};
+
 struct LoggingSecurityConfig final
 {
     bool redact_tokens{true};
@@ -164,6 +172,7 @@ struct SecurityConfig final
     EncryptionSecurityConfig encryption{};
     FederationSecurityConfig federation{};
     MediaSecurityConfig media{};
+    TrustSafetySecurityConfig trust_safety{};
     LoggingSecurityConfig logging{};
 };
 
@@ -233,10 +242,8 @@ struct DurationParseResult final
 [[nodiscard]] auto parse_size_limit(std::string_view value) noexcept -> SizeLimitParseResult;
 [[nodiscard]] auto parse_duration_seconds(std::string_view value) noexcept -> DurationParseResult;
 [[nodiscard]] auto is_private_or_loopback_range(std::string_view range) noexcept -> bool;
-[[nodiscard]] auto parse_rate_limit_policy(std::string_view value) noexcept
-    -> std::optional<http::RateLimitPolicy>;
-[[nodiscard]] auto parse_log_level(std::string_view value) noexcept
-    -> std::optional<observability::LogLevel>;
+[[nodiscard]] auto parse_rate_limit_policy(std::string_view value) noexcept -> std::optional<http::RateLimitPolicy>;
+[[nodiscard]] auto parse_log_level(std::string_view value) noexcept -> std::optional<observability::LogLevel>;
 [[nodiscard]] auto log_level_name(observability::LogLevel level) noexcept -> std::string_view;
 [[nodiscard]] auto validate(Config const& config) -> std::vector<ConfigValidationFinding>;
 [[nodiscard]] auto is_valid(Config const& config) -> bool;

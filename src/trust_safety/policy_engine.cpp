@@ -114,6 +114,18 @@ namespace
         return has_exactly_two_path_segments(target.substr(prefix.size()));
     }
 
+    [[nodiscard]] auto matches_admin_policy_rule_route(std::string_view target) noexcept -> bool
+    {
+        auto constexpr prefix = std::string_view{"/_matrix/client/v3/admin/safety/policy_rules/"};
+
+        if (!starts_with(target, prefix))
+        {
+            return false;
+        }
+
+        return has_exactly_two_path_segments(target.substr(prefix.size()));
+    }
+
 } // namespace
 
 auto policy_surface_name(PolicySurface surface) noexcept -> char const*
@@ -196,10 +208,18 @@ auto policy_server_hook_allows(PolicyServerHook const& hook) -> PolicyDecision
         return deny(PolicySurface::account, enforcement_reason("policy_server_unreachable", "policy check unavailable",
                                                                "policy server was unreachable"));
     }
-    if (hook.rule_id.empty() && !hook.allow_without_result)
+    if (!hook.decision_received && !hook.allow_without_result)
     {
         return deny(PolicySurface::account, enforcement_reason("policy_server_no_result", "policy check unavailable",
-                                                               "policy server returned no rule id"));
+                                                               "policy server returned no decision"));
+    }
+    if (hook.decision_received && hook.action != PolicyAction::allow)
+    {
+        auto decision = deny(PolicySurface::account,
+                             reason_or_default(hook.reason, "policy_server_denied", "policy blocked by policy server"),
+                             hook.action);
+        decision.policy_server_rule_id = hook.rule_id;
+        return decision;
     }
 
     auto decision = allow(PolicySurface::account);
@@ -233,11 +253,13 @@ auto evaluate_invite_policy(InvitePolicyRequest const& request) -> PolicyDecisio
         return decision;
     }();
     log_diagnostic(result.allowed ? "policy.invite.allowed" : "policy.invite.denied",
-                   {{"sender",  request.sender_user_id,                                false},
-                    {"target",  request.target_user_id,                                false},
-                    {"room_id", request.room_id,                                       false},
-                    {"action",  std::string{policy_action_name(result.action)},         false},
-                    {"reason",  result.reason.code,                                    false}});
+                   {
+                       {"sender",  request.sender_user_id,                         false},
+                       {"target",  request.target_user_id,                         false},
+                       {"room_id", request.room_id,                                false},
+                       {"action",  std::string{policy_action_name(result.action)}, false},
+                       {"reason",  result.reason.code,                             false}
+    });
     return result;
 }
 
@@ -273,10 +295,12 @@ auto evaluate_registration_policy(RegistrationPolicyRequest const& request) -> P
         return decision;
     }();
     log_diagnostic(result.allowed ? "policy.registration.allowed" : "policy.registration.denied",
-                   {{"user_id",  request.requested_user_id,                            false},
-                    {"address",  request.requester_address,                             false},
-                    {"action",   std::string{policy_action_name(result.action)},         false},
-                    {"reason",   result.reason.code,                                    false}});
+                   {
+                       {"user_id", request.requested_user_id,                      false},
+                       {"address", request.requester_address,                      false},
+                       {"action",  std::string{policy_action_name(result.action)}, false},
+                       {"reason",  result.reason.code,                             false}
+    });
     return result;
 }
 
@@ -304,9 +328,11 @@ auto evaluate_account_policy(AccountPolicyRequest const& request) -> PolicyDecis
         return allow(PolicySurface::account);
     }();
     log_diagnostic(result.allowed ? "policy.account.allowed" : "policy.account.denied",
-                   {{"user_id", request.user_id,                                       false},
-                    {"action",  std::string{policy_action_name(result.action)},          false},
-                    {"reason",  result.reason.code,                                     false}});
+                   {
+                       {"user_id", request.user_id,                                false},
+                       {"action",  std::string{policy_action_name(result.action)}, false},
+                       {"reason",  result.reason.code,                             false}
+    });
     return result;
 }
 
@@ -342,9 +368,11 @@ auto evaluate_federation_policy(FederationPolicyRequest const& request) -> Polic
         return decision;
     }();
     log_diagnostic(result.allowed ? "policy.federation.allowed" : "policy.federation.denied",
-                   {{"origin", request.origin_server,                                  false},
-                    {"action", std::string{policy_action_name(result.action)},           false},
-                    {"reason", result.reason.code,                                      false}});
+                   {
+                       {"origin", request.origin_server,                          false},
+                       {"action", std::string{policy_action_name(result.action)}, false},
+                       {"reason", result.reason.code,                             false}
+    });
     return result;
 }
 
@@ -378,9 +406,11 @@ auto evaluate_media_policy(MediaPolicyRequest const& request) -> PolicyDecision
         return decision;
     }();
     log_diagnostic(result.allowed ? "policy.media.allowed" : "policy.media.denied",
-                   {{"media_id", request.media_id,                                     false},
-                    {"action",   std::string{policy_action_name(result.action)},         false},
-                    {"reason",   result.reason.code,                                    false}});
+                   {
+                       {"media_id", request.media_id,                               false},
+                       {"action",   std::string{policy_action_name(result.action)}, false},
+                       {"reason",   result.reason.code,                             false}
+    });
     return result;
 }
 
@@ -389,15 +419,13 @@ auto evaluate_room_policy(RoomPolicyRequest const& request) -> PolicyDecision
     auto result = [&]() -> PolicyDecision {
         if (request.room_id.empty())
         {
-            return deny(PolicySurface::room,
-                        enforcement_reason("invalid_room_policy_input", "room cannot be processed",
-                                           "room policy input is incomplete"));
+            return deny(PolicySurface::room, enforcement_reason("invalid_room_policy_input", "room cannot be processed",
+                                                                "room policy input is incomplete"));
         }
         if (request.held_for_review)
         {
-            return review(PolicySurface::room,
-                          enforcement_reason("room_held_for_review", "room held for review",
-                                             "room is held for review"));
+            return review(PolicySurface::room, enforcement_reason("room_held_for_review", "room held for review",
+                                                                  "room is held for review"));
         }
         if (request.blocked_by_local_policy)
         {
@@ -415,9 +443,11 @@ auto evaluate_room_policy(RoomPolicyRequest const& request) -> PolicyDecision
         return decision;
     }();
     log_diagnostic(result.allowed ? "policy.room.allowed" : "policy.room.denied",
-                   {{"room_id", request.room_id,                                       false},
-                    {"action",  std::string{policy_action_name(result.action)},          false},
-                    {"reason",  result.reason.code,                                     false}});
+                   {
+                       {"room_id", request.room_id,                                false},
+                       {"action",  std::string{policy_action_name(result.action)}, false},
+                       {"reason",  result.reason.code,                             false}
+    });
     return result;
 }
 
@@ -464,6 +494,9 @@ auto reporting_api_routes() -> std::vector<ReportingApiRoute>
         route("POST", "/_matrix/client/v3/rooms/{roomId}/report/{eventId}", false),
         route("GET", "/_matrix/client/v3/admin/safety/reports", true),
         route("POST", "/_matrix/client/v3/admin/safety/review/{targetType}/{targetId}", true),
+        route("GET", "/_matrix/client/v3/admin/safety/policy_rules", true),
+        route("PUT", "/_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}", true),
+        route("DELETE", "/_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}", true),
     };
 }
 
@@ -486,6 +519,11 @@ auto match_reporting_api_route(std::string_view method, std::string_view target)
         }
         if (candidate.path_template == "/_matrix/client/v3/admin/safety/review/{targetType}/{targetId}" &&
             matches_admin_review_route(target))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.path_template == "/_matrix/client/v3/admin/safety/policy_rules/{scope}/{entity}" &&
+            matches_admin_policy_rule_route(target))
         {
             return {true, candidate, {}};
         }

@@ -375,6 +375,28 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        else if (key == "security.trust_safety.enabled")
+        {
+            if (!parse_bool_value(value, security.trust_safety.enabled))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
+        else if (key == "security.trust_safety.policy_server_url")
+        {
+            security.trust_safety.policy_server_url = std::string{value};
+        }
+        else if (key == "security.trust_safety.policy_server_timeout")
+        {
+            security.trust_safety.policy_server_timeout = std::string{value};
+        }
+        else if (key == "security.trust_safety.policy_server_allow_without_result")
+        {
+            if (!parse_bool_value(value, security.trust_safety.policy_server_allow_without_result))
+            {
+                add_parse_finding(findings, std::string{key}, "expected boolean value");
+            }
+        }
         else if (key == "security.logging.redact_tokens")
         {
             if (!parse_bool_value(value, security.logging.redact_tokens))
