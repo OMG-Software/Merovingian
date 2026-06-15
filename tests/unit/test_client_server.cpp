@@ -1545,10 +1545,10 @@ SCENARIO("Client-server leave and read_markers routes", "[homeserver][client-ser
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/rooms/!nonexistent:example.org/leave", token, "{}"});
 
-            THEN("the response is 404 M_NOT_FOUND")
+            THEN("the response is 200 with an empty object")
             {
-                REQUIRE(response.response.status == 404U);
-                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
             }
         }
 
@@ -1573,10 +1573,35 @@ SCENARIO("Client-server leave and read_markers routes", "[homeserver][client-ser
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/leave", bob_token, "{}"});
 
-            THEN("the response is 403 M_FORBIDDEN")
+            THEN("the response is 200 with an empty object")
             {
-                REQUIRE(response.response.status == 403U);
-                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
+            }
+        }
+
+        WHEN("the client retries leave after the persisted membership row has gone stale")
+        {
+            auto const first_leave = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/leave", token, "{}"});
+            REQUIRE(first_leave.response.status == 200U);
+            REQUIRE(merovingian::database::delete_membership(runtime.homeserver.database.persistent_store, id,
+                                                             "@alice:example.org"));
+
+            auto const retry = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/rooms/" + id + "/leave", token, "{}"});
+
+            THEN("the response is 200 and leave membership is re-materialized from room state")
+            {
+                REQUIRE(retry.response.status == 200U);
+                REQUIRE(retry.response.body == "{}");
+
+                auto const membership = std::ranges::find_if(
+                    runtime.homeserver.database.persistent_store.memberships, [&](auto const& row) {
+                        return row.room_id == id && row.user_id == "@alice:example.org";
+                    });
+                REQUIRE(membership != runtime.homeserver.database.persistent_store.memberships.end());
+                REQUIRE(membership->membership == "leave");
             }
         }
     }
@@ -1776,8 +1801,7 @@ SCENARIO("Client-server admin safety routes manage persisted policy rules", "[ho
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/media/v3/upload", token,
-                      "text/plain|text/plain|clean|hello"});
+            runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|hello"});
         REQUIRE(upload.response.status == 200U);
         auto const content_uri = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
         REQUIRE(!content_uri.empty());

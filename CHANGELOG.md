@@ -1,3 +1,8 @@
+## 0.8.12
+
+- **fix(client-server): make `POST /_matrix/client/v3/rooms/{roomId}/leave` idempotent for stale room state:** authenticated clients now receive `200 {}` even when the homeserver has already lost the active membership row, already considers the user left, or no longer has a live room record to act on. When room state still carries the caller's `m.room.member` event, Merovingian re-materializes the matching membership row before returning so a subsequent `/forget` can still observe the terminal leave state.
+- **test(client-server): pin stale leave retry behavior:** the room-membership unit coverage now exercises leaving an unknown room, leaving as a non-member, and retrying leave after the persisted membership row has been deleted while the leave state event remains.
+
 ## 0.8.11
 
 - **fix(ci): remove an unused runtime helper that failed `-Werror` builds:** `src/homeserver/runtime.cpp` no longer defines the unused local `starts_with` helper added during the trust-safety work, which was tripping `-Wunused-function` in the Linux and sanitizer builds and cascading into multiple failing PR workflows.

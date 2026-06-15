@@ -229,6 +229,8 @@
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/leave` | `leaveRoom` | access token | required application/json | 200, 429 |
 | `POST` | `/_matrix/client/v3/rooms/{roomId}/unban` | `unban` | access token | required application/json | 200, 403 |
 
+`leaveRoom` is implemented as an idempotent client operation: when the caller is already effectively out of the room, Merovingian still returns `200 {}` instead of surfacing stale local membership state back to the client.
+
 ## Room participation
 
 | Method | Path | Operation ID | Auth | Request body | Responses |
