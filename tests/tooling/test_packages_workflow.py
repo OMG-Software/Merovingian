@@ -29,6 +29,8 @@ class PackagesWorkflowTests(unittest.TestCase):
             "scripts/build-openbsd-pkg.sh",
             "scripts/build-netbsd-pkg.sh",
             "scripts/build-rpm.sh",
+            "scripts/build-rhel-rpm.sh",
+            "scripts/build-opensuse-rpm.sh",
             "scripts/build-static-linux.sh",
             "src/db_migrate.cpp",
             "src/main.cpp",
@@ -59,7 +61,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("sh scripts/build-static-linux.sh", workflow)
         self.assertIn("name: static-linux-fallback-package", workflow)
         self.assertIn(
-            "needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg]",
+            "needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, debian-pkg, rhel-rpm, opensuse-rpm]",
             workflow,
         )
         self.assertIn("merovingian-*-linux-static-x86_64.tar.gz", workflow)
@@ -88,6 +90,8 @@ class PackagesWorkflowTests(unittest.TestCase):
         expected_versions = {
             "scripts/build-deb.sh": f'VERSION="{version}"',
             "scripts/build-rpm.sh": f'VERSION="{version}"',
+            "scripts/build-rhel-rpm.sh": f'VERSION="{version}"',
+            "scripts/build-opensuse-rpm.sh": f'VERSION="{version}"',
             "scripts/build-freebsd-pkg.sh": f'VERSION="{version}"',
             "scripts/build-openbsd-pkg.sh": f'VERSION="{version}"',
             "scripts/build-netbsd-pkg.sh": f'VERSION="{version}"',
@@ -111,12 +115,36 @@ class PackagesWorkflowTests(unittest.TestCase):
             "src/db_migrate.cpp": f'constexpr auto version = std::string_view{{"{version}"}};',
             "packaging/freebsd/+MANIFEST": f'version: "{version}"',
             "packaging/rpm/merovingian.spec": f"Version:        {version}",
+            "packaging/rhel/merovingian.spec": f"Version:        {version}",
+            "packaging/opensuse/merovingian.spec": f"Version:        {version}",
             "packaging/netbsd/Makefile": f"merovingian-{version}",
         }
         for path, expected in expected_versions.items():
             with self.subTest(path=path):
                 content = (REPO_ROOT / path).read_text(encoding="utf-8")
                 self.assertIn(expected, content)
+
+    def test_linux_distro_package_jobs_exist(self) -> None:
+        # GIVEN the package publication workflow.
+        self.assertTrue(PACKAGES_WORKFLOW.is_file(), "packages workflow is missing")
+        workflow = PACKAGES_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN Debian, RHEL-compatible, and OpenSUSE ship installable packages.
+        # THEN each has a dedicated packaging job with SLSA attestation, and the
+        # new artifacts are included in the rolling-latest publish step.
+        for job in ("debian-pkg:", "rhel-rpm:", "opensuse-rpm:"):
+            self.assertIn(job, workflow)
+        self.assertIn("sh scripts/build-deb.sh", workflow)
+        self.assertIn("sh scripts/build-rhel-rpm.sh", workflow)
+        self.assertIn("sh scripts/build-opensuse-rpm.sh", workflow)
+        self.assertIn("name: debian-package", workflow)
+        self.assertIn("name: rhel-rpm-package", workflow)
+        self.assertIn("name: opensuse-rpm-package", workflow)
+        # THEN OpenSUSE-specific package names appear in the install step.
+        self.assertIn("libopenssl-devel", workflow)
+        self.assertIn("libjpeg62-turbo-devel", workflow)
+        # THEN EPEL is bootstrapped before the RHEL job installs its packages.
+        self.assertIn("epel-release", workflow)
 
     def test_all_bsd_platforms_have_package_build_jobs(self) -> None:
         # GIVEN the package publication workflow.

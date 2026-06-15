@@ -153,6 +153,194 @@ jobs:
       - name: Check release readiness metadata
         run: sh scripts/check-release-readiness.sh
 
+  # ── Debian (trixie) ────────────────────────────────────────────────────────
+  # Minimum Debian version per platform-support.md: Debian 13 (trixie),
+  # which provides glibc ≥ 2.39 and a C++26-capable clang 18+ toolchain.
+  debian-build-and-test:
+    runs-on: ubuntu-latest
+    container:
+      image: debian:trixie
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - name: Install dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            bison \
+            ca-certificates \
+            ccache \
+            clang \
+            flex \
+            gcc \
+            git \
+            libcurl4-openssl-dev \
+            libpng-dev \
+            libpq-dev \
+            libsodium-dev \
+            libssl-dev \
+            libturbojpeg0-dev \
+            m4 \
+            meson \
+            ninja-build \
+            perl \
+            pkg-config \
+            python3
+
+      - uses: actions/checkout@v4
+
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-debian-ci-${{ github.run_id }}
+          restore-keys: ccache-debian-ci-
+
+      - name: Build and test
+        run: sh scripts/build-linux.sh --builddir build-debian
+
+      - name: Conformance gate
+        run: sh scripts/check-conformance-gate.sh build-debian
+
+      - name: Packaging sanity gate
+        run: meson test -C build-debian packages-workflow-tooling --print-errorlogs
+
+      - name: Validate Phase 1 configuration gates
+        run: bash scripts/validate-phase1-config.sh build-debian
+
+      - name: Reject unsafe allocation patterns
+        run: bash scripts/reject-unsafe.sh
+
+      - name: Check release readiness metadata
+        run: sh scripts/check-release-readiness.sh
+
+  # ── RHEL-compatible / AlmaLinux 10 ─────────────────────────────────────────
+  # Minimum RHEL version per platform-support.md: RHEL 10 (glibc ≥ 2.39,
+  # clang 18 in AppStream). AlmaLinux 10 is the community rebuild used in CI;
+  # EPEL 10 provides libsodium and turbojpeg.
+  rhel-build-and-test:
+    runs-on: ubuntu-latest
+    container:
+      image: almalinux:10
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - name: Install EPEL and build dependencies
+        run: |
+          dnf install -y epel-release
+          dnf install -y \
+            bison \
+            ccache \
+            clang \
+            clang-tools-extra \
+            flex \
+            gcc-c++ \
+            git \
+            m4 \
+            meson \
+            ninja-build \
+            libcurl-devel \
+            libpng-devel \
+            libpq-devel \
+            libsodium-devel \
+            openssl-devel \
+            perl \
+            turbojpeg-devel \
+            pkgconf-pkg-config \
+            python3
+
+      - uses: actions/checkout@v4
+
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-rhel-ci-${{ github.run_id }}
+          restore-keys: ccache-rhel-ci-
+
+      - name: Build and test
+        run: sh scripts/build-linux.sh --builddir build-rhel
+
+      - name: Conformance gate
+        run: sh scripts/check-conformance-gate.sh build-rhel
+
+      - name: Packaging sanity gate
+        run: meson test -C build-rhel packages-workflow-tooling --print-errorlogs
+
+      - name: Validate Phase 1 configuration gates
+        run: bash scripts/validate-phase1-config.sh build-rhel
+
+      - name: Reject unsafe allocation patterns
+        run: bash scripts/reject-unsafe.sh
+
+      - name: Check release readiness metadata
+        run: sh scripts/check-release-readiness.sh
+
+  # ── OpenSUSE Tumbleweed ─────────────────────────────────────────────────────
+  # OpenSUSE Leap 15.x ships glibc 2.31, which predates the C++26 requirement.
+  # Tumbleweed (rolling release) carries a current glibc and clang 18+, making
+  # it the supported OpenSUSE target per platform-support.md.
+  opensuse-build-and-test:
+    runs-on: ubuntu-latest
+    container:
+      image: opensuse/tumbleweed
+    env:
+      CC: clang
+      CXX: clang++
+
+    steps:
+      - name: Install build dependencies
+        run: |
+          zypper --non-interactive refresh
+          zypper --non-interactive install -y \
+            bison \
+            ccache \
+            clang \
+            flex \
+            gcc-c++ \
+            git \
+            m4 \
+            meson \
+            ninja \
+            pkg-config \
+            libopenssl-devel \
+            libsodium-devel \
+            postgresql-devel \
+            libpng16-devel \
+            libjpeg62-turbo-devel \
+            libcurl-devel \
+            sqlite3-devel \
+            perl \
+            python3
+
+      - uses: actions/checkout@v4
+
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-opensuse-ci-${{ github.run_id }}
+          restore-keys: ccache-opensuse-ci-
+
+      - name: Build and test
+        run: sh scripts/build-linux.sh --builddir build-opensuse
+
+      - name: Conformance gate
+        run: sh scripts/check-conformance-gate.sh build-opensuse
+
+      - name: Packaging sanity gate
+        run: meson test -C build-opensuse packages-workflow-tooling --print-errorlogs
+
+      - name: Validate Phase 1 configuration gates
+        run: bash scripts/validate-phase1-config.sh build-opensuse
+
+      - name: Reject unsafe allocation patterns
+        run: bash scripts/reject-unsafe.sh
+
+      - name: Check release readiness metadata
+        run: sh scripts/check-release-readiness.sh
+
   # ── FreeBSD ────────────────────────────────────────────────────────────────
   freebsd-build-and-test:
     runs-on: ubuntu-latest

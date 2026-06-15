@@ -46,8 +46,11 @@ The escape hatch for old or minimal Linux is the **static musl tarball**
 
 | Platform | Minimum version | glibc (Linux) | Toolchain source | CI image |
 |---|---|---|---|---|
-| Ubuntu / Debian | Ubuntu 24.04 LTS · Debian 13 (trixie) | ≥ 2.39 / 2.39 | distro clang 18+ | `ubuntu-latest` (24.04) |
-| Fedora / RHEL family | Fedora 40+ (RHEL 10) | ≥ 2.39 / 2.39 | dnf clang 18+ | `fedora:latest` |
+| Ubuntu | Ubuntu 24.04 LTS | ≥ 2.39 | distro clang 18+ | `ubuntu-latest` (24.04) |
+| Debian | Debian 13 (trixie) | ≥ 2.39 | distro clang 18+ | `debian:trixie` |
+| Fedora | Fedora 40+ | ≥ 2.39 | dnf clang 18+ | `fedora:latest` |
+| RHEL-compatible | RHEL 10 / AlmaLinux 10 | ≥ 2.39 | dnf clang 18+ (AppStream) | `almalinux:10` |
+| OpenSUSE | Tumbleweed (rolling) | current | zypper clang 18+ | `opensuse/tumbleweed` |
 | FreeBSD | 14.1+ (base clang ≥ 18) | n/a (no glibc) | base clang | `vmactions/freebsd-vm@v1` (14.x) |
 | OpenBSD | 7.6+ with the `llvm` package (clang ≥ 18) | n/a | `llvm` package, not base | `vmactions/openbsd-vm@v1` (7.x) |
 | NetBSD | 10+ with pkgsrc `clang` (≥ 18) | n/a | pkgsrc clang | `vmactions/netbsd-vm@v1` (10.x) |
@@ -68,14 +71,14 @@ security updates and the OS packages declare them as runtime dependencies that
 the package manager installs automatically. SQLite, yyjson, and Catch2 are the
 only direct dependencies built from vendored subprojects when absent.
 
-| Library | Debian/Ubuntu (`apt`) | Fedora/RHEL (`dnf`) | FreeBSD (`pkg`) | OpenBSD (`pkg_add`) | NetBSD (`pkgin`) |
-|---|---|---|---|---|---|
-| libsodium | `libsodium-dev` | `libsodium-devel` | `libsodium` | `libsodium` | `libsodium` |
-| OpenSSL | `libssl-dev` | `openssl-devel` | `openssl` | `openssl` (LibreSSL base) | `openssl` |
-| PostgreSQL libpq | `libpq-dev` | `libpq-devel` | `postgresql17-client` | `postgresql-client` | `postgresql17-client` |
-| libcurl | `libcurl4-openssl-dev` | `libcurl-devel` | `curl` | `curl` | `curl` |
-| libpng | `libpng-dev` | `libpng-devel` | `png` | `png` | `png` |
-| libjpeg-turbo | `libturbojpeg0-dev` | `turbojpeg-devel` | `libjpeg-turbo` | `jpeg-turbo` | `libjpeg-turbo` |
+| Library | Debian/Ubuntu (`apt`) | Fedora/RHEL (`dnf`) | OpenSUSE (`zypper`) | FreeBSD (`pkg`) | OpenBSD (`pkg_add`) | NetBSD (`pkgin`) |
+|---|---|---|---|---|---|---|
+| libsodium | `libsodium-dev` | `libsodium-devel` | `libsodium-devel` | `libsodium` | `libsodium` | `libsodium` |
+| OpenSSL | `libssl-dev` | `openssl-devel` | `libopenssl-devel` | `openssl` | `openssl` (LibreSSL base) | `openssl` |
+| PostgreSQL libpq | `libpq-dev` | `libpq-devel` | `postgresql-devel` | `postgresql17-client` | `postgresql-client` | `postgresql17-client` |
+| libcurl | `libcurl4-openssl-dev` | `libcurl-devel` | `libcurl-devel` | `curl` | `curl` | `curl` |
+| libpng | `libpng-dev` | `libpng-devel` | `libpng16-devel` | `png` | `png` | `png` |
+| libjpeg-turbo | `libturbojpeg0-dev` | `turbojpeg-devel` | `libjpeg62-turbo-devel` | `libjpeg-turbo` | `jpeg-turbo` | `libjpeg-turbo` |
 
 Runtime package dependencies are declared in the OS packaging metadata
 (`packaging/deb/control` `Depends`, the rpm spec, `packaging/freebsd/+MANIFEST`
@@ -95,11 +98,14 @@ just cross-compiled. A regression on a Tier 1 platform blocks merge.
 
 | Platform | CI job | Toolchain | Notes |
 |---|---|---|---|
-| Linux (glibc, Ubuntu) | `linux-build-and-test` | clang | Reference platform |
+| Linux (glibc, Ubuntu) | `ubuntu-build-and-test` | clang | Reference platform |
+| Linux (Debian trixie) | `debian-build-and-test` | clang, container | apt-supplied libraries; `debian:trixie` |
 | Linux (Red Hat family, Fedora) | `fedora-build-and-test` | clang, container | dnf-supplied libraries |
-| FreeBSD | `freebsd` | clang (base) | `vmactions/freebsd-vm` |
-| OpenBSD | `openbsd` | clang (`llvm` package) | `vmactions/openbsd-vm` |
-| NetBSD | `netbsd` | clang (pkgsrc) | `vmactions/netbsd-vm` |
+| Linux (RHEL-compatible, AlmaLinux 10) | `rhel-build-and-test` | clang, container | dnf+EPEL 10-supplied libraries; `almalinux:10` |
+| Linux (OpenSUSE Tumbleweed) | `opensuse-build-and-test` | clang, container | zypper-supplied libraries; `opensuse/tumbleweed` |
+| FreeBSD | `freebsd-build-and-test` | clang (base) | `vmactions/freebsd-vm` |
+| OpenBSD | `openbsd-build-and-test` | clang (`llvm` package) | `vmactions/openbsd-vm` |
+| NetBSD | `netbsd-build-and-test` | clang (pkgsrc) | `vmactions/netbsd-vm` |
 
 All Tier 1 jobs build through the shared wrappers (`scripts/build-linux.sh`,
 `scripts/build-bsd.sh`) with `--wrap-mode=forcefallback`, so the core
@@ -113,12 +119,15 @@ runtime behaviour is covered transitively by the matching Tier 1 platform.
 
 | Artifact | Workflow | Runtime coverage via |
 |---|---|---|
-| Debian/Ubuntu `.deb` | `packages.yml` | Tier 1 Linux |
-| Fedora/RHEL `.rpm` | `packages.yml` | Tier 1 Fedora |
-| FreeBSD `.pkg` | `packages.yml` | Tier 1 FreeBSD |
-| OpenBSD `.tgz` (standalone `pkg_create`) | `packages.yml` | Tier 1 OpenBSD |
-| NetBSD `.tgz` (standalone `pkg_create`) | `packages.yml` | Tier 1 NetBSD |
-| Portable static Linux tarball (musl) | `packages.yml` | Tier 1 Linux (the sandboxed thumbnail worker is omitted when static image codecs are unavailable; thumbnails then fall back to original bytes) |
+| Ubuntu `.deb` (`ubuntu:latest`) | `packages.yml` (`deb`) | Tier 1 Ubuntu |
+| Debian trixie `.deb` | `packages.yml` (`debian-pkg`) | Tier 1 Debian |
+| Fedora `.rpm` | `packages.yml` (`rpm`) | Tier 1 Fedora |
+| RHEL-compatible `.rpm` (AlmaLinux 10) | `packages.yml` (`rhel-rpm`) | Tier 1 RHEL-compatible |
+| OpenSUSE Tumbleweed `.rpm` | `packages.yml` (`opensuse-rpm`) | Tier 1 OpenSUSE |
+| FreeBSD `.pkg` | `packages.yml` (`freebsd-pkg`) | Tier 1 FreeBSD |
+| OpenBSD `.tgz` (standalone `pkg_create`) | `packages.yml` (`openbsd-pkg`) | Tier 1 OpenBSD |
+| NetBSD `.tgz` (standalone `pkg_create`) | `packages.yml` (`netbsd-pkg`) | Tier 1 NetBSD |
+| Portable static Linux tarball (musl) | `packages.yml` (`static-linux-fallback`) | Tier 1 Linux (the sandboxed thumbnail worker is omitted when static image codecs are unavailable; thumbnails then fall back to original bytes) |
 
 The OpenBSD and NetBSD package jobs build with standalone `pkg_create(1)` (no
 ports/pkgsrc tree), generating a framework-free packing list from the staged

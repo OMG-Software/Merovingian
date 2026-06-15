@@ -1,0 +1,94 @@
+Name:           merovingian
+Version:        0.8.12
+Release:        1%{?dist}
+Summary:        Secure Matrix Protocol homeserver
+
+License:        GPL-3.0-or-later
+URL:            https://github.com/OMG-Software/Merovingian
+Source0:        %{name}-%{version}.tar.gz
+
+BuildRequires:  clang
+BuildRequires:  meson
+BuildRequires:  ninja-build
+BuildRequires:  pkgconf-pkg-config
+BuildRequires:  git
+BuildRequires:  openssl-devel
+BuildRequires:  libsodium-devel
+BuildRequires:  libpq-devel
+BuildRequires:  libpng-devel
+BuildRequires:  turbojpeg-devel
+BuildRequires:  libcurl-devel
+BuildRequires:  perl
+BuildRequires:  bison
+BuildRequires:  flex
+BuildRequires:  m4
+BuildRequires:  systemd-rpm-macros
+
+%description
+Merovingian is an alpha Matrix Protocol homeserver focused on secure
+implementation, runtime hardening, and auditable dependency boundaries.
+
+%prep
+%autosetup
+
+%build
+%meson \
+    --wrap-mode=forcefallback \
+    -Dhardening=true \
+    -Dbuild_tests=false \
+    -Dbuild_fuzz=false \
+    -Dcpp_link_args='-pie' \
+    -Dc_link_args='-pie'
+%meson_build
+
+%install
+%meson_install --skip-subprojects
+install -D -m 0644 packaging/systemd/merovingian.service \
+    %{buildroot}%{_unitdir}/merovingian.service
+install -d -m 0755 %{buildroot}%{_sysconfdir}/merovingian
+install -m 0644 config/merovingian.conf.example \
+    %{buildroot}%{_sysconfdir}/merovingian/merovingian.conf.example
+
+%pre
+if ! getent group merovingian >/dev/null 2>&1; then
+    groupadd -r merovingian
+fi
+if ! getent passwd merovingian >/dev/null 2>&1; then
+    useradd -r -g merovingian -d /var/lib/merovingian \
+            -s /sbin/nologin \
+            -c "Merovingian homeserver" \
+            merovingian
+fi
+
+%post
+%systemd_post merovingian.service
+install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
+install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
+TOKEN_FILE=%{_sysconfdir}/merovingian/registration-token
+if [ ! -f "${TOKEN_FILE}" ]; then
+    openssl rand -base64 48 > "${TOKEN_FILE}"
+    chmod 0640 "${TOKEN_FILE}"
+    chown root:merovingian "${TOKEN_FILE}"
+fi
+
+%preun
+%systemd_preun merovingian.service
+
+%postun
+%systemd_postun_with_restart merovingian.service
+
+%files
+%license LICENSE
+%doc README.md docs/configuration.md docs/release-process.md
+%{_bindir}/merovingian-server
+%{_bindir}/merovingian-db-migrate
+%dir %{_libexecdir}/merovingian
+%{_libexecdir}/merovingian/merovingian-thumbnail-worker
+%{_unitdir}/merovingian.service
+%dir %{_sysconfdir}/merovingian
+%{_sysconfdir}/merovingian/merovingian.conf.example
+
+%changelog
+* Sun Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.12-1
+- Initial RHEL-compatible (AlmaLinux 10) package
+- ci: add Debian trixie, RHEL-compatible, and OpenSUSE Tumbleweed CI and packaging jobs
