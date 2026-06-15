@@ -115,10 +115,18 @@ namespace
 [[nodiscard]] auto first_device_id_for(merovingian::homeserver::ClientServerRuntime const& rt,
                                        std::string_view user) -> std::string
 {
-    auto const result = std::ranges::find_last_if(
-        rt.devices, [user](merovingian::homeserver::ClientDevice const& d) { return d.user_id == user; });
-    REQUIRE(!result.empty());
-    return result.begin()->device_id;
+    // Track the last matching device with a portable loop: std::ranges::find_last_if
+    // is C++23 and is not yet provided by every Tier 1 platform's standard library.
+    merovingian::homeserver::ClientDevice const* match = nullptr;
+    for (auto const& device : rt.devices)
+    {
+        if (device.user_id == user)
+        {
+            match = &device;
+        }
+    }
+    REQUIRE(match != nullptr);
+    return match->device_id;
 }
 
 [[nodiscard]] auto parse_body(std::string const& body) -> merovingian::canonicaljson::Value

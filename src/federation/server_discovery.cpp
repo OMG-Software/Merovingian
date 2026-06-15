@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -296,10 +297,24 @@ namespace
         addrinfo* results_{nullptr};
     };
 
+    // DNS wire constants (RFC 1035). Used in place of the BIND ns_* enums so the
+    // resolver path builds on platforms without the ns_* parser API (OpenBSD).
+    constexpr int dns_class_in = 1;     // ns_c_in
+    constexpr int dns_type_srv = 33;    // ns_t_srv
+    constexpr std::size_t max_dns_name = 1025U; // NS_MAXDNAME
+    constexpr std::size_t dns_header_length = 12U;
+    constexpr std::size_t dns_rr_fixed_length = 10U; // type+class+ttl+rdlength
+    constexpr std::size_t srv_rdata_fixed_length = 6U; // priority+weight+port
+
+    [[nodiscard]] auto read_u16(unsigned char const* p) noexcept -> std::uint16_t
+    {
+        return static_cast<std::uint16_t>((static_cast<unsigned>(p[0]) << 8) | static_cast<unsigned>(p[1]));
+    }
+
     [[nodiscard]] auto decode_dns_name(unsigned char const* message, int message_length, unsigned char const* cursor,
                                        std::string& output) noexcept -> int
     {
-        auto expanded = std::array<char, NS_MAXDNAME>{};
+        auto expanded = std::array<char, max_dns_name>{};
         auto const length =
             ::dn_expand(message, message + message_length, cursor, expanded.data(), static_cast<int>(expanded.size()));
         if (length < 0)
@@ -354,46 +369,12 @@ namespace
             auto answer = std::array<unsigned char, 4096U>{};
             auto const service = std::string{service_name};
             auto const length =
-                ::res_query(service.c_str(), ns_c_in, ns_t_srv, answer.data(), static_cast<int>(answer.size()));
+                ::res_query(service.c_str(), dns_class_in, dns_type_srv, answer.data(), static_cast<int>(answer.size()));
             if (length <= 0)
             {
                 return {};
             }
-
-            auto handle = ns_msg{};
-            if (::ns_initparse(answer.data(), length, &handle) != 0)
-            {
-                return {};
-            }
-
-            auto records = std::vector<SrvRecord>{};
-            auto const count = ns_msg_count(handle, ns_s_an);
-            for (auto index = int{0}; index < count; ++index)
-            {
-                auto record = ns_rr{};
-                if (::ns_parserr(&handle, ns_s_an, index, &record) != 0 || ns_rr_type(record) != ns_t_srv)
-                {
-                    continue;
-                }
-                auto const* data = ns_rr_rdata(record);
-                auto const data_length = ns_rr_rdlen(record);
-                if (data_length < 7)
-                {
-                    continue;
-                }
-                auto target = std::string{};
-                if (decode_dns_name(answer.data(), length, data + 6U, target) < 0 || target.empty())
-                {
-                    continue;
-                }
-                records.push_back(SrvRecord{
-                    target,
-                    static_cast<std::uint16_t>(ns_get16(data + 4U)),
-                    static_cast<std::uint16_t>(ns_get16(data)),
-                    static_cast<std::uint16_t>(ns_get16(data + 2U)),
-                });
-            }
-            return sort_srv_records(std::move(records));
+            return sort_srv_records(parse_srv_records(answer.data(), length));
         }
 
         [[nodiscard]] auto lookup_addresses(std::string_view host, std::uint16_t port) -> ResolvedAddressSet override
@@ -448,6 +429,74 @@ namespace
     };
 
 } // namespace
+
+auto parse_srv_records(unsigned char const* message, int message_length) -> std::vector<SrvRecord>
+{
+    auto records = std::vector<SrvRecord>{};
+    if (message == nullptr || message_length < static_cast<int>(dns_header_length))
+    {
+        return records;
+    }
+    auto const* const end = message + static_cast<std::size_t>(message_length);
+    auto const question_count = read_u16(message + 4U);
+    auto const answer_count = read_u16(message + 6U);
+    auto const* cursor = message + dns_header_length;
+
+    // Skip the question section: each entry is NAME + QTYPE(2) + QCLASS(2).
+    for (std::uint16_t index = 0U; index < question_count; ++index)
+    {
+        auto scratch = std::string{};
+        auto const name_length = decode_dns_name(message, message_length, cursor, scratch);
+        if (name_length < 0)
+        {
+            return records;
+        }
+        cursor += static_cast<std::size_t>(name_length);
+        if (cursor + 4U > end)
+        {
+            return records;
+        }
+        cursor += 4U;
+    }
+
+    // Walk the answer section, collecting SRV records. Every field read is
+    // bounds-checked against the end of the (untrusted) message.
+    for (std::uint16_t index = 0U; index < answer_count && cursor < end; ++index)
+    {
+        auto scratch = std::string{};
+        auto const name_length = decode_dns_name(message, message_length, cursor, scratch);
+        if (name_length < 0)
+        {
+            return records;
+        }
+        cursor += static_cast<std::size_t>(name_length);
+        if (cursor + dns_rr_fixed_length > end)
+        {
+            return records;
+        }
+        auto const type = read_u16(cursor);
+        auto const rdlength = read_u16(cursor + 8U);
+        cursor += dns_rr_fixed_length;
+        if (cursor + rdlength > end)
+        {
+            return records;
+        }
+        if (type == static_cast<std::uint16_t>(dns_type_srv) && rdlength >= srv_rdata_fixed_length + 1U)
+        {
+            auto const priority = read_u16(cursor);
+            auto const weight = read_u16(cursor + 2U);
+            auto const port = read_u16(cursor + 4U);
+            auto target = std::string{};
+            if (decode_dns_name(message, message_length, cursor + srv_rdata_fixed_length, target) >= 0 &&
+                !target.empty())
+            {
+                records.push_back(SrvRecord{target, port, priority, weight});
+            }
+        }
+        cursor += rdlength;
+    }
+    return records;
+}
 
 auto discover_server(std::string_view server_name, std::string_view well_known_server) -> ServerDiscoveryResult
 {
