@@ -60,6 +60,31 @@ Clang the glibc remains too old, so they are not buildable or runnable from a
 glibc-dynamic build. Use the static tarball there. (On the BSDs there is no
 glibc; the only floor is a base/packaged clang ≥ 18.)
 
+## System library dependencies
+
+These libraries are **provided by the operating system** on every platform (the
+meson dependencies use `allow_fallback: false`), so deployments get distro
+security updates and the OS packages declare them as runtime dependencies that
+the package manager installs automatically. SQLite, yyjson, and Catch2 are the
+only direct dependencies built from vendored subprojects when absent.
+
+| Library | Debian/Ubuntu (`apt`) | Fedora/RHEL (`dnf`) | FreeBSD (`pkg`) | OpenBSD (`pkg_add`) | NetBSD (`pkgin`) |
+|---|---|---|---|---|---|
+| libsodium | `libsodium-dev` | `libsodium-devel` | `libsodium` | `libsodium` | `libsodium` |
+| OpenSSL | `libssl-dev` | `openssl-devel` | `openssl` | `openssl` (LibreSSL base) | `openssl` |
+| PostgreSQL libpq | `libpq-dev` | `libpq-devel` | `postgresql17-client` | `postgresql-client` | `postgresql17-client` |
+| libcurl | `libcurl4-openssl-dev` | `libcurl-devel` | `curl` | `curl` | `curl` |
+| libpng | `libpng-dev` | `libpng-devel` | `png` | `png` | `png` |
+| libjpeg-turbo | `libturbojpeg0-dev` | `turbojpeg-devel` | `libjpeg-turbo` | `jpeg-turbo` | `libjpeg-turbo` |
+
+Runtime package dependencies are declared in the OS packaging metadata
+(`packaging/deb/control` `Depends`, the rpm spec, `packaging/freebsd/+MANIFEST`
+`deps`, `packaging/openbsd/PLIST` `@depend`, `packaging/netbsd/Makefile`
+`DEPENDS`), so installing a Merovingian package pulls these libraries in
+automatically. `scripts/setup-dev-env.sh` installs the development files for
+local builds. The static (musl) tarball links the static variants of these
+libraries and therefore has no runtime package dependencies.
+
 ## Tier 1 — Supported (CI-gated per pull request)
 
 Tier 1 platforms build **and run the full test suite** (unit, integration,

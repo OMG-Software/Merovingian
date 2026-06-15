@@ -212,6 +212,7 @@ check_command "$pkg_config"
 check_pkg_config_module libsodium
 check_pkg_config_module openssl
 check_pkg_config_module libpq
+check_pkg_config_module libcurl
 
 meson_options="-Dbuild_tests=$build_tests -Dbuild_fuzz=$build_fuzz --wrap-mode=$wrap_mode"
 [ -z "$buildtype" ] || meson_options="$meson_options --buildtype=$buildtype"

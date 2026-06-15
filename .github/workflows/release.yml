@@ -125,7 +125,7 @@ jobs:
           usesh: true
           run: |
             tag="${GITHUB_REF_NAME}"
-            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client python3
+            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client python3 curl png libjpeg-turbo
             sh scripts/build-bsd.sh --builddir build-freebsd-release --profile hardened
             sh scripts/check-release-readiness.sh
             package_root="merovingian-${tag}-freebsd-x86_64"

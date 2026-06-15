@@ -46,10 +46,11 @@ yyjson_dep = dependency(
 )
 # libcurl drives the federation outbound HTTP client. The TLS backend is
 # whatever the system libcurl was built against; the OutboundClient
-# integration suite enforces consistent verification behavior across
-# Linux and BSD targets. A subprojects/curl.wrap fallback builds curl
-# from source when the system library is not available.
-libcurl_dep = dependency('libcurl', fallback: ['curl', 'libcurl_dep'])
+# integration suite enforces consistent verification behavior across Linux and
+# BSD targets. libcurl is a system-provided dependency on every platform (like
+# libsodium/openssl/libpq) — it is not vendored, so packages declare it as a
+# runtime dependency and the build host must provide the development files.
+libcurl_dep = dependency('libcurl', include_type: 'system', allow_fallback: false)
 resolv_dep = cpp.find_library('resolv', required: false)
 
 warning_flags = [

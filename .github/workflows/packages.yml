@@ -29,6 +29,7 @@ jobs:
             clang meson ninja-build pkg-config git make binutils \
             libssl-dev \
             libsodium-dev \
+            libcurl4-openssl-dev \
             libpq-dev \
             libpng-dev \
             libturbojpeg0-dev \
@@ -73,6 +74,12 @@ jobs:
             flex \
             g++ \
             git \
+            curl-dev \
+            curl-static \
+            nghttp2-static \
+            brotli-static \
+            zstd-static \
+            c-ares-static \
             libsodium-dev \
             libsodium-static \
             linux-headers \
@@ -162,7 +169,7 @@ jobs:
           usesh: true
           prepare: |
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex \
-              gmake openssl libsodium postgresql17-client python3 png libjpeg-turbo
+              gmake openssl libsodium postgresql17-client python3 curl png libjpeg-turbo
           run: sh scripts/build-freebsd-pkg.sh
       - name: Attest FreeBSD package
         uses: actions/attest-build-provenance@v2
@@ -187,7 +194,7 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client png jpeg-turbo
+            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
           run: sh scripts/build-openbsd-pkg.sh
       - name: Attest OpenBSD package
         uses: actions/attest-build-provenance@v2

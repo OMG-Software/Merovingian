@@ -59,10 +59,11 @@ class DependencyWrapTests(unittest.TestCase):
 
         # WHEN runtime dependencies are declared.
         # THEN wrap-backed dependencies are limited to the remaining vendored
-        # runtime libraries.
+        # runtime libraries (sqlite3, yyjson). libcurl, like libsodium/openssl/
+        # libpq, is system-provided (allow_fallback: false) and never vendored.
         self.assertIn("fallback: ['sqlite3', 'sqlite3_dep']", meson_build)
         self.assertIn("default_options: ['default_library=static'", meson_build)
-        self.assertIn("dependency('libcurl', fallback: ['curl', 'libcurl_dep'])", meson_build)
+        self.assertIn("dependency('libcurl', include_type: 'system', allow_fallback: false)", meson_build)
 
     def test_catch2_fallback_does_not_build_upstream_self_tests(self) -> None:
         # GIVEN Catch2 is a test-only dependency used through Meson fallback mode.
@@ -241,8 +242,11 @@ class DependencyWrapTests(unittest.TestCase):
             self.assertIn("check_pkg_config_module libsodium", script)
             self.assertIn("check_pkg_config_module libpq", script)
             self.assertIn("check_pkg_config_module openssl", script)
+            # libcurl is now system-provided on every platform (allow_fallback:
+            # false), so the build scripts require it like the other system libs.
+            self.assertIn("check_pkg_config_module libcurl", script)
+            # sqlite3 remains vendored via a wrap, so it is not a required module.
             self.assertNotIn("check_pkg_config_module sqlite3", script)
-            self.assertNotIn("check_pkg_config_module libcurl", script)
 
     def test_make_shim_exists_for_external_projects_on_bsd(self) -> None:
         # GIVEN the external-project wrappers for autotools sources.
@@ -371,18 +375,21 @@ class DependencyWrapTests(unittest.TestCase):
 
         # THEN all three platforms declare security libraries as dynamic runtime
         # dependencies so OS package updates (apt upgrade libssl3 etc.) patch
-        # the binary without rebuilding the package. App-level deps (SQLite,
-        # curl, yyjson) remain statically linked via Meson wraps.
-        for token in ("libsodium23", "libpq5", "libssl3"):
+        # the binary without rebuilding the package. SQLite and yyjson remain
+        # statically linked via Meson wraps; libcurl is now system-provided
+        # (allow_fallback: false) and declared as a runtime dependency.
+        for token in ("libsodium23", "libpq5", "libssl3", "libcurl4"):
             self.assertIn(token, deb_control)
         for token in ("Requires:       libsodium", "Requires:       libpq"):
             self.assertNotIn(token, rpm_spec)
         # Only inspect the dependency-declaration section, not post-install
-        # scripts: the scripts block may invoke openssl/curl as shell tools
-        # without those being package-level runtime dependencies.
+        # scripts: the scripts block may invoke openssl as a shell tool without
+        # it being a package-level runtime dependency.
         freebsd_manifest_deps = freebsd_manifest.split("scripts:")[0]
-        for token in ("openssl", "libsodium", "postgresql17-client", "curl"):
+        for token in ("openssl", "libsodium", "postgresql17-client"):
             self.assertNotIn(token, freebsd_manifest_deps)
+        # libcurl is dynamically linked from the system, so it is a declared dep.
+        self.assertIn("curl", freebsd_manifest_deps)
 
         # THEN NetBSD and OpenBSD scaffolds declare their OS-supplied runtime deps.
         for token in ("openssl", "libsodium", "postgresql17-client", "curl"):

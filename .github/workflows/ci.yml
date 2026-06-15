@@ -45,6 +45,7 @@ jobs:
             clang-tidy \
             catch2 \
             flex \
+            libcurl4-openssl-dev \
             libpng-dev \
             libpq-dev \
             libsodium-dev \
@@ -116,6 +117,7 @@ jobs:
             m4 \
             meson \
             ninja-build \
+            libcurl-devel \
             libpng-devel \
             libpq-devel \
             libsodium-devel \
@@ -163,7 +165,7 @@ jobs:
         with:
           usesh: true
           run: |
-            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client png libjpeg-turbo
+            pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
             sh scripts/build-bsd.sh --builddir build
             mkdir -p artifacts/bin artifacts/config artifacts/docs
             cp build/src/merovingian-server artifacts/bin/
@@ -194,7 +196,7 @@ jobs:
         with:
           usesh: true
           prepare: |
-            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client png jpeg-turbo
+            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
           run: |
             sh scripts/build-bsd.sh --builddir build
             mkdir -p artifacts/bin artifacts/config artifacts/docs
@@ -225,7 +227,10 @@ jobs:
           usesh: true
           prepare: |
             /usr/sbin/pkg_add -U pkgin || true
-            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo mozilla-rootcerts
+            # NetBSD base ships no CA trust store; populate /etc/openssl/certs so
+            # the system-CA-trust detection test (and real TLS) has a store.
+            /usr/pkg/sbin/mozilla-rootcerts install || true
           run: |
             sh scripts/build-bsd.sh --builddir build
             mkdir -p artifacts/bin artifacts/config artifacts/docs

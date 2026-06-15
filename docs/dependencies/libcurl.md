@@ -40,18 +40,20 @@ supported Linux and BSD targets, and ships in mainline distributions.
 
 ## Maintenance and platform posture
 
-libcurl is pinned through `subprojects/curl.wrap`, currently targeting the
-8.20.0 source release. The TLS backend still follows the host OpenSSL selection
-underneath that wrap, and the OutboundClient integration suite remains
-responsible for catching backend behavior drift across supported platforms.
-The fallback packagefile exposes curl's installed include root, not the nested
-`curl` include directory, so `<curl/curl.h>` resolves the same way on Linux and
-BSD.
+libcurl is a **system-provided dependency on every platform** — the meson
+dependency uses `allow_fallback: false`, so the build always links the operating
+system's libcurl and never vendors it. The build host must provide the libcurl
+development files (`libcurl4-openssl-dev`, `libcurl-devel`, or the `curl`
+package depending on platform), and the OS packages declare libcurl as a runtime
+dependency so deployments receive distro security updates. The TLS backend
+follows the host libcurl's OpenSSL/LibreSSL selection; the OutboundClient
+integration suite catches backend behavior drift across supported platforms.
 
-The fallback also disables optional zlib and zstd content-encoding support.
-Merovingian does not require compressed federation responses at this boundary,
-and disabling those backends keeps the static fallback link closed without
-pulling undeclared compression libraries into every binary.
+The portable static (musl) build links Alpine's static libcurl
+(`curl-static`) together with its static transitive dependencies. The
+`subprojects/curl.wrap` source-build fallback is no longer used by the build
+(the dependency is `allow_fallback: false`); `<curl/curl.h>` resolves from the
+system include root the same way on Linux and BSD.
 
 ## Current limitations
 

@@ -403,18 +403,22 @@ auto detect_system_ca_trust() -> SystemCaTrust
     // Concatenated PEM bundles, in rough order of prevalence across the
     // platforms Merovingian ships on (Debian/Ubuntu/Alpine, Fedora/RHEL,
     // openSUSE, BSD/macOS, FreeBSD ports).
-    constexpr std::array<std::string_view, 6U> bundle_files{
+    constexpr std::array<std::string_view, 8U> bundle_files{
         "/etc/ssl/certs/ca-certificates.crt",
         "/etc/pki/tls/certs/ca-bundle.crt",
         "/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem",
         "/etc/ssl/ca-bundle.pem",
         "/etc/ssl/cert.pem",
         "/usr/local/share/certs/ca-root-nss.crt",
+        "/etc/openssl/cert.pem",      // NetBSD (base/pkgsrc openssl)
+        "/usr/pkg/etc/openssl/cert.pem", // NetBSD pkgsrc prefix
     };
     // OpenSSL hashed certificate directories.
-    constexpr std::array<std::string_view, 2U> bundle_dirs{
+    constexpr std::array<std::string_view, 4U> bundle_dirs{
         "/etc/ssl/certs",
         "/etc/pki/tls/certs",
+        "/etc/openssl/certs",      // NetBSD
+        "/usr/pkg/etc/openssl/certs", // NetBSD pkgsrc prefix
     };
     auto trust = SystemCaTrust{};
     for (auto const candidate : bundle_files)

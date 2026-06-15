@@ -8,9 +8,9 @@ PKG_NAME="merovingian"
 STAGING="staging-deb"
 
 # 1. Configure with meson.
-#    --wrap-mode=forcefallback: app-level deps (SQLite, curl, yyjson) are
-#    built from source-pinned wraps; OS-supplied security libs (OpenSSL,
-#    libsodium, libpq) are resolved from the system with allow_fallback=false.
+#    --wrap-mode=forcefallback: vendored deps (SQLite, yyjson) are built from
+#    source-pinned wraps; OS-supplied libraries (OpenSSL, libsodium, libpq,
+#    libcurl) are resolved from the system with allow_fallback=false.
 #    -pie: position-independent executable so the kernel applies ASLR.
 CC=clang CXX=clang++ meson setup build-deb \
     --prefix=/usr \

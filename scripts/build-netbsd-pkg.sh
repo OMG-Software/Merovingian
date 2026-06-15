@@ -19,14 +19,13 @@ export CXX="${CXX:-clang++}"
 
 rm -rf "${STAGE}" build-netbsd-pkg pkg-plist-netbsd "merovingian-${VERSION}.tgz"
 
-# 1. Configure + build with NetBSD/pkgsrc prefix conventions.
-#    --wrap-mode=default (not forcefallback): the vendored curl autotools build
-#    hits a GNU make readdir bug on NetBSD, so use the system libcurl. sqlite/
-#    yyjson still fall back to vendored subprojects when no system copy exists.
+# 1. Configure + build with NetBSD/pkgsrc prefix conventions. libcurl is a
+#    system dependency on every platform, so forcefallback only vendors
+#    sqlite/yyjson and never tries to build curl from source.
 meson setup build-netbsd-pkg \
     --prefix="${PREFIX}" \
     --sysconfdir="${PREFIX}/etc" \
-    --wrap-mode=default \
+    --wrap-mode=forcefallback \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false
