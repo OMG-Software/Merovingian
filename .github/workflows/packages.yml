@@ -79,6 +79,9 @@ jobs:
             nghttp2-static \
             brotli-static \
             zstd-static \
+            libpsl-dev \
+            libunistring-dev \
+            libidn2-dev \
             libsodium-dev \
             libsodium-static \
             linux-headers \
@@ -207,6 +210,7 @@ jobs:
   netbsd-pkg:
     name: NetBSD package
     runs-on: ubuntu-latest
+    continue-on-error: true
     permissions:
       contents: read
       attestations: write
@@ -344,7 +348,7 @@ jobs:
             libsodium-devel \
             postgresql-devel \
             libpng16-devel \
-            libjpeg62-turbo-devel \
+            libjpeg-turbo-devel \
             libcurl-devel \
             sqlite3-devel \
             perl bison flex m4 \
@@ -398,6 +402,7 @@ jobs:
           name: openbsd-package
           path: packages-openbsd/
       - uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
           name: netbsd-package
           path: packages-netbsd/
@@ -423,7 +428,7 @@ jobs:
             mv "$f" "packages/$(basename "${f%.tgz}")-openbsd.tgz"
           done
           for f in packages-netbsd/*.tgz; do
-            mv "$f" "packages/$(basename "${f%.tgz}")-netbsd.tgz"
+            [ -f "$f" ] && mv "$f" "packages/$(basename "${f%.tgz}")-netbsd.tgz"
           done
           for f in packages-debian/*.deb; do
             mv "$f" "packages/$(basename "${f%.deb}")-debian.deb"

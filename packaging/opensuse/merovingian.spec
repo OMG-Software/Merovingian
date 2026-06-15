@@ -12,7 +12,7 @@ Source0:        %{name}-%{version}.tar.gz
 #   libopenssl-devel replaces openssl-devel
 #   postgresql-devel replaces libpq-devel
 #   libpng16-devel replaces libpng-devel
-#   libjpeg62-turbo-devel replaces turbojpeg-devel (provides turbojpeg.h)
+#   libjpeg-turbo-devel replaces turbojpeg-devel (provides turbojpeg.h)
 #   sqlite3-devel replaces sqlite-devel
 #   ninja replaces ninja-build
 # catch2 is omitted: tests are disabled (-Dbuild_tests=false).
@@ -25,7 +25,7 @@ BuildRequires:  libopenssl-devel
 BuildRequires:  libsodium-devel
 BuildRequires:  postgresql-devel
 BuildRequires:  libpng16-devel
-BuildRequires:  libjpeg62-turbo-devel
+BuildRequires:  libjpeg-turbo-devel
 BuildRequires:  libcurl-devel
 BuildRequires:  sqlite3-devel
 BuildRequires:  perl

@@ -309,7 +309,7 @@ jobs:
             libsodium-devel \
             postgresql-devel \
             libpng16-devel \
-            libjpeg62-turbo-devel \
+            libjpeg-turbo-devel \
             libcurl-devel \
             sqlite3-devel \
             perl \

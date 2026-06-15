@@ -142,7 +142,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("name: opensuse-rpm-package", workflow)
         # THEN OpenSUSE-specific package names appear in the install step.
         self.assertIn("libopenssl-devel", workflow)
-        self.assertIn("libjpeg62-turbo-devel", workflow)
+        self.assertIn("libjpeg-turbo-devel", workflow)
         # THEN EPEL is bootstrapped before the RHEL job installs its packages.
         self.assertIn("epel-release", workflow)
 
