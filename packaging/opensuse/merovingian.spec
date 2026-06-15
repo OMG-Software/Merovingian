@@ -12,7 +12,7 @@ Source0:        %{name}-%{version}.tar.gz
 #   libopenssl-devel replaces openssl-devel
 #   postgresql-devel replaces libpq-devel
 #   libpng16-devel replaces libpng-devel
-#   libjpeg-turbo-devel replaces turbojpeg-devel (provides turbojpeg.h)
+#   libjpeg8-devel provides turbojpeg.h and libturbojpeg.pc (Tumbleweed naming)
 #   sqlite3-devel replaces sqlite-devel
 #   ninja replaces ninja-build
 # catch2 is omitted: tests are disabled (-Dbuild_tests=false).
@@ -25,7 +25,7 @@ BuildRequires:  libopenssl-devel
 BuildRequires:  libsodium-devel
 BuildRequires:  postgresql-devel
 BuildRequires:  libpng16-devel
-BuildRequires:  libjpeg-turbo-devel
+BuildRequires:  libjpeg8-devel
 BuildRequires:  libcurl-devel
 BuildRequires:  sqlite3-devel
 BuildRequires:  perl
@@ -39,7 +39,7 @@ Requires:       libsodium23
 Requires:       libpq5
 Requires:       libcurl4
 Requires:       libpng16-16
-Requires:       libjpeg62-turbo
+Requires:       libturbojpeg0
 
 %description
 Merovingian is an alpha Matrix Protocol homeserver focused on secure

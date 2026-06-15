@@ -11,6 +11,20 @@ TARBALL="${PACKAGE_ROOT}.tar.gz"
 
 rm -rf "$BUILD_DIR" "$STAGING" "$PACKAGE_ROOT" "$TARBALL" "${TARBALL}.sha256"
 
+# Alpine ships libpsl, libunistring, and libidn2 as shared-only libraries;
+# no static archives are available. curl's pkg-config lists them under
+# Libs.private for static linking even though Alpine's libcurl.a was built
+# without those features at the .a level. Strip them from a temp overlay so
+# Meson does not emit unresolvable -lpsl/-lunistring/-lidn2 link flags.
+_curl_pc_dir=$(pkg-config --variable=pcfiledir libcurl 2>/dev/null || true)
+if [ -n "$_curl_pc_dir" ] && [ -f "$_curl_pc_dir/libcurl.pc" ]; then
+    _patch_dir=$(mktemp -d)
+    sed 's/ -lpsl\b//g; s/ -lunistring\b//g; s/ -lidn2\b//g' \
+        "$_curl_pc_dir/libcurl.pc" > "$_patch_dir/libcurl.pc"
+    PKG_CONFIG_PATH="${_patch_dir}${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+    export PKG_CONFIG_PATH
+fi
+
 CC="${CC:-clang}" CXX="${CXX:-clang++}" meson setup "$BUILD_DIR" \
     --prefix=/usr \
     --wrap-mode=forcefallback \
