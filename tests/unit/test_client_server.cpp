@@ -1777,7 +1777,7 @@ SCENARIO("Client-server admin safety routes manage persisted policy rules", "[ho
         auto const token = login_token(login.response.body);
         auto const upload = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/media/v3/upload", token,
-                      "application/octet-stream|application/octet-stream|clean|hello"});
+                      "text/plain|text/plain|clean|hello"});
         REQUIRE(upload.response.status == 200U);
         auto const content_uri = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
         REQUIRE(!content_uri.empty());
