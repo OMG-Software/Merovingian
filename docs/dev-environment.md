@@ -10,6 +10,12 @@ It installs the toolchain and development packages needed for the current Meson 
 
 ## Supported Hosts
 
+Merovingian is C++26, so the host needs a recent toolchain: **Clang ≥ 18
+(`-std=c++26`) or GCC ≥ 14** with the matching C++ standard library, plus
+Meson ≥ 1.1.0. Older distributions ship a pre-C++26 compiler and cannot build
+the project — see [platform-support.md](platform-support.md) for the minimum
+version of each Tier 1 platform and for the static-tarball path for older hosts.
+
 The script supports these package managers:
 
 - Linux: `apt`, `dnf`, `zypper`, `pacman`, `apk`

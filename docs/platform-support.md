@@ -4,6 +4,37 @@ Merovingian targets POSIX server platforms. Support is organised into tiers by
 how much continuous-integration coverage a platform receives. A platform's tier
 states what is *guaranteed by CI*, not whether it happens to work elsewhere.
 
+## Build toolchain and minimum platform versions
+
+Merovingian is C++26 (`cpp_std=c++26` in `meson.build`). That is the hard
+constraint on which platform versions can build it: the C++26 compiler **and** a
+matching C++ standard library only ship in recent OS releases. Older releases
+cannot build from source — use the portable static tarball (see Tier 2) instead.
+
+**Toolchain floor (all platforms):**
+
+- **Clang ≥ 18** (`-std=c++26`) or **GCC ≥ 14**, with the matching
+  `libc++` / `libstdc++` C++26 runtime.
+- **Meson ≥ 1.1.0** and Ninja.
+- Core dependencies are vendored and built from subprojects
+  (`--wrap-mode=forcefallback`); only the base toolchain and the optional image
+  codecs (`libpng`, `libjpeg-turbo`) come from the OS.
+
+**Minimum OS versions that ship a C++26 toolchain:**
+
+| Platform | Minimum version | Toolchain source | CI image |
+|---|---|---|---|
+| Ubuntu / Debian | Ubuntu 24.04 LTS · Debian 13 (trixie) | distro clang 18+ | `ubuntu-latest` (24.04) |
+| Fedora / RHEL family | Fedora 40+ (RHEL 10, or clang module on 9) | dnf clang 18+ | `fedora:latest` |
+| FreeBSD | 14.1+ (base clang ≥ 18) | base clang | `vmactions/freebsd-vm@v1` (14.x) |
+| OpenBSD | 7.6+ with the `llvm` package (clang ≥ 18) | `llvm` package, not base | `vmactions/openbsd-vm@v1` (7.x) |
+| NetBSD | 10+ with pkgsrc `clang` (≥ 18) | pkgsrc clang | `vmactions/netbsd-vm@v1` (10.x) |
+
+The CI VM/runner images track the current stable release of each platform, so
+"build on" is the latest stable and "build for" is the minimum version in the
+table above. Earlier releases (e.g. Ubuntu 22.04, Debian 12, FreeBSD 13,
+OpenBSD ≤ 7.5) ship a pre-C++26 toolchain and are **not** buildable from source.
+
 ## Tier 1 — Supported (CI-gated per pull request)
 
 Tier 1 platforms build **and run the full test suite** (unit, integration,
@@ -44,6 +75,25 @@ ports/pkgsrc tree), generating a framework-free packing list from the staged
 install. The checked-in `packaging/openbsd/PLIST` and `packaging/netbsd/Makefile`
 remain the ports/pkgsrc recipes for downstream porters and are kept in sync by
 version-consistency tests.
+
+### Older Linux distributions — the static tarball
+
+Distributions older than the minimums above (e.g. Ubuntu 22.04, Debian 12,
+RHEL 9, or any host whose glibc / toolchain predates C++26) cannot build from
+source and cannot run a glibc-dynamic build linked against newer libraries. For
+those hosts the **portable static Linux tarball** is the supported path: it is
+built against musl and **statically links essentially every dependency**
+(OpenSSL, libpq, SQLite, libcurl, libsodium, zlib, and the C/C++ runtime), so it
+runs on old and minimal systems with no shared-library or glibc version
+requirements.
+
+The trade-off is size: because it links the world, the static binary is **much
+larger** than the dynamically linked distro packages, carries no automatic
+security updates for its bundled libraries (the tarball must be rebuilt and
+redeployed to pick up dependency fixes), and omits the sandboxed thumbnail worker
+when static image codecs are unavailable (thumbnails then fall back to original
+bytes). Prefer a native Tier 1/Tier 2 package whenever the platform is new
+enough; use the static tarball only when it is not.
 
 ## Tier 3 — Best-effort (not in CI)
 
