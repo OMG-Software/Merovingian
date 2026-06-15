@@ -37,6 +37,27 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("libpq-dev", workflow)
         self.assertIn("libsodium postgresql17-client", workflow)
 
+    def test_tier_one_bsd_platforms_have_build_and_test_jobs(self) -> None:
+        # GIVEN the repository CI workflow.
+        self.assertTrue(CI_WORKFLOW.is_file(), "CI workflow is missing")
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the Tier 1 platform matrix is checked.
+        # THEN FreeBSD, OpenBSD, and NetBSD each have a dedicated job that builds
+        # and runs the test suite on the platform VM, so platform-specific
+        # runtime behaviour (e.g. hardening self-checks) is exercised per PR.
+        for job in ("freebsd:", "openbsd:", "netbsd:"):
+            self.assertIn(job, workflow)
+        for vm in (
+            "vmactions/freebsd-vm",
+            "vmactions/openbsd-vm",
+            "vmactions/netbsd-vm",
+        ):
+            self.assertIn(vm, workflow)
+        # THEN each BSD job builds through the shared BSD wrapper, which runs the
+        # full meson test suite on the platform.
+        self.assertGreaterEqual(workflow.count("sh scripts/build-bsd.sh --builddir build"), 3)
+
     def test_conformance_and_packaging_capability_gates_are_present(self) -> None:
         # GIVEN the repository CI workflow.
         self.assertTrue(CI_WORKFLOW.is_file(), "CI workflow is missing")

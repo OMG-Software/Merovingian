@@ -35,12 +35,14 @@ a non-production environment.
   `security.trust_safety.policy_server_*`; admin review decisions persist live
   `policy_rules`; and admins can list, upsert, and delete policy rules through
   the client-server admin safety routes.
+- ~~Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and
+  documented support tiers.~~ OpenBSD and NetBSD now have per-PR build+test CI
+  jobs (`vmactions/*-vm`) running the full suite — including the platform
+  hardening self-check tests — alongside Linux/Fedora/FreeBSD as Tier 1. Support
+  tiers are documented in `docs/platform-support.md`.
 
 ## Remaining
 
-- Add OpenBSD and NetBSD CI jobs, platform-specific runtime tests, and
-  documented support tiers. (Only Linux, Fedora, and FreeBSD CI jobs exist;
-  OpenBSD/NetBSD appear only as release packaging artifacts.)
 - Add corpus management, broader fuzz execution, property tests, load tests,
   and chaos tests. (Only `fuzz_canonicaljson` and `fuzz_http_request` targets
   exist today.)

@@ -178,3 +178,66 @@ jobs:
           path: merovingian-freebsd-artifacts.tar.gz
           if-no-files-found: error
           retention-days: 14
+
+  # ── OpenBSD ────────────────────────────────────────────────────────────────
+  # Tier 1 platform. The build wrapper runs the full meson test suite on the VM,
+  # which exercises the platform-specific runtime tests (hardening self-check
+  # unit/integration/smoke tests) on OpenBSD itself.
+  openbsd:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test on OpenBSD
+        uses: vmactions/openbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg_add -I llvm meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client png jpeg-turbo
+          run: |
+            sh scripts/build-bsd.sh --builddir build
+            mkdir -p artifacts/bin artifacts/config artifacts/docs
+            cp build/src/merovingian-server artifacts/bin/
+            cp config/merovingian.conf.example artifacts/config/
+            cp README.md docs/configuration.md docs/security-review-checklist.md artifacts/docs/
+            tar -C artifacts -czf merovingian-openbsd-artifacts.tar.gz .
+
+      - name: Upload OpenBSD CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: merovingian-openbsd-${{ github.sha }}
+          path: merovingian-openbsd-artifacts.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # ── NetBSD ─────────────────────────────────────────────────────────────────
+  # Tier 1 platform. Same full build+test path as the other BSDs.
+  netbsd:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test on NetBSD
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            /usr/sbin/pkg_add -U pkgin || true
+            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client png libjpeg-turbo
+          run: |
+            sh scripts/build-bsd.sh --builddir build
+            mkdir -p artifacts/bin artifacts/config artifacts/docs
+            cp build/src/merovingian-server artifacts/bin/
+            cp config/merovingian.conf.example artifacts/config/
+            cp README.md docs/configuration.md docs/security-review-checklist.md artifacts/docs/
+            tar -C artifacts -czf merovingian-netbsd-artifacts.tar.gz .
+
+      - name: Upload NetBSD CI artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: merovingian-netbsd-${{ github.sha }}
+          path: merovingian-netbsd-artifacts.tar.gz
+          if-no-files-found: error
+          retention-days: 14

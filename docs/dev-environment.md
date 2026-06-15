@@ -258,6 +258,11 @@ FreeBSD and HardenedBSD use `pkg`. OpenBSD uses `pkg_add`. NetBSD prefers `pkgin
 
 Some BSD releases ship a base compiler and package LLVM separately. The script installs the packaged LLVM toolchain so clang-format, clang-tidy, and current C++ compiler support are available for project checks.
 
+FreeBSD, OpenBSD, and NetBSD are Tier 1 platforms: each builds and runs the full
+test suite per pull request through `scripts/build-bsd.sh` on a CI VM. See
+[platform-support.md](platform-support.md) for the full support-tier matrix and
+per-platform hardening posture.
+
 ## Security Posture
 
 The setup script does not weaken local package manager policy, add third-party package repositories, install Boost, or fetch dependencies outside the operating-system package manager. Use `--dry-run` during review to record the exact package command before running it on hardened hosts.
