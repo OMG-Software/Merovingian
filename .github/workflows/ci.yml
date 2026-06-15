@@ -16,7 +16,7 @@ on:
 jobs:
 
   # ── Linux ──────────────────────────────────────────────────────────────────
-  linux-build-and-test:
+  ubuntu-build-and-test:
     runs-on: ubuntu-latest
     env:
       CC: clang
@@ -154,7 +154,7 @@ jobs:
         run: sh scripts/check-release-readiness.sh
 
   # ── FreeBSD ────────────────────────────────────────────────────────────────
-  freebsd:
+  freebsd-build-and-test:
     runs-on: ubuntu-latest
 
     steps:
@@ -185,7 +185,7 @@ jobs:
   # Tier 1 platform. The build wrapper runs the full meson test suite on the VM,
   # which exercises the platform-specific runtime tests (hardening self-check
   # unit/integration/smoke tests) on OpenBSD itself.
-  openbsd:
+  openbsd-build-and-test:
     runs-on: ubuntu-latest
 
     steps:
