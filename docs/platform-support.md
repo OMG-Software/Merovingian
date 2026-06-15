@@ -35,9 +35,15 @@ runtime behaviour is covered transitively by the matching Tier 1 platform.
 | Debian/Ubuntu `.deb` | `packages.yml` | Tier 1 Linux |
 | Fedora/RHEL `.rpm` | `packages.yml` | Tier 1 Fedora |
 | FreeBSD `.pkg` | `packages.yml` | Tier 1 FreeBSD |
-| OpenBSD package metadata | `release.yml` | Tier 1 OpenBSD |
-| NetBSD / pkgsrc metadata | `release.yml` | Tier 1 NetBSD |
+| OpenBSD `.tgz` (standalone `pkg_create`) | `packages.yml` | Tier 1 OpenBSD |
+| NetBSD `.tgz` (standalone `pkg_create`) | `packages.yml` | Tier 1 NetBSD |
 | Portable static Linux tarball (musl) | `packages.yml` | Tier 1 Linux (the sandboxed thumbnail worker is omitted when static image codecs are unavailable; thumbnails then fall back to original bytes) |
+
+The OpenBSD and NetBSD package jobs build with standalone `pkg_create(1)` (no
+ports/pkgsrc tree), generating a framework-free packing list from the staged
+install. The checked-in `packaging/openbsd/PLIST` and `packaging/netbsd/Makefile`
+remain the ports/pkgsrc recipes for downstream porters and are kept in sync by
+version-consistency tests.
 
 ## Tier 3 — Best-effort (not in CI)
 

@@ -173,10 +173,61 @@ jobs:
           name: freebsd-package
           path: merovingian-*.pkg
 
+  openbsd-pkg:
+    name: OpenBSD package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build OpenBSD package
+        uses: vmactions/openbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client png jpeg-turbo
+          run: sh scripts/build-openbsd-pkg.sh
+      - name: Attest OpenBSD package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openbsd-package
+          path: merovingian-*.tgz
+
+  netbsd-pkg:
+    name: NetBSD package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build NetBSD package
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            /usr/sbin/pkg_add -U pkgin || true
+            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client png libjpeg-turbo
+          run: sh scripts/build-netbsd-pkg.sh
+      - name: Attest NetBSD package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netbsd-package
+          path: merovingian-*.tgz
+
   publish-latest:
     name: Publish rolling latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [deb, static-linux-fallback, rpm, freebsd-pkg]
+    needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -197,6 +248,24 @@ jobs:
         with:
           name: freebsd-package
           path: packages/
+      # OpenBSD and NetBSD both emit merovingian-<version>.tgz; download to
+      # separate dirs and re-suffix so the flat release bundle does not collide.
+      - uses: actions/download-artifact@v4
+        with:
+          name: openbsd-package
+          path: packages-openbsd/
+      - uses: actions/download-artifact@v4
+        with:
+          name: netbsd-package
+          path: packages-netbsd/
+      - name: Disambiguate BSD tarball names
+        run: |
+          for f in packages-openbsd/*.tgz; do
+            mv "$f" "packages/$(basename "${f%.tgz}")-openbsd.tgz"
+          done
+          for f in packages-netbsd/*.tgz; do
+            mv "$f" "packages/$(basename "${f%.tgz}")-netbsd.tgz"
+          done
       - name: Generate checksums
         run: sha256sum packages/* > packages/SHA256SUMS
       - name: Publish rolling latest release
