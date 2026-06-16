@@ -41,6 +41,8 @@ production-gated.
 - Client-server auth/device/key actions append durable audit rows without
   logging plaintext credentials, bearer tokens, or key payloads.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.
+- Registration token verification using Argon2id (`crypto_pwhash_str` / `crypto_pwhash_str_verify`);
+  only the password hash is retained, and the plaintext token is zeroised after hashing.
 
 ## Security posture
 
@@ -61,6 +63,8 @@ The boundary establishes these guarantees:
   not uploaded key material.
 - Persisted key material is represented as server-blind sensitive JSON payloads
   and is not logged through prepared-statement summaries.
+- Registration tokens are verified with Argon2id and only the hash is retained;
+  plaintext tokens are zeroised with `sodium_memzero` after hashing.
 
 ## Deliberately not included
 
@@ -68,7 +72,6 @@ These remain deferred:
 
 - Full Matrix UI-auth fallback flows and account recovery endpoints.
 - Admin bootstrap flow.
-- Registration token storage.
 - Rate-limit integration.
 - Device-list stream tokens and cross-device key update semantics.
 - Complete backup retrieval/deletion semantics.

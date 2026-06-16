@@ -902,6 +902,23 @@ control check: It does not have HTTP ok status" and the request fails with
 `net::ERR_FAILED`. Merovingian itself answers this OPTIONS with `200` + CORS on
 the client-server listener, so a failure is always a proxy routing gap.
 
+## Secrets and at-rest encryption
+
+A 256-bit master key can be configured to encrypt sensitive material that is
+persisted to the database. The file must contain exactly 32 raw bytes and should
+be protected with owner-only, non-executable permissions, outside web roots:
+
+```text
+security.secrets.master_key_file=/etc/merovingian/master.key
+```
+
+When this key is present, the Ed25519 server signing secret is encrypted at rest
+with `secret_box` (`secretbox:v1:...`) before being stored in the database. If no
+master key is configured the secret is stored as a legacy plaintext base64 value
+for backward compatibility and a one-time diagnostic warns the operator. Rotating
+the signing key after enabling the master key will re-encrypt the active secret
+under the new at-rest format.
+
 ## Registration Token Policy
 
 Public registration is disabled by default. If it is enabled, startup requires
@@ -917,7 +934,9 @@ The token file is read by the registration path and should contain the
 registration token on its first line. Treat it as a secret: owner-only,
 non-executable, outside web roots, and rotated whenever it may have been
 shared too broadly. Changing the token-file path requires a restart so startup
-can re-run secret-file metadata checks.
+can re-run secret-file metadata checks. The token is hashed with Argon2id at load
+time and only the hash is retained in process memory; the plaintext is zeroised
+after hashing.
 
 Successful public registration creates a normal user only. Admin users must be
 created through the explicit operator bootstrap path, not by being the first
