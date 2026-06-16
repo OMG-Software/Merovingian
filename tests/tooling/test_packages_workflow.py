@@ -61,7 +61,7 @@ class PackagesWorkflowTests(unittest.TestCase):
         self.assertIn("sh scripts/build-static-linux.sh", workflow)
         self.assertIn("name: static-linux-fallback-package", workflow)
         self.assertIn(
-            "needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, debian-pkg, rhel-rpm, opensuse-rpm]",
+            "needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, netbsd-pkg-retry, debian-pkg, rhel-rpm, opensuse-rpm]",
             workflow,
         )
         self.assertIn("merovingian-*-linux-static-x86_64.tar.gz", workflow)

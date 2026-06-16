@@ -231,6 +231,37 @@ jobs:
           name: netbsd-package
           path: merovingian-*.tgz
 
+  # Retry once on QEMU infrastructure crashes (ssh exit 139 / SIGSEGV).
+  # Only runs when netbsd-pkg fails; skipped on success.
+  netbsd-pkg-retry:
+    name: NetBSD package (retry)
+    runs-on: ubuntu-latest
+    needs: netbsd-pkg
+    if: needs.netbsd-pkg.result == 'failure'
+    continue-on-error: true
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build NetBSD package
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            /usr/sbin/pkg_add -U pkgin || true
+            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+          run: sh scripts/build-netbsd-pkg.sh
+      - name: Attest NetBSD package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netbsd-package
+          path: merovingian-*.tgz
+
   debian-pkg:
     name: Debian trixie package
     runs-on: ubuntu-latest
@@ -370,8 +401,8 @@ jobs:
 
   publish-latest:
     name: Publish rolling latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, debian-pkg, rhel-rpm, opensuse-rpm]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, netbsd-pkg-retry, debian-pkg, rhel-rpm, opensuse-rpm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
