@@ -1689,6 +1689,15 @@ auto wire_federation_callbacks(HomeserverRuntime& runtime) -> void
             // 502 signals a server-side failure instead.
             return response(502U, "malformed federation authorization");
         }
+        // Security: never trust the destination claimed in the (client-supplied)
+        // auth token. Pin it to this server's own name — exactly as the production
+        // handle_federation_http_request path does — so a request a remote signed
+        // for a different server cannot be relayed or replayed here. now_ts and the
+        // canonical-verification flag remain caller-supplied because this router is
+        // dispatched only in HttpDispatchMode::local_router (the in-process test
+        // harness, never wired by main.cpp), where tests must drive expiry and
+        // canonical-JSON verification paths.
+        signed_request->destination = runtime.config.server().server_name;
         auto const federation_response = [&]() -> federation::FederationResponse {
             auto const local_rule = find_policy_rule(runtime, "federation", signed_request->origin);
             auto const held_for_review = local_rule.has_value() && local_rule->action == "quarantine";

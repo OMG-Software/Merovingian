@@ -3,11 +3,10 @@
 
 #include "merovingian/auth/token.hpp"
 
+#include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
-#include <algorithm>
-#include <cstddef>
 #include <string>
 #include <vector>
 
@@ -58,17 +57,10 @@ auto token_is_active(AccessTokenRecord const& token, std::chrono::system_clock::
 
 auto constant_time_equal(std::string_view left, std::string_view right) noexcept -> bool
 {
-    auto difference = left.size() ^ right.size();
-    auto const compared_size = std::max(left.size(), right.size());
-
-    for (std::size_t index = 0; index < compared_size; ++index)
-    {
-        auto const left_byte = index < left.size() ? static_cast<unsigned char>(left[index]) : 0U;
-        auto const right_byte = index < right.size() ? static_cast<unsigned char>(right[index]) : 0U;
-        difference |= left_byte ^ right_byte;
-    }
-
-    return difference == 0U;
+    // Delegates to the crypto module's libsodium-backed comparison so every
+    // constant-time secret comparison shares one hardened implementation and
+    // libsodium calls stay confined to src/crypto/ (see the crypto-boundary rule).
+    return crypto::constant_time_equal(left, right);
 }
 
 auto redacted_token_for_log(std::string_view token_secret) -> std::string

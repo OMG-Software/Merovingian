@@ -9,4 +9,5 @@ crypto_lib = static_library(
   'merovingian-crypto',
   crypto_sources,
   include_directories: inc,
+  dependencies: [libsodium_dep],
 )
