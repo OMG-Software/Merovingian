@@ -167,10 +167,20 @@ python build.py wsl --builddir build-tsan --buildtype debug --sanitize thread
 ### Packaging targets
 
 ```sh
-python build.py deb      # Debian .deb package
-python build.py rpm      # RPM package
-python build.py pkg      # FreeBSD .pkg package
-python build.py static   # Portable static Linux tarball
+python build.py deb        # Ubuntu/Debian .deb package
+python build.py rpm        # Fedora RPM package
+python build.py pkg        # FreeBSD .pkg package
+python build.py static     # Portable static Linux tarball (musl)
+```
+
+CI also produces distro-specific packages via dedicated scripts:
+
+```sh
+sh scripts/build-deb.sh           # Debian .deb (also used by deb CI job)
+sh scripts/build-rhel-rpm.sh      # RHEL-compatible RPM (AlmaLinux 10)
+sh scripts/build-opensuse-rpm.sh  # OpenSUSE Tumbleweed RPM
+sh scripts/build-openbsd-pkg.sh   # OpenBSD .tgz (run inside OpenBSD)
+sh scripts/build-netbsd-pkg.sh    # NetBSD .tgz (run inside NetBSD)
 ```
 
 ### Common development options

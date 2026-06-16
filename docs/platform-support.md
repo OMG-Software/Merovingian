@@ -78,7 +78,7 @@ only direct dependencies built from vendored subprojects when absent.
 | PostgreSQL libpq | `libpq-dev` | `libpq-devel` | `postgresql-devel` | `postgresql17-client` | `postgresql-client` | `postgresql17-client` |
 | libcurl | `libcurl4-openssl-dev` | `libcurl-devel` | `libcurl-devel` | `curl` | `curl` | `curl` |
 | libpng | `libpng-dev` | `libpng-devel` | `libpng16-devel` | `png` | `png` | `png` |
-| libjpeg-turbo | `libturbojpeg0-dev` | `turbojpeg-devel` | `libjpeg62-turbo-devel` | `libjpeg-turbo` | `jpeg-turbo` | `libjpeg-turbo` |
+| libjpeg-turbo | `libturbojpeg0-dev` | `turbojpeg-devel` | `libjpeg8-devel` | `libjpeg-turbo` | `jpeg-turbo` | `libjpeg-turbo` |
 
 Runtime package dependencies are declared in the OS packaging metadata
 (`packaging/deb/control` `Depends`, the rpm spec, `packaging/freebsd/+MANIFEST`
@@ -126,13 +126,17 @@ runtime behaviour is covered transitively by the matching Tier 1 platform.
 | OpenSUSE Tumbleweed `.rpm` | `packages.yml` (`opensuse-rpm`) | Tier 1 OpenSUSE |
 | FreeBSD `.pkg` | `packages.yml` (`freebsd-pkg`) | Tier 1 FreeBSD |
 | OpenBSD `.tgz` (standalone `pkg_create`) | `packages.yml` (`openbsd-pkg`) | Tier 1 OpenBSD |
-| NetBSD `.tgz` (standalone `pkg_create`) | `packages.yml` (`netbsd-pkg`) | Tier 1 NetBSD |
+| NetBSD `.tgz` (tar-assembled, no `pkg_create`) | `packages.yml` (`netbsd-pkg`) | Tier 1 NetBSD |
 | Portable static Linux tarball (musl) | `packages.yml` (`static-linux-fallback`) | Tier 1 Linux (the sandboxed thumbnail worker is omitted when static image codecs are unavailable; thumbnails then fall back to original bytes) |
 
-The OpenBSD and NetBSD package jobs build with standalone `pkg_create(1)` (no
-ports/pkgsrc tree), generating a framework-free packing list from the staged
-install. The checked-in `packaging/openbsd/PLIST` and `packaging/netbsd/Makefile`
-remain the ports/pkgsrc recipes for downstream porters and are kept in sync by
+The OpenBSD package job builds with standalone `pkg_create(1)` (no ports tree),
+generating a framework-free packing list from the staged install. The NetBSD
+package job assembles the `.tgz` directly with `tar` — NetBSD 10.x's base
+`pkg_create` segfaults when scanning hardened ELF binaries under QEMU. The
+resulting archive follows the NetBSD package format (`+CONTENTS`, `+COMMENT`,
+`+DESC`, `+BUILD_INFO` at the archive root) and is compatible with `pkg_add`.
+The checked-in `packaging/openbsd/PLIST` and `packaging/netbsd/Makefile` remain
+the ports/pkgsrc recipes for downstream porters and are kept in sync by
 version-consistency tests.
 
 ### Older Linux distributions — the static tarball
