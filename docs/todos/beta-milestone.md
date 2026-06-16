@@ -41,8 +41,14 @@ a non-production environment.
   hardening self-check tests — alongside Linux/Fedora/FreeBSD as Tier 1. Support
   tiers are documented in `docs/platform-support.md`.
 
+- ~~Add corpus management, broader fuzz execution, property tests, load tests,
+  and chaos tests.~~ Five new fuzz targets added in 0.8.14:
+  `fuzz_sync_filter`, `fuzz_config_parser`, `fuzz_stream_token`,
+  `fuzz_query_params`, and `fuzz_srv_record`. Checked-in seed corpus in
+  `tests/fuzz/corpus/<target>/`; `run-fuzz-targets.sh` now seeds the
+  working corpus from the checked-in directory on each run and covers all
+  seven targets. Property tests, load tests, and chaos tests remain future work.
+
 ## Remaining
 
-- Add corpus management, broader fuzz execution, property tests, load tests,
-  and chaos tests. (Only `fuzz_canonicaljson` and `fuzz_http_request` targets
-  exist today.)
+- Property tests (QuickCheck-style), load tests, and chaos tests.

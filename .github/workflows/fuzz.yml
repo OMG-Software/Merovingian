@@ -57,7 +57,7 @@ jobs:
             echo "seconds=120" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build and run canonical JSON + HTTP transport fuzz targets
+      - name: Build and run all fuzz targets
         run: sh scripts/run-fuzz-targets.sh --builddir build-fuzz --duration "${{ steps.duration.outputs.seconds }}"
 
       - name: Upload fuzz corpora and crash artifacts

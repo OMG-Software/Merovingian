@@ -1,0 +1,1 @@
+{"room":{"timeline":{"limit":20,"types":["m.room.message"],"not_types":["m.room.member"],"senders":["@alice:example.com"],"not_senders":["@bob:example.com"]},"rooms":["!abc:example.com"],"not_rooms":[],"include_leave":false},"presence":{"types":["m.presence"]},"account_data":{"types":["m.push_rules"]}}

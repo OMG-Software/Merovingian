@@ -108,6 +108,12 @@ run_target() {
     corpus_dir="$corpus_root/$target_name"
     mkdir -p "$corpus_dir"
 
+    # Seed the working corpus from the checked-in corpus directory when present.
+    seed_dir="$repo_root/tests/fuzz/corpus/$target_name"
+    if [ -d "$seed_dir" ]; then
+        cp -n "$seed_dir/"* "$corpus_dir/" 2>/dev/null || true
+    fi
+
     printf 'Running fuzz target %s for %ss\n' "$target_name" "$duration_seconds"
 
     # -max_total_time bounds wall-clock; -runs caps iterations when set;
@@ -126,7 +132,12 @@ run_target() {
         "$target_binary" $fuzz_args "$corpus_dir"
 }
 
-run_target fuzz-canonicaljson "$builddir/tests/fuzz/fuzz-canonicaljson"
-run_target fuzz-http-request "$builddir/tests/fuzz/fuzz-http-request"
+run_target fuzz-canonicaljson    "$builddir/tests/fuzz/fuzz-canonicaljson"
+run_target fuzz-http-request     "$builddir/tests/fuzz/fuzz-http-request"
+run_target fuzz-sync-filter      "$builddir/tests/fuzz/fuzz-sync-filter"
+run_target fuzz-config-parser    "$builddir/tests/fuzz/fuzz-config-parser"
+run_target fuzz-stream-token     "$builddir/tests/fuzz/fuzz-stream-token"
+run_target fuzz-query-params     "$builddir/tests/fuzz/fuzz-query-params"
+run_target fuzz-srv-record       "$builddir/tests/fuzz/fuzz-srv-record"
 
 printf 'All fuzz targets completed cleanly.\n'

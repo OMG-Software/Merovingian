@@ -9,6 +9,11 @@ Built only when `-Dbuild_fuzz=true` is passed to Meson.
 |---|---|
 | `fuzz_canonicaljson.cpp` | Canonical JSON parser |
 | `fuzz_http_request.cpp` | HTTP request parser |
+| `fuzz_sync_filter.cpp` | Sync filter argument parser (`parse_filter_argument`) |
+| `fuzz_config_parser.cpp` | Key-value config parser (`parse_key_value_config`) |
+| `fuzz_stream_token.cpp` | Stream token decoder (`decode_stream_token`) |
+| `fuzz_query_params.cpp` | Query-string parser and percent-decoder |
+| `fuzz_srv_record.cpp` | Portable DNS SRV record parser (`parse_srv_records`) |
 
 ## Adding a new target
 
