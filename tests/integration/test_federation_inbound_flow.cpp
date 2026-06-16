@@ -486,6 +486,59 @@ SCENARIO("Homeserver routes signed inbound federation transactions through runti
     }
 }
 
+// --- Destination binding (relay / replay prevention) --------------------------
+// Spec: Matrix Server-Server API v1.18, Request Authentication (X-Matrix).
+// URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#request-authentication
+//
+// The signed X-Matrix payload binds {origin, destination, method, uri, content}.
+// The receiving server MUST rebuild that payload using its OWN name as the
+// destination, never a destination value supplied by the caller. Otherwise a
+// request a remote signed for server B could be relayed or replayed against this
+// server and still verify. The router must pin destination server-side.
+SCENARIO("Homeserver rejects an inbound federation request signed for a foreign destination",
+         "[integration][federation][security]")
+{
+    GIVEN("a started runtime with a known remote server")
+    {
+        auto started = merovingian::homeserver::start_runtime(federation_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token = std::string{"verify-token"};
+        merovingian::federation::upsert_remote(runtime.federation, remote_for(origin, key_id, token));
+        auto const target = std::string{"/_matrix/federation/v1/send/txn123"};
+        auto const body = transaction_body(origin, signed_json_pdu(origin, key_id, token));
+
+        // The remote signs the request for a DIFFERENT destination and embeds that
+        // claim in the auth token — simulating a relay/replay of a request that was
+        // originally destined for another server.
+        auto const foreign_destination = std::string{"evil.example"};
+        auto const foreign_signature = merovingian::federation::make_federation_signature(
+            origin, foreign_destination, "PUT", target, body,
+            merovingian::federation::test::keypair_from_seed(token).secret_key);
+        auto const foreign_authorization =
+            origin + '|' + key_id + '|' + foreign_signature + '|' + foreign_destination + "|1000|canonical";
+
+        WHEN("the request claiming a foreign destination reaches the local router")
+        {
+            auto const response = merovingian::homeserver::handle_local_http_request(
+                runtime, {"PUT", target, foreign_authorization, body});
+
+            THEN("verification fails closed and no transaction is recorded")
+            {
+                // Spec MUST: the destination is pinned to this server's own name,
+                // so the rebuilt payload cannot match a signature minted for
+                // "evil.example". Do NOT remove/change - trusting a client-supplied
+                // destination reopens a federation request relay/replay vector.
+                REQUIRE(response.status == 403U);
+                REQUIRE(response.body == "request signature verification failed");
+                REQUIRE(runtime.federation.accepted_transactions.empty());
+            }
+        }
+    }
+}
+
 // --- Malformed request rejection ----------------------------------------------
 // Spec: Matrix Server-Server API v1.18, general error handling
 // URL:  ../../docs/matrix-v1.18-spec/server-server-api.md

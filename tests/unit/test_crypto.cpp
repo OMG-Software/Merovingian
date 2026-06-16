@@ -91,6 +91,28 @@ SCENARIO("Crypto constant-time equality preserves exact comparison semantics", "
     }
 }
 
+SCENARIO("Crypto constant-time equality holds at boundaries", "[crypto][security][boundary]")
+{
+    GIVEN("empty, equal-length-differing, and length-mismatched byte strings")
+    {
+        WHEN("the values are compared")
+        {
+            auto const empty_equal = merovingian::crypto::constant_time_equal("", "");
+            auto const differ_last_byte = merovingian::crypto::constant_time_equal("secret-aaaa", "secret-aaab");
+            auto const identical = merovingian::crypto::constant_time_equal("secret-aaaa", "secret-aaaa");
+            auto const length_mismatch = merovingian::crypto::constant_time_equal("secret", "secrets");
+
+            THEN("only exact, equal-length matches are accepted")
+            {
+                REQUIRE(empty_equal);
+                REQUIRE_FALSE(differ_last_byte);
+                REQUIRE(identical);
+                REQUIRE_FALSE(length_mismatch);
+            }
+        }
+    }
+}
+
 SCENARIO("Crypto random boundary rejects invalid request sizes", "[crypto]")
 {
     GIVEN("zero, bounded, and oversized requests")

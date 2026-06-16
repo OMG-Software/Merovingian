@@ -3,25 +3,23 @@
 
 #include "merovingian/crypto/constant_time.hpp"
 
-#include <algorithm>
-#include <cstddef>
+#include <sodium.h>
 
 namespace merovingian::crypto
 {
 
 auto constant_time_equal(std::string_view left, std::string_view right) noexcept -> bool
 {
-    auto difference = left.size() ^ right.size();
-    auto const compared_size = std::max(left.size(), right.size());
-
-    for (std::size_t index = 0; index < compared_size; ++index)
+    // Length is not secret here (token hashes and signatures are fixed-size),
+    // so comparing sizes up front is safe. The equal-length byte comparison is
+    // delegated to libsodium's sodium_memcmp — the hardened, optimisation-proof
+    // constant-time primitive — rather than a hand-rolled loop the compiler
+    // could legally short-circuit.
+    if (left.size() != right.size())
     {
-        auto const left_byte = index < left.size() ? static_cast<unsigned char>(left[index]) : 0U;
-        auto const right_byte = index < right.size() ? static_cast<unsigned char>(right[index]) : 0U;
-        difference |= left_byte ^ right_byte;
+        return false;
     }
-
-    return difference == 0U;
+    return sodium_memcmp(left.data(), right.data(), left.size()) == 0;
 }
 
 } // namespace merovingian::crypto

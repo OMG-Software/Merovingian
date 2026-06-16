@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.15
+Version:        0.8.16
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -100,6 +100,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.16-1
+- fix: pin federation auth destination server-side in the local router to close a relay/replay vector
+- fix: back constant_time_equal with libsodium sodium_memcmp; auth delegates to the crypto wrapper
 * Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.15-1
 - fix: guard curl write callback against unsigned underflow when body exceeds cap
 - fix: guard thumbnailer framing against size_t-to-uint32_t silent truncation for large payloads

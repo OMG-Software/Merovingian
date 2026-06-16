@@ -38,15 +38,22 @@ than the others.
 
 | File | What to change |
 |------|---------------|
-| `meson.build` | `version: 'X.Y.Z'` in the `project()` call (line 5) |
-| `src/main.cpp` | `constexpr auto version = std::string_view{"X.Y.Z"};` (line 39) |
-| `src/db_migrate.cpp` | `constexpr auto version = std::string_view{"X.Y.Z"};` (line 16) |
-| `packaging/freebsd/+MANIFEST` | `version: "X.Y.Z"` (line 2) |
-| `packaging/rpm/merovingian.spec` | `Version: X.Y.Z` (line 2) **and** add a new `%changelog` entry at the top |
-| `scripts/build-deb.sh` | Comment on line 3 and `VERSION="X.Y.Z"` on line 6 |
-| `scripts/build-rpm.sh` | Comment on line 3 and `VERSION="X.Y.Z"` on line 6 |
-| `scripts/build-freebsd-pkg.sh` | Comment on line 3 and `VERSION="X.Y.Z"` on line 6 |
-| `scripts/build-static-linux.sh` | `VERSION="${MEROVINGIAN_VERSION:-X.Y.Z}"` on line 6 |
+| `meson.build` | `version: 'X.Y.Z'` in the `project()` call |
+| `src/main.cpp` | `constexpr auto version = std::string_view{"X.Y.Z"};` |
+| `src/db_migrate.cpp` | `constexpr auto version = std::string_view{"X.Y.Z"};` |
+| `packaging/freebsd/+MANIFEST` | `version: "X.Y.Z"` |
+| `packaging/netbsd/Makefile` | `DISTNAME= merovingian-X.Y.Z` |
+| `packaging/rpm/merovingian.spec` | `Version: X.Y.Z` **and** add a new `%changelog` entry at the top |
+| `packaging/rhel/merovingian.spec` | `Version: X.Y.Z` **and** add a new `%changelog` entry at the top |
+| `packaging/opensuse/merovingian.spec` | `Version: X.Y.Z` **and** add a new `%changelog` entry at the top |
+| `scripts/build-deb.sh` | Comment line and `VERSION="X.Y.Z"` |
+| `scripts/build-rpm.sh` | Comment line and `VERSION="X.Y.Z"` |
+| `scripts/build-rhel-rpm.sh` | Comment line and `VERSION="X.Y.Z"` |
+| `scripts/build-opensuse-rpm.sh` | Comment line and `VERSION="X.Y.Z"` |
+| `scripts/build-freebsd-pkg.sh` | Comment line and `VERSION="X.Y.Z"` |
+| `scripts/build-netbsd-pkg.sh` | Comment line and `VERSION="X.Y.Z"` |
+| `scripts/build-openbsd-pkg.sh` | Comment line and `VERSION="X.Y.Z"` |
+| `scripts/build-static-linux.sh` | `VERSION="${MEROVINGIAN_VERSION:-X.Y.Z}"` |
 | `CHANGELOG.md` | New `## X.Y.Z` section at the top |
 
 ### Notes
@@ -56,10 +63,14 @@ than the others.
   edit.
 - The `packaging/deb/control` template has no version field; it is used only
   for `Depends` and other metadata, not the package version.
-- The RPM `%changelog` requires a new dated entry for every version — the
-  `Version:` field alone is not sufficient for `rpmbuild` to accept the spec.
-- Historical version strings in `CHANGELOG.md` and the RPM `%changelog` are
+- The RPM-family `%changelog` (the `rpm`, `rhel`, and `opensuse` specs) requires
+  a new dated entry for every version — the `Version:` field alone is not
+  sufficient for `rpmbuild` to accept the spec.
+- Historical version strings in `CHANGELOG.md` and every spec `%changelog` are
   records, not live values; do not edit them when bumping.
+- `tests/tooling/test_packages_workflow.py` enforces that every file in the table
+  above carries the current `meson.build` version. Run it (or `python build.py
+  wsl`) after a bump to catch any location that was missed.
 
 ## Release process
 
