@@ -64,6 +64,12 @@ class PackagesWorkflowTests(unittest.TestCase):
             "needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, netbsd-pkg-retry, debian-pkg, rhel-rpm, opensuse-rpm]",
             workflow,
         )
+        # Retry must use .outputs.build_succeeded — not .result — because
+        # continue-on-error masks .result as 'success' even when the job fails.
+        self.assertIn(
+            "if: needs.netbsd-pkg.outputs.build_succeeded != 'true'",
+            workflow,
+        )
         self.assertIn("merovingian-*-linux-static-x86_64.tar.gz", workflow)
 
     def test_publish_latest_retargets_the_release_in_repository_scope(self) -> None:

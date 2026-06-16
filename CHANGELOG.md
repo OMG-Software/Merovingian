@@ -1,5 +1,7 @@
 ## 0.8.12
 
+- **fix(ci): fix NetBSD retry condition and OpenSUSE _FORTIFY_SOURCE redefinition:** `netbsd-pkg-retry` previously gated on `needs.netbsd-pkg.result == 'failure'` which never fires — `continue-on-error: true` masks `.result` as `'success'` even when the job fails. Fixed by surfacing the real build outcome via a job output (`build_succeeded: ${{ steps.build.outcome == 'success' }}`) and gating the retry on `needs.netbsd-pkg.outputs.build_succeeded != 'true'`. OpenSUSE RPM builds failed because `%optflags` injects `-D_FORTIFY_SOURCE=2` while meson's hardening profile adds `-D_FORTIFY_SOURCE=3`; clang treats the redefinition as an error under `-Wmacro-redefined`. Fixed by overriding `%optflags` in `packaging/opensuse/merovingian.spec` to strip the `_FORTIFY_SOURCE` definition before calling `%meson`.
+
 - **fix(ci): retry NetBSD package job once on QEMU infrastructure failure:** `netbsd-pkg-retry` runs automatically when `netbsd-pkg` fails (e.g., ssh exit 139 / QEMU SIGSEGV) and uploads the same `netbsd-package` artifact if the retry succeeds. `publish-latest` now lists `netbsd-pkg-retry` in its `needs` and uses `always()` so a skipped retry (when first attempt succeeds) does not block the release.
 
 - **fix(ci): increase meson test timeouts to 600s for slow QEMU VMs:** unit-tests and conformance-tests both had a 120s meson timeout; OpenBSD QEMU VMs need several minutes to run 588 conformance test cases and were receiving SIGTERM at test 587/588. Both timeouts raised to 600s.

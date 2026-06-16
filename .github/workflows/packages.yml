@@ -212,9 +212,14 @@ jobs:
       contents: read
       attestations: write
       id-token: write
+    outputs:
+      # continue-on-error masks .result as 'success' even on failure, so we
+      # surface the real step outcome via a job output for the retry condition.
+      build_succeeded: ${{ steps.build.outcome == 'success' }}
     steps:
       - uses: actions/checkout@v4
       - name: Build NetBSD package
+        id: build
         uses: vmactions/netbsd-vm@v1
         with:
           usesh: true
@@ -231,13 +236,14 @@ jobs:
           name: netbsd-package
           path: merovingian-*.tgz
 
-  # Retry once on QEMU infrastructure crashes (ssh exit 139 / SIGSEGV).
-  # Only runs when netbsd-pkg fails; skipped on success.
+  # Retry once on QEMU infrastructure crashes (ssh exit 139 / SIGSEGV) or
+  # CDN outages.  continue-on-error on netbsd-pkg masks .result as 'success'
+  # even when the job fails, so we gate on the build_succeeded output instead.
   netbsd-pkg-retry:
     name: NetBSD package (retry)
     runs-on: ubuntu-latest
     needs: netbsd-pkg
-    if: needs.netbsd-pkg.result == 'failure'
+    if: needs.netbsd-pkg.outputs.build_succeeded != 'true'
     continue-on-error: true
     permissions:
       contents: read

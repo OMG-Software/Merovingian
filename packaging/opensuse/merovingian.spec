@@ -41,6 +41,11 @@ Requires:       libcurl4
 Requires:       libpng16-16
 Requires:       libturbojpeg0
 
+# OpenSUSE %optflags includes -D_FORTIFY_SOURCE=2; meson's hardening sets
+# -D_FORTIFY_SOURCE=3.  Clang treats the redefinition as an error under
+# -Werror,-Wmacro-redefined.  Strip it here so meson's level-3 value wins.
+%global optflags %(echo %{optflags} | sed 's/-D_FORTIFY_SOURCE=[^ ]*//g')
+
 %description
 Merovingian is an alpha Matrix Protocol homeserver focused on secure
 implementation, runtime hardening, and auditable dependency boundaries.
