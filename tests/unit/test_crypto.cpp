@@ -12,6 +12,8 @@
 #include <string_view>
 #include <utility>
 
+#include <sodium.h>
+
 namespace
 {
 
@@ -330,6 +332,35 @@ SCENARIO("SecretBox encryption uses a fresh nonce per call", "[crypto][secret_bo
                 REQUIRE(*merovingian::crypto::secret_box_decrypt(*a, *key) == plaintext);
                 REQUIRE(*merovingian::crypto::secret_box_decrypt(*b, *key) == plaintext);
             }
+        }
+    }
+}
+
+SCENARIO("SecretBox fails closed with empty or short input", "[crypto][secret_box]")
+{
+    GIVEN("a derived SecretBox key")
+    {
+        auto const master = std::vector<std::uint8_t>(crypto_generichash_KEYBYTES, 0xABU);
+        auto const key = merovingian::crypto::derive_secret_box_key(master);
+        REQUIRE(key.has_value());
+
+        THEN("deriving a key from empty material fails closed")
+        {
+            auto const empty = std::vector<std::uint8_t>{};
+            REQUIRE_FALSE(merovingian::crypto::derive_secret_box_key(empty).has_value());
+        }
+
+        THEN("encrypting empty plaintext fails closed")
+        {
+            auto const empty = std::vector<std::uint8_t>{};
+            REQUIRE_FALSE(merovingian::crypto::secret_box_encrypt(empty, *key).has_value());
+        }
+
+        THEN("decrypting a ciphertext shorter than nonce+mac fails closed")
+        {
+            auto const short_ciphertext = merovingian::crypto::SecretBoxCiphertext{
+                .bytes = std::vector<std::uint8_t>(crypto_secretbox_NONCEBYTES, 0U)};
+            REQUIRE_FALSE(merovingian::crypto::secret_box_decrypt(short_ciphertext, *key).has_value());
         }
     }
 }

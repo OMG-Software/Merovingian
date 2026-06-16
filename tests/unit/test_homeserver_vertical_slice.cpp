@@ -1050,6 +1050,35 @@ SCENARIO("rotate_server_signing_key encrypts the new secret when a master key is
     }
 }
 
+SCENARIO("ensure_runtime_server_signing_key fails closed when an encrypted secret lacks a master key",
+         "[homeserver][vertical][signing][security]")
+{
+    GIVEN("a runtime whose store contains a secretbox:v1: secret but no master key is configured")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.database.persistent_store.server_signing_keys.clear();
+        runtime.database.persistent_store.server_signing_keys.push_back({
+            runtime.config.server().server_name,
+            "ed25519:deadbeef",
+            "public-key-base64",
+            32503680000000ULL,
+            "secretbox:v1:not-valid-base64",
+        });
+
+        WHEN("the signing key is ensured without a master key")
+        {
+            auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("no usable key is returned because the encrypted secret cannot be decrypted")
+            {
+                REQUIRE_FALSE(key.has_value());
+            }
+        }
+    }
+}
+
 SCENARIO("Homeserver rejects unauthenticated room route operations", "[homeserver][vertical][security]")
 {
     GIVEN("a started runtime")
