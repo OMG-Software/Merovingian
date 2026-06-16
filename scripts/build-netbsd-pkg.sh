@@ -31,7 +31,7 @@ meson setup build-netbsd-pkg \
     -Dbuild_fuzz=false
 
 meson compile -C build-netbsd-pkg
-meson install -C build-netbsd-pkg --destdir "${PWD}/${STAGE}"
+meson install -C build-netbsd-pkg --destdir "${PWD}/${STAGE}" --skip-subprojects
 
 # 2. rc.d example script (pkgsrc installs under share/examples/rc.d) with the
 #    pkgsrc @PREFIX@/@PKG_SYSCONFDIR@ placeholders substituted; sample config.

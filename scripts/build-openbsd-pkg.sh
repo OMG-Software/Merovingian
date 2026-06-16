@@ -24,7 +24,7 @@ meson setup build-openbsd-pkg \
     -Dbuild_fuzz=false
 
 meson compile -C build-openbsd-pkg
-meson install -C build-openbsd-pkg --destdir "${PWD}/${STAGE}"
+meson install -C build-openbsd-pkg --destdir "${PWD}/${STAGE}" --skip-subprojects
 
 # 2. Stage the rc.d control script and sample config (outside ${PREFIX}).
 install -d "${STAGE}/etc/rc.d"
