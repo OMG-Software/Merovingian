@@ -379,12 +379,12 @@ auto main() -> int
     }
 
     auto const frame_opt = merovingian::media::frame_thumbnail_response(response);
+    // LCOV_EXCL_START — only reachable for >4 GiB PNG; impossible with any sane max_pixels limit
     if (!frame_opt.has_value())
     {
-        // PNG output exceeding UINT32_MAX bytes cannot be framed; this is physically
-        // impossible given sane max_pixels limits but the protocol must not silently corrupt.
         return 1;
     }
+    // LCOV_EXCL_STOP
     write_all_stdout(*frame_opt);
     return 0;
 }

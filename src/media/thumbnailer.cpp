@@ -163,10 +163,12 @@ auto map_content_type_to_source_format(std::string_view content_type) -> std::op
 
 auto frame_thumbnail_request(ThumbnailWorkerRequest const& request) -> std::optional<std::string>
 {
+    // LCOV_EXCL_START — requires a >4 GiB source_bytes; max_upload_bytes enforces this upstream
     if (request.source_bytes.size() > std::numeric_limits<std::uint32_t>::max())
     {
         return std::nullopt;
     }
+    // LCOV_EXCL_STOP
     auto frame = std::string{request_magic};
     frame.push_back(static_cast<char>(request.format));
     frame.push_back(static_cast<char>(request.method));
@@ -209,10 +211,12 @@ auto parse_thumbnail_request(std::string_view frame) -> std::optional<ThumbnailW
 
 auto frame_thumbnail_response(ThumbnailWorkerResponse const& response) -> std::optional<std::string>
 {
+    // LCOV_EXCL_START — requires a >4 GiB PNG; physically impossible with any sane max_pixels limit
     if (response.png_bytes.size() > std::numeric_limits<std::uint32_t>::max())
     {
         return std::nullopt;
     }
+    // LCOV_EXCL_STOP
     auto frame = std::string{response_magic};
     frame.push_back(static_cast<char>(response.status));
     append_u32(frame, response.width);
@@ -295,10 +299,12 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     worker_request.max_pixels = config.max_pixels;
     worker_request.source_bytes = request.source_bytes;
     auto const frame_opt = frame_thumbnail_request(worker_request);
+    // LCOV_EXCL_START — only reachable when source_bytes > 4 GiB; prevented by max_upload_bytes
     if (!frame_opt.has_value())
     {
         return {false, 413U, {}, {}, 0U, 0U, "source image too large for thumbnail wire protocol"};
     }
+    // LCOV_EXCL_STOP
     auto const& frame = *frame_opt;
 
     // stdin: parent writes -> child reads; stdout: child writes -> parent reads.
