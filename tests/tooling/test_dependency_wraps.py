@@ -314,8 +314,9 @@ class DependencyWrapTests(unittest.TestCase):
         tests_meson = tests_build.read_text(encoding="utf-8")
 
         # WHEN fallback, coverage, or sanitizer builds execute the aggregate binary.
-        # THEN the Meson test timeout is explicit and larger than the 30s default.
-        self.assertIn("test('unit-tests', unit_tests, timeout: 120)", tests_meson)
+        # THEN the Meson test timeout is explicit and large enough for slow QEMU VMs
+        # (OpenBSD/NetBSD) that need several minutes for the full conformance suite.
+        self.assertIn("test('unit-tests', unit_tests, timeout: 600)", tests_meson)
 
     def test_phase1_config_validation_uses_wrapped_runtime_libraries(self) -> None:
         # GIVEN the Phase 1 config validation script runs built executables directly.
