@@ -1,3 +1,9 @@
+## 0.8.13
+
+- **docs: close OpenBSD/NetBSD beta milestone item in priorities and capability-gaps:** `docs/todos/priorities.md` item 2 struck through; `docs/todos/capability-gaps.md` supply-chain row updated to include RHEL-compatible and OpenSUSE packages now shipping in CI.
+
+- **docs: update supported-platform documentation across platform-support, release-process, and dev-environment:** `platform-support.md` corrects the OpenSUSE libjpeg-turbo package name to `libjpeg8-devel` (the correct Tumbleweed name) and updates the NetBSD Tier 2 description — the package job now assembles the `.tgz` with `tar` rather than `pkg_create` due to a bug in NetBSD 10.x's base `pkg_create` under QEMU. `release-process.md` updates the rolling-latest and alpha-release sections to list all supported platforms (Debian trixie, RHEL-compatible, OpenSUSE Tumbleweed, OpenBSD, NetBSD) not just Debian and Fedora. `dev-environment.md` adds the distro-specific packaging scripts to the packaging-targets section.
+
 ## 0.8.12
 
 - **fix(ci): bypass pkg_create SIGSEGV on NetBSD by assembling the .tgz with tar:** NetBSD 10.x's base system `pkg_create` segfaults (ssh exit 139) when it scans hardened ELF binaries under QEMU — reproducible on both first attempt and retry with a clean packing list. Rewrote `scripts/build-netbsd-pkg.sh` to assemble the package archive directly using tar: meta-files (`+CONTENTS`, `+COMMENT`, `+DESC`, `+BUILD_INFO`) are written first at the archive root, followed by the package files at their install-relative paths. The resulting `.tgz` is compatible with `pkg_add`.

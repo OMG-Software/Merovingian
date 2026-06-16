@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.12
+Version:        0.8.13
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -111,6 +111,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.13-1
+- docs: update platform-support, release-process, dev-environment for all supported platforms
+
 * Mon Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.12-1
 - Initial OpenSUSE Tumbleweed package
 - ci: add Debian trixie, RHEL-compatible, and OpenSUSE Tumbleweed CI and packaging jobs

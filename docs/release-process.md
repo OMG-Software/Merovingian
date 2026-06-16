@@ -13,7 +13,7 @@ v*-alpha*
 Pushing a matching tag triggers [release.yml](../.github/workflows/release.yml).
 That workflow:
 
-- builds Linux and FreeBSD packages with the hardened profile
+- builds packages for all Tier 1 platforms (Linux, FreeBSD, OpenBSD, NetBSD) with the hardened profile
 - runs the full Meson test suite on both platforms
 - runs Linux phase 1 configuration validation
 - runs the unsafe-source gate
@@ -92,9 +92,22 @@ dependency-triage workflow keeps a separate vulnerability report artifact.
 ## Rolling latest packages
 
 Pushes to `main` also trigger [packages.yml](../.github/workflows/packages.yml).
-That workflow rebuilds the Debian, Fedora RPM, FreeBSD, and static Linux
-fallback packages, replaces the rolling `latest` GitHub prerelease, and uploads
-fresh package checksums. Each package is individually attested with
+That workflow rebuilds packages for all supported platforms, replaces the
+rolling `latest` GitHub prerelease, and uploads fresh package checksums:
+
+| Artifact | Job |
+|---|---|
+| Ubuntu `.deb` | `deb` |
+| Debian trixie `.deb` | `debian-pkg` |
+| Fedora `.rpm` | `rpm` |
+| RHEL-compatible `.rpm` (AlmaLinux 10) | `rhel-rpm` |
+| OpenSUSE Tumbleweed `.rpm` | `opensuse-rpm` |
+| FreeBSD `.pkg` | `freebsd-pkg` |
+| OpenBSD `.tgz` | `openbsd-pkg` |
+| NetBSD `.tgz` | `netbsd-pkg` (retried once on QEMU infrastructure failure) |
+| Portable static Linux tarball (musl) | `static-linux-fallback` |
+
+Each package is individually attested with
 `actions/attest-build-provenance` before upload, verifiable with:
 
 ```sh
