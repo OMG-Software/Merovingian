@@ -375,18 +375,29 @@ jobs:
     steps:
       - name: Install build dependencies
         run: |
-          zypper --non-interactive refresh
-          zypper --non-interactive install -y \
-            ccache clang gcc-c++ meson ninja pkg-config git \
-            libopenssl-devel \
-            libsodium-devel \
-            postgresql-devel \
-            libpng16-devel \
-            libjpeg8-devel \
-            libcurl-devel \
-            sqlite3-devel \
-            perl bison flex m4 \
-            rpm-build systemd-rpm-macros
+          set -e
+          # Transient CDN timeouts fetching Tumbleweed repo metadata are the
+          # most common cause of OpenSUSE CI failures.  Retry refresh + install
+          # a few times before giving up; --gpg-auto-import-keys tolerates key
+          # rotation on the download mirrors.
+          for attempt in 1 2 3; do
+            if zypper --non-interactive --gpg-auto-import-keys refresh && \
+               zypper --non-interactive install -y \
+                 ccache clang gcc-c++ meson ninja pkg-config git \
+                 libopenssl-devel \
+                 libsodium-devel \
+                 postgresql-devel \
+                 libpng16-devel \
+                 libjpeg8-devel \
+                 libcurl-devel \
+                 sqlite3-devel \
+                 perl bison flex m4 \
+                 rpm-build systemd-rpm-macros; then
+              break
+            fi
+            echo "zypper attempt ${attempt} failed; retrying in 15s"
+            sleep 15
+          done
       - uses: actions/checkout@v4
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@v1.2

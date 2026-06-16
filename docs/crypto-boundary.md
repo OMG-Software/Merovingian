@@ -19,6 +19,9 @@ implementing custom cryptographic primitives.
 - Event-signing integration tests using deterministic provider doubles.
 - Cryptographically random Ed25519 keypair generation for runtime signing
   (replacing the previous deterministic derivation from public values).
+- `secret_box` authenticated encryption for at-rest signing-secret storage,
+  using a domain-separated XSalsa20-Poly1305 key derived from a configured
+  master key (`security.secrets.master_key_file`).
 
 ## Security posture
 
@@ -32,16 +35,20 @@ construction seeded from runtime secret material; the previous unkeyed
 `token-hash:v2` form remains accepted only for lookup compatibility with older
 persisted rows.
 
-The runtime signing key is now generated using `crypto_sign_keypair`, which
-produces a cryptographically random keypair. The secret key is held only in
-process memory and is not persisted to disk; on restart a new keypair is
-generated and the public key is upserted, effecting an automatic key rotation.
-An explicit rotation is also available via `rotate_server_signing_key`: it retires
-the active key (setting its `valid_until_ts` to now so it publishes under
-`old_verify_keys` with a past `expired_ts`) and activates a freshly generated key.
-`ensure_runtime_server_signing_key` selects the key with the greatest
-`valid_until_ts`, so the rotated-in key becomes active while peers can still verify
-events signed under the retired key. A single key is active at a time.
+The runtime signing key is generated using `crypto_sign_keypair`, which produces
+a cryptographically random keypair. When `security.secrets.master_key_file` is
+configured, the secret seed is encrypted at rest with `secret_box` and a
+random nonce, stored as `secretbox:v1:<base64(nonce || mac || ciphertext)>`, and
+transparently decrypted on restart. If no master key is configured the secret is
+stored as a legacy plaintext base64 value and a one-time diagnostic warns the
+operator; this fallback preserves backward compatibility with existing
+deployments and test configurations. An explicit rotation is available via
+`rotate_server_signing_key`: it retires the active key (setting its
+`valid_until_ts` to now so it publishes under `old_verify_keys` with a past
+`expired_ts`) and activates a freshly generated key. `ensure_runtime_server_signing_key`
+selects the key with the greatest `valid_until_ts`, so the rotated-in key becomes
+active while peers can still verify events signed under the retired key. A single
+key is active at a time.
 Comma-delimited PDUs without JSON are rejected when a signing key is available,
 closing the legacy-verification bypass.
 
@@ -60,6 +67,9 @@ The boundary provides these guarantees:
   public server identity values.
 - Newly issued bearer-token digests are keyed, so a database leak no longer
   exposes reusable unkeyed token hashes for offline correlation.
+- The server signing secret is encrypted at rest when a master key is configured;
+  deployments without a master key fall back to plaintext with a diagnostic so the
+  operator can rotate to encrypted storage.
 - Commma-delimited PDUs without JSON body are rejected rather than bypassing
   Ed25519 cryptographic verification.
 
@@ -70,12 +80,13 @@ These remain deferred:
 - Simultaneously-active multiple signing keys (one key is active at a time).
 - Audit-log persistence for signing-key lifecycle changes.
 - Hardware-backed key support.
-- Persistent secret-key storage (key file, HSM, or key vault).
+- Encrypted key storage without operator-supplied master-key material (the master
+  key file must be provisioned and protected by the administrator).
 
 ## Next starting points
 
 1. Add dependency review documentation for the selected crypto provider.
 2. Add a concrete production provider behind the Ed25519 and RNG interfaces.
-3. Add persistent secret-key storage so the signing key survives restarts
-   without automatic rotation (key file, HSM, or key vault).
-4. Add audit events for signing-key lifecycle changes.
+3. Add audit events for signing-key lifecycle changes.
+4. Investigate hardware-backed key storage (HSM or key vault) for operator-managed
+   deployments that cannot rely on a filesystem master key.

@@ -251,6 +251,53 @@ SCENARIO("Homeserver registration follows runtime registration config", "[homese
     }
 }
 
+// --- Registration token verification -----------------------------------------
+// Spec: Merovingian security policy
+//
+// Registration tokens MUST be compared with a password-grade KDF (Argon2id)
+// rather than a plaintext byte comparison.  The server MUST reject a token that
+// differs by even one character, and MUST accept the configured token.
+SCENARIO("Homeserver rejects an incorrect registration token and accepts the configured one",
+         "[homeserver][vertical][auth][security]")
+{
+    GIVEN("a runtime with token-protected registration")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("a client registers with the wrong token")
+        {
+            auto const bad = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          std::string{"alice|CorrectHorse7!|wrong-token"}});
+
+            THEN("registration is rejected")
+            {
+                REQUIRE(bad.status == 403U);
+                REQUIRE(bad.body == "registration token rejected");
+            }
+        }
+
+        WHEN("a client registers with the correct token")
+        {
+            auto const good = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+
+            THEN("registration succeeds and returns the fully-qualified user ID")
+            {
+                REQUIRE(good.status == 200U);
+                REQUIRE(good.body == "@alice:example.org");
+            }
+        }
+    }
+}
+
 // --- Session creation and token revocation -----------------------------------
 // Spec: Matrix Client-Server API v1.18
 // URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#login

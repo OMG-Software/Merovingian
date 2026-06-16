@@ -418,6 +418,10 @@ namespace
                 add_parse_finding(findings, std::string{key}, "expected boolean value");
             }
         }
+        else if (key == "security.secrets.master_key_file")
+        {
+            security.secrets.master_key_file = std::string{value};
+        }
         else
         {
             add_parse_finding(findings, std::string{key}, "unknown configuration key");

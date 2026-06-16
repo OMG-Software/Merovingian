@@ -20,6 +20,7 @@
 - Device and key APIs
 - E2EE /keys/upload signature validation (verifies one-time and fallback key signatures against the device's own identity key, rejecting unverifiable keys with 400 M_INVALID_SIGNATURE)
 - Token handling
+- Server signing-key persistence
 - Media handling
 - Image decoding (thumbnail generation; isolated in a sandboxed worker)
 - Outbound requests (SSRF via federation discovery and remote media fetch)
@@ -60,7 +61,7 @@ flowchart TB
 | Remote exhaustion attacker | Listeners, queues, parsers | Bounded queues, rate limiting, resource limits, circuit breakers |
 | Media upload attacker | Image decoding | Out-of-process seccomp/rlimit-sandboxed worker, pixel-count decode-bomb guard, MIME sniffing, quarantine |
 | Malicious reverse proxy | Header/transport trust | Production listener rejects test-only credential encodings; response header validation |
-| DB exfiltration attacker | Persistence | Prepared statements only, runtime/migration role separation, audit redaction |
+| DB exfiltration attacker | Persistence | Prepared statements only, runtime/migration role separation, audit redaction; at-rest encryption for the server signing secret when a master key is configured; Argon2id hashing for registration tokens |
 | Supply-chain attacker | Dependencies, release | Vendored/pinned subprojects, secret scanning, SBOM; signing/provenance tracked in production milestone |
 | Compromised administrator | Admin surface | Audited admin actions; richer admin authZ tracked as a gap |
 
@@ -109,6 +110,22 @@ threat it closes; the controls above are the standing defences these reinforce.
   PDUs without calling `authorize_event_against_auth_events`. A federated peer could
   persist events that violate the room's power-level and membership rules. Fixed by running
   full event-authorization against the room's current resolved state before persistence.
+
+- **Server signing secret stored plaintext at rest:** the Ed25519 server signing
+  secret seed was persisted as a base64 plaintext value in the database, so a DB
+  exfiltration attacker could forge federation signatures and impersonate the
+  server. Fixed by encrypting the seed with `secret_box` under a domain-separated
+  XSalsa20-Poly1305 key derived from `security.secrets.master_key_file`; a
+  transparent plaintext fallback remains for deployments that have not yet
+  provisioned a master key, with a one-time diagnostic so operators can rotate
+  to encrypted storage.
+
+- **Registration token stored and compared as plaintext:** the shared
+  registration token was loaded from config and compared with `sodium_memcmp`,
+  leaving the token in long-term process memory and exposing a timing side-channel.
+  Fixed by hashing the token with Argon2id (`crypto_pwhash_str`) and verifying
+  with `crypto_pwhash_str_verify`; only the hash is retained, and the plaintext
+  token is zeroised after hashing.
 
 - **Untrusted image decoding in-process:** generating thumbnails requires
   decoding attacker-supplied PNG/JPEG bytes, and the C image parsers

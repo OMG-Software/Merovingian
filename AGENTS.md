@@ -47,6 +47,18 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Make the correct change for the ask, not the smallest.
 - Update `CHANGELOG.md` on every change.
 
+## Ignore list
+Ignore these dirs:
+- .claude/
+- .github/
+- .idea/
+- .pytest_cache/
+- .vscode/
+- .worktrees/
+- build/
+- buildDir/
+- build-*/
+
 ## Project Layout
 Source headers (`include/merovingian/`) and implementations (`src/`) mirror each other by module.
 

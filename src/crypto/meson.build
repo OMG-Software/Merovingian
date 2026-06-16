@@ -2,6 +2,7 @@ crypto_sources = files(
   'constant_time.cpp',
   'ed25519.cpp',
   'random.cpp',
+  'secret_box.cpp',
   'signing_service.cpp',
 )
 
