@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.17
+Version:        0.8.18
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -111,7 +111,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.17-1
+* Wed Jun 17 2026 James Chapman <claude@ping.me.uk> - 0.8.18-1
+- Security hardening: seccomp fail-closed, thumbnail worker fd sandbox, state caps, token key separation, atomic migrations.
+
+* Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.18-1
 - fix(crypto): encrypt the Ed25519 server signing secret at rest when a master key is configured
 - fix(auth): hash the registration token with Argon2id instead of storing/comparing plaintext
 - fix(ci): harden OpenSUSE Tumbleweed dependency install against transient zypper refresh timeouts

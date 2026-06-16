@@ -1,3 +1,12 @@
+## 0.8.18
+
+### Security
+- Fail-closed seccomp default action and tightened filesystem-syscall allowlist.
+- Thumbnail worker no longer inherits parent file descriptors.
+- Hard resource caps on federation event signatures and state resolution.
+- Access-token HMAC key is now derived from the master key, not the Ed25519 signing secret.
+- SQLite migrations are atomic and DDL identifiers are allowlisted/quoted.
+
 ## 0.8.17
 
 - **fix(crypto): encrypt the Ed25519 server signing secret at rest when a master key is configured:** `ensure_runtime_server_signing_key` and `rotate_server_signing_key` in `src/homeserver/room_service.cpp` previously stored the secret Ed25519 seed as a base64 plaintext string in the database. A new `secret_box` helper in `src/crypto/secret_box.cpp` derives a domain-separated XSalsa20-Poly1305 key from a 256-bit master key read from `security.secrets.master_key_file`, and encrypts the seed with a random nonce and the `secretbox:v1:` storage prefix. The signing-key paths transparently decrypt legacy plaintext or `secretbox:v1:` records; when no master key is configured they continue to fall back to plaintext with a one-time diagnostic so existing deployments and tests are not broken. `crypto_lib` gains the new source; unit tests in `tests/unit/test_crypto.cpp` cover key derivation, round-trip, tamper detection, and nonce freshness.
