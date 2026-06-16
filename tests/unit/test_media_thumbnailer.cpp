@@ -9,6 +9,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <utility>
 
 SCENARIO("thumbnail request frames round-trip", "[media][thumbnail]")
 {
@@ -24,8 +25,9 @@ SCENARIO("thumbnail request frames round-trip", "[media][thumbnail]")
 
         WHEN("the request is framed and parsed back")
         {
-            auto const frame = merovingian::media::frame_thumbnail_request(request);
-            auto const parsed = merovingian::media::parse_thumbnail_request(frame);
+            auto const frame_opt = merovingian::media::frame_thumbnail_request(request);
+            REQUIRE(frame_opt.has_value());
+            auto const parsed = merovingian::media::parse_thumbnail_request(*frame_opt);
 
             THEN("every field is preserved exactly")
             {
@@ -53,8 +55,9 @@ SCENARIO("thumbnail response frames round-trip", "[media][thumbnail]")
 
         WHEN("the response is framed and parsed back")
         {
-            auto const frame = merovingian::media::frame_thumbnail_response(response);
-            auto const parsed = merovingian::media::parse_thumbnail_response(frame);
+            auto const frame_opt = merovingian::media::frame_thumbnail_response(response);
+            REQUIRE(frame_opt.has_value());
+            auto const parsed = merovingian::media::parse_thumbnail_response(*frame_opt);
 
             THEN("the status, dimensions, and bytes survive")
             {
@@ -87,7 +90,9 @@ SCENARIO("malformed frames are rejected", "[media][thumbnail]")
         auto request = merovingian::media::ThumbnailWorkerRequest{};
         request.format = merovingian::media::ThumbnailSourceFormat::png;
         request.source_bytes = "abcd";
-        auto frame = merovingian::media::frame_thumbnail_request(request);
+        auto frame_opt = merovingian::media::frame_thumbnail_request(request);
+        REQUIRE(frame_opt.has_value());
+        auto frame = std::move(*frame_opt);
 
         WHEN("a trailing byte is appended")
         {
@@ -95,6 +100,57 @@ SCENARIO("malformed frames are rejected", "[media][thumbnail]")
             auto const parsed = merovingian::media::parse_thumbnail_request(frame);
 
             THEN("the length mismatch is detected")
+            {
+                REQUIRE_FALSE(parsed.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("parse rejects request frame with maximum input_len and no payload", "[media][thumbnail][security]")
+{
+    GIVEN("a well-formed 22-byte request header whose input_len field is UINT32_MAX")
+    {
+        // Frame layout: "MTH1"(4) + format(1) + method(1) + w(4) + h(4) + max_px(4) + input_len(4)
+        // input_len = 0xFFFFFFFF but no payload bytes follow — a mismatch the parser must catch.
+        auto frame = std::string{};
+        frame += "MTH1";                  // magic
+        frame.push_back('\x00');          // format = png
+        frame.push_back('\x00');          // method = scale
+        frame.append(4U, '\x00');         // target_width
+        frame.append(4U, '\x00');         // target_height
+        frame.append(4U, '\x00');         // max_pixels
+        frame.append(4U, '\xFF');         // input_len = UINT32_MAX (big-endian 0xFFFFFFFF)
+
+        WHEN("the frame is parsed as a thumbnail request")
+        {
+            auto const parsed = merovingian::media::parse_thumbnail_request(frame);
+
+            THEN("parsing is rejected because the declared length cannot match the zero-byte payload")
+            {
+                REQUIRE_FALSE(parsed.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("parse rejects response frame with maximum output_len and no payload", "[media][thumbnail][security]")
+{
+    GIVEN("a well-formed 17-byte response header whose output_len field is UINT32_MAX")
+    {
+        // Frame layout: "MTR1"(4) + status(1) + w(4) + h(4) + output_len(4)
+        auto frame = std::string{};
+        frame += "MTR1";                  // magic
+        frame.push_back('\x00');          // status = ok
+        frame.append(4U, '\x00');         // width
+        frame.append(4U, '\x00');         // height
+        frame.append(4U, '\xFF');         // output_len = UINT32_MAX (big-endian 0xFFFFFFFF)
+
+        WHEN("the frame is parsed as a thumbnail response")
+        {
+            auto const parsed = merovingian::media::parse_thumbnail_response(frame);
+
+            THEN("parsing is rejected because the declared length cannot match the zero-byte payload")
             {
                 REQUIRE_FALSE(parsed.has_value());
             }

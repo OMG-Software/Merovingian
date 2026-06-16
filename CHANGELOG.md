@@ -1,3 +1,11 @@
+## 0.8.15
+
+- **fix(http): guard curl write callback against unsigned underflow:** `mero_curl_write_body` in `src/http/outbound_client.cpp` tested `bytes > sink->cap - sink->body.size()` — wrapping to a huge value when `body.size() >= cap`. Added an explicit `sink->body.size() >= sink->cap` pre-check so the subtraction is only evaluated when it cannot underflow.
+
+- **fix(media): guard thumbnailer framing against size_t→uint32_t silent truncation:** `frame_thumbnail_request` and `frame_thumbnail_response` in `src/media/thumbnailer.cpp` cast `source_bytes.size()` / `png_bytes.size()` directly to `uint32_t`, silently truncating payloads larger than 4 GiB. Changed return types to `std::optional<std::string>` (returning `nullopt` when the payload exceeds `UINT32_MAX`) and updated both callers to handle the failure case explicitly. Updated `tests/unit/test_media_thumbnailer.cpp` with two new parser-robustness scenarios (crafted frames with `input_len = UINT32_MAX` and no payload) and adapted existing round-trip tests to unwrap the optional.
+
+- **fix(media): use saturating multiply for thumbnail worker memory limit:** `worker_plan()` in `src/media/repository.cpp` computed `config.max_upload_bytes * 64U` without overflow protection; a sufficiently large config value would wrap `uint64_t` to a tiny number. Replaced with a saturating multiply that clamps to `UINT64_MAX` when `max_upload_bytes > UINT64_MAX / 64`.
+
 ## 0.8.14
 
 - **docs: document fuzz testing in testing-standards.md:** added a Fuzz testing section covering how to run locally, seed corpus conventions, CI schedule (120 s on PR / 900 s weekly), how to add a new target, and the crash-finding workflow (minimise → regression test with `[fuzz][regression]` → corpus entry → fix).

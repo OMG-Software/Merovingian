@@ -10,6 +10,8 @@
 #include <chrono>
 #include <cstdint>
 #include <cstring>
+#include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -159,8 +161,12 @@ auto map_content_type_to_source_format(std::string_view content_type) -> std::op
     return std::nullopt;
 }
 
-auto frame_thumbnail_request(ThumbnailWorkerRequest const& request) -> std::string
+auto frame_thumbnail_request(ThumbnailWorkerRequest const& request) -> std::optional<std::string>
 {
+    if (request.source_bytes.size() > std::numeric_limits<std::uint32_t>::max())
+    {
+        return std::nullopt;
+    }
     auto frame = std::string{request_magic};
     frame.push_back(static_cast<char>(request.format));
     frame.push_back(static_cast<char>(request.method));
@@ -201,8 +207,12 @@ auto parse_thumbnail_request(std::string_view frame) -> std::optional<ThumbnailW
     return request;
 }
 
-auto frame_thumbnail_response(ThumbnailWorkerResponse const& response) -> std::string
+auto frame_thumbnail_response(ThumbnailWorkerResponse const& response) -> std::optional<std::string>
 {
+    if (response.png_bytes.size() > std::numeric_limits<std::uint32_t>::max())
+    {
+        return std::nullopt;
+    }
     auto frame = std::string{response_magic};
     frame.push_back(static_cast<char>(response.status));
     append_u32(frame, response.width);
@@ -284,7 +294,12 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     worker_request.target_height = dimensions->second;
     worker_request.max_pixels = config.max_pixels;
     worker_request.source_bytes = request.source_bytes;
-    auto const frame = frame_thumbnail_request(worker_request);
+    auto const frame_opt = frame_thumbnail_request(worker_request);
+    if (!frame_opt.has_value())
+    {
+        return {false, 413U, {}, {}, 0U, 0U, "source image too large for thumbnail wire protocol"};
+    }
+    auto const& frame = *frame_opt;
 
     // stdin: parent writes -> child reads; stdout: child writes -> parent reads.
     auto to_child = std::array<int, 2>{-1, -1};

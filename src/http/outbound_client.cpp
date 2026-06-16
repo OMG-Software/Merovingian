@@ -248,9 +248,9 @@ namespace
             return 0U;
         }
         auto const bytes = size * nmemb;
-        // Guard against accumulating past the cap. The subtraction form avoids
-        // any overflow concern if bytes is enormous.
-        if (bytes > sink->cap - sink->body.size())
+        // Guard against accumulating past the cap. Check body.size() first to
+        // prevent underflow in the subtraction when body already meets or exceeds cap.
+        if (sink->body.size() >= sink->cap || bytes > sink->cap - sink->body.size())
         {
             sink->too_large = true;
             return 0U;

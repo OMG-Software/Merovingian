@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -100,9 +101,11 @@ struct ThumbnailerConfig final
 [[nodiscard]] auto map_content_type_to_source_format(std::string_view content_type)
     -> std::optional<ThumbnailSourceFormat>;
 
-[[nodiscard]] auto frame_thumbnail_request(ThumbnailWorkerRequest const& request) -> std::string;
+// Returns nullopt when source_bytes.size() exceeds UINT32_MAX (wire protocol limit).
+[[nodiscard]] auto frame_thumbnail_request(ThumbnailWorkerRequest const& request) -> std::optional<std::string>;
 [[nodiscard]] auto parse_thumbnail_request(std::string_view frame) -> std::optional<ThumbnailWorkerRequest>;
-[[nodiscard]] auto frame_thumbnail_response(ThumbnailWorkerResponse const& response) -> std::string;
+// Returns nullopt when png_bytes.size() exceeds UINT32_MAX (wire protocol limit).
+[[nodiscard]] auto frame_thumbnail_response(ThumbnailWorkerResponse const& response) -> std::optional<std::string>;
 [[nodiscard]] auto parse_thumbnail_response(std::string_view frame) -> std::optional<ThumbnailWorkerResponse>;
 
 // --- Parent driver -----------------------------------------------------------

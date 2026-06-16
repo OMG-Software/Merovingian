@@ -378,6 +378,13 @@ auto main() -> int
         }
     }
 
-    write_all_stdout(merovingian::media::frame_thumbnail_response(response));
+    auto const frame_opt = merovingian::media::frame_thumbnail_response(response);
+    if (!frame_opt.has_value())
+    {
+        // PNG output exceeding UINT32_MAX bytes cannot be framed; this is physically
+        // impossible given sane max_pixels limits but the protocol must not silently corrupt.
+        return 1;
+    }
+    write_all_stdout(*frame_opt);
     return 0;
 }

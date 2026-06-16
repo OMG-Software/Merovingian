@@ -11,6 +11,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -154,9 +155,19 @@ namespace
         plan.private_tmp = true;
         plan.seccomp_required = true;
         plan.decode_timeout_seconds = 10U;
-        plan.memory_limit_bytes = config.max_decode_output_bytes == 0U
-                                      ? std::max<std::uint64_t>(268435456U, config.max_upload_bytes * 64U)
-                                      : config.max_decode_output_bytes;
+        if (config.max_decode_output_bytes == 0U)
+        {
+            // Saturating multiply: prevent uint64_t wrap when max_upload_bytes is extreme.
+            constexpr auto max_safe = std::numeric_limits<std::uint64_t>::max() / 64U;
+            auto const scaled = config.max_upload_bytes > max_safe
+                                    ? std::numeric_limits<std::uint64_t>::max()
+                                    : config.max_upload_bytes * 64U;
+            plan.memory_limit_bytes = std::max<std::uint64_t>(268435456U, scaled);
+        }
+        else
+        {
+            plan.memory_limit_bytes = config.max_decode_output_bytes;
+        }
         return plan;
     }
 

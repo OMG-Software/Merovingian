@@ -108,8 +108,11 @@ posture:
 - `CURLOPT_RESOLVE` populated from `pinned_addresses` so the connection
   is locked to addresses validated by the federation security policy
 
-The response body is captured up to `max_response_body_bytes`. Oversized
-responses abort the transfer and surface as `response_too_large`. A 3xx
+The response body is captured up to `max_response_body_bytes`. The write
+callback guards against unsigned underflow: it checks `body.size() >= cap`
+before evaluating `bytes > cap - body.size()`, preventing wrap-around when
+the accumulated body already meets the cap. Oversized responses abort the
+transfer and surface as `response_too_large`. A 3xx
 response surfaces as `redirect_rejected` with the status and headers
 preserved on the result for audit logging.
 
