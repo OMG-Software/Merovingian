@@ -1,5 +1,7 @@
 ## 0.8.14
 
+- **docs: document fuzz testing in testing-standards.md:** added a Fuzz testing section covering how to run locally, seed corpus conventions, CI schedule (120 s on PR / 900 s weekly), how to add a new target, and the crash-finding workflow (minimise → regression test with `[fuzz][regression]` → corpus entry → fix).
+
 - **feat(fuzz): add five new fuzz targets with checked-in seed corpus:** `fuzz_sync_filter` (sync filter argument parser), `fuzz_config_parser` (key-value config parser), `fuzz_stream_token` (stream token decoder), `fuzz_query_params` (query-string parser and percent-decoder), and `fuzz_srv_record` (portable DNS SRV record parser) are now registered in `tests/fuzz/meson.build` and executed by `scripts/run-fuzz-targets.sh`. Each target has an initial seed corpus in `tests/fuzz/corpus/<target>/`; the run script now seeds the working corpus from the checked-in directory on each CI run. The `fuzz.yml` workflow step label updated to reflect all seven targets. Beta milestone fuzz item marked done; `docs/todos/capability-gaps.md` fuzzing row updated.
 
 ## 0.8.13

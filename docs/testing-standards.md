@@ -36,6 +36,85 @@ This rule applies to:
 - If a conformance expectation changes, the test comment must cite the newer
   spec section that justifies the change.
 
+## Fuzz testing
+
+Fuzz targets live in `tests/fuzz/` and are built only when `-Dbuild_fuzz=true` is
+passed to Meson. They require clang — libFuzzer is a compiler-rt component not
+available with GCC.
+
+### Running locally
+
+```bash
+sh scripts/run-fuzz-targets.sh --builddir build-fuzz --duration 60
+```
+
+Options:
+- `--duration <seconds>` — per-target wall-clock budget (default 120)
+- `--runs <count>` — libFuzzer `-runs=` cap; useful for quick smoke checks
+- `--builddir <path>` — Meson build directory (default `build-fuzz`)
+
+Each target runs under ASan + UBSan with `abort_on_error=1`. The working corpus
+accumulates in `build-fuzz/fuzz-corpus/<target>/` across runs.
+
+### Seed corpus
+
+Checked-in seeds live in `tests/fuzz/corpus/<target>/`. The run script copies
+them into the working corpus before each run so CI always starts from known-good
+inputs. Seeds should be short, valid inputs that exercise distinct parse paths —
+the fuzzer extends them automatically through mutation.
+
+### CI schedule
+
+| Trigger | Duration per target |
+|---|---|
+| Pull request / push | 120 s |
+| Weekly (Sunday 02:11 UTC) | 900 s |
+
+The `fuzz` workflow uploads the working corpora and any crash artifacts
+(`crash-*`, `leak-*`, `timeout-*`) as a GitHub Actions artifact retained for
+14 days.
+
+### Adding a new target
+
+1. Create `tests/fuzz/fuzz_<surface>.cpp` — one `LLVMFuzzerTestOneInput` that
+   feeds raw bytes into a single parsing surface. Do not assert specific output;
+   assert only that the call does not crash or loop.
+2. Register the executable in `tests/fuzz/meson.build` with `fuzz_sanitizer_args`
+   for both `cpp_args` and `link_args`. List all transitive static libraries
+   explicitly in `link_with` (Meson does not propagate `link_with` from static
+   libraries to executables). If the target's library calls into `observability_lib`
+   (e.g. `diagnostic_log_summary`), add it to `link_with` too.
+3. Add `run_target <name> "$builddir/tests/fuzz/<name>"` to
+   `scripts/run-fuzz-targets.sh`.
+4. Add at least two seed files to `tests/fuzz/corpus/<target>/`.
+5. Update the target table in `tests/fuzz/CLAUDE.md`.
+
+### Handling a crash finding
+
+When the fuzzer finds a crash:
+
+1. Minimise the input with `<target> -minimize_crash=1 crash-<hash>`.
+2. Add the minimised bytes as a regression test in
+   `tests/unit/test_<surface>.cpp`:
+
+```cpp
+SCENARIO("fuzz regression: <brief description>", "[<surface>][fuzz][regression]") {
+    GIVEN("the crashing input") {
+        // ...
+        WHEN("parsed") {
+            // ...
+            THEN("it does not crash or produce undefined behaviour") {
+                // ...
+            }
+        }
+    }
+}
+```
+
+3. Add the minimised input to `tests/fuzz/corpus/<target>/` so CI never
+   regresses on it.
+4. Fix the underlying bug before merging.
+
 ## Sanitizers and concurrency tests
 
 - CI runs the suite under sanitizers in `.github/workflows/sanitizers.yml`:
