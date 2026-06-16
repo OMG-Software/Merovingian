@@ -26,7 +26,7 @@ meson compile -C build-freebsd-pkg
 
 # 3. Install into staging tree.
 #    $PWD avoids subshell/symlink issues that $(pwd) can have inside the VM.
-meson install -C build-freebsd-pkg --destdir "${PWD}/${STAGING}"
+meson install -C build-freebsd-pkg --destdir "${PWD}/${STAGING}" --skip-subprojects
 
 # 4. Install rc.d script and sample config (BSD install does not accept GNU -D)
 mkdir -p "${STAGING}/usr/local/etc/rc.d"

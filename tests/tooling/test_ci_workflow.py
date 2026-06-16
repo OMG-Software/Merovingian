@@ -37,6 +37,59 @@ class CiWorkflowTests(unittest.TestCase):
         self.assertIn("libpq-dev", workflow)
         self.assertIn("libsodium postgresql17-client", workflow)
 
+    def test_tier_one_bsd_platforms_have_build_and_test_jobs(self) -> None:
+        # GIVEN the repository CI workflow.
+        self.assertTrue(CI_WORKFLOW.is_file(), "CI workflow is missing")
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the Tier 1 platform matrix is checked.
+        # THEN FreeBSD, OpenBSD, and NetBSD each have a dedicated job that builds
+        # and runs the test suite on the platform VM, so platform-specific
+        # runtime behaviour (e.g. hardening self-checks) is exercised per PR.
+        for job in (
+            "freebsd-build-and-test:",
+            "openbsd-build-and-test:",
+            "netbsd-build-and-test:",
+        ):
+            self.assertIn(job, workflow)
+        for vm in (
+            "vmactions/freebsd-vm",
+            "vmactions/openbsd-vm",
+            "vmactions/netbsd-vm",
+        ):
+            self.assertIn(vm, workflow)
+        # THEN each BSD job builds through the shared BSD wrapper, which runs the
+        # full meson test suite on the platform.
+        self.assertGreaterEqual(workflow.count("sh scripts/build-bsd.sh --builddir build"), 3)
+
+    def test_tier_one_linux_distro_platforms_have_build_and_test_jobs(self) -> None:
+        # GIVEN the repository CI workflow.
+        self.assertTrue(CI_WORKFLOW.is_file(), "CI workflow is missing")
+        workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+
+        # WHEN the Tier 1 Linux distro matrix is checked.
+        # THEN Debian trixie, RHEL-compatible (AlmaLinux 10), and OpenSUSE
+        # Tumbleweed each have a dedicated container job that builds and runs the
+        # full test suite, covering distro-specific package names and glibc versions.
+        for job in (
+            "debian-build-and-test:",
+            "rhel-build-and-test:",
+            "opensuse-build-and-test:",
+        ):
+            self.assertIn(job, workflow)
+        for image in ("debian:trixie", "almalinux:10", "opensuse/tumbleweed"):
+            self.assertIn(image, workflow)
+        # THEN each job installs distro-specific library packages.
+        self.assertIn("libopenssl-devel", workflow)   # OpenSUSE OpenSSL
+        self.assertIn("libjpeg8-devel", workflow)  # OpenSUSE libjpeg-turbo (Tumbleweed package name)
+        self.assertIn("findutils", workflow)           # OpenSUSE: find(1) for test-registration check
+        self.assertIn("epel-release", workflow)        # RHEL EPEL bootstrap
+        self.assertIn("zypper --non-interactive install", workflow)  # OpenSUSE pkg mgr
+        # THEN each job runs the same Linux build wrapper used by Ubuntu and Fedora.
+        self.assertIn("sh scripts/build-linux.sh --builddir build-debian", workflow)
+        self.assertIn("sh scripts/build-linux.sh --builddir build-rhel", workflow)
+        self.assertIn("sh scripts/build-linux.sh --builddir build-opensuse", workflow)
+
     def test_conformance_and_packaging_capability_gates_are_present(self) -> None:
         # GIVEN the repository CI workflow.
         self.assertTrue(CI_WORKFLOW.is_file(), "CI workflow is missing")

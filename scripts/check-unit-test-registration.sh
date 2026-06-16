@@ -12,10 +12,12 @@ actual_conformance_file=$(mktemp)
 registered_conformance_file=$(mktemp)
 trap 'rm -f "$actual_unit_file" "$registered_unit_file" "$actual_conformance_file" "$registered_conformance_file"' EXIT HUP INT TERM
 
-find tests/unit -maxdepth 1 -type f -name 'test_*.cpp' -printf 'unit/%f\n' | sort > "$actual_unit_file"
+# Note: find's -printf is a GNU extension absent from BSD find (OpenBSD/NetBSD),
+# so strip the leading tests/ prefix with sed instead for portability.
+find tests/unit -maxdepth 1 -type f -name 'test_*.cpp' | sed 's#^tests/##' | sort > "$actual_unit_file"
 sed -n "s/^[[:space:]]*'\(unit\/test_[^']*\.cpp\)'.*/\1/p" tests/meson.build | sort > "$registered_unit_file"
 
-find tests/conformance -maxdepth 1 -type f -name 'test_*.cpp' -printf 'conformance/%f\n' | sort > "$actual_conformance_file"
+find tests/conformance -maxdepth 1 -type f -name 'test_*.cpp' | sed 's#^tests/##' | sort > "$actual_conformance_file"
 sed -n "s/^[[:space:]]*'\(conformance\/test_[^']*\.cpp\)'.*/\1/p" tests/meson.build | sort > "$registered_conformance_file"
 
 missing_unit=$(comm -23 "$actual_unit_file" "$registered_unit_file")

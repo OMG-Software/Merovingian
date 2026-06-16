@@ -8,9 +8,9 @@ PKG_NAME="merovingian"
 STAGING="staging-deb"
 
 # 1. Configure with meson.
-#    --wrap-mode=forcefallback: app-level deps (SQLite, curl, yyjson) are
-#    built from source-pinned wraps; OS-supplied security libs (OpenSSL,
-#    libsodium, libpq) are resolved from the system with allow_fallback=false.
+#    --wrap-mode=forcefallback: vendored deps (SQLite, yyjson) are built from
+#    source-pinned wraps; OS-supplied libraries (OpenSSL, libsodium, libpq,
+#    libcurl) are resolved from the system with allow_fallback=false.
 #    -pie: position-independent executable so the kernel applies ASLR.
 CC=clang CXX=clang++ meson setup build-deb \
     --prefix=/usr \
@@ -51,7 +51,7 @@ Version: ${VERSION}
 Architecture: ${ARCH}
 Maintainer: James Chapman <james@merovingian-homeserver.example>
 Installed-Size: ${INSTALLED_SIZE}
-Depends: libssl3, libsodium23, libpq5
+Depends: libssl3, libsodium23, libpq5, libcurl4, libpng16-16, libturbojpeg0
 Recommends: ca-certificates
 Section: net
 Priority: optional

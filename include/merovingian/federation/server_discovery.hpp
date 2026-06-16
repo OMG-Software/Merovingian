@@ -28,6 +28,13 @@ struct SrvRecord final
     std::uint16_t weight{0U};
 };
 
+// Parses SRV records from the answer section of a raw DNS response message (as
+// produced by res_query). Portable across resolver implementations — it does not
+// use the BIND ns_* parser API, which is absent on some platforms (e.g. OpenBSD).
+// The message bytes are untrusted: the parser is fully bounds-checked and never
+// reads past `message_length`. Exposed for unit testing.
+[[nodiscard]] auto parse_srv_records(unsigned char const* message, int message_length) -> std::vector<SrvRecord>;
+
 struct ResolvedAddressSet final
 {
     bool ok{false};

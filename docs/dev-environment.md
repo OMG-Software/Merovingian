@@ -10,6 +10,12 @@ It installs the toolchain and development packages needed for the current Meson 
 
 ## Supported Hosts
 
+Merovingian is C++26, so the host needs a recent toolchain: **Clang ≥ 18
+(`-std=c++26`) or GCC ≥ 14** with the matching C++ standard library, plus
+Meson ≥ 1.1.0. Older distributions ship a pre-C++26 compiler and cannot build
+the project — see [platform-support.md](platform-support.md) for the minimum
+version of each Tier 1 platform and for the static-tarball path for older hosts.
+
 The script supports these package managers:
 
 - Linux: `apt`, `dnf`, `zypper`, `pacman`, `apk`
@@ -257,6 +263,11 @@ registration.
 FreeBSD and HardenedBSD use `pkg`. OpenBSD uses `pkg_add`. NetBSD prefers `pkgin` and falls back to `pkg_add` when available.
 
 Some BSD releases ship a base compiler and package LLVM separately. The script installs the packaged LLVM toolchain so clang-format, clang-tidy, and current C++ compiler support are available for project checks.
+
+FreeBSD, OpenBSD, and NetBSD are Tier 1 platforms: each builds and runs the full
+test suite per pull request through `scripts/build-bsd.sh` on a CI VM. See
+[platform-support.md](platform-support.md) for the full support-tier matrix and
+per-platform hardening posture.
 
 ## Security Posture
 

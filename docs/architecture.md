@@ -323,7 +323,7 @@ Implemented endpoints:
 
 Meson (`>=1.1.0`), C++26, `-Werror`, warning level 3. Hardening: stack protector, PIE, hidden visibility, zero-init, stack clash protection, CF protection, FORTIFY_SOURCE=3, no-exec stack. Link flags: `-Wl,-z,noexecstack`.
 
-Dependencies: libsodium, OpenSSL, libpq (+ pgcommon/pgport), SQLite3, yyjson, libcurl, resolv (optional). Catch2 for tests. Subproject wraps for libsodium, SQLite, yyjson, curl, postgresql, catch2. The optional thumbnail worker links system `libpng` and `libjpeg-turbo`; when absent the worker is not built and thumbnailing falls back to original bytes.
+Dependencies: libsodium, OpenSSL, libpq (+ pgcommon/pgport), libcurl, resolv (optional) — all **system-provided** (`allow_fallback: false`). SQLite3, yyjson, and Catch2 (tests) build from source-pinned subproject wraps when no system copy is present. The thumbnail worker links system `libpng` and `libjpeg-turbo`; when those codecs are absent the worker is not built and thumbnailing falls back to original bytes. See [platform-support.md](platform-support.md) for the per-platform system-dependency package names.
 
 Install targets: `merovingian-server`, `merovingian-db-migrate`, and (when image codecs are present) `merovingian-thumbnail-worker` under `libexecdir/merovingian`. Sysconfdir baked in as `MEROVINGIAN_SYSCONFDIR`; the worker path as `MEROVINGIAN_THUMBNAIL_WORKER_PATH`. The worker is an out-of-process, seccomp/rlimit-sandboxed image decoder so untrusted PNG/JPEG bytes are never parsed in the server process.
 

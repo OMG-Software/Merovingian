@@ -18,6 +18,7 @@ CC="${CC:-clang}" CXX="${CXX:-clang++}" meson setup "$BUILD_DIR" \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
+    -Dstatic_curl_wrap=true \
     -Dcpp_link_args=-static-pie \
     -Dc_link_args=-static-pie
 

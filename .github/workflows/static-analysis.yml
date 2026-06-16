@@ -27,6 +27,7 @@ jobs:
             clang-tidy \
             catch2 \
             flex \
+            libcurl4-openssl-dev \
             libpq-dev \
             libsodium-dev \
             libssl-dev \

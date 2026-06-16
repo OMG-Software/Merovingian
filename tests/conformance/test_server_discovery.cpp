@@ -25,6 +25,7 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -818,6 +819,126 @@ SCENARIO("Server discovery rejects a delegated port of zero and falls through",
                 // Spec MUST: discovery MUST still succeed via direct fall-through.
                 // Do NOT remove/change - failing closed on a bad port would block a reachable server.
                 REQUIRE(result.discovery_allowed);
+            }
+        }
+    }
+}
+
+namespace
+{
+
+auto append_u16(std::vector<unsigned char>& message, std::uint16_t value) -> void
+{
+    message.push_back(static_cast<unsigned char>(value >> 8));
+    message.push_back(static_cast<unsigned char>(value & 0xFFU));
+}
+
+// Appends a domain name as uncompressed length-prefixed labels ending in root.
+auto append_dns_name(std::vector<unsigned char>& message, std::string_view name) -> void
+{
+    std::size_t start = 0U;
+    while (start < name.size())
+    {
+        auto const dot = name.find('.', start);
+        auto const label_end = dot == std::string_view::npos ? name.size() : dot;
+        auto const label = name.substr(start, label_end - start);
+        message.push_back(static_cast<unsigned char>(label.size()));
+        for (auto const ch : label)
+        {
+            message.push_back(static_cast<unsigned char>(ch));
+        }
+        if (dot == std::string_view::npos)
+        {
+            break;
+        }
+        start = dot + 1U;
+    }
+    message.push_back(0U); // root label
+}
+
+auto append_srv_answer(std::vector<unsigned char>& message, std::string_view name, std::uint16_t priority,
+                       std::uint16_t weight, std::uint16_t port, std::string_view target) -> void
+{
+    append_dns_name(message, name);
+    append_u16(message, 33U); // TYPE = SRV
+    append_u16(message, 1U);  // CLASS = IN
+    append_u16(message, 0U);  // TTL high
+    append_u16(message, 0U);  // TTL low
+    auto rdata = std::vector<unsigned char>{};
+    append_u16(rdata, priority);
+    append_u16(rdata, weight);
+    append_u16(rdata, port);
+    append_dns_name(rdata, target);
+    append_u16(message, static_cast<std::uint16_t>(rdata.size()));
+    message.insert(message.end(), rdata.begin(), rdata.end());
+}
+
+} // namespace
+
+// Spec: Matrix Server-Server API v1.18
+// Section: 2 Resolving server names (SRV lookup of _matrix-fed._tcp)
+// URL: ../../docs/matrix-v1.18-spec/server-server-api.md#resolving-server-names
+//
+// SRV resolution must parse the DNS response portably across resolver
+// implementations (the BIND ns_* parser API is absent on some platforms). The
+// response is untrusted, so the parser must be fully bounds-checked.
+SCENARIO("SRV response parsing extracts records and is bounds-safe on untrusted input",
+         "[federation][discovery][security]")
+{
+    GIVEN("a DNS response with one question and two SRV answers")
+    {
+        auto message = std::vector<unsigned char>{};
+        append_u16(message, 0U);      // ID
+        append_u16(message, 0x8180U); // flags: standard response
+        append_u16(message, 1U);      // QDCOUNT
+        append_u16(message, 2U);      // ANCOUNT
+        append_u16(message, 0U);      // NSCOUNT
+        append_u16(message, 0U);      // ARCOUNT
+        append_dns_name(message, "_matrix-fed._tcp.example.com");
+        append_u16(message, 33U); // QTYPE SRV
+        append_u16(message, 1U);  // QCLASS IN
+        append_srv_answer(message, "_matrix-fed._tcp.example.com", 10U, 5U, 8448U, "alpha.example.com");
+        append_srv_answer(message, "_matrix-fed._tcp.example.com", 20U, 0U, 8449U, "beta.example.com");
+
+        WHEN("the response is parsed")
+        {
+            auto const records = merovingian::federation::parse_srv_records(
+                message.data(), static_cast<int>(message.size()));
+
+            THEN("both SRV records are recovered with their fields intact")
+            {
+                REQUIRE(records.size() == 2U);
+                REQUIRE(records[0].target == "alpha.example.com");
+                REQUIRE(records[0].priority == 10U);
+                REQUIRE(records[0].weight == 5U);
+                REQUIRE(records[0].port == 8448U);
+                REQUIRE(records[1].target == "beta.example.com");
+                REQUIRE(records[1].port == 8449U);
+            }
+        }
+
+        WHEN("the response is truncated mid-record")
+        {
+            auto truncated = message;
+            truncated.resize(message.size() - 8U);
+            auto const records = merovingian::federation::parse_srv_records(
+                truncated.data(), static_cast<int>(truncated.size()));
+
+            THEN("parsing stops safely without reading past the buffer")
+            {
+                // The parser must not crash or over-read; it returns only the
+                // records it could fully validate (here, the first answer).
+                REQUIRE(records.size() <= 1U);
+            }
+        }
+
+        WHEN("the buffer is shorter than a DNS header")
+        {
+            auto const records = merovingian::federation::parse_srv_records(message.data(), 4);
+
+            THEN("no records are returned")
+            {
+                REQUIRE(records.empty());
             }
         }
     }

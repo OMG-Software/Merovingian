@@ -1,0 +1,20 @@
+#!/bin/ksh
+# SPDX-License-Identifier: GPL-3.0-or-later
+# OpenBSD rc.d(8) control script for merovingian.
+# Installed as /etc/rc.d/merovingian and managed with rcctl(8).
+
+daemon="/usr/local/bin/merovingian-server"
+daemon_flags="--config /etc/merovingian/merovingian.conf"
+daemon_user="merovingian"
+
+. /etc/rc.d/rc.subr
+
+pexp="${daemon}.*"
+
+rc_pre() {
+    install -d -o "${daemon_user}" -g "${daemon_user}" -m 0750 /var/run/merovingian
+    install -d -o "${daemon_user}" -g "${daemon_user}" -m 0750 /var/db/merovingian
+    install -d -o "${daemon_user}" -g "${daemon_user}" -m 0750 /var/log/merovingian
+}
+
+rc_cmd "$1"

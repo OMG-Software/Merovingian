@@ -1,4 +1,4 @@
-DISTNAME=       merovingian-0.1.65
+DISTNAME=       merovingian-0.8.12
 CATEGORIES=    net
 MASTER_SITES=   ${MASTER_SITE_GITHUB:=OMG-Software/}
 GITHUB_PROJECT= Merovingian
@@ -11,6 +11,7 @@ LICENSE=        gnu-gpl-v3
 USE_LANGUAGES=  c c++
 USE_TOOLS+=     pkg-config perl bison flex gmake
 
+DEPENDS+=       openssl>=1.1.1:../../security/openssl
 DEPENDS+=       libsodium>=1.0.18:../../security/libsodium
 DEPENDS+=       postgresql17-client>=17:../../databases/postgresql17-client
 DEPENDS+=       curl>=8:../../www/curl

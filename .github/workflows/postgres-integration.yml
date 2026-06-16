@@ -59,6 +59,7 @@ jobs:
             catch2 \
             flex \
             libpng-dev \
+            libcurl4-openssl-dev \
             libpq-dev \
             libsodium-dev \
             libssl-dev \

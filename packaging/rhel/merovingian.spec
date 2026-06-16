@@ -18,7 +18,6 @@ BuildRequires:  libpq-devel
 BuildRequires:  libpng-devel
 BuildRequires:  turbojpeg-devel
 BuildRequires:  libcurl-devel
-BuildRequires:  catch-devel
 BuildRequires:  perl
 BuildRequires:  bison
 BuildRequires:  flex
@@ -58,11 +57,9 @@ install -m 0644 config/merovingian.conf.example \
     %{buildroot}%{_sysconfdir}/merovingian/merovingian.conf.example
 
 %pre
-# Create merovingian group if it does not exist
 if ! getent group merovingian >/dev/null 2>&1; then
     groupadd -r merovingian
 fi
-# Create merovingian user if it does not exist
 if ! getent passwd merovingian >/dev/null 2>&1; then
     useradd -r -g merovingian -d /var/lib/merovingian \
             -s /sbin/nologin \
@@ -74,7 +71,6 @@ fi
 %systemd_post merovingian.service
 install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
 install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
-# Generate a registration token on first install. Never overwrite an existing token.
 TOKEN_FILE=%{_sysconfdir}/merovingian/registration-token
 if [ ! -f "${TOKEN_FILE}" ]; then
     openssl rand -base64 48 > "${TOKEN_FILE}"
@@ -103,4 +99,3 @@ fi
 * Mon Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.12-1
 - Initial OpenSUSE Tumbleweed package
 - ci: add Debian trixie, RHEL-compatible, and OpenSUSE Tumbleweed CI and packaging jobs
-

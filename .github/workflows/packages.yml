@@ -29,6 +29,7 @@ jobs:
             clang meson ninja-build pkg-config git make binutils \
             libssl-dev \
             libsodium-dev \
+            libcurl4-openssl-dev \
             libpq-dev \
             libpng-dev \
             libturbojpeg0-dev \
@@ -73,6 +74,11 @@ jobs:
             flex \
             g++ \
             git \
+            curl-dev \
+            curl-static \
+            nghttp2-static \
+            brotli-static \
+            zstd-static \
             libsodium-dev \
             libsodium-static \
             linux-headers \
@@ -162,7 +168,7 @@ jobs:
           usesh: true
           prepare: |
             pkg install -y meson ninja llvm catch2 pkgconf git perl5 bison flex \
-              gmake openssl libsodium postgresql17-client python3 png libjpeg-turbo
+              gmake openssl libsodium postgresql17-client python3 curl png libjpeg-turbo
           run: sh scripts/build-freebsd-pkg.sh
       - name: Attest FreeBSD package
         uses: actions/attest-build-provenance@v2
@@ -173,10 +179,236 @@ jobs:
           name: freebsd-package
           path: merovingian-*.pkg
 
+  openbsd-pkg:
+    name: OpenBSD package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build OpenBSD package
+        uses: vmactions/openbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            pkg_add -I meson ninja pkgconf git bison flex gmake openssl libsodium postgresql-client curl png jpeg-turbo
+          run: sh scripts/build-openbsd-pkg.sh
+      - name: Attest OpenBSD package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openbsd-package
+          path: merovingian-*.tgz
+
+  netbsd-pkg:
+    name: NetBSD package
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    outputs:
+      # continue-on-error masks .result as 'success' even on failure, so we
+      # surface the real step outcome via a job output for the retry condition.
+      build_succeeded: ${{ steps.build.outcome == 'success' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build NetBSD package
+        id: build
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            /usr/sbin/pkg_add -U pkgin || true
+            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+          run: sh scripts/build-netbsd-pkg.sh
+      - name: Attest NetBSD package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netbsd-package
+          path: merovingian-*.tgz
+
+  # Retry once on QEMU infrastructure crashes (ssh exit 139 / SIGSEGV) or
+  # CDN outages.  continue-on-error on netbsd-pkg masks .result as 'success'
+  # even when the job fails, so we gate on the build_succeeded output instead.
+  netbsd-pkg-retry:
+    name: NetBSD package (retry)
+    runs-on: ubuntu-latest
+    needs: netbsd-pkg
+    if: needs.netbsd-pkg.outputs.build_succeeded != 'true'
+    continue-on-error: true
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build NetBSD package
+        uses: vmactions/netbsd-vm@v1
+        with:
+          usesh: true
+          prepare: |
+            /usr/sbin/pkg_add -U pkgin || true
+            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+          run: sh scripts/build-netbsd-pkg.sh
+      - name: Attest NetBSD package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.tgz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: netbsd-package
+          path: merovingian-*.tgz
+
+  debian-pkg:
+    name: Debian trixie package
+    runs-on: ubuntu-latest
+    container: debian:trixie
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            binutils \
+            bison \
+            ca-certificates \
+            ccache \
+            clang \
+            flex \
+            gcc \
+            git \
+            m4 \
+            make \
+            meson \
+            ninja-build \
+            pkg-config \
+            libssl-dev \
+            libsodium-dev \
+            libcurl4-openssl-dev \
+            libpq-dev \
+            libpng-dev \
+            libturbojpeg0-dev \
+            perl
+      - uses: actions/checkout@v4
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-debian-pkg-${{ github.run_id }}
+          restore-keys: ccache-debian-pkg-
+      - name: Build .deb
+        run: sh scripts/build-deb.sh
+      - name: Attest Debian package
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian_*.deb
+      - uses: actions/upload-artifact@v4
+        with:
+          name: debian-package
+          path: merovingian_*.deb
+          retention-days: 30
+
+  rhel-rpm:
+    name: RHEL-compatible (AlmaLinux 10) RPM
+    runs-on: ubuntu-latest
+    container: almalinux:10
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - name: Install EPEL and build dependencies
+        run: |
+          dnf install -y epel-release
+          dnf install -y ccache clang meson ninja-build pkgconf-pkg-config git \
+            openssl-devel \
+            libsodium-devel \
+            libpq-devel \
+            libpng-devel \
+            turbojpeg-devel \
+            libcurl-devel \
+            perl bison flex m4 \
+            rpm-build systemd-rpm-macros
+      - uses: actions/checkout@v4
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-rhel-rpm-${{ github.run_id }}
+          restore-keys: ccache-rhel-rpm-
+      - name: Build RHEL .rpm
+        run: sh scripts/build-rhel-rpm.sh
+      - name: Attest RHEL RPM
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rhel-rpm-package
+          path: merovingian-*.rpm
+          retention-days: 30
+
+  opensuse-rpm:
+    name: OpenSUSE Tumbleweed RPM
+    runs-on: ubuntu-latest
+    container: opensuse/tumbleweed
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - name: Install build dependencies
+        run: |
+          zypper --non-interactive refresh
+          zypper --non-interactive install -y \
+            ccache clang gcc-c++ meson ninja pkg-config git \
+            libopenssl-devel \
+            libsodium-devel \
+            postgresql-devel \
+            libpng16-devel \
+            libjpeg8-devel \
+            libcurl-devel \
+            sqlite3-devel \
+            perl bison flex m4 \
+            rpm-build systemd-rpm-macros
+      - uses: actions/checkout@v4
+      - name: Cache compiler output with ccache
+        uses: hendrikmuhs/ccache-action@v1.2
+        with:
+          key: ccache-opensuse-rpm-${{ github.run_id }}
+          restore-keys: ccache-opensuse-rpm-
+      - name: Build OpenSUSE .rpm
+        run: sh scripts/build-opensuse-rpm.sh
+      - name: Attest OpenSUSE RPM
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: merovingian-*.rpm
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opensuse-rpm-package
+          path: merovingian-*.rpm
+          retention-days: 30
+
   publish-latest:
     name: Publish rolling latest
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [deb, static-linux-fallback, rpm, freebsd-pkg]
+    if: always() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [deb, static-linux-fallback, rpm, freebsd-pkg, openbsd-pkg, netbsd-pkg, netbsd-pkg-retry, debian-pkg, rhel-rpm, opensuse-rpm]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -197,6 +429,44 @@ jobs:
         with:
           name: freebsd-package
           path: packages/
+      # OpenBSD and NetBSD both emit merovingian-<version>.tgz; download to
+      # separate dirs and re-suffix so the flat release bundle does not collide.
+      - uses: actions/download-artifact@v4
+        with:
+          name: openbsd-package
+          path: packages-openbsd/
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: netbsd-package
+          path: packages-netbsd/
+      # Debian trixie and Ubuntu both produce merovingian_<ver>_<arch>.deb;
+      # download to a separate dir and re-suffix to avoid collision.
+      - uses: actions/download-artifact@v4
+        with:
+          name: debian-package
+          path: packages-debian/
+      # RHEL and OpenSUSE RPMs carry distinct dist tags (.el10 / .opensuse) so
+      # their filenames are unique and can land directly in packages/.
+      - uses: actions/download-artifact@v4
+        with:
+          name: rhel-rpm-package
+          path: packages/
+      - uses: actions/download-artifact@v4
+        with:
+          name: opensuse-rpm-package
+          path: packages/
+      - name: Disambiguate BSD tarball and Debian package names
+        run: |
+          for f in packages-openbsd/*.tgz; do
+            mv "$f" "packages/$(basename "${f%.tgz}")-openbsd.tgz"
+          done
+          for f in packages-netbsd/*.tgz; do
+            [ -f "$f" ] && mv "$f" "packages/$(basename "${f%.tgz}")-netbsd.tgz"
+          done
+          for f in packages-debian/*.deb; do
+            mv "$f" "packages/$(basename "${f%.deb}")-debian.deb"
+          done
       - name: Generate checksums
         run: sha256sum packages/* > packages/SHA256SUMS
       - name: Publish rolling latest release

@@ -7,30 +7,44 @@ License:        GPL-3.0-or-later
 URL:            https://github.com/OMG-Software/Merovingian
 Source0:        %{name}-%{version}.tar.gz
 
+# OpenSUSE package names differ from Fedora/RHEL:
+#   pkgconf replaces pkgconf-pkg-config
+#   libopenssl-devel replaces openssl-devel
+#   postgresql-devel replaces libpq-devel
+#   libpng16-devel replaces libpng-devel
+#   libjpeg8-devel provides turbojpeg.h and libturbojpeg.pc (Tumbleweed naming)
+#   sqlite3-devel replaces sqlite-devel
+#   ninja replaces ninja-build
+# catch2 is omitted: tests are disabled (-Dbuild_tests=false).
 BuildRequires:  clang
 BuildRequires:  meson
-BuildRequires:  ninja-build
-BuildRequires:  pkgconf-pkg-config
+BuildRequires:  ninja
+BuildRequires:  pkgconf
 BuildRequires:  git
-BuildRequires:  openssl-devel
+BuildRequires:  libopenssl-devel
 BuildRequires:  libsodium-devel
-BuildRequires:  libpq-devel
-BuildRequires:  libpng-devel
-BuildRequires:  turbojpeg-devel
+BuildRequires:  postgresql-devel
+BuildRequires:  libpng16-devel
+BuildRequires:  libjpeg8-devel
 BuildRequires:  libcurl-devel
-BuildRequires:  catch-devel
+BuildRequires:  sqlite3-devel
 BuildRequires:  perl
 BuildRequires:  bison
 BuildRequires:  flex
 BuildRequires:  m4
 BuildRequires:  systemd-rpm-macros
 
-Requires:       openssl-libs
-Requires:       libsodium
-Requires:       libpq
-Requires:       libcurl
-Requires:       libpng
-Requires:       libjpeg-turbo
+Requires:       libopenssl3
+Requires:       libsodium23
+Requires:       libpq5
+Requires:       libcurl4
+Requires:       libpng16-16
+Requires:       libturbojpeg0
+
+# OpenSUSE %optflags includes -D_FORTIFY_SOURCE=2; meson's hardening sets
+# -D_FORTIFY_SOURCE=3.  Clang treats the redefinition as an error under
+# -Werror,-Wmacro-redefined.  Strip it here so meson's level-3 value wins.
+%global optflags %(echo %{optflags} | sed 's/-D_FORTIFY_SOURCE=[^ ]*//g')
 
 %description
 Merovingian is an alpha Matrix Protocol homeserver focused on secure
@@ -58,11 +72,9 @@ install -m 0644 config/merovingian.conf.example \
     %{buildroot}%{_sysconfdir}/merovingian/merovingian.conf.example
 
 %pre
-# Create merovingian group if it does not exist
 if ! getent group merovingian >/dev/null 2>&1; then
     groupadd -r merovingian
 fi
-# Create merovingian user if it does not exist
 if ! getent passwd merovingian >/dev/null 2>&1; then
     useradd -r -g merovingian -d /var/lib/merovingian \
             -s /sbin/nologin \
@@ -74,7 +86,6 @@ fi
 %systemd_post merovingian.service
 install -d -o merovingian -g merovingian -m 0750 /var/lib/merovingian
 install -d -o merovingian -g merovingian -m 0750 /var/log/merovingian
-# Generate a registration token on first install. Never overwrite an existing token.
 TOKEN_FILE=%{_sysconfdir}/merovingian/registration-token
 if [ ! -f "${TOKEN_FILE}" ]; then
     openssl rand -base64 48 > "${TOKEN_FILE}"
@@ -103,4 +114,3 @@ fi
 * Mon Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.12-1
 - Initial OpenSUSE Tumbleweed package
 - ci: add Debian trixie, RHEL-compatible, and OpenSUSE Tumbleweed CI and packaging jobs
-
