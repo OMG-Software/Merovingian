@@ -298,6 +298,7 @@ jobs:
             bison \
             ccache \
             clang \
+            findutils \
             flex \
             gcc-c++ \
             git \

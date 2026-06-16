@@ -44,13 +44,14 @@ yyjson_dep = dependency(
   required: false,
   fallback: ['yyjson', 'yyjson_dep'],
 )
-# libcurl drives the federation outbound HTTP client. The TLS backend is
-# whatever the system libcurl was built against; the OutboundClient
-# integration suite enforces consistent verification behavior across Linux and
-# BSD targets. libcurl is a system-provided dependency on every platform (like
-# libsodium/openssl/libpq) — it is not vendored, so packages declare it as a
-# runtime dependency and the build host must provide the development files.
-libcurl_dep = dependency('libcurl', include_type: 'system', allow_fallback: false)
+# libcurl drives the federation outbound HTTP client. On regular builds the
+# OS package provides it (allow_fallback defaults to false via static_curl_wrap
+# option). For static-PIE builds (-Dstatic_curl_wrap=true) the vendored wrap
+# is used instead: Alpine's system curl.a pulls in psl/idn2/unistring whose
+# static archives are not shipped by Alpine, so the wrap (built with
+# --without-libpsl --without-libidn2) is the only viable path.
+libcurl_dep = dependency('libcurl', include_type: 'system',
+    allow_fallback: get_option('static_curl_wrap'))
 resolv_dep = cpp.find_library('resolv', required: false)
 
 warning_flags = [

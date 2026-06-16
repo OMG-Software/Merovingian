@@ -82,6 +82,7 @@ class CiWorkflowTests(unittest.TestCase):
         # THEN each job installs distro-specific library packages.
         self.assertIn("libopenssl-devel", workflow)   # OpenSUSE OpenSSL
         self.assertIn("libjpeg8-devel", workflow)  # OpenSUSE libjpeg-turbo (Tumbleweed package name)
+        self.assertIn("findutils", workflow)           # OpenSUSE: find(1) for test-registration check
         self.assertIn("epel-release", workflow)        # RHEL EPEL bootstrap
         self.assertIn("zypper --non-interactive install", workflow)  # OpenSUSE pkg mgr
         # THEN each job runs the same Linux build wrapper used by Ubuntu and Fedora.

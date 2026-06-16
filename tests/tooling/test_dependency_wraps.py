@@ -59,11 +59,14 @@ class DependencyWrapTests(unittest.TestCase):
 
         # WHEN runtime dependencies are declared.
         # THEN wrap-backed dependencies are limited to the remaining vendored
-        # runtime libraries (sqlite3, yyjson). libcurl, like libsodium/openssl/
-        # libpq, is system-provided (allow_fallback: false) and never vendored.
+        # runtime libraries (sqlite3, yyjson). libcurl uses system-provided
+        # libraries by default (static_curl_wrap option defaults to false); the
+        # wrap is only selected for static-PIE builds where Alpine's system curl
+        # lacks static psl/idn2/unistring archives.
         self.assertIn("fallback: ['sqlite3', 'sqlite3_dep']", meson_build)
         self.assertIn("default_options: ['default_library=static'", meson_build)
-        self.assertIn("dependency('libcurl', include_type: 'system', allow_fallback: false)", meson_build)
+        self.assertIn("dependency('libcurl', include_type: 'system',", meson_build)
+        self.assertIn("allow_fallback: get_option('static_curl_wrap')", meson_build)
 
     def test_catch2_fallback_does_not_build_upstream_self_tests(self) -> None:
         # GIVEN Catch2 is a test-only dependency used through Meson fallback mode.

@@ -340,7 +340,7 @@ jobs:
         run: |
           zypper --non-interactive refresh
           zypper --non-interactive install -y \
-            ccache clang meson ninja pkg-config git \
+            ccache clang gcc-c++ meson ninja pkg-config git \
             libopenssl-devel \
             libsodium-devel \
             postgresql-devel \
