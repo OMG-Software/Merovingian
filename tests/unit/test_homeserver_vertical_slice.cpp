@@ -20,6 +20,7 @@
 // |                                                                         |
 // +-------------------------------------------------------------------------+
 
+#include "../support/master_key.hpp"
 #include "../support/registration_token.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/database/persistent_store.hpp"
@@ -49,6 +50,19 @@ namespace
 {
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
+    return {
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
+[[nodiscard]] auto registration_enabled_config_with_master_key(std::string master_key_path)
+    -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    security.secrets.master_key_file = std::move(master_key_path);
     return {
         merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
         merovingian::config::DatabaseConfig{},         security,
@@ -952,6 +966,84 @@ SCENARIO("ensure_runtime_server_signing_key migrates a legacy ed25519:auto key b
                 REQUIRE(key->key_id.size() == std::string_view{"ed25519:"}.size() + 8U);
                 // Two keys now in the store: the old legacy entry plus the newly generated one.
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 2U);
+                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+            }
+        }
+    }
+}
+
+
+SCENARIO("ensure_runtime_server_signing_key encrypts a fresh secret when a master key is configured",
+         "[homeserver][vertical][signing][security]")
+{
+    GIVEN("a started runtime configured with a 256-bit master key")
+    {
+        auto started = merovingian::homeserver::start_runtime(
+            registration_enabled_config_with_master_key(merovingian::tests::master_key_file()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        THEN("the persisted signing secret is stored as secretbox:v1:...")
+        {
+            REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
+            REQUIRE(runtime.database.persistent_store.server_signing_keys.front().secret_key.starts_with(
+                "secretbox:v1:"));
+            REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+        }
+    }
+}
+
+SCENARIO("ensure_runtime_server_signing_key decrypts an encrypted signing secret on reload",
+         "[homeserver][vertical][signing][security]")
+{
+    GIVEN("a runtime whose signing secret is stored encrypted")
+    {
+        auto const master_key_path = merovingian::tests::master_key_file();
+        auto started = merovingian::homeserver::start_runtime(
+            registration_enabled_config_with_master_key(master_key_path));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const encrypted_secret =
+            runtime.database.persistent_store.server_signing_keys.front().secret_key;
+        REQUIRE(encrypted_secret.starts_with("secretbox:v1:"));
+
+        WHEN("the runtime secret is cleared and ensure is called again")
+        {
+            runtime.database.signing_secret_key.clear();
+            auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
+
+            THEN("the encrypted secret is decrypted back into the runtime signing key")
+            {
+                REQUIRE(key.has_value());
+                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+            }
+        }
+    }
+}
+
+SCENARIO("rotate_server_signing_key encrypts the new secret when a master key is configured",
+         "[homeserver][vertical][signing][security]")
+{
+    GIVEN("a started runtime configured with a 256-bit master key")
+    {
+        auto started = merovingian::homeserver::start_runtime(
+            registration_enabled_config_with_master_key(merovingian::tests::master_key_file()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("the signing key is rotated")
+        {
+            auto const result = merovingian::homeserver::rotate_server_signing_key(runtime);
+
+            THEN("the rotation succeeds and the new secret is stored encrypted")
+            {
+                REQUIRE(result.ok);
+                auto const active = std::ranges::max_element(
+                    runtime.database.persistent_store.server_signing_keys,
+                    {},
+                    &merovingian::database::PersistentServerSigningKey::valid_until_ts);
+                REQUIRE(active != runtime.database.persistent_store.server_signing_keys.end());
+                REQUIRE(active->secret_key.starts_with("secretbox:v1:"));
                 REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
             }
         }
