@@ -33,7 +33,7 @@ fuzz_targets = [
     include_directories: inc,
     cpp_args: fuzz_sanitizer_args,
     link_args: fuzz_sanitizer_args,
-    link_with: [sync_lib, canonicaljson_lib, observability_lib],
+    link_with: [sync_lib, canonicaljson_lib, observability_lib, platform_lib],
   ),
   executable(
     'fuzz-config-parser',
@@ -66,6 +66,6 @@ fuzz_targets = [
     cpp_args: fuzz_sanitizer_args,
     link_args: fuzz_sanitizer_args,
     dependencies: [libsodium_dep, libcurl_dep, resolv_dep],
-    link_with: [federation_lib, canonicaljson_lib, crypto_lib, database_lib, events_lib, http_lib, rooms_lib, observability_lib],
+    link_with: [federation_lib, canonicaljson_lib, crypto_lib, database_lib, events_lib, http_lib, rooms_lib, observability_lib, platform_lib],
   ),
 ]

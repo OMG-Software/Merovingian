@@ -83,7 +83,8 @@ The `fuzz` workflow uploads the working corpora and any crash artifacts
    for both `cpp_args` and `link_args`. List all transitive static libraries
    explicitly in `link_with` (Meson does not propagate `link_with` from static
    libraries to executables). If the target's library calls into `observability_lib`
-   (e.g. `diagnostic_log_summary`), add it to `link_with` too.
+   (e.g. `diagnostic_log_summary`), add both `observability_lib` and `platform_lib`
+   to `link_with` — `observability_lib` references `platform::HardeningSelfCheck`.
 3. Add `run_target <name> "$builddir/tests/fuzz/<name>"` to
    `scripts/run-fuzz-targets.sh`.
 4. Add at least two seed files to `tests/fuzz/corpus/<target>/`.
