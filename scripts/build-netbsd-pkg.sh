@@ -2,10 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build a NetBSD binary package (.tgz) for merovingian 0.8.12.
 #
-# Standalone pkg_create(1) from pkgtools/pkg_install — no pkgsrc tree. The
-# checked-in packaging/netbsd/Makefile is the pkgsrc recipe kept for downstream;
-# this script generates a framework-free package so CI builds and validates an
-# installable artifact on every run.
+# The checked-in packaging/netbsd/Makefile is the pkgsrc recipe kept for
+# downstream porters.  This script generates a framework-free package so CI
+# builds and validates an installable artifact on every run.
+#
+# pkg_create from NetBSD 10.x base segfaults (SIGSEGV / ssh exit 139) when it
+# scans hardened ELF binaries under QEMU.  We assemble the .tgz directly from
+# a staged tree using tar, which produces a package that pkg_add can install.
 set -e
 
 VERSION="0.8.12"
@@ -17,11 +20,11 @@ PREFIX=/usr/pkg
 export CC="${CC:-clang}"
 export CXX="${CXX:-clang++}"
 
-rm -rf "${STAGE}" build-netbsd-pkg pkg-plist-netbsd "merovingian-${VERSION}.tgz"
+rm -rf "${STAGE}" build-netbsd-pkg pkg-build "+CONTENTS" "+COMMENT" "+DESC" "+BUILD_INFO" \
+    "merovingian-${VERSION}.tgz"
 
-# 1. Configure + build with NetBSD/pkgsrc prefix conventions. libcurl is a
-#    system dependency on every platform, so forcefallback only vendors
-#    sqlite/yyjson and never tries to build curl from source.
+# 1. Configure + build with NetBSD/pkgsrc prefix conventions. forcefallback
+#    vendors sqlite/yyjson; libcurl is a system dependency on every platform.
 meson setup build-netbsd-pkg \
     --prefix="${PREFIX}" \
     --sysconfdir="${PREFIX}/etc" \
@@ -31,6 +34,8 @@ meson setup build-netbsd-pkg \
     -Dbuild_fuzz=false
 
 meson compile -C build-netbsd-pkg
+# --skip-subprojects prevents vendored sqlite3 headers/archives from landing
+# in the staging tree and confusing the package tool.
 meson install -C build-netbsd-pkg --destdir "${PWD}/${STAGE}" --skip-subprojects
 
 # 2. rc.d example script (pkgsrc installs under share/examples/rc.d) with the
@@ -44,12 +49,9 @@ install -d "${STAGE}${PREFIX}/etc/merovingian"
 install -m 0644 config/merovingian.conf.example \
     "${STAGE}${PREFIX}/etc/merovingian/merovingian.conf.sample"
 
-# 3. Metadata files required by pkg_create.
-COMMENT="${PWD}/netbsd-comment"
-DESC="${PWD}/netbsd-desc"
-BUILD_INFO="${PWD}/netbsd-build-info"
-printf '%s\n' "Secure Matrix Protocol homeserver" > "${COMMENT}"
-cat > "${DESC}" <<'EOF'
+# 3. Package metadata (NetBSD pkg format).
+printf '%s\n' "Secure Matrix Protocol homeserver" > "+COMMENT"
+cat > "+DESC" <<'EOF'
 Merovingian is an alpha Matrix Protocol homeserver focused on secure
 implementation, runtime hardening, and auditable dependency boundaries.
 EOF
@@ -57,26 +59,50 @@ EOF
     echo "MACHINE_ARCH=$(uname -p 2>/dev/null || uname -m)"
     echo "OPSYS=$(uname -s)"
     echo "OS_VERSION=$(uname -r)"
-} > "${BUILD_INFO}"
+} > "+BUILD_INFO"
 
-# 4. Packing list (+CONTENTS) generated from the staged tree. Paths are relative
-#    to the staging prefix; pkg_create reads them from -p (the staging tree) and
-#    records them under -I (the real install prefix).
-PLIST="${PWD}/pkg-plist-netbsd"
-( cd "${STAGE}${PREFIX}" && find . -type f | sed 's|^\./||' | sort ) > "${PLIST}"
+# +CONTENTS packing list: @name identifies the package, @cwd is the install
+# prefix, files are relative to @cwd, @dir records directories to remove on
+# deinstall.
+cat > "+CONTENTS" <<EOF
+@name merovingian-${VERSION}
+@cwd ${PREFIX}
+bin/merovingian-db-migrate
+bin/merovingian-server
+etc/merovingian/merovingian.conf.sample
+libexec/merovingian/merovingian-thumbnail-worker
+share/examples/rc.d/merovingian
+@dir share/examples/rc.d
+@dir share/examples
+@dir libexec/merovingian
+@dir etc/merovingian
+EOF
 
-echo "[debug] staged tree under ${STAGE}:"
-ls -lR "${STAGE}" || true
-echo "[debug] packing list:"
-cat "${PLIST}"
+# 4. Assemble the .tgz: meta-files first (pkg_add expects +CONTENTS, +COMMENT,
+#    +DESC, +BUILD_INFO at the archive root), then the package files at their
+#    install-relative paths.
+PKGDIR="${PWD}/pkg-build"
+mkdir -p \
+    "${PKGDIR}/bin" \
+    "${PKGDIR}/etc/merovingian" \
+    "${PKGDIR}/libexec/merovingian" \
+    "${PKGDIR}/share/examples/rc.d"
 
-pkg_create \
-    -p "${PWD}/${STAGE}${PREFIX}" \
-    -I "${PREFIX}" \
-    -c "${COMMENT}" \
-    -d "${DESC}" \
-    -B "${BUILD_INFO}" \
-    -f "${PLIST}" \
-    "merovingian-${VERSION}"
+cp "+CONTENTS" "+COMMENT" "+DESC" "+BUILD_INFO" "${PKGDIR}/"
+cp "${STAGE}${PREFIX}/bin/merovingian-db-migrate"        "${PKGDIR}/bin/"
+cp "${STAGE}${PREFIX}/bin/merovingian-server"            "${PKGDIR}/bin/"
+cp "${STAGE}${PREFIX}/etc/merovingian/merovingian.conf.sample" \
+                                                          "${PKGDIR}/etc/merovingian/"
+cp "${STAGE}${PREFIX}/libexec/merovingian/merovingian-thumbnail-worker" \
+                                                          "${PKGDIR}/libexec/merovingian/"
+cp "${STAGE}${PREFIX}/share/examples/rc.d/merovingian"   "${PKGDIR}/share/examples/rc.d/"
+
+( cd "${PKGDIR}" && tar czf "${OLDPWD}/merovingian-${VERSION}.tgz" \
+    +CONTENTS +COMMENT +DESC +BUILD_INFO \
+    bin/merovingian-db-migrate \
+    bin/merovingian-server \
+    etc/merovingian/merovingian.conf.sample \
+    libexec/merovingian/merovingian-thumbnail-worker \
+    share/examples/rc.d/merovingian )
 
 echo "Built NetBSD package for merovingian-${VERSION}"
