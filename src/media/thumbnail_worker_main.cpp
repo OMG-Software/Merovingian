@@ -378,6 +378,13 @@ auto main() -> int
         }
     }
 
-    write_all_stdout(merovingian::media::frame_thumbnail_response(response));
+    auto const frame_opt = merovingian::media::frame_thumbnail_response(response);
+    // LCOV_EXCL_START — only reachable for >4 GiB PNG; impossible with any sane max_pixels limit
+    if (!frame_opt.has_value())
+    {
+        return 1;
+    }
+    // LCOV_EXCL_STOP
+    write_all_stdout(*frame_opt);
     return 0;
 }

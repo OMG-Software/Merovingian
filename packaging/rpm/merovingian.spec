@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.14
+Version:        0.8.15
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -100,6 +100,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.15-1
+- fix: guard curl write callback against unsigned underflow when body exceeds cap
+- fix: guard thumbnailer framing against size_t-to-uint32_t silent truncation for large payloads
+- fix: use saturating multiply for thumbnail worker memory limit to prevent uint64_t overflow
 * Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.14-1
 - feat: add fuzz targets for sync filter, config parser, stream token, query params, and SRV record parsing
 * Mon Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.12-1

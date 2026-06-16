@@ -52,7 +52,10 @@ surface), so it runs in a short-lived, sandboxed child process:
   (libjpeg-turbo) into RGBA, resamples (bilinear `scale` to fit, or `scale`
   then centre-`crop` to fill), re-encodes PNG, and writes a framed response on
   stdout. It holds no secrets, sockets, or filesystem access beyond the inherited
-  stdio pipes.
+  stdio pipes. The wire protocol encodes payload lengths as `uint32_t`; both
+  `frame_thumbnail_request` and `frame_thumbnail_response` return
+  `std::optional<std::string>` and produce `nullopt` when the payload exceeds
+  `UINT32_MAX` — callers treat this as a 413 or internal error respectively.
 - Before reading any input the worker clamps its own address space, CPU time,
   output file size, and descriptor count via `setrlimit`, sets
   `PR_SET_NO_NEW_PRIVS`/`PR_SET_DUMPABLE=0`, and installs the seccomp-bpf filter
