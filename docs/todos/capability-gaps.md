@@ -24,7 +24,7 @@ Open work per capability area. Status column reflects the current level in the
 | Runtime hardening | `integrated` | ELF program-header probe (linker/RELRO) retired in v0.7.2; seccomp-bpf allowlist applied and probe retired in v0.7.2. Remaining: harden default action to `SECCOMP_RET_KILL_PROCESS` after allowlist validation, OpenBSD pledge/unveil, FreeBSD Capsicum, optional in-process privilege drop, Landlock confinement, and `RLIMIT_CORE` clamp. |
 | Platform support | `runtime-wired` | OpenBSD and NetBSD CI jobs added (full build + test suite per PR via `vmactions/*-vm`), joining Linux/Fedora/FreeBSD as Tier 1; platform runtime tests run on each via the suite; support tiers documented in [platform-support.md](../platform-support.md). Remaining: per-platform hardening parity (pledge/unveil, Capsicum) and richer platform-specific assertions. |
 | Fuzzing and conformance | `integrated` | Add durable corpus management, broader Matrix conformance suite, property tests, load tests, and chaos tests. |
-| Supply chain and release | `integrated` | Debian, Fedora, FreeBSD, OpenBSD, and NetBSD packages now build and are provenance-attested in CI (`packages.yml`). Remaining: dependency pinning policy, license review, artifact signing, and reproducible build notes. |
+| Supply chain and release | `integrated` | Debian, Fedora, RHEL-compatible, OpenSUSE, FreeBSD, OpenBSD, and NetBSD packages now build and are provenance-attested in CI (`packages.yml`). Remaining: dependency pinning policy, license review, artifact signing, and reproducible build notes. |
 
 ## Protocol coverage gaps
 
