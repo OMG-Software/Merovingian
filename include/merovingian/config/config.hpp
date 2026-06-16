@@ -144,7 +144,7 @@ struct LoggingSecurityConfig final
 // At-rest protection for high-value server secrets. The master key file
 // contains raw secret material that is hashed with domain separation to
 // derive the key used to encrypt the Ed25519 signing secret before it is
-// written to the database. When empty, new signing keys cannot be created
+// written to the database. When empty, fresh signing keys cannot be created
 // (legacy plaintext keys may still be loaded for migration).
 struct SecretsSecurityConfig final
 {
