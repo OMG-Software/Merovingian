@@ -39,6 +39,7 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
                                        "security.federation.max_transaction_size=8MiB\n"
                                        "security.federation.remote_timeout=45s\n"
                                        "security.registration.token_file=/etc/merovingian/registration-token\n"
+                                       "security.secrets.master_key_file=/etc/merovingian/master.key\n"
                                        "security.media.max_upload_size=25MiB\n"};
 
         WHEN("the config is parsed")
@@ -57,6 +58,7 @@ SCENARIO("Key-value config parser applies known scalar values", "[config][parser
                 REQUIRE(result.config.security().federation.max_transaction_size == "8MiB");
                 REQUIRE(result.config.security().federation.remote_timeout == "45s");
                 REQUIRE(result.config.security().registration.token_file == "/etc/merovingian/registration-token");
+                REQUIRE(result.config.security().secrets.master_key_file == "/etc/merovingian/master.key");
                 REQUIRE(result.config.security().media.max_upload_size == "25MiB");
             }
         }
