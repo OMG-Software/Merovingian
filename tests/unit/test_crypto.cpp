@@ -3,6 +3,7 @@
 #include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/crypto/ed25519.hpp"
 #include "merovingian/crypto/random.hpp"
+#include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
 
 #include <catch2/catch_test_macros.hpp>
@@ -214,6 +215,120 @@ SCENARIO("Crypto signing service fails closed for unusable keys", "[crypto][sign
             {
                 REQUIRE_FALSE(result.error.empty());
                 REQUIRE(result.error == "active signing key is not usable");
+            }
+        }
+    }
+}
+
+SCENARIO("SecretBox derives the same key from identical master material", "[crypto][secret_box]")
+{
+    GIVEN("two equal master key byte strings")
+    {
+        auto const material = std::vector<std::uint8_t>{0x01U, 0x02U, 0x03U, 0x04U, 0x05U};
+
+        WHEN("keys are derived")
+        {
+            auto const key_a = merovingian::crypto::derive_secret_box_key(material);
+            auto const key_b = merovingian::crypto::derive_secret_box_key(material);
+
+            THEN("both derivations succeed and produce identical keys")
+            {
+                REQUIRE(key_a.has_value());
+                REQUIRE(key_b.has_value());
+                REQUIRE(key_a->bytes == key_b->bytes);
+            }
+        }
+    }
+}
+
+SCENARIO("SecretBox round-trips plaintext through authenticated encryption", "[crypto][secret_box]")
+{
+    GIVEN("a derived key and a secret message")
+    {
+        auto const master = std::vector<std::uint8_t>{0x0aU, 0x0bU, 0x0cU, 0x0dU};
+        auto const key = merovingian::crypto::derive_secret_box_key(master);
+        REQUIRE(key.has_value());
+
+        auto const plaintext = std::vector<std::uint8_t>{0xdeU, 0xadU, 0xbeU, 0xefU};
+
+        WHEN("the plaintext is encrypted and then decrypted")
+        {
+            auto const ciphertext = merovingian::crypto::secret_box_encrypt(plaintext, *key);
+            REQUIRE(ciphertext.has_value());
+            REQUIRE(ciphertext->bytes.size() > plaintext.size());
+
+            auto const decrypted = merovingian::crypto::secret_box_decrypt(*ciphertext, *key);
+
+            THEN("the decrypted bytes match the original plaintext")
+            {
+                REQUIRE(decrypted.has_value());
+                REQUIRE(*decrypted == plaintext);
+            }
+        }
+    }
+}
+
+SCENARIO("SecretBox fails closed when ciphertext is tampered", "[crypto][secret_box]")
+{
+    GIVEN("a valid ciphertext and a different key")
+    {
+        auto const master = std::vector<std::uint8_t>{0x10U, 0x20U, 0x30U, 0x40U};
+        auto const key = merovingian::crypto::derive_secret_box_key(master);
+        REQUIRE(key.has_value());
+
+        auto const plaintext = std::vector<std::uint8_t>{0xcaU, 0xfeU, 0xbaU, 0xbeU};
+        auto ciphertext = merovingian::crypto::secret_box_encrypt(plaintext, *key);
+        REQUIRE(ciphertext.has_value());
+
+        WHEN("the ciphertext is corrupted")
+        {
+            ciphertext->bytes.back() ^= 0xFFU;
+            auto const decrypted = merovingian::crypto::secret_box_decrypt(*ciphertext, *key);
+
+            THEN("decryption is rejected")
+            {
+                REQUIRE_FALSE(decrypted.has_value());
+            }
+        }
+
+        WHEN("a different derived key is used")
+        {
+            auto const other_master = std::vector<std::uint8_t>{0x50U, 0x60U, 0x70U, 0x80U};
+            auto const other_key = merovingian::crypto::derive_secret_box_key(other_master);
+            REQUIRE(other_key.has_value());
+
+            auto const decrypted = merovingian::crypto::secret_box_decrypt(*ciphertext, *other_key);
+
+            THEN("decryption is rejected")
+            {
+                REQUIRE_FALSE(decrypted.has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("SecretBox encryption uses a fresh nonce per call", "[crypto][secret_box]")
+{
+    GIVEN("a derived key and a fixed plaintext")
+    {
+        auto const master = std::vector<std::uint8_t>{0xaaU, 0xbbU, 0xccU, 0xddU};
+        auto const key = merovingian::crypto::derive_secret_box_key(master);
+        REQUIRE(key.has_value());
+
+        auto const plaintext = std::vector<std::uint8_t>(32U, 0x55U);
+
+        WHEN("the same plaintext is encrypted twice")
+        {
+            auto const a = merovingian::crypto::secret_box_encrypt(plaintext, *key);
+            auto const b = merovingian::crypto::secret_box_encrypt(plaintext, *key);
+
+            THEN("the ciphertexts differ but both decrypt to the original plaintext")
+            {
+                REQUIRE(a.has_value());
+                REQUIRE(b.has_value());
+                REQUIRE(a->bytes != b->bytes);
+                REQUIRE(*merovingian::crypto::secret_box_decrypt(*a, *key) == plaintext);
+                REQUIRE(*merovingian::crypto::secret_box_decrypt(*b, *key) == plaintext);
             }
         }
     }

@@ -141,6 +141,16 @@ struct LoggingSecurityConfig final
     bool structured{true};
 };
 
+// At-rest protection for high-value server secrets. The master key file
+// contains raw secret material that is hashed with domain separation to
+// derive the key used to encrypt the Ed25519 signing secret before it is
+// written to the database. When empty, new signing keys cannot be created
+// (legacy plaintext keys may still be loaded for migration).
+struct SecretsSecurityConfig final
+{
+    std::string master_key_file{};
+};
+
 // Per-endpoint rate-limit policies. The values populate
 // `http::RateLimitEngine` at `start_client_server()` time; restart
 // required (see `src/config/reload_policy.cpp`). The 0.5.0 design doc
@@ -174,6 +184,7 @@ struct SecurityConfig final
     MediaSecurityConfig media{};
     TrustSafetySecurityConfig trust_safety{};
     LoggingSecurityConfig logging{};
+    SecretsSecurityConfig secrets{};
 };
 
 class Config final

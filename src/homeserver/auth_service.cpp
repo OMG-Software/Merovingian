@@ -15,10 +15,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <fstream>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <unordered_map>
 #include <vector>
 
 #include <sodium.h>
@@ -256,12 +258,44 @@ namespace
         }
     }
 
-    [[nodiscard]] auto read_registration_token(config::RegistrationSecurityConfig const& registration)
+    // Hash a registration token with Argon2id using libsodium's recommended
+    // interactive limits.  The resulting string is safe to keep in memory and to
+    // compare with crypto_pwhash_str_verify.
+    [[nodiscard]] auto hash_registration_token(std::string_view token) -> std::optional<std::string>
+    {
+        if (!sodium_is_ready() || token.empty())
+        {
+            return std::nullopt;
+        }
+        auto output = std::array<char, crypto_pwhash_STRBYTES>{};
+        if (crypto_pwhash_str(output.data(), token.data(), static_cast<unsigned long long>(token.size()),
+                              crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE)
+            != 0)
+        {
+            return std::nullopt;
+        }
+        return std::string{output.data()};
+    }
+
+    // Load the registration token from disk once, hash it with Argon2id, and cache
+    // only the hash keyed by the file path.  The plaintext token is zeroised after
+    // hashing so it does not remain in server memory.
+    [[nodiscard]] auto load_hashed_registration_token(config::RegistrationSecurityConfig const& registration)
         -> std::optional<std::string>
     {
         if (registration.token_file.empty())
         {
             return std::nullopt;
+        }
+
+        static auto mutex = std::mutex{};
+        static auto cache = std::unordered_map<std::string, std::string>{};
+
+        auto lock = std::lock_guard<std::mutex>{mutex};
+        auto const it = cache.find(registration.token_file);
+        if (it != cache.end())
+        {
+            return it->second;
         }
 
         auto input = std::ifstream{registration.token_file};
@@ -273,14 +307,38 @@ namespace
         auto token = std::string{};
         std::getline(input, token);
         trim_line_ending(token);
-        return token.empty() ? std::optional<std::string>{} : std::optional<std::string>{std::move(token)};
+        if (token.empty())
+        {
+            return std::nullopt;
+        }
+
+        auto hash = hash_registration_token(token);
+        // Best-effort memory clearing of the plaintext token after hashing.  This
+        // reduces the window in which a memory disclosure would reveal the raw secret.
+        std::ignore = sodium_mlock(token.data(), token.size());
+        std::fill(token.begin(), token.end(), '\0');
+        sodium_munlock(token.data(), token.size());
+
+        if (!hash.has_value())
+        {
+            return std::nullopt;
+        }
+
+        auto const [inserted, ok] = cache.emplace(registration.token_file, std::move(*hash));
+        std::ignore = ok;
+        return inserted->second;
     }
 
-    [[nodiscard]] auto registration_token_matches(std::string_view expected, std::string_view presented) noexcept
+    [[nodiscard]] auto registration_token_matches(std::string_view expected_hash, std::string_view presented) noexcept
         -> bool
     {
-        return sodium_is_ready() && expected.size() == presented.size() &&
-               sodium_memcmp(expected.data(), presented.data(), expected.size()) == 0;
+        if (!sodium_is_ready() || expected_hash.empty() || presented.empty())
+        {
+            return false;
+        }
+        return crypto_pwhash_str_verify(expected_hash.data(), presented.data(),
+                                        static_cast<unsigned long long>(presented.size()))
+               == 0;
     }
 
     [[nodiscard]] auto make_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
@@ -345,8 +403,8 @@ auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart,
 
     if (registration.require_token)
     {
-        auto const expected_token = read_registration_token(registration);
-        if (!expected_token.has_value() || !registration_token_matches(*expected_token, registration_token))
+        auto const expected_hash = load_hashed_registration_token(registration);
+        if (!expected_hash.has_value() || !registration_token_matches(*expected_hash, registration_token))
         {
             return make_operation_result(false, {}, "registration token rejected", 403U);
         }
