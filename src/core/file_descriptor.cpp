@@ -4,8 +4,10 @@
 #include "merovingian/core/file_descriptor.hpp"
 
 #include <array>
+#include <cerrno>
 #include <climits>
 #include <cstdint>
+#include <cstdlib>
 #include <set>
 #include <string>
 #include <tuple>
