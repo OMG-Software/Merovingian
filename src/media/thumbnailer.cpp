@@ -23,7 +23,9 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#if defined(__linux__)
 #include <sys/prctl.h>
+#endif
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -378,7 +380,11 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
         core::close_all_file_descriptors_except(keep_open);
 
         // Prevent privilege escalation through setuid/setcap helpers before exec.
+        // PR_SET_NO_NEW_PRIVS is Linux-specific; other platforms rely on the
+        // fork/exec model and the worker's own hardening.
+#if defined(__linux__)
         std::ignore = ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+#endif
 
         child_stdin_read.reset();
         child_stdout_write.reset();

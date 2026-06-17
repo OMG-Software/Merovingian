@@ -27,11 +27,10 @@
 #include <tuple>
 #include <vector>
 
-#include <sys/resource.h>
-#include <unistd.h>
-
 #include <png.h>
+#include <sys/resource.h>
 #include <turbojpeg.h>
+#include <unistd.h>
 
 #if defined(__linux__)
 #include <sys/prctl.h>
@@ -64,8 +63,8 @@ using merovingian::media::ThumbnailWorkerStatus;
 
 // Hard ceilings the worker imposes on itself regardless of the request, so a
 // malformed frame or hostile image cannot exhaust the host.
-constexpr std::size_t max_input_bytes = 64U * 1024U * 1024U;       // 64 MiB source
-constexpr std::uint64_t max_address_space = 768U * 1024U * 1024U;  // 768 MiB RSS+heap
+constexpr std::size_t max_input_bytes = 64U * 1024U * 1024U;      // 64 MiB source
+constexpr std::uint64_t max_address_space = 768U * 1024U * 1024U; // 768 MiB RSS+heap
 constexpr std::uint64_t max_cpu_seconds = 15U;
 constexpr std::uint64_t max_file_size = 64U * 1024U * 1024U;
 constexpr std::uint32_t absolute_max_dimension = 4096U;
@@ -87,6 +86,10 @@ auto harden() -> void
     };
     if (!sanitizer_build)
     {
+        // Strict resource caps are dropped in sanitizer builds because
+        // ASan/TSan/MSan reserve a large virtual address space and the
+        // instrumented runtime is much slower; the same build is never
+        // used in production.
         apply(RLIMIT_AS, max_address_space);
     }
     apply(RLIMIT_CPU, max_cpu_seconds);
@@ -96,8 +99,16 @@ auto harden() -> void
 #if defined(__linux__)
     std::ignore = ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
     std::ignore = ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+
+    // The seccomp-bpf allowlist is incompatible with sanitizer runtimes,
+    // which need syscalls (e.g. for shadow memory, error reporting, and
+    // /proc access) that the production worker does not require. Skip it
+    // in sanitizer builds so the worker can run under ASan/UBSan/TSan.
+    if (!sanitizer_build)
+    {
+        std::ignore = merovingian::platform::apply_seccomp_filter();
+    }
 #endif
-    std::ignore = merovingian::platform::apply_seccomp_filter();
 }
 
 [[nodiscard]] auto read_all_stdin() -> std::string

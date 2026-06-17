@@ -29,7 +29,7 @@ class LiveIntegrationRegistrationTests(unittest.TestCase):
         self.assertIn("'integration/test_live_synapse_federation.cpp'", meson)
 
         integration_block_match = re.search(
-            r"integration_tests = executable\((?P<body>.*?)\n\s*\)\n\n\s*test\('integration-tests', integration_tests\)",
+            r"integration_tests = executable\((?P<body>.*?)\n\s*\)\n(?:\s*(?:#.*)?\n)*\s*test\('integration-tests', integration_tests[^\)]*\)",
             meson,
             re.DOTALL,
         )

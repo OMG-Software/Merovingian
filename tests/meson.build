@@ -221,7 +221,10 @@ if get_option ('build_tests')
     cpp_args: thumbnail_test_args,
   )
 
-  test('integration-tests', integration_tests)
+  # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
+  # worker) and can be slow under sanitizers; give them the same headroom as
+  # the unit and conformance suites.
+  test('integration-tests', integration_tests, timeout: 600)
 
   if get_option('build_live_tests')
     live_integration_tests = executable(
