@@ -24,7 +24,6 @@ listeners if any check reports `disabled`.
 | `capsicum` | FreeBSD Capsicum capability mode entry is not yet wired into startup. | Call `cap_enter()` after listeners bind and before request handling. |
 | `privilege drop` | Privilege drop is delegated to the service manager (systemd `User=`, OpenRC `user=`, rc.d `_user`) during alpha. | Add an in-process `setresgid`/`setresuid` step gated by configuration. |
 | `filesystem restrictions` | Filesystem confinement is delegated to systemd sandboxing directives during alpha (`ProtectSystem=strict`, `PrivateTmp=`, `ReadWritePaths=`). | Add Landlock / unveil / Capsicum file-descriptor confinement inside the process. |
-| `core dump policy` | `RLIMIT_CORE` is not yet clamped from inside the process. | Call `setrlimit(RLIMIT_CORE, {0, 0})` at startup and disable `PR_SET_DUMPABLE`. |
 
 ## Retired exceptions
 
@@ -33,6 +32,9 @@ listeners if any check reports `disabled`.
 | `linker hardening` | v0.7.2 | ELF program-header probe via `/proc/self/exe` (Linux). Reports `enabled` when `PT_GNU_RELRO`, `DT_BIND_NOW`, and `PT_GNU_STACK` (noexec) are all present; `unknown` otherwise (static or dev build). |
 | `RELRO` | v0.7.2 | Same ELF probe as `linker hardening`. Reports `enabled` when `PT_GNU_RELRO` is present; `unknown` otherwise. |
 | `seccomp` | v0.7.2 | Runtime BPF syscall allowlist applied via `prctl(PR_SET_NO_NEW_PRIVS)` + `seccomp(SECCOMP_SET_MODE_FILTER)` before listeners bind. Reports `enabled` when `/proc/self/status` confirms `Seccomp: 2`; `unknown` on non-Linux, old kernels, or dev/dry-run invocations. Default action is `SECCOMP_RET_LOG` for beta. |
+| `core dump policy` | v0.8.18 | `setrlimit(RLIMIT_CORE, {0, 0})` + `prctl(PR_SET_DUMPABLE, 0)` applied on Linux at startup; self-check probes via `getrlimit`. |
+| `no_new_privs` | v0.8.18 | `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` applied on Linux at startup; self-check probes via `PR_GET_NO_NEW_PRIVS`. |
+| `capability bounding` | v0.8.18 | Linux capability bounding set is dropped with `prctl(PR_CAPBSET_DROP, ...)` for every capability before listeners bind. |
 
 ## Operator expectations during alpha
 

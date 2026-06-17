@@ -8,6 +8,7 @@
 #ifdef __linux__
 #include <cstdint>
 
+#include <linux/audit.h>
 #include <linux/seccomp.h>
 #include <sys/syscall.h>
 #include <unistd.h>
@@ -155,6 +156,24 @@ SCENARIO("seccomp filter defaults to kill-process and blocks removed filesystem 
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_renameat));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_truncate));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_ftruncate));
+            }
+        }
+
+        WHEN("the expected architecture is queried")
+        {
+            auto const expected = merovingian::platform::seccomp_expected_architecture();
+
+            THEN("x86_64 and aarch64 builds have an architecture constant; unsupported builds fail closed")
+            {
+#if defined(__x86_64__)
+                REQUIRE(expected.has_value());
+                REQUIRE(*expected == static_cast<std::uint32_t>(AUDIT_ARCH_X86_64));
+#elif defined(__aarch64__)
+                REQUIRE(expected.has_value());
+                REQUIRE(*expected == static_cast<std::uint32_t>(AUDIT_ARCH_AARCH64));
+#else
+                REQUIRE_FALSE(expected.has_value());
+#endif
             }
         }
     }

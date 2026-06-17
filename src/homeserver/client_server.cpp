@@ -3624,8 +3624,8 @@ namespace
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto const secret =
-                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.data()),
-                            rt.homeserver.database.signing_secret_key.size()};
+                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
+                            rt.homeserver.database.signing_secret_key.bytes().size()};
             for (auto const& [server, uid_list] : remote_by_server)
             {
                 auto remote_dk = canonicaljson::Object{};
@@ -3781,8 +3781,8 @@ namespace
             auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
             auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
             auto const secret =
-                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.data()),
-                            rt.homeserver.database.signing_secret_key.size()};
+                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
+                            rt.homeserver.database.signing_secret_key.bytes().size()};
             for (auto& [server, user_claims] : remote_by_server)
             {
                 auto claim_body_obj = canonicaljson::Object{};

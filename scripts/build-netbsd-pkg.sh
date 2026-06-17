@@ -31,7 +31,9 @@ meson setup build-netbsd-pkg \
     --wrap-mode=forcefallback \
     -Dhardening=true \
     -Dbuild_tests=false \
-    -Dbuild_fuzz=false
+    -Dbuild_fuzz=false \
+    -Dcpp_link_args='-pie -Wl,-z,relro -Wl,-z,now' \
+    -Dc_link_args='-pie -Wl,-z,relro -Wl,-z,now'
 
 meson compile -C build-netbsd-pkg
 # --skip-subprojects prevents vendored sqlite3 headers/archives from landing

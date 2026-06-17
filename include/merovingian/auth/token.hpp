@@ -36,6 +36,7 @@ struct TokenPolicyDecision final
 [[nodiscard]] auto token_is_active(AccessTokenRecord const& token, std::chrono::system_clock::time_point now)
     -> TokenPolicyDecision;
 [[nodiscard]] auto constant_time_equal(std::string_view left, std::string_view right) noexcept -> bool;
+[[nodiscard]] auto constant_time_equal_variable_length(std::string_view left, std::string_view right) noexcept -> bool;
 [[nodiscard]] auto redacted_token_for_log(std::string_view token_secret) -> std::string;
 
 } // namespace merovingian::auth

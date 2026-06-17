@@ -87,6 +87,7 @@ struct LinuxHardeningPlan final
     bool seccomp_filter_required{true};
     bool no_new_privs_required{true};
     bool capability_bounding_required{true};
+    bool core_dump_policy_required{true};
     bool landlock_documented{true};
     bool apparmor_documented{true};
     bool selinux_documented{true};
@@ -148,6 +149,13 @@ struct HardeningGate final
 [[nodiscard]] auto bsd_hardening_plan_is_documented(BsdHardeningPlan const& plan) noexcept -> bool;
 [[nodiscard]] auto evaluate_runtime_hardening_profile(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision;
 [[nodiscard]] auto evaluate_hardening_gates(std::vector<HardeningGate> const& gates) -> HardeningPlanDecision;
+
+// Apply the platform-specific controls that are safe to invoke from inside the
+// server process. Linux: core-dump policy, no_new_privs, capability bounding.
+// BSD: documented alpha exceptions remain until pledge/unveil/capsicum helpers
+// are implemented. Portable: no-op (delegated to service manager).
+[[nodiscard]] auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision;
+
 [[nodiscard]] auto linux_deployment_profile_notes() -> std::vector<std::string>;
 [[nodiscard]] auto bsd_deployment_profile_notes() -> std::vector<std::string>;
 [[nodiscard]] auto runtime_hardening_ci_gate_notes() -> std::vector<std::string>;

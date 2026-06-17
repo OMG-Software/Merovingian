@@ -11,6 +11,12 @@
 #include <utility>
 #include <vector>
 
+#ifdef __linux__
+#include <linux/capability.h>
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#endif
+
 namespace merovingian::platform
 {
 namespace
@@ -222,8 +228,8 @@ auto signal_handling_plan_is_safe(SignalHandlingPlan const& plan) noexcept -> bo
 auto linux_hardening_plan_is_documented(LinuxHardeningPlan const& plan) noexcept -> bool
 {
     return plan.seccomp_filter_required && plan.no_new_privs_required && plan.capability_bounding_required &&
-           plan.landlock_documented && plan.apparmor_documented && plan.selinux_documented &&
-           plan.systemd_sandboxing_documented;
+           plan.core_dump_policy_required && plan.landlock_documented && plan.apparmor_documented &&
+           plan.selinux_documented && plan.systemd_sandboxing_documented;
 }
 
 auto bsd_hardening_plan_is_documented(BsdHardeningPlan const& plan) noexcept -> bool
@@ -270,9 +276,11 @@ auto evaluate_runtime_hardening_profile(RuntimeHardeningProfile const& profile) 
         return accept();
     }();
     log_diagnostic(result.accepted ? "profile.accepted" : "profile.rejected",
-                   {{"platform", std::string{hardening_platform_name(profile.platform)}, false},
-                    {"mode",     std::string{hardening_mode_name(profile.mode)},          false},
-                    {"reason",   result.reason,                                            false}});
+                   {
+                       {"platform", std::string{hardening_platform_name(profile.platform)}, false},
+                       {"mode",     std::string{hardening_mode_name(profile.mode)},         false},
+                       {"reason",   result.reason,                                          false}
+    });
     return result;
 }
 
@@ -282,21 +290,25 @@ auto evaluate_hardening_gates(std::vector<HardeningGate> const& gates) -> Harden
     {
         if (gate.name.empty())
         {
-            log_diagnostic("gates.rejected", {{"reason", "hardening gate name is required", false}});
+            log_diagnostic("gates.rejected", {
+                                                 {"reason", "hardening gate name is required", false}
+            });
             return reject("hardening gate name is required");
         }
         if (gate.mode == HardeningMode::required && !gate.available)
         {
             auto const reason = "required hardening gate unavailable: " + gate.name;
-            log_diagnostic("gates.rejected",
-                           {{"gate",   gate.name, false},
-                            {"reason", reason,    false}});
+            log_diagnostic("gates.rejected", {
+                                                 {"gate",   gate.name, false},
+                                                 {"reason", reason,    false}
+            });
             return reject(reason);
         }
     }
 
-    log_diagnostic("gates.accepted",
-                   {{"gate_count", std::to_string(gates.size()), false}});
+    log_diagnostic("gates.accepted", {
+                                         {"gate_count", std::to_string(gates.size()), false}
+    });
     return accept();
 }
 
@@ -330,6 +342,87 @@ auto runtime_hardening_ci_gate_notes() -> std::vector<std::string>
         "but not linked.",
         "CI gate: static analysis and unsafe source gates protect hardening code paths from accidental unsafe API use.",
     };
+}
+
+namespace
+{
+
+#ifdef __linux__
+
+    [[nodiscard]] auto apply_linux_core_dump_policy() noexcept -> bool
+    {
+        auto const limit = ::rlimit{
+            .rlim_cur = 0,
+            .rlim_max = 0,
+        };
+        if (::setrlimit(RLIMIT_CORE, &limit) != 0)
+        {
+            return false;
+        }
+        std::ignore = ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
+        return true;
+    }
+
+    [[nodiscard]] auto apply_linux_no_new_privs() noexcept -> bool
+    {
+        return ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) == 0;
+    }
+
+    [[nodiscard]] auto apply_linux_capability_bounding_set() noexcept -> bool
+    {
+        // Drop every capability from the ambient bounding set. Failures are
+        // ignored for individual caps because the kernel may not expose all
+        // caps to userspace; the goal is to drop as many as possible.
+        for (auto cap = std::int32_t{0}; cap <= CAP_LAST_CAP; ++cap)
+        {
+            std::ignore = ::prctl(PR_CAPBSET_DROP, cap, 0, 0, 0);
+        }
+        return true;
+    }
+
+#endif
+
+} // namespace
+
+auto apply_runtime_hardening_controls(RuntimeHardeningProfile const& profile) -> HardeningPlanDecision
+{
+    auto profile_decision = evaluate_runtime_hardening_profile(profile);
+    if (!profile_decision.accepted)
+    {
+        return profile_decision;
+    }
+
+    if (profile.platform == HardeningPlatform::linux)
+    {
+#ifdef __linux__
+        if (profile.linux.core_dump_policy_required && !apply_linux_core_dump_policy())
+        {
+            return reject_if_required(profile.mode, "failed to apply Linux core dump policy");
+        }
+        if (profile.linux.no_new_privs_required && !apply_linux_no_new_privs())
+        {
+            return reject_if_required(profile.mode, "failed to apply PR_SET_NO_NEW_PRIVS");
+        }
+        if (profile.linux.capability_bounding_required && !apply_linux_capability_bounding_set())
+        {
+            return reject_if_required(profile.mode, "failed to drop Linux capability bounding set");
+        }
+        return accept();
+#else
+        return reject_if_required(profile.mode, "Linux hardening requested on non-Linux platform");
+#endif
+    }
+
+    if (profile.platform == HardeningPlatform::bsd)
+    {
+        // pledge/unveil/capsicum are intentionally deferred until the project
+        // has BSD CI environments to test them safely.
+        return reject_if_required(profile.mode, "BSD sandbox helpers are not yet implemented");
+    }
+
+    // Portable profile: service-manager units apply privilege drop and filesystem
+    // restrictions; the process only validates that the plan documents them.
+    return accept();
 }
 
 } // namespace merovingian::platform

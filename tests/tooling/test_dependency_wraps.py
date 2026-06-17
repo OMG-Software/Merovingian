@@ -228,7 +228,9 @@ class DependencyWrapTests(unittest.TestCase):
         # THEN the wrapper prefers static libraries, requests static PIE, and
         # rejects binaries that still contain a dynamic interpreter.
         self.assertIn("--prefer-static", wrapper)
-        self.assertIn("-Dcpp_link_args=-static-pie", wrapper)
+        self.assertIn("-Dcpp_link_args='-static-pie", wrapper)
+        self.assertIn("-Wl,-z,relro", wrapper)
+        self.assertIn("-Wl,-z,now", wrapper)
         self.assertIn("readelf -l", wrapper)
         self.assertIn('PACKAGE_ROOT="merovingian-${VERSION}-linux-static-x86_64"', wrapper)
         self.assertIn('TARBALL="${PACKAGE_ROOT}.tar.gz"', wrapper)

@@ -339,13 +339,13 @@ namespace
                                          std::string_view room_version) -> std::optional<std::string>
     {
         auto key = ensure_runtime_server_signing_key(runtime);
-        if (!key.has_value() || runtime.database.signing_secret_key.size() != crypto_sign_SECRETKEYBYTES)
+        if (!key.has_value() || runtime.database.signing_secret_key.bytes().size() != crypto_sign_SECRETKEYBYTES)
         {
             return std::nullopt;
         }
         auto secret_key = std::array<unsigned char, crypto_sign_SECRETKEYBYTES>{};
-        std::copy(runtime.database.signing_secret_key.begin(), runtime.database.signing_secret_key.end(),
-                  secret_key.begin());
+        std::copy(runtime.database.signing_secret_key.bytes().begin(),
+                  runtime.database.signing_secret_key.bytes().end(), secret_key.begin());
         auto const* policy = rooms::find_room_version_policy(room_version.empty() ? "12" : room_version);
         if (policy == nullptr)
         {
@@ -1510,7 +1510,7 @@ namespace
                                                           .count());
                 });
             auto key = ensure_runtime_server_signing_key(runtime);
-            if (!key.has_value() || runtime.database.signing_secret_key.size() != crypto_sign_SECRETKEYBYTES)
+            if (!key.has_value() || runtime.database.signing_secret_key.bytes().size() != crypto_sign_SECRETKEYBYTES)
             {
                 log_diagnostic("dispatch.start.rejected", {
                                                               {"reason", "server signing key unavailable", false}
@@ -1521,8 +1521,8 @@ namespace
             dispatch_config.origin = runtime.config.server().server_name;
             dispatch_config.key_id = key->key_id;
             dispatch_config.secret_key =
-                std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.data()),
-                            runtime.database.signing_secret_key.size()};
+                std::string{reinterpret_cast<char const*>(runtime.database.signing_secret_key.bytes().data()),
+                            runtime.database.signing_secret_key.bytes().size()};
             auto* discovery_ptr = discovery;
             auto const discovery_timeout = timeout > 0U ? timeout : 30U;
             auto resolver = [discovery_ptr, discovery_timeout](

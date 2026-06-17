@@ -44,8 +44,8 @@ implementation, runtime hardening, and auditable dependency boundaries.
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
-    -Dcpp_link_args='-pie' \
-    -Dc_link_args='-pie'
+    -Dcpp_link_args='-pie -Wl,-z,relro -Wl,-z,now' \
+    -Dc_link_args='-pie -Wl,-z,relro -Wl,-z,now'
 %meson_build
 
 %install

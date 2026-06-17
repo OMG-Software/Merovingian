@@ -185,12 +185,13 @@ namespace
     // validating legacy tokens; new tokens MUST use the master-key-derived v4 key.
     [[nodiscard]] auto token_hmac_key_v3(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
     {
-        if (!sodium_is_ready() || runtime.database.signing_secret_key.size() < crypto_generichash_KEYBYTES)
+        if (!sodium_is_ready() || runtime.database.signing_secret_key.bytes().size() < crypto_generichash_KEYBYTES)
         {
             return std::nullopt;
         }
         auto key = crypto::TokenHmacKey{};
-        std::copy_n(runtime.database.signing_secret_key.begin(), crypto_generichash_KEYBYTES, key.bytes.begin());
+        std::copy_n(runtime.database.signing_secret_key.bytes().begin(), crypto_generichash_KEYBYTES,
+                    key.bytes.begin());
         return key;
     }
 

@@ -19,8 +19,8 @@ CC=clang CXX=clang++ meson setup build-deb \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
-    -Dcpp_link_args='-pie' \
-    -Dc_link_args='-pie'
+    -Dcpp_link_args='-pie -Wl,-z,relro -Wl,-z,now' \
+    -Dc_link_args='-pie -Wl,-z,relro -Wl,-z,now'
 
 # 2. Compile
 meson compile -C build-deb

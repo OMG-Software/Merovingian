@@ -19,8 +19,8 @@ CC="${CC:-clang}" CXX="${CXX:-clang++}" meson setup "$BUILD_DIR" \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
     -Dstatic_curl_wrap=true \
-    -Dcpp_link_args=-static-pie \
-    -Dc_link_args=-static-pie
+    -Dcpp_link_args='-static-pie -Wl,-z,relro -Wl,-z,now' \
+    -Dc_link_args='-static-pie -Wl,-z,relro -Wl,-z,now'
 
 meson compile -C "$BUILD_DIR"
 meson install -C "$BUILD_DIR" --destdir "$(pwd)/${STAGING}/"

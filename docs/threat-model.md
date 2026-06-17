@@ -146,6 +146,38 @@ threat it closes; the controls above are the standing defences these reinforce.
   guard, and SIGKILLs a worker that overruns. See `media/thumbnailer.hpp` and
   [media-repository.md](media-repository.md).
 
+- **Variable-length secret comparison leaking length (#8):** comparing a config
+  secret with a fixed-size function such as `sodium_memcmp` up to the shorter
+  length branches on the secret's size before comparing bytes. Fixed by adding a
+  domain-separated `crypto_generichash` path that produces fixed-size digests for
+  both inputs and compares those digests with `sodium_memcmp`, hiding length
+  differences.
+
+- **Runtime hardening controls not applied in-process (#9):** the startup
+  hardening self-check documented `core dump policy`, `no_new_privs`, and
+  `capability bounding` as alpha exceptions without enforcing them. On Linux the
+  server now clamps `RLIMIT_CORE` to zero, sets `PR_SET_NO_NEW_PRIVS`, and drops
+  the capability bounding set before serving traffic; the self-check reports the
+  resulting status instead of a placeholder.
+
+- **Signing secret material in ordinary process memory (#10):** the Ed25519 server
+  signing secret was kept in a plain `std::vector` while loaded for signing and
+  token-key derivation, leaving it exposed to swap and core dumps and copying it
+  into regular containers. Fixed by storing the secret in `core::SecretBuffer`,
+  which uses libsodium `mlock` and zeroises the buffer on destruction or move.
+
+- **Seccomp filter architecture guard was x86_64-only (#11):** the seccomp-bpf
+  architecture check hard-coded `AUDIT_ARCH_X86_64`, so an aarch64 build would
+  either mismatch the filter or silently accept a wrong constant. Fixed by
+  selecting `AUDIT_ARCH_X86_64` or `AUDIT_ARCH_AARCH64` at compile time and
+  returning `SECCOMP_RET_KILL_PROCESS` on any unsupported architecture.
+
+- **RELRO/BIND_NOW not explicit in linker flags (#12):** the build and packaging
+  scripts relied on toolchain defaults for partial RELRO and lazy binding,
+  leaving GOT/PLT writable at runtime. `-Wl,-z,relro` and `-Wl,-z,now` are now
+  passed explicitly in `meson.build` and every packaging script, and the startup
+  ELF probe verifies `PT_GNU_RELRO` and `DT_BIND_NOW`.
+
 ## Security principles
 
 - Fail closed.

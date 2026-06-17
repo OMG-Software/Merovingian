@@ -124,7 +124,7 @@ auto install_unusable_persisted_signing_key(merovingian::homeserver::HomeserverR
         32503680000000ULL,
         "not-base64",
     });
-    runtime.database.signing_secret_key.clear();
+    runtime.database.signing_secret_key = merovingian::core::SecretBuffer{};
 }
 
 } // namespace
@@ -994,7 +994,7 @@ SCENARIO("ensure_runtime_server_signing_key generates a derived key_id, never th
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.front().key_id == key->key_id);
                 // The runtime secret key is populated and has the correct Ed25519 size.
-                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
             }
         }
     }
@@ -1032,7 +1032,7 @@ SCENARIO("ensure_runtime_server_signing_key migrates a legacy ed25519:auto key b
                 REQUIRE(key->key_id.size() == std::string_view{"ed25519:"}.size() + 8U);
                 // Two keys now in the store: the old legacy entry plus the newly generated one.
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 2U);
-                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
             }
         }
     }
@@ -1053,7 +1053,7 @@ SCENARIO("ensure_runtime_server_signing_key encrypts a fresh secret when a maste
             REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
             REQUIRE(
                 runtime.database.persistent_store.server_signing_keys.front().secret_key.starts_with("secretbox:v1:"));
-            REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+            REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
         }
     }
 }
@@ -1073,13 +1073,13 @@ SCENARIO("ensure_runtime_server_signing_key decrypts an encrypted signing secret
 
         WHEN("the runtime secret is cleared and ensure is called again")
         {
-            runtime.database.signing_secret_key.clear();
+            runtime.database.signing_secret_key = merovingian::core::SecretBuffer{};
             auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
 
             THEN("the encrypted secret is decrypted back into the runtime signing key")
             {
                 REQUIRE(key.has_value());
-                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
             }
         }
     }
@@ -1107,7 +1107,7 @@ SCENARIO("rotate_server_signing_key encrypts the new secret when a master key is
                                              &merovingian::database::PersistentServerSigningKey::valid_until_ts);
                 REQUIRE(active != runtime.database.persistent_store.server_signing_keys.end());
                 REQUIRE(active->secret_key.starts_with("secretbox:v1:"));
-                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
             }
         }
     }

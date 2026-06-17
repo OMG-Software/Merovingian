@@ -8,6 +8,7 @@
 #ifdef __linux__
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 
 #include <fcntl.h>
 #include <linux/audit.h>
@@ -62,12 +63,23 @@ namespace
 
     // clang-format off
     struct ::sock_filter k_seccomp_filter[] = {  // NOLINT(*-avoid-c-arrays)
+#if defined(__x86_64__)
         // ── Architecture guard ──────────────────────────────────────────────
         // Reject non-x86_64 calls to block 32-bit compat (IA-32) syscall spoofing.
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  static_cast<uint32_t>(offsetof(struct ::seccomp_data, arch))),
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_X86_64, 1, 0),
-        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_KILL_PROCESS),
+        BPF_STMT(BPF_RET | BPF_K, k_seccomp_ret_kill_process),
+#elif defined(__aarch64__)
+        // Reject non-aarch64 calls to block aarch32 compat syscall spoofing.
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
+                 static_cast<uint32_t>(offsetof(struct ::seccomp_data, arch))),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, AUDIT_ARCH_AARCH64, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, k_seccomp_ret_kill_process),
+#else
+        // Unsupported architecture: fail closed rather than allowing syscalls.
+        BPF_STMT(BPF_RET | BPF_K, k_seccomp_ret_kill_process),
+#endif
         // Load the syscall number for all remaining comparisons.
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS,
                  static_cast<uint32_t>(offsetof(struct ::seccomp_data, nr))),
@@ -343,6 +355,17 @@ auto seccomp_is_syscall_allowed(int const syscall_number) noexcept -> bool
         }
     }
     return false;
+}
+
+auto seccomp_expected_architecture() noexcept -> std::optional<std::uint32_t>
+{
+#if defined(__x86_64__)
+    return static_cast<std::uint32_t>(AUDIT_ARCH_X86_64);
+#elif defined(__aarch64__)
+    return static_cast<std::uint32_t>(AUDIT_ARCH_AARCH64);
+#else
+    return std::nullopt;
+#endif
 }
 #endif // __linux__
 

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 
 namespace merovingian::platform
 {
@@ -36,6 +37,10 @@ struct SeccompProbeResult final
 // apply_seccomp_filter(). Exposed for unit testing without installing the
 // filter in the test process.
 [[nodiscard]] auto seccomp_is_syscall_allowed(int syscall_number) noexcept -> bool;
+
+// Returns the AUDIT_ARCH_* constant the installed filter expects, or std::nullopt
+// when the build architecture is not supported (fail-closed). Exposed for testing.
+[[nodiscard]] auto seccomp_expected_architecture() noexcept -> std::optional<std::uint32_t>;
 #endif
 
 } // namespace merovingian::platform

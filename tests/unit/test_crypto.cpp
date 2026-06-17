@@ -117,6 +117,32 @@ SCENARIO("Crypto constant-time equality holds at boundaries", "[crypto][security
     }
 }
 
+SCENARIO("Crypto variable-length constant-time comparison hides length differences", "[crypto][security][boundary]")
+{
+    GIVEN("equal and unequal strings with different lengths")
+    {
+        WHEN("the values are compared without a length check")
+        {
+            auto const identical = merovingian::crypto::constant_time_equal_variable_length("secret", "secret");
+            auto const different_same_length =
+                merovingian::crypto::constant_time_equal_variable_length("secret", "secreu");
+            auto const different_length =
+                merovingian::crypto::constant_time_equal_variable_length("secret", "secret-longer");
+            auto const empty_vs_value = merovingian::crypto::constant_time_equal_variable_length("", "secret");
+            auto const empty_vs_empty = merovingian::crypto::constant_time_equal_variable_length("", "");
+
+            THEN("only exact content matches are accepted regardless of length")
+            {
+                REQUIRE(identical);
+                REQUIRE_FALSE(different_same_length);
+                REQUIRE_FALSE(different_length);
+                REQUIRE_FALSE(empty_vs_value);
+                REQUIRE(empty_vs_empty);
+            }
+        }
+    }
+}
+
 SCENARIO("Crypto random boundary rejects invalid request sizes", "[crypto]")
 {
     GIVEN("zero, bounded, and oversized requests")

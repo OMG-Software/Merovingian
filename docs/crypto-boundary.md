@@ -5,7 +5,11 @@ implementing custom cryptographic primitives.
 
 ## Included now
 
-- Constant-time comparison boundary.
+- Constant-time comparison boundary (fixed and variable-length inputs).
+- Variable-length comparison uses domain-separated hashing so it does not leak
+  input length through a premature length check.
+- Runtime signing secret material is held in `core::SecretBuffer` (mlocked,
+  zeroised-on-destruction) while in process memory.
 - Random-source interface for future reviewed RNG integration.
 - Ed25519 provider interface for reviewed signing and verification integration.
 - Server signing-key store interface.
@@ -34,6 +38,10 @@ Access-token and refresh-token hashes now use a keyed BLAKE2b (`token-hash:v3`)
 construction seeded from runtime secret material; the previous unkeyed
 `token-hash:v2` form remains accepted only for lookup compatibility with older
 persisted rows.
+- Variable-length secret comparison does not branch on input length before
+  computing a fixed-size digest, removing a timing side-channel on secret size.
+- Signing secret material is held in a `core::SecretBuffer` while in process memory
+  and is zeroised when the buffer is destroyed or moved-from.
 
 The runtime signing key is generated using `crypto_sign_keypair`, which produces
 a cryptographically random keypair. When `security.secrets.master_key_file` is
