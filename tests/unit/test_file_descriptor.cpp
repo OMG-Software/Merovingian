@@ -5,6 +5,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <set>
+#include <tuple>
 
 #include <fcntl.h>
 #include <unistd.h>
