@@ -78,6 +78,31 @@ auto FileDescriptor::reset(int fd) noexcept -> void
 namespace
 {
 
+    // Fallback when /proc/self/fd and /dev/fd are unavailable. sysconf(_SC_OPEN_MAX)
+    // returns the maximum number of open files for the process; iterate up from 0
+    // and close any descriptor that is open and not in the keep list. Best-effort and
+    // noisy on failure: individual errors are ignored.
+    auto close_from_max_nfiles(std::set<int> const& keep_open) noexcept -> void
+    {
+        auto const open_max = ::sysconf(_SC_OPEN_MAX);
+        if (open_max <= 0)
+        {
+            return;
+        }
+        auto const limit = static_cast<int>(std::min<long>(open_max, static_cast<long>(INT_MAX)));
+        for (int fd = 0; fd < limit; ++fd)
+        {
+            if (keep_open.contains(fd))
+            {
+                continue;
+            }
+            if (::fcntl(fd, F_GETFD, 0) >= 0)
+            {
+                std::ignore = ::close(fd);
+            }
+        }
+    }
+
     // Close every fd returned by a directory walk. `walk_fd` is the DIR* used for
     // readdir and must not be closed by this sweep; it is added to keep_open implicitly.
     auto close_from_directory(int walk_fd, std::set<int> const& keep_open) noexcept -> void
@@ -136,31 +161,6 @@ namespace
             std::ignore = ::close(fd);
         }
         std::ignore = ::closedir(dir);
-    }
-
-    // Fallback when /proc/self/fd and /dev/fd are unavailable. sysconf(_SC_OPEN_MAX)
-    // returns the maximum number of open files for the process; iterate down from
-    // there because most descriptors live at the low end. Best-effort and noisy on
-    // failure: individual errors are ignored.
-    auto close_from_max_nfiles(std::set<int> const& keep_open) noexcept -> void
-    {
-        auto const open_max = ::sysconf(_SC_OPEN_MAX);
-        if (open_max <= 0)
-        {
-            return;
-        }
-        auto const limit = static_cast<int>(std::min<long>(open_max, static_cast<long>(INT_MAX)));
-        for (int fd = 0; fd < limit; ++fd)
-        {
-            if (keep_open.contains(fd))
-            {
-                continue;
-            }
-            if (::fcntl(fd, F_GETFD, 0) >= 0)
-            {
-                std::ignore = ::close(fd);
-            }
-        }
     }
 
 } // namespace
