@@ -111,11 +111,11 @@ namespace
     // readdir and must not be closed by this sweep; it is added to keep_open implicitly.
     auto close_from_directory(int walk_fd, std::set<int> const& keep_open) noexcept -> void
     {
-        // On FreeBSD and NetBSD /dev/fd contains entries for every possible fd
-        // (not only open ones), and fdopendir+readdir may see stale entries.
-        // Iterating fcntl(F_GETFD) on 0..sysconf(_SC_OPEN_MAX) is simpler and
-        // race-tolerant on these platforms, so skip the directory walk there.
-#if defined(__FreeBSD__) || defined(__NetBSD__)
+        // On FreeBSD, NetBSD, and OpenBSD /dev/fd contains entries for every
+        // possible fd (not only open ones). Iterating fcntl(F_GETFD) on a
+        // small, capped range is simpler and race-tolerant on these platforms,
+        // so skip the directory walk there.
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
         std::ignore = ::close(walk_fd);
         close_from_max_nfiles(keep_open);
         return;
