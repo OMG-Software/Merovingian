@@ -87,13 +87,28 @@ namespace
     // noisy on failure: individual errors are ignored.
     auto close_from_max_nfiles(std::set<int> const& keep_open) noexcept -> void
     {
-        auto const open_max = ::sysconf(_SC_OPEN_MAX);
-        if (open_max <= 0)
+        // On BSDs, F_MAXFD returns the highest currently open fd, so we only need to
+        // scan from 0 to that value. This avoids a slow walk over sysconf(_SC_OPEN_MAX)
+        // on NetBSD/QEMU where even a 4096-entry scan can consume the worker's CPU budget.
+        auto limit = int{0};
+#ifdef F_MAXFD
+        auto const max_fd = ::fcntl(0, F_MAXFD);
+        if (max_fd >= 0)
         {
-            return;
+            limit = max_fd + 1;
         }
-        constexpr auto max_scan = 4096L;
-        auto const limit = static_cast<int>(std::min({open_max, static_cast<long>(INT_MAX), max_scan}));
+        else
+#endif
+        {
+            auto const open_max = ::sysconf(_SC_OPEN_MAX);
+            if (open_max <= 0)
+            {
+                return;
+            }
+            constexpr auto max_scan = 1024L;
+            limit = static_cast<int>(std::min({open_max, static_cast<long>(INT_MAX), max_scan}));
+        }
+
         for (int fd = 0; fd < limit; ++fd)
         {
             if (keep_open.contains(fd))
