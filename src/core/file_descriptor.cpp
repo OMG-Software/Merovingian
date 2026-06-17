@@ -3,6 +3,7 @@
 
 #include "merovingian/core/file_descriptor.hpp"
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <climits>
@@ -79,8 +80,10 @@ namespace
 {
 
     // Fallback when /proc/self/fd and /dev/fd are unavailable. sysconf(_SC_OPEN_MAX)
-    // returns the maximum number of open files for the process; iterate up from 0
-    // and close any descriptor that is open and not in the keep list. Best-effort and
+    // can return a very large value on some kernels (e.g. NetBSD defaults), and a
+    // linear fcntl(F_GETFD)/close scan over that whole range can burn several seconds
+    // of CPU in a short-lived worker. Cap the scan to the descriptors a worker actually
+    // inherits; anything higher is extremely unlikely to hold secrets. Best-effort and
     // noisy on failure: individual errors are ignored.
     auto close_from_max_nfiles(std::set<int> const& keep_open) noexcept -> void
     {
@@ -89,7 +92,8 @@ namespace
         {
             return;
         }
-        auto const limit = static_cast<int>(std::min<long>(open_max, static_cast<long>(INT_MAX)));
+        constexpr auto max_scan = 4096L;
+        auto const limit = static_cast<int>(std::min({open_max, static_cast<long>(INT_MAX), max_scan}));
         for (int fd = 0; fd < limit; ++fd)
         {
             if (keep_open.contains(fd))
