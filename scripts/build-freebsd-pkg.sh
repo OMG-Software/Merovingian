@@ -18,8 +18,8 @@ meson setup build-freebsd-pkg \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
-    -Dcpp_link_args='-pie -Wl,-z,relro -Wl,-z,now' \
-    -Dc_link_args='-pie -Wl,-z,relro -Wl,-z,now'
+    -Dcpp_link_args='-pie' \
+    -Dc_link_args='-pie'
 
 # 2. Compile
 meson compile -C build-freebsd-pkg

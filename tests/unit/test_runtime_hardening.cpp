@@ -318,13 +318,17 @@ SCENARIO("Linux runtime hardening controls apply when supported", "[platform][ha
         {
             auto const decision = merovingian::platform::apply_runtime_hardening_controls(profile);
 
-            THEN("the decision is accepted on Linux and best-effort elsewhere")
+            THEN("the decision is accepted when running on Linux")
             {
-                if (profile.platform == merovingian::platform::HardeningPlatform::linux)
-                {
-                    REQUIRE(decision.accepted);
-                    REQUIRE_FALSE(decision.fail_closed);
-                }
+#ifdef __linux__
+                REQUIRE(decision.accepted);
+                REQUIRE_FALSE(decision.fail_closed);
+#else
+                // On non-Linux hosts a Linux profile is inapplicable and the
+                // implementation correctly reports that it cannot apply it.
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.fail_closed);
+#endif
             }
         }
     }

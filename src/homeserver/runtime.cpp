@@ -498,8 +498,15 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     runtime.discovery_network = federation::make_system_server_discovery_network();
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
-    auto const hardening_controls =
-        platform::apply_runtime_hardening_controls(platform::default_linux_hardening_profile());
+    auto const hardening_controls = [&]() {
+#if defined(__linux__)
+        return platform::apply_runtime_hardening_controls(platform::default_linux_hardening_profile());
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+        return platform::apply_runtime_hardening_controls(platform::default_bsd_hardening_profile());
+#else
+        return platform::apply_runtime_hardening_controls(platform::default_portable_hardening_profile());
+#endif
+    }();
     log_diagnostic("start.hardening_controls", {
                                                    {"accepted", hardening_controls.accepted ? "true" : "false", false},
                                                    {"reason",   hardening_controls.reason,                      false},

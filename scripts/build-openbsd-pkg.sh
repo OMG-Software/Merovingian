@@ -22,8 +22,8 @@ meson setup build-openbsd-pkg \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
-    -Dcpp_link_args='-pie -Wl,-z,relro -Wl,-z,now' \
-    -Dc_link_args='-pie -Wl,-z,relro -Wl,-z,now'
+    -Dcpp_link_args='-pie' \
+    -Dc_link_args='-pie'
 
 meson compile -C build-openbsd-pkg
 meson install -C build-openbsd-pkg --destdir "${PWD}/${STAGE}" --skip-subprojects

@@ -85,17 +85,19 @@ hardening_compile_flags = [
 # -pie is supplied per-platform by the build scripts:
 #   Alpine/musl .deb Ã¢â€ â€™ -static-pie (fully static PIE via cpp_link_args)
 #   Fedora .rpm / FreeBSD .pkg Ã¢â€ â€™ -pie (dynamic-libc PIE via cpp_link_args)
-# -Wl,-z,relro/-z,now are requested for every dynamic ELF build. Meson's
-# get_supported_link_arguments drops them for fully-static toolchains where
-# they are not applicable, but package builds (deb/rpm/pkg) must pass them
-# explicitly so they are never silently omitted.
 # -Wl,-z,noexecstack sets the PT_GNU_STACK ELF note; the kernel reads this on
 # both static and dynamic ELF binaries, so it applies universally.
-hardening_link_flags = [
-  '-Wl,-z,noexecstack',
-  '-Wl,-z,relro',
-  '-Wl,-z,now',
-]
+# -Wl,-z,relro/-z,now are requested for GNU/Linux dynamic ELF builds. Meson's
+# get_supported_link_arguments drops them for fully-static or non-ELF
+# toolchains, and the host-system gate keeps them off BSD package builds where
+# the base linker does not accept these GNU ld options.
+noexecstack_flag = '-Wl,-z,noexecstack'
+relro_now_flags = ['-Wl,-z,relro', '-Wl,-z,now']
+
+hardening_link_flags = [noexecstack_flag]
+if host_machine.system() == 'linux'
+  hardening_link_flags += relro_now_flags
+endif
 
 add_project_arguments(cpp.get_supported_arguments(warning_flags), language: 'cpp')
 
