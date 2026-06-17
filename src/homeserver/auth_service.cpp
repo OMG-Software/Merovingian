@@ -5,6 +5,7 @@
 
 #include "merovingian/auth/identity.hpp"
 #include "merovingian/auth/session.hpp"
+#include "merovingian/crypto/token_key.hpp"
 #include "merovingian/homeserver/local_services.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -65,6 +67,11 @@ namespace
     [[nodiscard]] auto token_hash_is_v3(std::string_view token_hash) noexcept -> bool
     {
         return token_hash.starts_with("token-hash:v3:");
+    }
+
+    [[nodiscard]] auto token_hash_is_v4(std::string_view token_hash) noexcept -> bool
+    {
+        return token_hash.starts_with("token-hash:v4:");
     }
 
     [[nodiscard]] auto password_hash_payload(std::string_view password_hash) noexcept -> std::string_view
@@ -134,23 +141,76 @@ namespace
         return "token-hash:v2:" + to_hex(digest.data(), digest.size());
     }
 
-    [[nodiscard]] auto token_hash_key(HomeserverRuntime const& runtime)
-        -> std::optional<std::array<unsigned char, crypto_generichash_KEYBYTES>>
+    // Load operator-supplied master key material from the configured file.
+    // Mirrors the loader in room_service.cpp; kept local to the auth boundary so
+    // the token HMAC key never leaves the crypto module.
+    [[nodiscard]] auto load_master_key_material(std::string_view path) -> std::optional<std::vector<std::uint8_t>>
+    {
+        if (path.empty())
+        {
+            return std::nullopt;
+        }
+        auto stream = std::ifstream{std::string{path}, std::ios::binary};
+        if (!stream)
+        {
+            return std::nullopt;
+        }
+        auto content = std::vector<std::uint8_t>{};
+        auto constexpr size_limit = std::size_t{4096U};
+        auto buffer = std::array<char, 1024U>{};
+        while (stream.good())
+        {
+            stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+            auto const count = stream.gcount();
+            if (count <= 0)
+            {
+                break;
+            }
+            auto const added = static_cast<std::size_t>(count);
+            if (content.size() + added > size_limit)
+            {
+                return std::nullopt;
+            }
+            content.insert(content.end(), reinterpret_cast<std::uint8_t*>(buffer.data()),
+                           reinterpret_cast<std::uint8_t*>(buffer.data()) + added);
+        }
+        if (content.empty())
+        {
+            return std::nullopt;
+        }
+        return content;
+    }
+
+    // v3 HMAC key: derived from the Ed25519 signing secret. Retained only for
+    // validating legacy tokens; new tokens MUST use the master-key-derived v4 key.
+    [[nodiscard]] auto token_hmac_key_v3(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
     {
         if (!sodium_is_ready() || runtime.database.signing_secret_key.size() < crypto_generichash_KEYBYTES)
         {
             return std::nullopt;
         }
-        auto key = std::array<unsigned char, crypto_generichash_KEYBYTES>{};
-        std::copy_n(runtime.database.signing_secret_key.begin(), crypto_generichash_KEYBYTES, key.begin());
+        auto key = crypto::TokenHmacKey{};
+        std::copy_n(runtime.database.signing_secret_key.begin(), crypto_generichash_KEYBYTES, key.bytes.begin());
         return key;
     }
 
-    [[nodiscard]] auto hash_token_v3(HomeserverRuntime const& runtime, std::string_view token)
-        -> std::optional<std::string>
+    // v4 HMAC key: derived from the operator's master key file, completely
+    // independent from the Ed25519 signing secret. If no master key is configured,
+    // v4 hashing is unavailable and the code falls back to v3/v2.
+    [[nodiscard]] auto token_hmac_key_v4(HomeserverRuntime const& runtime) -> std::optional<crypto::TokenHmacKey>
     {
-        auto const key = token_hash_key(runtime);
-        if (!key.has_value())
+        auto const material = load_master_key_material(runtime.config.security().secrets.master_key_file);
+        if (!material.has_value())
+        {
+            return std::nullopt;
+        }
+        return crypto::derive_token_hmac_key(*material);
+    }
+
+    [[nodiscard]] auto hash_token_with_key(std::string_view token, std::span<unsigned char const> key,
+                                           std::string_view prefix) -> std::optional<std::string>
+    {
+        if (!sodium_is_ready())
         {
             return std::nullopt;
         }
@@ -161,25 +221,53 @@ namespace
         {
             token_bytes.push_back(static_cast<unsigned char>(character));
         }
-        if (crypto_generichash(digest.data(), digest.size(), token_bytes.data(), token_bytes.size(), key->data(),
-                               key->size()) != 0)
+        if (crypto_generichash(digest.data(), digest.size(), token_bytes.data(), token_bytes.size(), key.data(),
+                               key.size()) != 0)
         {
             return std::nullopt;
         }
-        return "token-hash:v3:" + to_hex(digest.data(), digest.size());
+        return std::string{prefix} + to_hex(digest.data(), digest.size());
+    }
+
+    [[nodiscard]] auto hash_token_v3(HomeserverRuntime const& runtime, std::string_view token)
+        -> std::optional<std::string>
+    {
+        auto const key = token_hmac_key_v3(runtime);
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        return hash_token_with_key(token, key->bytes, "token-hash:v3:");
+    }
+
+    [[nodiscard]] auto hash_token_v4(HomeserverRuntime const& runtime, std::string_view token)
+        -> std::optional<std::string>
+    {
+        auto const key = token_hmac_key_v4(runtime);
+        if (!key.has_value())
+        {
+            return std::nullopt;
+        }
+        return hash_token_with_key(token, key->bytes, "token-hash:v4:");
     }
 
     [[nodiscard]] auto issue_token_hash(HomeserverRuntime const& runtime, std::string_view token)
         -> std::optional<std::string>
     {
+        // Prefer the master-key-derived v4 hash when a master key is configured.
+        if (auto const v4 = hash_token_v4(runtime, token); v4.has_value())
+        {
+            return v4;
+        }
+        // No master key: fall back to the signing-secret-derived v3 hash for
+        // backwards compatibility.
         if (auto const v3 = hash_token_v3(runtime, token); v3.has_value())
         {
             return v3;
         }
-        // Signing key unavailable (e.g. corrupted or not yet initialised): fall
-        // back to the unkeyed v2 SHA-256 hash so local operations (login, logout,
-        // session lookup) still work.  Federation will fail separately if the
-        // signing key is broken; login should not be collateral damage.
+        // Signing key and master key both unavailable: fall back to the unkeyed
+        // v2 hash so local operations still work. Federation will fail separately
+        // if keys are broken; login should not be collateral damage.
         return hash_token_v2(token);
     }
 
@@ -187,6 +275,10 @@ namespace
         -> std::vector<std::string>
     {
         auto hashes = std::vector<std::string>{};
+        if (auto const v4 = hash_token_v4(runtime, token); v4.has_value())
+        {
+            hashes.push_back(*v4);
+        }
         if (auto const v3 = hash_token_v3(runtime, token); v3.has_value())
         {
             hashes.push_back(*v3);
@@ -200,8 +292,9 @@ namespace
 
     [[nodiscard]] auto token_hash_matches(std::string_view left, std::string_view right) noexcept -> bool
     {
-        auto const same_version =
-            (token_hash_is_v2(left) && token_hash_is_v2(right)) || (token_hash_is_v3(left) && token_hash_is_v3(right));
+        auto const same_version = (token_hash_is_v2(left) && token_hash_is_v2(right)) ||
+                                  (token_hash_is_v3(left) && token_hash_is_v3(right)) ||
+                                  (token_hash_is_v4(left) && token_hash_is_v4(right));
         return same_version && left.size() == right.size() &&
                sodium_memcmp(left.data(), right.data(), left.size()) == 0;
     }
@@ -250,6 +343,51 @@ namespace
         return iterator == database.sessions.end() ? nullptr : &(*iterator);
     }
 
+    // One-shot migration of a v3 access token to the master-key-derived v4 hash.
+    // Called after a presented token successfully authenticates against a stored
+    // v3 hash. The old v3 row is revoked and a new v4 row is inserted, and the
+    // in-memory session is updated so subsequent requests use the v4 hash. If the
+    // persistence step fails, the in-memory session is left on v3 and the next
+    // successful auth will retry.
+    auto upgrade_v3_access_token_to_v4(HomeserverRuntime& runtime, std::string_view token,
+                                       std::string_view matched_v3_hash) -> void
+    {
+        if (!token_hash_is_v3(matched_v3_hash))
+        {
+            return;
+        }
+        auto const v4_hash = hash_token_v4(runtime, token);
+        if (!v4_hash.has_value())
+        {
+            return;
+        }
+
+        auto upgraded_any = false;
+        auto user_id = std::string{};
+        auto device_id = std::string{};
+        for (auto& session : runtime.database.sessions)
+        {
+            if (!session.revoked && session.access_token_hash == matched_v3_hash)
+            {
+                session.access_token_hash = *v4_hash;
+                user_id = session.user_id;
+                device_id = session.device_id;
+                upgraded_any = true;
+            }
+        }
+        if (!upgraded_any)
+        {
+            return;
+        }
+
+        if (database::revoke_access_token(runtime.database.persistent_store, matched_v3_hash) == 0U)
+        {
+            return;
+        }
+        auto const new_row = database::PersistentAccessToken{user_id, device_id, *v4_hash, false};
+        std::ignore = database::store_access_token(runtime.database.persistent_store, new_row);
+    }
+
     auto trim_line_ending(std::string& value) -> void
     {
         while (!value.empty() && (value.back() == '\n' || value.back() == '\r'))
@@ -269,8 +407,7 @@ namespace
         }
         auto output = std::array<char, crypto_pwhash_STRBYTES>{};
         if (crypto_pwhash_str(output.data(), token.data(), static_cast<unsigned long long>(token.size()),
-                              crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE)
-            != 0)
+                              crypto_pwhash_OPSLIMIT_INTERACTIVE, crypto_pwhash_MEMLIMIT_INTERACTIVE) != 0)
         {
             return std::nullopt;
         }
@@ -337,8 +474,7 @@ namespace
             return false;
         }
         return crypto_pwhash_str_verify(expected_hash.data(), presented.data(),
-                                        static_cast<unsigned long long>(presented.size()))
-               == 0;
+                                        static_cast<unsigned long long>(presented.size())) == 0;
     }
 
     [[nodiscard]] auto make_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
@@ -664,6 +800,10 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
                              "access_token.rejected", "<unknown>", "<unknown>", "session not found");
         return std::nullopt;
     }
+    // If the session still uses the legacy v3 hash, opportunistically rehash to
+    // the master-key-derived v4 hash on successful use. This transparently
+    // removes the signing-secret-derived key from the token path.
+    upgrade_v3_access_token_to_v4(runtime, access_token, session->access_token_hash);
     if (find_user(runtime.database, session->user_id) == nullptr)
     {
         // Security: session exists but the owning user record is gone — use the

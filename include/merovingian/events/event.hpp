@@ -3,7 +3,9 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/limits.hpp"
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>

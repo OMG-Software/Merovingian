@@ -4,6 +4,7 @@ crypto_sources = files(
   'random.cpp',
   'secret_box.cpp',
   'signing_service.cpp',
+  'token_key.cpp',
 )
 
 crypto_lib = static_library(

@@ -169,9 +169,22 @@ namespace
         return ok;
     }
 
-    [[nodiscard]] auto create_table_if_missing_sql(SchemaTableDefinition const& table) -> std::string
+    [[nodiscard]] auto create_table_if_missing_sql(SchemaTableDefinition const& table) -> std::optional<std::string>
     {
-        return "CREATE TABLE IF NOT EXISTS " + std::string{table.name} + " (" + std::string{table.columns_sql} + ")";
+        // Only core tables may be materialised by the bootstrap path; unknown
+        // names fail closed rather than being concatenated into DDL.
+        if (!schema_table_is_core(table.name))
+        {
+            return std::nullopt;
+        }
+
+        auto quoted = quote_sqlite_identifier(table.name);
+        if (!quoted.has_value())
+        {
+            return std::nullopt;
+        }
+
+        return "CREATE TABLE IF NOT EXISTS " + std::move(*quoted) + " (" + std::string{table.columns_sql} + ")";
     }
 
     [[nodiscard]] auto prepare(sqlite3& connection, std::string const& sql) -> std::optional<SqliteStatement>
@@ -254,9 +267,18 @@ namespace
 
     auto initialize_current_schema(sqlite3& connection) -> bool
     {
+        // Wrap the entire bootstrap in one transaction so that a failure
+        // after any CREATE TABLE leaves no partial schema or ledger row.
+        auto transaction = SqliteTransaction{connection};
+        if (!transaction.active())
+        {
+            return false;
+        }
+
         for (auto const& table : initial_schema_definitions())
         {
-            if (!execute_sql(connection, create_table_if_missing_sql(table)))
+            auto const sql = create_table_if_missing_sql(table);
+            if (!sql.has_value() || !execute_sql(connection, *sql))
             {
                 return false;
             }
@@ -268,8 +290,13 @@ namespace
         // Bootstrap records only the initial schema row. Runtime startup can
         // then apply newer numbered migrations against the freshly created
         // tables when current_schema_version() is greater than 1.
-        return execute_sql(connection,
-                           "INSERT OR IGNORE INTO schema_migrations VALUES ('1', 'initial_schema', 'upgrade')");
+        if (!execute_sql(connection,
+                         "INSERT OR IGNORE INTO schema_migrations VALUES ('1', 'initial_schema', 'upgrade')"))
+        {
+            return false;
+        }
+
+        return transaction.commit();
     }
 
     auto apply_pending_migrations(sqlite3& connection, SchemaState state) -> std::optional<SchemaState>
@@ -282,6 +309,14 @@ namespace
         }
         for (auto const& step : plan.steps)
         {
+            // Each migration step is atomic: all of its statements plus the
+            // ledger-row insert succeed together or are rolled back together.
+            auto transaction = SqliteTransaction{connection};
+            if (!transaction.active())
+            {
+                return std::nullopt;
+            }
+
             for (auto const& statement : step.statements)
             {
                 if (!execute_sql(connection, statement.sql))
@@ -294,21 +329,19 @@ namespace
             // values pass through SQLite's parameter binding (which
             // handles quoting, NUL bytes, and binary safely), matching
             // the boundary used by the rest of the database layer.
-            auto record_statement = prepare(connection,
-                                            "INSERT OR IGNORE INTO schema_migrations VALUES (?1, ?2, ?3)");
+            auto record_statement = prepare(connection, "INSERT OR IGNORE INTO schema_migrations VALUES (?1, ?2, ?3)");
             if (!record_statement.has_value())
             {
                 return std::nullopt;
             }
             auto& record_handle = *record_statement->get();
-            auto const bind_result = sqlite3_bind_int64(&record_handle, 1,
-                                                        static_cast<sqlite3_int64>(step.version)) == SQLITE_OK &&
-                                     sqlite3_bind_text(&record_handle, 2, step.name.c_str(),
-                                                       static_cast<int>(step.name.size()),
-                                                       sqlite_transient_destructor()) == SQLITE_OK &&
-                                     sqlite3_bind_text(&record_handle, 3, migration_direction_name(step.direction).data(),
-                                                       static_cast<int>(migration_direction_name(step.direction).size()),
-                                                       sqlite_transient_destructor()) == SQLITE_OK;
+            auto const bind_result =
+                sqlite3_bind_int64(&record_handle, 1, static_cast<sqlite3_int64>(step.version)) == SQLITE_OK &&
+                sqlite3_bind_text(&record_handle, 2, step.name.c_str(), static_cast<int>(step.name.size()),
+                                  sqlite_transient_destructor()) == SQLITE_OK &&
+                sqlite3_bind_text(&record_handle, 3, migration_direction_name(step.direction).data(),
+                                  static_cast<int>(migration_direction_name(step.direction).size()),
+                                  sqlite_transient_destructor()) == SQLITE_OK;
             if (!bind_result)
             {
                 return std::nullopt;
@@ -318,6 +351,11 @@ namespace
                 return std::nullopt;
             }
             sqlite3_reset(&record_handle);
+
+            if (!transaction.commit())
+            {
+                return std::nullopt;
+            }
         }
         auto applied = apply_migration_plan(std::move(state), plan);
         if (!applied.ok)
@@ -582,8 +620,7 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.room_aliases.push_back({column_text(row, 0), column_text(row, 1)});
                          }) &&
-               load_rows(connection,
-                         "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids",
+               load_rows(connection, "SELECT user_id, room_id, event_type, txn_id, event_id FROM client_txn_ids",
                          [&store](sqlite3_stmt& row) {
                              store.client_txn_ids.push_back({column_text(row, 0), column_text(row, 1),
                                                              column_text(row, 2), column_text(row, 3),

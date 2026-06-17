@@ -6,6 +6,8 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
+#include <cstddef>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <variant>
@@ -82,15 +84,26 @@ namespace
         return true;
     }
 
-    [[nodiscard]] auto parse_event_signatures(canonicaljson::Object const& object) -> std::vector<EventSignature>
+    // Bounded signature parsing: fail closed if the signatures object is too
+    // large to be legitimate. This prevents adversarial PDUs from consuming
+    // unbounded memory before verification.
+    [[nodiscard]] auto parse_event_signatures(canonicaljson::Object const& object)
+        -> std::optional<std::vector<EventSignature>>
     {
         auto const* signatures = object_member_as_object(object, "signatures");
         if (signatures == nullptr)
         {
-            return {};
+            return std::vector<EventSignature>{};
+        }
+
+        if (signatures->size() > max_servers_with_signatures)
+        {
+            return std::nullopt;
         }
 
         auto parsed = std::vector<EventSignature>{};
+        parsed.reserve(std::min(signatures->size() * 2U, max_signatures_per_event));
+
         for (auto const& server_member : *signatures)
         {
             auto const* server_signatures = std::get_if<canonicaljson::Object>(&server_member.value->storage());
@@ -98,12 +111,20 @@ namespace
             {
                 continue;
             }
+            if (server_signatures->size() > max_signatures_per_server)
+            {
+                return std::nullopt;
+            }
             for (auto const& key_member : *server_signatures)
             {
                 auto const* signature = std::get_if<std::string>(&key_member.value->storage());
                 if (signature != nullptr)
                 {
                     parsed.push_back({server_member.key, key_member.key, *signature});
+                    if (parsed.size() > max_signatures_per_event)
+                    {
+                        return std::nullopt;
+                    }
                 }
             }
         }
@@ -118,8 +139,7 @@ auto matrix_id_is_valid(std::string_view id, char sigil) noexcept -> bool
     // User IDs (@) and event IDs ($) still require a colon. Room IDs (!) may
     // omit the colon when the ID is a hash-derived v12 room identifier.
     auto const requires_colon = sigil != '!';
-    return id.size() >= 3U && id.front() == sigil &&
-           (!requires_colon || id.find(':') != std::string_view::npos) &&
+    return id.size() >= 3U && id.front() == sigil && (!requires_colon || id.find(':') != std::string_view::npos) &&
            contains_no_control_or_space(id);
 }
 
@@ -182,7 +202,12 @@ auto parse_event_envelope(canonicaljson::Value const& json) -> EventParseResult
         event.event_type = *type;
         event.sender = *sender;
         event.origin_server_ts = *origin_server_ts;
-        event.signatures = parse_event_signatures(*object);
+        auto signatures = parse_event_signatures(*object);
+        if (!signatures.has_value())
+        {
+            return {{}, "event signatures exceed resource limits"};
+        }
+        event.signatures = std::move(*signatures);
 
         if (auto const* state_key = string_member(*object, "state_key"); state_key != nullptr)
         {
@@ -193,14 +218,17 @@ auto parse_event_envelope(canonicaljson::Value const& json) -> EventParseResult
     }();
     if (result.error.empty())
     {
-        log_diagnostic("envelope.parsed",
-                       {{"room_id",    result.event.room_id,    false},
-                        {"event_type", result.event.event_type, false},
-                        {"sender",     result.event.sender,     false}});
+        log_diagnostic("envelope.parsed", {
+                                              {"room_id",    result.event.room_id,    false},
+                                              {"event_type", result.event.event_type, false},
+                                              {"sender",     result.event.sender,     false}
+        });
     }
     else
     {
-        log_diagnostic("envelope.rejected", {{"reason", result.error, false}});
+        log_diagnostic("envelope.rejected", {
+                                                {"reason", result.error, false}
+        });
     }
     return result;
 }

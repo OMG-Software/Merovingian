@@ -5,6 +5,7 @@
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/crypto/token_key.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -361,6 +362,66 @@ SCENARIO("SecretBox fails closed with empty or short input", "[crypto][secret_bo
             auto const short_ciphertext = merovingian::crypto::SecretBoxCiphertext{
                 .bytes = std::vector<std::uint8_t>(crypto_secretbox_NONCEBYTES, 0U)};
             REQUIRE_FALSE(merovingian::crypto::secret_box_decrypt(short_ciphertext, *key).has_value());
+        }
+    }
+}
+
+SCENARIO("TokenHmacKey derives the same key from identical master material", "[crypto][token_key]")
+{
+    GIVEN("two equal master key byte strings")
+    {
+        auto const material = std::vector<std::uint8_t>{0x01U, 0x02U, 0x03U, 0x04U, 0x05U};
+
+        WHEN("token HMAC keys are derived")
+        {
+            auto const key_a = merovingian::crypto::derive_token_hmac_key(material);
+            auto const key_b = merovingian::crypto::derive_token_hmac_key(material);
+
+            THEN("both derivations succeed and produce identical keys")
+            {
+                REQUIRE(key_a.has_value());
+                REQUIRE(key_b.has_value());
+                REQUIRE(key_a->bytes == key_b->bytes);
+            }
+        }
+    }
+}
+
+SCENARIO("TokenHmacKey domain separation produces a different key than SecretBox", "[crypto][token_key][boundary]")
+{
+    GIVEN("a single master key byte string")
+    {
+        auto const material = std::vector<std::uint8_t>(32U, 0xABU);
+
+        WHEN("the same material is used for both token HMAC and SecretBox keys")
+        {
+            auto const token_key = merovingian::crypto::derive_token_hmac_key(material);
+            auto const secret_key = merovingian::crypto::derive_secret_box_key(material);
+
+            THEN("the derived keys are distinct and both derivations succeed")
+            {
+                REQUIRE(token_key.has_value());
+                REQUIRE(secret_key.has_value());
+                REQUIRE(token_key->bytes != secret_key->bytes);
+            }
+        }
+    }
+}
+
+SCENARIO("TokenHmacKey fails closed with empty material", "[crypto][token_key]")
+{
+    GIVEN("empty master key material")
+    {
+        auto const empty = std::vector<std::uint8_t>{};
+
+        WHEN("a token HMAC key is derived")
+        {
+            auto const key = merovingian::crypto::derive_token_hmac_key(empty);
+
+            THEN("derivation is rejected")
+            {
+                REQUIRE_FALSE(key.has_value());
+            }
         }
     }
 }

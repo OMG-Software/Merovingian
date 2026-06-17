@@ -13,6 +13,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -985,7 +986,7 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
             auto const room_aliases_definition = merovingian::database::schema_table_definition("room_aliases");
             auto const users_sql = users_definition.has_value()
                                        ? merovingian::database::create_table_sql(users_definition.value())
-                                       : std::string{};
+                                       : std::nullopt;
             auto const current_state_columns = current_state_definition.has_value()
                                                    ? current_state_definition.value().columns_sql
                                                    : std::string_view{};
@@ -1003,12 +1004,105 @@ SCENARIO("Database schema inventory covers the core Matrix tables", "[database][
                 REQUIRE(users_definition.has_value());
                 REQUIRE(current_state_definition.has_value());
                 REQUIRE(room_aliases_definition.has_value());
-                REQUIRE(users_sql.find("user_id TEXT PRIMARY KEY") != std::string::npos);
+                REQUIRE(users_sql.has_value());
+                REQUIRE(users_sql->find("user_id TEXT PRIMARY KEY") != std::string::npos);
                 REQUIRE(current_state_columns.find("PRIMARY KEY (room_id, event_type, state_key)") !=
                         std::string_view::npos);
                 REQUIRE_FALSE(unknown_is_core);
             }
         }
+    }
+}
+
+SCENARIO("SQLite identifier quoting and DDL allowlisting reject malicious identifiers", "[database][schema]")
+{
+    GIVEN("safe and malicious table identifiers")
+    {
+        auto const safe = merovingian::database::quote_sqlite_identifier("users");
+        auto const with_underscore = merovingian::database::quote_sqlite_identifier("client_txn_ids");
+        auto const empty = merovingian::database::quote_sqlite_identifier("");
+        auto const with_semicolon = merovingian::database::quote_sqlite_identifier("users; DROP TABLE users;--");
+        auto const with_quote = merovingian::database::quote_sqlite_identifier("bad\"name");
+
+        WHEN("they are validated against the core table allowlist and identifier grammar")
+        {
+            auto const users_definition = merovingian::database::schema_table_definition("users");
+            auto const malicious_definition =
+                merovingian::database::SchemaTableDefinition{"users; DROP TABLE users;--", "user_id TEXT PRIMARY KEY"};
+            auto const safe_sql = users_definition.has_value()
+                                      ? merovingian::database::create_table_sql(users_definition.value())
+                                      : std::nullopt;
+            auto const malicious_sql = merovingian::database::create_table_sql(malicious_definition);
+            auto const unknown_is_core = merovingian::database::schema_table_is_core("users; DROP TABLE users;--");
+
+            THEN("safe identifiers are quoted and malicious inputs are rejected")
+            {
+                REQUIRE(safe.has_value());
+                REQUIRE(safe.value() == "\"users\"");
+                REQUIRE(with_underscore.has_value());
+                REQUIRE(with_underscore.value() == "\"client_txn_ids\"");
+                REQUIRE_FALSE(empty.has_value());
+                REQUIRE_FALSE(with_semicolon.has_value());
+                REQUIRE_FALSE(with_quote.has_value());
+
+                REQUIRE(safe_sql.has_value());
+                REQUIRE(safe_sql->find("\"users\"") != std::string::npos);
+                REQUIRE_FALSE(malicious_sql.has_value());
+                REQUIRE_FALSE(unknown_is_core);
+            }
+        }
+    }
+}
+
+SCENARIO("SQLite migration step failure rolls back the ledger row", "[database][persistence][migration][sqlite]")
+{
+    GIVEN("a fresh SQLite file with a pre-existing core table that forces apply_pending_migrations")
+    {
+        auto const sqlite_path = unique_sqlite_path();
+        std::filesystem::remove(sqlite_path);
+
+        // Seed the file with an existing 'users' table so the store-opening
+        // path takes the migration route instead of the bootstrap route.
+        sqlite3* seed = nullptr;
+        REQUIRE(sqlite3_open(sqlite_path.string().c_str(), &seed) == SQLITE_OK);
+        REQUIRE(sqlite3_exec(seed, "CREATE TABLE users (user_id TEXT PRIMARY KEY)", nullptr, nullptr, nullptr) ==
+                SQLITE_OK);
+        sqlite3_close(seed);
+
+        WHEN("opening the store and the initial migration step fails mid-step")
+        {
+            auto const opened = merovingian::database::open_sqlite_persistent_store(sqlite_path.string());
+
+            THEN("the store is rejected")
+            {
+                REQUIRE_FALSE(opened.ok);
+            }
+
+            AND_WHEN("the database is reopened to inspect the ledger")
+            {
+                sqlite3* raw = nullptr;
+                REQUIRE(sqlite3_open(sqlite_path.string().c_str(), &raw) == SQLITE_OK);
+                sqlite3_stmt* statement = nullptr;
+                REQUIRE(sqlite3_prepare_v2(raw,
+                                           "SELECT count(*) FROM sqlite_master WHERE type = 'table' AND name = "
+                                           "'schema_migrations'",
+                                           -1, &statement, nullptr) == SQLITE_OK);
+                auto ledger_tables = std::int64_t{0};
+                if (sqlite3_step(statement) == SQLITE_ROW)
+                {
+                    ledger_tables = sqlite3_column_int64(statement, 0);
+                }
+                sqlite3_finalize(statement);
+                sqlite3_close(raw);
+
+                THEN("no migration ledger table was committed")
+                {
+                    REQUIRE(ledger_tables == 0);
+                }
+            }
+        }
+
+        std::filesystem::remove(sqlite_path);
     }
 }
 

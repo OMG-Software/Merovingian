@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <set>
 #include <utility>
 
 namespace merovingian::core
@@ -37,8 +38,19 @@ public:
     [[nodiscard]] auto release() noexcept -> int;
     auto reset(int fd = invalid) noexcept -> void;
 
+    // Set the FD_CLOEXEC flag on the wrapped descriptor. Returns true on success,
+    // false on error or when no descriptor is held.
+    [[nodiscard]] auto set_cloexec() noexcept -> bool;
+
 private:
     int m_fd{invalid};
 };
+
+// Close every open file descriptor except those listed in `keep_open`.
+// Walks /proc/self/fd on Linux, /dev/fd on BSDs, and falls back to iterating
+// up to sysconf(_SC_OPEN_MAX) otherwise. Never closes the directory being
+// walked. Best-effort: individual close() errors are ignored so the sweep
+// completes.
+auto close_all_file_descriptors_except(std::set<int> const& keep_open) noexcept -> void;
 
 } // namespace merovingian::core

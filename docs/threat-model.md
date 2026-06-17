@@ -106,6 +106,12 @@ threat it closes; the controls above are the standing defences these reinforce.
   any server. Fixed by resolving the sender domain's signing key via `remote_key_resolver`
   before authorizing; fail-closed when the resolver is wired but cannot produce a key.
 
+- **Thumbnail worker descriptor leak + privilege-escalation surface:** the parent forked the
+  image decoder with `pipe()` (descriptor leak) and did not close other inherited descriptors
+  or set `PR_SET_NO_NEW_PRIVS` before `execv()`. A compromised worker could access unrelated
+  parent sockets/files or escalate via a setuid helper. Fixed by creating pipes with `O_CLOEXEC`,
+  sweeping all non-stdio descriptors in the child, and setting no-new-privs before exec.
+
 - **Missing event-auth before persist (C2):** The production `pdu_sink` persisted inbound
   PDUs without calling `authorize_event_against_auth_events`. A federated peer could
   persist events that violate the room's power-level and membership rules. Fixed by running

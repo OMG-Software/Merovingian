@@ -126,7 +126,7 @@ namespace
         SchemaTableDefinition{"client_txn_ids",
                               "user_id TEXT NOT NULL, room_id TEXT NOT NULL, event_type TEXT NOT NULL, "
                               "txn_id TEXT NOT NULL, event_id TEXT NOT NULL, "
-                              "PRIMARY KEY (user_id, room_id, event_type, txn_id)"                                   },
+                              "PRIMARY KEY (user_id, room_id, event_type, txn_id)"                                                                             },
     };
 
 } // namespace
@@ -165,9 +165,49 @@ auto schema_table_is_core(std::string_view table_name) noexcept -> bool
     return schema_table_definition(table_name).has_value();
 }
 
-auto create_table_sql(SchemaTableDefinition const& table) -> std::string
+auto quote_sqlite_identifier(std::string_view identifier) noexcept -> std::optional<std::string>
 {
-    return "CREATE TABLE " + std::string{table.name} + " (" + std::string{table.columns_sql} + ")";
+    if (identifier.empty())
+    {
+        return std::nullopt;
+    }
+
+    auto quoted = std::string{"\""};
+    for (auto const character : identifier)
+    {
+        // Core table names use only ASCII letters, digits, and underscores.
+        // Reject anything else (including embedded quotes) rather than trying
+        // to escape attacker-controlled input.
+        if ((character >= 'A' && character <= 'Z') || (character >= 'a' && character <= 'z') ||
+            (character >= '0' && character <= '9') || character == '_')
+        {
+            quoted.push_back(character);
+        }
+        else
+        {
+            return std::nullopt;
+        }
+    }
+    quoted.push_back('\"');
+    return quoted;
+}
+
+auto create_table_sql(SchemaTableDefinition const& table) -> std::optional<std::string>
+{
+    // Only core tables may participate in generated DDL. Unknown names fail
+    // closed instead of being concatenated into SQL.
+    if (!schema_table_is_core(table.name))
+    {
+        return std::nullopt;
+    }
+
+    auto quoted = quote_sqlite_identifier(table.name);
+    if (!quoted.has_value())
+    {
+        return std::nullopt;
+    }
+
+    return "CREATE TABLE " + std::move(*quoted) + " (" + std::string{table.columns_sql} + ")";
 }
 
 } // namespace merovingian::database

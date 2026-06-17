@@ -8,10 +8,12 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -21,6 +23,7 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <sys/prctl.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -50,7 +53,8 @@ namespace
 
     [[nodiscard]] auto monotonic_ms() -> std::int64_t
     {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
             .count();
     }
 
@@ -144,6 +148,35 @@ namespace
         {
             std::ignore = ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         }
+    }
+
+    // Create a pipe whose ends carry FD_CLOEXEC. On Linux and FreeBSD pipe2() is
+    // atomic; elsewhere we fall back to pipe() + fcntl(F_SETFD). Returns false on
+    // error and leaves both ends set to -1.
+    [[nodiscard]] auto create_cloexec_pipe(std::array<int, 2>& fds) noexcept -> bool
+    {
+        fds = {-1, -1};
+#if defined(__linux__) || defined(__FreeBSD__)
+        if (::pipe2(fds.data(), O_CLOEXEC) == 0)
+        {
+            return true;
+        }
+        // Fall back on kernels/libc that lack pipe2 even on these platforms.
+#endif
+        if (::pipe(fds.data()) != 0)
+        {
+            return false;
+        }
+        auto read_ok = core::FileDescriptor{fds[0]}.set_cloexec();
+        auto write_ok = core::FileDescriptor{fds[1]}.set_cloexec();
+        if (!read_ok || !write_ok)
+        {
+            ::close(fds[0]);
+            ::close(fds[1]);
+            fds = {-1, -1};
+            return false;
+        }
+        return true;
     }
 
 } // namespace
@@ -310,13 +343,13 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     // stdin: parent writes -> child reads; stdout: child writes -> parent reads.
     auto to_child = std::array<int, 2>{-1, -1};
     auto from_child = std::array<int, 2>{-1, -1};
-    if (::pipe(to_child.data()) != 0)
+    if (!create_cloexec_pipe(to_child))
     {
         return {false, 500U, {}, {}, 0U, 0U, "failed to create worker input pipe"};
     }
     auto child_stdin_read = core::FileDescriptor{to_child[0]};
     auto child_stdin_write = core::FileDescriptor{to_child[1]};
-    if (::pipe(from_child.data()) != 0)
+    if (!create_cloexec_pipe(from_child))
     {
         return {false, 500U, {}, {}, 0U, 0U, "failed to create worker output pipe"};
     }
@@ -330,12 +363,24 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     }
     if (pid == 0)
     {
-        // Child: wire pipes to stdio, drop every other descriptor, exec.
+        // Child: wire pipes to stdio, drop every other descriptor, then exec.
         ::dup2(child_stdin_read.get(), STDIN_FILENO);
         ::dup2(child_stdout_write.get(), STDOUT_FILENO);
-        child_stdin_read.reset();
+
+        // The parent write-end and child read-end are not needed after dup2.
+        // Close them explicitly before the sweep so the sweep does not need to
+        // know about them and we avoid double-close on the FileDescriptor reset.
         child_stdin_write.reset();
         child_stdout_read.reset();
+
+        // Close everything except stdio and the pipe ends that are now stdio.
+        auto keep_open = std::set<int>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(), child_stdout_write.get()};
+        core::close_all_file_descriptors_except(keep_open);
+
+        // Prevent privilege escalation through setuid/setcap helpers before exec.
+        std::ignore = ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+
+        child_stdin_read.reset();
         child_stdout_write.reset();
         char* const argv[] = {const_cast<char*>(config.worker_path.c_str()), nullptr};
         ::execv(config.worker_path.c_str(), argv);
@@ -350,19 +395,19 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     set_nonblocking(child_stdin_write.get());
     set_nonblocking(child_stdout_read.get());
 
-    auto const timeout_ms = static_cast<std::int64_t>(config.timeout_seconds == 0U ? 10U : config.timeout_seconds) *
-                            1000;
+    auto const timeout_ms =
+        static_cast<std::int64_t>(config.timeout_seconds == 0U ? 10U : config.timeout_seconds) * 1000;
     auto const deadline_ms = monotonic_ms() + timeout_ms;
 
     auto const wrote = write_all_deadline(child_stdin_write.get(), frame, deadline_ms);
     child_stdin_write.reset(); // signal EOF to the worker
     auto read_ok = false;
     auto const response_bytes =
-        wrote ? read_all_deadline(child_stdout_read.get(), deadline_ms,
-                                  config.max_output_bytes == 0U ? 0U : static_cast<std::size_t>(config.max_output_bytes) +
-                                                                           32U,
-                                  read_ok)
-              : std::string{};
+        wrote
+            ? read_all_deadline(
+                  child_stdout_read.get(), deadline_ms,
+                  config.max_output_bytes == 0U ? 0U : static_cast<std::size_t>(config.max_output_bytes) + 32U, read_ok)
+            : std::string{};
 
     // Reap the worker; kill it if it is still alive (timeout or protocol error).
     auto status = 0;

@@ -95,6 +95,7 @@ if get_option ('build_tests')
       'unit/test_database_backend_config.cpp',
       'unit/test_database_persistence.cpp',
       'unit/test_dispatch_worker.cpp',
+      'unit/test_event.cpp',
       'unit/test_federation_event_query.cpp',
       'unit/test_federation_inbound_request.cpp',
       'unit/test_federation_invite_join.cpp',

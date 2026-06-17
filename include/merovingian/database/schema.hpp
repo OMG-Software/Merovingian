@@ -23,6 +23,7 @@ struct SchemaTableDefinition final
 [[nodiscard]] auto schema_table_definition(std::string_view table_name) noexcept
     -> std::optional<SchemaTableDefinition>;
 [[nodiscard]] auto schema_table_is_core(std::string_view table_name) noexcept -> bool;
-[[nodiscard]] auto create_table_sql(SchemaTableDefinition const& table) -> std::string;
+[[nodiscard]] auto quote_sqlite_identifier(std::string_view identifier) noexcept -> std::optional<std::string>;
+[[nodiscard]] auto create_table_sql(SchemaTableDefinition const& table) -> std::optional<std::string>;
 
 } // namespace merovingian::database
