@@ -192,6 +192,23 @@ namespace
 
 } // namespace
 
+// --- NetBSD SIGABRT diagnostic -----------------------------------------------
+// The NetBSD CI job aborts during the first federation invite-join scenario.
+// Catch2 attributes fatal signals to the last active assertion, which is the
+// sodium_init() check, so the real crash site is somewhere between that check
+// and the next assertion. This minimal scenario isolates start_runtime() so we
+// can tell whether the abort is inside start_runtime() or in the scenario body.
+// TODO: remove once the NetBSD abort is diagnosed and fixed.
+SCENARIO("diagnostic: start_runtime does not abort on NetBSD",
+         "[netbsd][diagnostic][start_runtime][temporary]")
+{
+    GIVEN("a registration-enabled config")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+    }
+}
+
 // --- make_join auth_events ---------------------------------------------------
 // Spec: Matrix Server-Server API v1.18
 // URL:  ../../docs/matrix-v1.18-spec/server-server-api.md#get_matrixfederationv1make_joinroomiduserid
