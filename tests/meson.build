@@ -95,6 +95,7 @@ if get_option ('build_tests')
       'unit/test_database_backend_config.cpp',
       'unit/test_database_persistence.cpp',
       'unit/test_dispatch_worker.cpp',
+      'unit/test_event.cpp',
       'unit/test_federation_event_query.cpp',
       'unit/test_federation_inbound_request.cpp',
       'unit/test_federation_invite_join.cpp',
@@ -220,7 +221,10 @@ if get_option ('build_tests')
     cpp_args: thumbnail_test_args,
   )
 
-  test('integration-tests', integration_tests)
+  # Integration tests spawn real dependencies (PostgreSQL, SQLite, thumbnail
+  # worker) and can be slow under sanitizers; give them the same headroom as
+  # the unit and conformance suites.
+  test('integration-tests', integration_tests, timeout: 600)
 
   if get_option('build_live_tests')
     live_integration_tests = executable(

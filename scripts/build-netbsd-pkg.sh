@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build a NetBSD binary package (.tgz) for merovingian 0.8.17.
+# Build a NetBSD binary package (.tgz) for merovingian 0.8.18.
 #
 # The checked-in packaging/netbsd/Makefile is the pkgsrc recipe kept for
 # downstream porters.  This script generates a framework-free package so CI
@@ -11,7 +11,7 @@
 # a staged tree using tar, which produces a package that pkg_add can install.
 set -e
 
-VERSION="0.8.17"
+VERSION="0.8.18"
 STAGE="staging-netbsd"
 PREFIX=/usr/pkg
 
@@ -31,7 +31,9 @@ meson setup build-netbsd-pkg \
     --wrap-mode=forcefallback \
     -Dhardening=true \
     -Dbuild_tests=false \
-    -Dbuild_fuzz=false
+    -Dbuild_fuzz=false \
+    -Dcpp_link_args='-pie' \
+    -Dc_link_args='-pie'
 
 meson compile -C build-netbsd-pkg
 # --skip-subprojects prevents vendored sqlite3 headers/archives from landing

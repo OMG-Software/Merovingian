@@ -75,14 +75,14 @@ SCENARIO("Auth user ID validator enforces lowercase-only localparts for new IDs"
 {
     GIVEN("a lowercase-only user ID, an uppercase user ID, and a malformed server name")
     {
-        auto constexpr valid_user          = "@alice_1.-=/+:example.org";
-        auto constexpr uppercase_user      = "@Alice:example.org";
+        auto constexpr valid_user = "@alice_1.-=/+:example.org";
+        auto constexpr uppercase_user = "@Alice:example.org";
         auto constexpr malformed_server_user = "@alice:example.org:abc";
 
         WHEN("user IDs are validated with the strict new-ID validator")
         {
-            auto const valid_user_result           = merovingian::auth::user_id_is_valid(valid_user);
-            auto const uppercase_user_result       = merovingian::auth::user_id_is_valid(uppercase_user);
+            auto const valid_user_result = merovingian::auth::user_id_is_valid(valid_user);
+            auto const uppercase_user_result = merovingian::auth::user_id_is_valid(uppercase_user);
             auto const malformed_server_user_result = merovingian::auth::user_id_is_valid(malformed_server_user);
 
             THEN("lowercase localparts are accepted; uppercase and malformed server names are rejected")
@@ -214,6 +214,28 @@ SCENARIO("Auth token helpers avoid plaintext token disclosure", "[auth][tokens]"
                 REQUIRE(redacted == "[redacted-token:length=36]");
                 REQUIRE(matching);
                 REQUIRE_FALSE(different);
+            }
+        }
+    }
+}
+
+SCENARIO("Auth variable-length constant-time compare hides secret length", "[auth][tokens][security]")
+{
+    GIVEN("plaintext secrets of differing lengths")
+    {
+        WHEN("compared with the variable-length helper")
+        {
+            auto const matching = merovingian::auth::constant_time_equal_variable_length("alpha", "alpha");
+            auto const different_same_length = merovingian::auth::constant_time_equal_variable_length("alpha", "betaa");
+            auto const different_length = merovingian::auth::constant_time_equal_variable_length("alpha", "alphabet");
+            auto const empty_vs_value = merovingian::auth::constant_time_equal_variable_length("", "alpha");
+
+            THEN("only exact content matches are accepted")
+            {
+                REQUIRE(matching);
+                REQUIRE_FALSE(different_same_length);
+                REQUIRE_FALSE(different_length);
+                REQUIRE_FALSE(empty_vs_value);
             }
         }
     }

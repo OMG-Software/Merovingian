@@ -3,7 +3,7 @@
 # Build a portable Linux fallback tarball with musl-linked static PIE binaries.
 set -eu
 
-VERSION="${MEROVINGIAN_VERSION:-0.8.17}"
+VERSION="${MEROVINGIAN_VERSION:-0.8.18}"
 BUILD_DIR="${BUILD_DIR:-build-static-linux}"
 STAGING="staging-static-linux"
 PACKAGE_ROOT="merovingian-${VERSION}-linux-static-x86_64"
@@ -19,8 +19,8 @@ CC="${CC:-clang}" CXX="${CXX:-clang++}" meson setup "$BUILD_DIR" \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
     -Dstatic_curl_wrap=true \
-    -Dcpp_link_args=-static-pie \
-    -Dc_link_args=-static-pie
+    -Dcpp_link_args='-static-pie -Wl,-z,relro -Wl,-z,now' \
+    -Dc_link_args='-static-pie -Wl,-z,relro -Wl,-z,now'
 
 meson compile -C "$BUILD_DIR"
 meson install -C "$BUILD_DIR" --destdir "$(pwd)/${STAGING}/"

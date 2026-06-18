@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/config/config.hpp"
+#include "merovingian/core/secret_buffer.hpp"
 #include "merovingian/database/persistent_store.hpp"
 #include "merovingian/federation/dispatch_worker.hpp"
 #include "merovingian/federation/inbound_request.hpp"
@@ -99,7 +100,7 @@ struct LocalDatabase final
     std::vector<LocalRoom> rooms{};
     std::vector<observability::AuditLogEvent> audit_events{};
     database::PersistentStore persistent_store{};
-    std::vector<unsigned char> signing_secret_key{};
+    core::SecretBuffer signing_secret_key{};
     // Cache of the signed /_matrix/key/v2/server response, protected by its own
     // internal mutex so the federation key endpoint can be served without acquiring
     // the global runtime mutex. Wrapped in unique_ptr so LocalDatabase remains

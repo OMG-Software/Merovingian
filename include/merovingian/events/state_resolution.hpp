@@ -3,6 +3,7 @@
 #pragma once
 
 #include "merovingian/canonicaljson/value.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <cstdint>

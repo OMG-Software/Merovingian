@@ -56,6 +56,9 @@ surface), so it runs in a short-lived, sandboxed child process:
   `frame_thumbnail_request` and `frame_thumbnail_response` return
   `std::optional<std::string>` and produce `nullopt` when the payload exceeds
   `UINT32_MAX` — callers treat this as a 413 or internal error respectively.
+- The parent (`media::generate_thumbnail`) creates its worker pipes with
+  `O_CLOEXEC`, closes every non-stdio descriptor in the child after `dup2()`-ing
+  the pipe ends to stdin/stdout, and sets `PR_SET_NO_NEW_PRIVS` before `execv()`.
 - Before reading any input the worker clamps its own address space, CPU time,
   output file size, and descriptor count via `setrlimit`, sets
   `PR_SET_NO_NEW_PRIVS`/`PR_SET_DUMPABLE=0`, and installs the seccomp-bpf filter

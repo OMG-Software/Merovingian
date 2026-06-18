@@ -5,6 +5,7 @@
 #include "merovingian/crypto/random.hpp"
 #include "merovingian/crypto/secret_box.hpp"
 #include "merovingian/crypto/signing_service.hpp"
+#include "merovingian/crypto/token_key.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -111,6 +112,32 @@ SCENARIO("Crypto constant-time equality holds at boundaries", "[crypto][security
                 REQUIRE_FALSE(differ_last_byte);
                 REQUIRE(identical);
                 REQUIRE_FALSE(length_mismatch);
+            }
+        }
+    }
+}
+
+SCENARIO("Crypto variable-length constant-time comparison hides length differences", "[crypto][security][boundary]")
+{
+    GIVEN("equal and unequal strings with different lengths")
+    {
+        WHEN("the values are compared without a length check")
+        {
+            auto const identical = merovingian::crypto::constant_time_equal_variable_length("secret", "secret");
+            auto const different_same_length =
+                merovingian::crypto::constant_time_equal_variable_length("secret", "secreu");
+            auto const different_length =
+                merovingian::crypto::constant_time_equal_variable_length("secret", "secret-longer");
+            auto const empty_vs_value = merovingian::crypto::constant_time_equal_variable_length("", "secret");
+            auto const empty_vs_empty = merovingian::crypto::constant_time_equal_variable_length("", "");
+
+            THEN("only exact content matches are accepted regardless of length")
+            {
+                REQUIRE(identical);
+                REQUIRE_FALSE(different_same_length);
+                REQUIRE_FALSE(different_length);
+                REQUIRE_FALSE(empty_vs_value);
+                REQUIRE(empty_vs_empty);
             }
         }
     }
@@ -361,6 +388,66 @@ SCENARIO("SecretBox fails closed with empty or short input", "[crypto][secret_bo
             auto const short_ciphertext = merovingian::crypto::SecretBoxCiphertext{
                 .bytes = std::vector<std::uint8_t>(crypto_secretbox_NONCEBYTES, 0U)};
             REQUIRE_FALSE(merovingian::crypto::secret_box_decrypt(short_ciphertext, *key).has_value());
+        }
+    }
+}
+
+SCENARIO("TokenHmacKey derives the same key from identical master material", "[crypto][token_key]")
+{
+    GIVEN("two equal master key byte strings")
+    {
+        auto const material = std::vector<std::uint8_t>{0x01U, 0x02U, 0x03U, 0x04U, 0x05U};
+
+        WHEN("token HMAC keys are derived")
+        {
+            auto const key_a = merovingian::crypto::derive_token_hmac_key(material);
+            auto const key_b = merovingian::crypto::derive_token_hmac_key(material);
+
+            THEN("both derivations succeed and produce identical keys")
+            {
+                REQUIRE(key_a.has_value());
+                REQUIRE(key_b.has_value());
+                REQUIRE(key_a->bytes == key_b->bytes);
+            }
+        }
+    }
+}
+
+SCENARIO("TokenHmacKey domain separation produces a different key than SecretBox", "[crypto][token_key][boundary]")
+{
+    GIVEN("a single master key byte string")
+    {
+        auto const material = std::vector<std::uint8_t>(32U, 0xABU);
+
+        WHEN("the same material is used for both token HMAC and SecretBox keys")
+        {
+            auto const token_key = merovingian::crypto::derive_token_hmac_key(material);
+            auto const secret_key = merovingian::crypto::derive_secret_box_key(material);
+
+            THEN("the derived keys are distinct and both derivations succeed")
+            {
+                REQUIRE(token_key.has_value());
+                REQUIRE(secret_key.has_value());
+                REQUIRE(token_key->bytes != secret_key->bytes);
+            }
+        }
+    }
+}
+
+SCENARIO("TokenHmacKey fails closed with empty material", "[crypto][token_key]")
+{
+    GIVEN("empty master key material")
+    {
+        auto const empty = std::vector<std::uint8_t>{};
+
+        WHEN("a token HMAC key is derived")
+        {
+            auto const key = merovingian::crypto::derive_token_hmac_key(empty);
+
+            THEN("derivation is rejected")
+            {
+                REQUIRE_FALSE(key.has_value());
+            }
         }
     }
 }

@@ -124,7 +124,7 @@ auto install_unusable_persisted_signing_key(merovingian::homeserver::HomeserverR
         32503680000000ULL,
         "not-base64",
     });
-    runtime.database.signing_secret_key.clear();
+    runtime.database.signing_secret_key = merovingian::core::SecretBuffer{};
 }
 
 } // namespace
@@ -283,10 +283,7 @@ SCENARIO("Homeserver rejects an incorrect registration token and accepts the con
         WHEN("a client registers with the wrong token")
         {
             auto const bad = merovingian::homeserver::handle_local_http_request(
-                runtime, {"POST",
-                          "/_matrix/client/v3/register",
-                          {},
-                          std::string{"alice|CorrectHorse7!|wrong-token"}});
+                runtime, {"POST", "/_matrix/client/v3/register", {}, std::string{"alice|CorrectHorse7!|wrong-token"}});
 
             THEN("registration is rejected")
             {
@@ -517,6 +514,74 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
                 // Do NOT remove - identical hashes allow one token to authenticate as another.
                 REQUIRE(runtime.database.sessions.front().access_token_hash !=
                         runtime.database.sessions.back().access_token_hash);
+            }
+        }
+    }
+}
+
+SCENARIO("Homeserver with master key issues master-key-derived v4 token hashes",
+         "[homeserver][vertical][auth][security]")
+{
+    GIVEN("a started runtime with a master key configured")
+    {
+        auto started = merovingian::homeserver::start_runtime(
+            registration_enabled_config_with_master_key(merovingian::tests::master_key_file()));
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        WHEN("a user registers and logs in")
+        {
+            auto const user = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/register",
+                          {},
+                          merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+            REQUIRE(user.status == 200U);
+            auto const login = merovingian::homeserver::handle_local_http_request(
+                runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+
+            THEN("the stored token hash uses the v4 prefix and remains authenticable")
+            {
+                REQUIRE(login.status == 200U);
+                REQUIRE(runtime.database.sessions.size() == 1U);
+                REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v4:", 0U) == 0U);
+                REQUIRE(merovingian::homeserver::authenticated_user(runtime, login.body).has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("Homeserver upgrades a stored v3 token to v4 on first use when a master key is present",
+         "[homeserver][vertical][auth][security]")
+{
+    GIVEN("a runtime that initially has no master key, a registered user, and a v3 access token")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_pipe("alice", "CorrectHorse7!")});
+        REQUIRE(user.status == 200U);
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|DEVICE1"});
+        REQUIRE(login.status == 200U);
+        REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v3:", 0U) == 0U);
+
+        WHEN("the runtime is reconfigured with a master key and the same v3 token is used")
+        {
+            runtime.config.security().secrets.master_key_file = merovingian::tests::master_key_file();
+
+            auto const authenticated = merovingian::homeserver::authenticated_user(runtime, login.body);
+
+            THEN("the token authenticates and the stored hash is transparently upgraded to v4")
+            {
+                REQUIRE(authenticated.has_value());
+                REQUIRE(authenticated.value() == user.body);
+                REQUIRE(runtime.database.sessions.front().access_token_hash.rfind("token-hash:v4:", 0U) == 0U);
             }
         }
     }
@@ -929,7 +994,7 @@ SCENARIO("ensure_runtime_server_signing_key generates a derived key_id, never th
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.front().key_id == key->key_id);
                 // The runtime secret key is populated and has the correct Ed25519 size.
-                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
             }
         }
     }
@@ -948,7 +1013,8 @@ SCENARIO("ensure_runtime_server_signing_key migrates a legacy ed25519:auto key b
         // "ed25519:auto", which notary servers (e.g. matrix.org) may have cached with a
         // far-future valid_until_ts, making it impossible to rotate via normal expiry.
         runtime.database.persistent_store.server_signing_keys.push_back({
-            server_name, "ed25519:auto",
+            server_name,
+            "ed25519:auto",
             "cHVibGlja2V5", // base64("pubkey") - syntactically valid but not real Ed25519
             32503680000000ULL,
             "c2VjcmV0a2V5", // base64("secretkey") - valid base64, wrong size
@@ -966,12 +1032,11 @@ SCENARIO("ensure_runtime_server_signing_key migrates a legacy ed25519:auto key b
                 REQUIRE(key->key_id.size() == std::string_view{"ed25519:"}.size() + 8U);
                 // Two keys now in the store: the old legacy entry plus the newly generated one.
                 REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 2U);
-                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
             }
         }
     }
 }
-
 
 SCENARIO("ensure_runtime_server_signing_key encrypts a fresh secret when a master key is configured",
          "[homeserver][vertical][signing][security]")
@@ -986,9 +1051,9 @@ SCENARIO("ensure_runtime_server_signing_key encrypts a fresh secret when a maste
         THEN("the persisted signing secret is stored as secretbox:v1:...")
         {
             REQUIRE(runtime.database.persistent_store.server_signing_keys.size() == 1U);
-            REQUIRE(runtime.database.persistent_store.server_signing_keys.front().secret_key.starts_with(
-                "secretbox:v1:"));
-            REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+            REQUIRE(
+                runtime.database.persistent_store.server_signing_keys.front().secret_key.starts_with("secretbox:v1:"));
+            REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
         }
     }
 }
@@ -999,23 +1064,22 @@ SCENARIO("ensure_runtime_server_signing_key decrypts an encrypted signing secret
     GIVEN("a runtime whose signing secret is stored encrypted")
     {
         auto const master_key_path = merovingian::tests::master_key_file();
-        auto started = merovingian::homeserver::start_runtime(
-            registration_enabled_config_with_master_key(master_key_path));
+        auto started =
+            merovingian::homeserver::start_runtime(registration_enabled_config_with_master_key(master_key_path));
         REQUIRE(started.started);
         auto& runtime = started.runtime;
-        auto const encrypted_secret =
-            runtime.database.persistent_store.server_signing_keys.front().secret_key;
+        auto const encrypted_secret = runtime.database.persistent_store.server_signing_keys.front().secret_key;
         REQUIRE(encrypted_secret.starts_with("secretbox:v1:"));
 
         WHEN("the runtime secret is cleared and ensure is called again")
         {
-            runtime.database.signing_secret_key.clear();
+            runtime.database.signing_secret_key = merovingian::core::SecretBuffer{};
             auto const key = merovingian::homeserver::ensure_runtime_server_signing_key(runtime);
 
             THEN("the encrypted secret is decrypted back into the runtime signing key")
             {
                 REQUIRE(key.has_value());
-                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
             }
         }
     }
@@ -1038,13 +1102,12 @@ SCENARIO("rotate_server_signing_key encrypts the new secret when a master key is
             THEN("the rotation succeeds and the new secret is stored encrypted")
             {
                 REQUIRE(result.ok);
-                auto const active = std::ranges::max_element(
-                    runtime.database.persistent_store.server_signing_keys,
-                    {},
-                    &merovingian::database::PersistentServerSigningKey::valid_until_ts);
+                auto const active =
+                    std::ranges::max_element(runtime.database.persistent_store.server_signing_keys, {},
+                                             &merovingian::database::PersistentServerSigningKey::valid_until_ts);
                 REQUIRE(active != runtime.database.persistent_store.server_signing_keys.end());
                 REQUIRE(active->secret_key.starts_with("secretbox:v1:"));
-                REQUIRE(runtime.database.signing_secret_key.size() == crypto_sign_SECRETKEYBYTES);
+                REQUIRE(runtime.database.signing_secret_key.bytes().size() == crypto_sign_SECRETKEYBYTES);
             }
         }
     }

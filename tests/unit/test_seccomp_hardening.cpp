@@ -5,8 +5,16 @@
 
 #include <catch2/catch_test_macros.hpp>
 
-SCENARIO("seccomp hardening check maps probe results to the correct status",
-         "[platform][hardening][seccomp]")
+#ifdef __linux__
+#include <cstdint>
+
+#include <linux/audit.h>
+#include <linux/seccomp.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
+
+SCENARIO("seccomp hardening check maps probe results to the correct status", "[platform][hardening][seccomp]")
 {
     GIVEN("a probe result indicating the filter is active")
     {
@@ -105,4 +113,69 @@ SCENARIO("seccomp probe reads /proc/self/status successfully on Linux", "[platfo
         }
     }
 }
+
+SCENARIO("seccomp filter defaults to kill-process and blocks removed filesystem syscalls",
+         "[platform][hardening][seccomp][linux]")
+{
+    GIVEN("the seccomp allowlist constants")
+    {
+        WHEN("the default action is queried")
+        {
+            auto const action = merovingian::platform::seccomp_default_action();
+
+            THEN("it is SECCOMP_RET_KILL_PROCESS (fail-closed)")
+            {
+                REQUIRE(action == static_cast<std::uint32_t>(SECCOMP_RET_KILL_PROCESS));
+            }
+        }
+
+        WHEN("required syscalls are checked")
+        {
+            THEN("common I/O and directory-creation syscalls are allowed")
+            {
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_read));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_write));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_openat));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_mkdirat));
+            }
+        }
+
+        WHEN("removed filesystem syscalls are checked")
+        {
+            THEN("chmod, fchmod, fchmodat, umask, mkdir, unlink, unlinkat, rename, renameat, truncate and ftruncate "
+                 "are not allowed")
+            {
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_chmod));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fchmod));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fchmodat));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_umask));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_mkdir));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_unlink));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_unlinkat));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_rename));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_renameat));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_truncate));
+                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_ftruncate));
+            }
+        }
+
+        WHEN("the expected architecture is queried")
+        {
+            auto const expected = merovingian::platform::seccomp_expected_architecture();
+
+            THEN("x86_64 and aarch64 builds have an architecture constant; unsupported builds fail closed")
+            {
+#if defined(__x86_64__)
+                REQUIRE(expected.has_value());
+                REQUIRE(*expected == static_cast<std::uint32_t>(AUDIT_ARCH_X86_64));
+#elif defined(__aarch64__)
+                REQUIRE(expected.has_value());
+                REQUIRE(*expected == static_cast<std::uint32_t>(AUDIT_ARCH_AARCH64));
+#else
+                REQUIRE_FALSE(expected.has_value());
 #endif
+            }
+        }
+    }
+}
+#endif // __linux__

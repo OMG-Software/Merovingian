@@ -307,3 +307,95 @@ SCENARIO("Linux BSD and CI hardening notes cover deployment security profiles", 
         }
     }
 }
+
+SCENARIO("Linux runtime hardening controls apply when supported", "[platform][hardening]")
+{
+    GIVEN("the default Linux hardening profile")
+    {
+        auto profile = merovingian::platform::default_linux_hardening_profile();
+
+        WHEN("controls are applied")
+        {
+            auto const decision = merovingian::platform::apply_runtime_hardening_controls(profile);
+
+            THEN("the decision is accepted when running on Linux")
+            {
+#ifdef __linux__
+                REQUIRE(decision.accepted);
+                REQUIRE_FALSE(decision.fail_closed);
+#else
+                // On non-Linux hosts a Linux profile is inapplicable and the
+                // implementation correctly reports that it cannot apply it.
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.fail_closed);
+#endif
+            }
+        }
+    }
+}
+
+SCENARIO("Portable runtime hardening controls delegate to service manager", "[platform][hardening]")
+{
+    GIVEN("the default portable hardening profile")
+    {
+        auto profile = merovingian::platform::default_portable_hardening_profile();
+
+        WHEN("controls are applied")
+        {
+            auto const decision = merovingian::platform::apply_runtime_hardening_controls(profile);
+
+            THEN("the profile is accepted because the process does not apply sandboxing directly")
+            {
+                REQUIRE(decision.accepted);
+                REQUIRE_FALSE(decision.fail_closed);
+            }
+        }
+    }
+}
+
+SCENARIO("BSD runtime hardening controls remain documented alpha exceptions", "[platform][hardening]")
+{
+    GIVEN("the default BSD hardening profile")
+    {
+        auto profile = merovingian::platform::default_bsd_hardening_profile();
+
+        WHEN("controls are applied")
+        {
+            auto const decision = merovingian::platform::apply_runtime_hardening_controls(profile);
+
+            THEN("BSD helpers are rejected in required mode and accepted as optional")
+            {
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.fail_closed);
+                REQUIRE(decision.reason.find("BSD sandbox helpers") != std::string::npos);
+
+                auto optional_profile = profile;
+                optional_profile.mode = merovingian::platform::HardeningMode::optional;
+                auto const optional_decision =
+                    merovingian::platform::apply_runtime_hardening_controls(optional_profile);
+                REQUIRE(optional_decision.accepted);
+                REQUIRE(optional_decision.reason.find("BSD sandbox helpers") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Linux hardening documentation gate requires core dump policy", "[platform][hardening]")
+{
+    GIVEN("a Linux profile with core dump policy documentation disabled")
+    {
+        auto profile = merovingian::platform::default_linux_hardening_profile();
+        profile.linux.core_dump_policy_required = false;
+
+        WHEN("the profile is evaluated")
+        {
+            auto const decision = merovingian::platform::evaluate_runtime_hardening_profile(profile);
+
+            THEN("the profile is rejected because the Linux plan is incomplete")
+            {
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.reason == "linux hardening plan is incomplete");
+            }
+        }
+    }
+}

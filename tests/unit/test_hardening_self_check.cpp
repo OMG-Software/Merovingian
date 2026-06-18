@@ -11,7 +11,7 @@ SCENARIO("Startup hardening self-check reports stable baseline checks", "[platfo
 {
     GIVEN("the expected baseline check count")
     {
-        auto constexpr expected_count = 13U;
+        auto constexpr expected_count = 15U;
 
         WHEN("the startup hardening self-check runs")
         {
@@ -32,7 +32,9 @@ SCENARIO("Startup hardening self-check reports stable baseline checks", "[platfo
                 REQUIRE(self_check.checks()[9].name == "privilege drop");
                 REQUIRE(self_check.checks()[10].name == "filesystem restrictions");
                 REQUIRE(self_check.checks()[11].name == "core dump policy");
-                REQUIRE(self_check.checks()[12].name == "secret redaction policy");
+                REQUIRE(self_check.checks()[12].name == "no_new_privs");
+                REQUIRE(self_check.checks()[13].name == "capability bounding");
+                REQUIRE(self_check.checks()[14].name == "secret redaction policy");
             }
         }
     }
@@ -48,17 +50,24 @@ SCENARIO("Runtime hardening checks deferred for alpha carry documented exception
         {
             auto const self_check = merovingian::platform::run_startup_hardening_self_check();
 
-            THEN("placeholder runtime checks are tagged alpha_exception with a non-empty note")
+            THEN("placeholder runtime checks are tagged alpha_exception or are already enabled")
             {
                 auto const& checks = self_check.checks();
-                // Indices 7–11: pledge/unveil, capsicum, privilege drop,
-                // filesystem restrictions, core dump policy — still alpha exceptions.
+                // Indices 7–12: pledge/unveil, capsicum, privilege drop,
+                // filesystem restrictions, core dump policy, no_new_privs.
+                // These are alpha exceptions on platforms where the control is not
+                // implemented; on Linux they may already be enabled by an earlier
+                // test that applied runtime hardening controls in the same process.
                 // Index 6 (seccomp) is now probe-based, not alpha_exception.
-                auto const deferred_indices = {7U, 8U, 9U, 10U, 11U};
+                auto const deferred_indices = {7U, 8U, 9U, 10U, 11U, 12U};
                 for (auto const index : deferred_indices)
                 {
-                    REQUIRE(checks[index].status == alpha_exception);
-                    REQUIRE_FALSE(checks[index].note.empty());
+                    auto const status = checks[index].status;
+                    REQUIRE((status == alpha_exception || status == merovingian::platform::HardeningStatus::enabled));
+                    if (status == alpha_exception)
+                    {
+                        REQUIRE_FALSE(checks[index].note.empty());
+                    }
                 }
             }
 
@@ -142,8 +151,8 @@ SCENARIO("Secret redaction policy self-check is enabled", "[platform][hardening]
 
             THEN("the secret redaction policy check is enabled")
             {
-                REQUIRE(self_check.checks()[12].name == "secret redaction policy");
-                REQUIRE(self_check.checks()[12].status == enabled);
+                REQUIRE(self_check.checks()[14].name == "secret redaction policy");
+                REQUIRE(self_check.checks()[14].status == enabled);
             }
         }
     }

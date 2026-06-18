@@ -1,9 +1,9 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build a Debian binary package (.deb) for merovingian 0.8.17.
+# Build a Debian binary package (.deb) for merovingian 0.8.18.
 set -e
 
-VERSION="0.8.17"
+VERSION="0.8.18"
 PKG_NAME="merovingian"
 STAGING="staging-deb"
 
@@ -19,8 +19,8 @@ CC=clang CXX=clang++ meson setup build-deb \
     -Dhardening=true \
     -Dbuild_tests=false \
     -Dbuild_fuzz=false \
-    -Dcpp_link_args='-pie' \
-    -Dc_link_args='-pie'
+    -Dcpp_link_args='-pie -Wl,-z,relro -Wl,-z,now' \
+    -Dc_link_args='-pie -Wl,-z,relro -Wl,-z,now'
 
 # 2. Compile
 meson compile -C build-deb

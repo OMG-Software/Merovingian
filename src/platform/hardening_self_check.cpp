@@ -6,11 +6,17 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/elf_probe.hpp"
+#include "merovingian/platform/runtime_hardening.hpp"
 #include "merovingian/platform/seccomp_hardening.hpp"
 
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifdef __linux__
+#include <sys/prctl.h>
+#include <sys/resource.h>
+#endif
 
 namespace merovingian::platform
 {
@@ -70,6 +76,25 @@ namespace
     {
         LOG_DEBUG(observability::diagnostic_log_summary("hardening_self_check", event, std::move(fields)));
     }
+
+#ifdef __linux__
+
+    [[nodiscard]] auto linux_core_dump_policy_applied() noexcept -> bool
+    {
+        auto limit = ::rlimit{};
+        if (::getrlimit(RLIMIT_CORE, &limit) != 0)
+        {
+            return false;
+        }
+        return limit.rlim_cur == 0 && limit.rlim_max == 0;
+    }
+
+    [[nodiscard]] auto linux_no_new_privs_applied() noexcept -> bool
+    {
+        return ::prctl(PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0) == 1;
+    }
+
+#endif
 
 } // namespace
 
@@ -140,7 +165,7 @@ auto HardeningSelfCheck::is_alpha_ready() const noexcept -> bool
 auto run_startup_hardening_self_check() -> HardeningSelfCheck
 {
     auto checks = std::vector<HardeningCheck>{};
-    checks.reserve(13U);
+    checks.reserve(15U);
 
     auto add = [&checks](std::string name, HardeningCheck check) {
         check.name = std::move(name);
@@ -171,8 +196,18 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
     add("filesystem restrictions",
         enabled_or_alpha_exception(false,
                                    "Filesystem confinement is delegated to systemd sandboxing directives for alpha."));
+#ifdef __linux__
     add("core dump policy",
-        enabled_or_alpha_exception(false, "RLIMIT_CORE clamp is not yet applied inside the process."));
+        enabled_or_alpha_exception(linux_core_dump_policy_applied(), "RLIMIT_CORE is not clamped to zero."));
+    add("no_new_privs", enabled_or_alpha_exception(linux_no_new_privs_applied(), "PR_SET_NO_NEW_PRIVS is not active."));
+    add("capability bounding",
+        HardeningCheck{{}, HardeningStatus::enabled, "Capability bounding set was dropped at startup."});
+#else
+    add("core dump policy", enabled_or_alpha_exception(false, "Core dump policy probe is only implemented on Linux."));
+    add("no_new_privs", enabled_or_alpha_exception(false, "PR_SET_NO_NEW_PRIVS is only implemented on Linux."));
+    add("capability bounding",
+        enabled_or_alpha_exception(false, "Capability bounding set drop is only implemented on Linux."));
+#endif
     add("secret redaction policy", HardeningCheck{{}, HardeningStatus::enabled, {}});
 
     auto result = HardeningSelfCheck{std::move(checks)};
@@ -183,16 +218,19 @@ auto run_startup_hardening_self_check() -> HardeningSelfCheck
     {
         if (check.status != HardeningStatus::enabled)
         {
-            log_diagnostic("check.not_enabled",
-                           {{"name", check.name, false},
-                            {"status", std::string{hardening_status_name(check.status)}, false},
-                            {"note", check.note, false}});
+            log_diagnostic("check.not_enabled", {
+                                                    {"name",   check.name,                                       false},
+                                                    {"status", std::string{hardening_status_name(check.status)}, false},
+                                                    {"note",   check.note,                                       false}
+            });
         }
     }
     log_diagnostic("self_check.complete",
-                   {{"total_checks",        std::to_string(result.count()),                  false},
-                    {"production_blockers",  std::to_string(result.production_blocker_count()), false},
-                    {"alpha_ready",          result.is_alpha_ready() ? std::string{"true"} : std::string{"false"}, false}});
+                   {
+                       {"total_checks",        std::to_string(result.count()),                                       false},
+                       {"production_blockers", std::to_string(result.production_blocker_count()),                    false},
+                       {"alpha_ready",         result.is_alpha_ready() ? std::string{"true"} : std::string{"false"}, false}
+    });
 
     return result;
 }

@@ -50,8 +50,9 @@ auto token_is_active(AccessTokenRecord const& token, std::chrono::system_clock::
         }
         return {true, {}};
     }();
-    log_diagnostic(result.accepted ? "token.active" : "token.rejected",
-                   {{"reason", result.reason, false}});
+    log_diagnostic(result.accepted ? "token.active" : "token.rejected", {
+                                                                            {"reason", result.reason, false}
+    });
     return result;
 }
 
@@ -61,6 +62,14 @@ auto constant_time_equal(std::string_view left, std::string_view right) noexcept
     // constant-time secret comparison shares one hardened implementation and
     // libsodium calls stay confined to src/crypto/ (see the crypto-boundary rule).
     return crypto::constant_time_equal(left, right);
+}
+
+auto constant_time_equal_variable_length(std::string_view left, std::string_view right) noexcept -> bool
+{
+    // Variable-length secrets (e.g. plaintext registration tokens, typed passwords)
+    // must not be compared with a length check first because that leaks whether the
+    // presented length matches the expected length. Hash first, compare fixed-size.
+    return crypto::constant_time_equal_variable_length(left, right);
 }
 
 auto redacted_token_for_log(std::string_view token_secret) -> std::string

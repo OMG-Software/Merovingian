@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iostream>
 #include <string>
 
 #include <sodium.h>
@@ -46,12 +47,9 @@ namespace
     auto security = merovingian::config::SecurityConfig{};
     merovingian::tests::enable_token_registration(security);
     return {
-        merovingian::config::ServerConfig{},
-        merovingian::config::ListenersConfig{},
-        merovingian::config::DatabaseConfig{},
-        security,
-        merovingian::config::ClientRateLimitsConfig{},
-        merovingian::config::LogModulesConfig{},
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
     };
 }
 
@@ -67,8 +65,8 @@ namespace
 }
 
 // Convenience: build the login body for a freshly registered user.
-[[nodiscard]] auto login_body(std::string_view user_id, std::string_view password,
-                              std::string_view device_id) -> std::string
+[[nodiscard]] auto login_body(std::string_view user_id, std::string_view password, std::string_view device_id)
+    -> std::string
 {
     auto out = std::string{};
     out.append(R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":")");
@@ -86,8 +84,7 @@ namespace
     // Mirrors merovingian::tests::registration_json so the test files are
     // independent, but embedded locally to avoid having to update the shared
     // helper for this regression suite.
-    return std::string{R"({"username":")"} + std::string{localpart} + R"(","password":")" +
-           std::string{password} +
+    return std::string{R"({"username":")"} + std::string{localpart} + R"(","password":")" + std::string{password} +
            R"(","auth":{"type":"m.login.registration_token","token":"test-registration-token"}})";
 }
 
@@ -115,9 +112,8 @@ namespace
     }
 
     auto signature = std::array<unsigned char, crypto_sign_BYTES>{};
-    crypto_sign_detached(signature.data(), nullptr,
-                         reinterpret_cast<unsigned char const*>(payload.data()), payload.size(),
-                         reinterpret_cast<unsigned char const*>(secret_key_bytes.data()));
+    crypto_sign_detached(signature.data(), nullptr, reinterpret_cast<unsigned char const*>(payload.data()),
+                         payload.size(), reinterpret_cast<unsigned char const*>(secret_key_bytes.data()));
 
     auto const sig_b64 = merovingian::events::matrix_base64_from_bytes(
         {reinterpret_cast<char const*>(signature.data()), crypto_sign_BYTES});
@@ -126,15 +122,13 @@ namespace
     auto result = std::string{};
     if (key_object_prefix.empty())
     {
-        result = std::string{R"({"key":")"} + std::string{key_value} +
-                 R"(","signatures":{")" + std::string{user_id} +
-                 R"(":{"ed25519:)" + std::string{device_id} + R"(":")" + sig_b64 + R"("}}})" ;
+        result = std::string{R"({"key":")"} + std::string{key_value} + R"(","signatures":{")" + std::string{user_id} +
+                 R"(":{"ed25519:)" + std::string{device_id} + R"(":")" + sig_b64 + R"("}}})";
     }
     else
     {
-        result = "{" + std::string{key_object_prefix} + R"("key":")" + std::string{key_value} +
-                 R"(","signatures":{")" + std::string{user_id} +
-                 R"(":{"ed25519:)" + std::string{device_id} + R"(":")" + sig_b64 + R"("}}})" ;
+        result = "{" + std::string{key_object_prefix} + R"("key":")" + std::string{key_value} + R"(","signatures":{")" +
+                 std::string{user_id} + R"(":{"ed25519:)" + std::string{device_id} + R"(":")" + sig_b64 + R"("}}})";
     }
     return result;
 }
@@ -164,12 +158,13 @@ SCENARIO("E2EE /keys/upload rejects one-time keys signed by a different ed25519 
         auto& runtime = started.runtime;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
-                              register_body("inviter", "CorrectHorse7!")})
+                    runtime, {"POST", "/_matrix/client/v3/register", {}, register_body("inviter", "CorrectHorse7!")})
                     .response.status == 200U);
 
         auto const inviter_login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/login", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
                       login_body("@inviter:example.org", "CorrectHorse7!", "INVITER_DEV")});
         REQUIRE(inviter_login.response.status == 200U);
         auto const inviter_token = login_token(inviter_login.response.body);
@@ -197,9 +192,8 @@ SCENARIO("E2EE /keys/upload rejects one-time keys signed by a different ed25519 
                 REQUIRE(otk_upload.response.body.find("M_INVALID_SIGNATURE") != std::string::npos);
 
                 auto const& store = runtime.homeserver.database.persistent_store;
-                auto const stored = std::ranges::find_if(
-                    store.one_time_keys,
-                    [](merovingian::database::PersistentOneTimeKey const& k) {
+                auto const stored =
+                    std::ranges::find_if(store.one_time_keys, [](merovingian::database::PersistentOneTimeKey const& k) {
                         return k.device_id == "INVITER_DEV";
                     });
                 REQUIRE(stored == store.one_time_keys.end());
@@ -227,35 +221,36 @@ SCENARIO("E2EE /keys/upload accepts one-time keys signed by the device's own ed2
         auto& runtime = started.runtime;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
-                              register_body("inviter", "CorrectHorse7!")})
+                    runtime, {"POST", "/_matrix/client/v3/register", {}, register_body("inviter", "CorrectHorse7!")})
                     .response.status == 200U);
 
         auto const inviter_login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/login", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
                       login_body("@inviter:example.org", "CorrectHorse7!", "INVITER_DEV")});
         REQUIRE(inviter_login.response.status == 200U);
         auto const inviter_token = login_token(inviter_login.response.body);
 
         // Derive a real deterministic Ed25519 keypair from a seed.
-        auto const keypair     = merovingian::federation::test::keypair_from_seed("inviter-dev-seed");
-        auto const pubkey_b64  = merovingian::events::matrix_base64_from_bytes(keypair.public_key);
+        auto const keypair = merovingian::federation::test::keypair_from_seed("inviter-dev-seed");
+        auto const pubkey_b64 = merovingian::events::matrix_base64_from_bytes(keypair.public_key);
 
         auto const device_keys_upload = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
-             std::string{R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":")"} +
-             pubkey_b64 + R"("}}})"});
+             std::string{
+                 R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":")"} +
+                 pubkey_b64 + R"("}}})"});
         REQUIRE(device_keys_upload.response.status == 200U);
 
         WHEN("the inviter uploads a one_time_key with a valid Ed25519 signature")
         {
-            auto const otk_json = make_valid_signed_otk("@inviter:example.org", "INVITER_DEV",
-                                                        "OTK_KEY_1", {}, keypair.secret_key);
+            auto const otk_json =
+                make_valid_signed_otk("@inviter:example.org", "INVITER_DEV", "OTK_KEY_1", {}, keypair.secret_key);
             auto const otk_upload = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
-                 R"({"one_time_keys":{"signed_curve25519:AAAA":)" + otk_json + R"(}})"});
+                runtime, {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
+                          R"({"one_time_keys":{"signed_curve25519:AAAA":)" + otk_json + R"(}})"});
 
             THEN("the upload succeeds and the OTK is stored")
             {
@@ -265,9 +260,8 @@ SCENARIO("E2EE /keys/upload accepts one-time keys signed by the device's own ed2
                 REQUIRE(otk_upload.response.status == 200U);
 
                 auto const& store = runtime.homeserver.database.persistent_store;
-                auto const stored = std::ranges::find_if(
-                    store.one_time_keys,
-                    [](merovingian::database::PersistentOneTimeKey const& k) {
+                auto const stored =
+                    std::ranges::find_if(store.one_time_keys, [](merovingian::database::PersistentOneTimeKey const& k) {
                         return k.device_id == "INVITER_DEV";
                     });
                 REQUIRE(stored != store.one_time_keys.end());
@@ -297,24 +291,26 @@ SCENARIO("E2EE /keys/upload rejects one-time keys with garbage signature bytes u
         auto& runtime = started.runtime;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
-                              register_body("inviter", "CorrectHorse7!")})
+                    runtime, {"POST", "/_matrix/client/v3/register", {}, register_body("inviter", "CorrectHorse7!")})
                     .response.status == 200U);
 
         auto const inviter_login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/login", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
                       login_body("@inviter:example.org", "CorrectHorse7!", "INVITER_DEV")});
         REQUIRE(inviter_login.response.status == 200U);
         auto const inviter_token = login_token(inviter_login.response.body);
 
-        auto const keypair    = merovingian::federation::test::keypair_from_seed("inviter-dev-seed");
+        auto const keypair = merovingian::federation::test::keypair_from_seed("inviter-dev-seed");
         auto const pubkey_b64 = merovingian::events::matrix_base64_from_bytes(keypair.public_key);
 
         auto const device_keys_upload = merovingian::homeserver::handle_client_server_request(
             runtime,
             {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
-             std::string{R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":")"} +
-             pubkey_b64 + R"("}}})"});
+             std::string{
+                 R"({"device_keys":{"user_id":"@inviter:example.org","device_id":"INVITER_DEV","algorithms":["m.olm.v1.curve25519-aes-sha2","m.megolm.v1.aes-sha2"],"keys":{"curve25519:INVITER_DEV":"AAAA_CURVE","ed25519:INVITER_DEV":")"} +
+                 pubkey_b64 + R"("}}})"});
         REQUIRE(device_keys_upload.response.status == 200U);
 
         WHEN("an OTK is uploaded with garbage signature bytes under the correct key ID")
@@ -336,9 +332,8 @@ SCENARIO("E2EE /keys/upload rejects one-time keys with garbage signature bytes u
                 REQUIRE(otk_upload.response.body.find("M_INVALID_SIGNATURE") != std::string::npos);
 
                 auto const& store = runtime.homeserver.database.persistent_store;
-                auto const stored = std::ranges::find_if(
-                    store.one_time_keys,
-                    [](merovingian::database::PersistentOneTimeKey const& k) {
+                auto const stored =
+                    std::ranges::find_if(store.one_time_keys, [](merovingian::database::PersistentOneTimeKey const& k) {
                         return k.device_id == "INVITER_DEV";
                     });
                 REQUIRE(stored == store.one_time_keys.end());
@@ -366,12 +361,13 @@ SCENARIO("E2EE /keys/upload rejects fallback keys signed by a different ed25519 
         auto& runtime = started.runtime;
 
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
-                              register_body("inviter", "CorrectHorse7!")})
+                    runtime, {"POST", "/_matrix/client/v3/register", {}, register_body("inviter", "CorrectHorse7!")})
                     .response.status == 200U);
 
         auto const inviter_login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/login", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
                       login_body("@inviter:example.org", "CorrectHorse7!", "INVITER_DEV")});
         REQUIRE(inviter_login.response.status == 200U);
         auto const inviter_token = login_token(inviter_login.response.body);
@@ -398,11 +394,10 @@ SCENARIO("E2EE /keys/upload rejects fallback keys signed by a different ed25519 
                 REQUIRE(fallback_upload.response.body.find("M_INVALID_SIGNATURE") != std::string::npos);
 
                 auto const& store = runtime.homeserver.database.persistent_store;
-                auto const stored = std::ranges::find_if(
-                    store.fallback_keys,
-                    [](merovingian::database::PersistentFallbackKey const& k) {
-                        return k.device_id == "INVITER_DEV";
-                    });
+                auto const stored = std::ranges::find_if(store.fallback_keys,
+                                                         [](merovingian::database::PersistentFallbackKey const& k) {
+                                                             return k.device_id == "INVITER_DEV";
+                                                         });
                 REQUIRE(stored == store.fallback_keys.end());
             }
         }
@@ -423,27 +418,37 @@ SCENARIO("E2EE /keys/upload rejects signed_curve25519 OTKs when no device identi
 {
     GIVEN("a logged-in inviter that has never uploaded device_keys")
     {
+        std::cerr << "[netbsd-diag] otk-no-identity: start_client_server\n" << std::flush;
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
+        std::cerr << "[netbsd-diag] otk-no-identity: runtime started\n" << std::flush;
         auto& runtime = started.runtime;
 
+        std::cerr << "[netbsd-diag] otk-no-identity: register\n" << std::flush;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
-                    runtime, {"POST", "/_matrix/client/v3/register", {},
-                              register_body("inviter", "CorrectHorse7!")})
+                    runtime, {"POST", "/_matrix/client/v3/register", {}, register_body("inviter", "CorrectHorse7!")})
                     .response.status == 200U);
+        std::cerr << "[netbsd-diag] otk-no-identity: registered\n" << std::flush;
 
+        std::cerr << "[netbsd-diag] otk-no-identity: login\n" << std::flush;
         auto const inviter_login = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/login", {},
+            runtime, {"POST",
+                      "/_matrix/client/v3/login",
+                      {},
                       login_body("@inviter:example.org", "CorrectHorse7!", "INVITER_DEV")});
         REQUIRE(inviter_login.response.status == 200U);
+        std::cerr << "[netbsd-diag] otk-no-identity: logged in\n" << std::flush;
         auto const inviter_token = login_token(inviter_login.response.body);
 
         WHEN("the inviter uploads a signed_curve25519 one_time_key with no device_keys in the body or store")
         {
+            std::cerr << "[netbsd-diag] otk-no-identity: upload\n" << std::flush;
             auto const otk_upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
                  R"({"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_1"}}}}})"});
+            std::cerr << "[netbsd-diag] otk-no-identity: upload returned status=" << otk_upload.response.status << "\n"
+                      << std::flush;
 
             THEN("the upload is rejected because the signature cannot be verified without a device identity")
             {
@@ -453,13 +458,13 @@ SCENARIO("E2EE /keys/upload rejects signed_curve25519 OTKs when no device identi
 
                 // Rejected keys must not be persisted.
                 auto const& store = runtime.homeserver.database.persistent_store;
-                auto const stored = std::ranges::find_if(
-                    store.one_time_keys,
-                    [](merovingian::database::PersistentOneTimeKey const& k) {
+                auto const stored =
+                    std::ranges::find_if(store.one_time_keys, [](merovingian::database::PersistentOneTimeKey const& k) {
                         return k.device_id == "INVITER_DEV";
                     });
                 REQUIRE(stored == store.one_time_keys.end());
             }
+            std::cerr << "[netbsd-diag] otk-no-identity: scenario end\n" << std::flush;
         }
     }
 }

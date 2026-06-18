@@ -27,6 +27,7 @@ new documents.
 | `observability-audit.md` | New log fields, audit events, or observability changes |
 | `trust-safety.md` | Policy engine changes |
 | `architecture.md` | Module structure or cross-module dependency changes |
+| `hardening.md` | Runtime hardening controls, seccomp, sandboxing, or build/link hardening changes |
 
 ## Do NOT create new documents for
 

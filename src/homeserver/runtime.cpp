@@ -15,6 +15,7 @@
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/platform/runtime_hardening.hpp"
 
 #include <algorithm>
 #include <cstddef>
@@ -497,6 +498,19 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     runtime.discovery_network = federation::make_system_server_discovery_network();
     runtime.media_repository = media::make_local_media_repository(media::make_runtime_media_config(config));
     hydrate_media_repository(runtime.media_repository, runtime.database.persistent_store);
+    auto const hardening_controls = [&]() {
+#if defined(__linux__)
+        return platform::apply_runtime_hardening_controls(platform::default_linux_hardening_profile());
+#elif defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || defined(__DragonFly__)
+        return platform::apply_runtime_hardening_controls(platform::default_bsd_hardening_profile());
+#else
+        return platform::apply_runtime_hardening_controls(platform::default_portable_hardening_profile());
+#endif
+    }();
+    log_diagnostic("start.hardening_controls", {
+                                                   {"accepted", hardening_controls.accepted ? "true" : "false", false},
+                                                   {"reason",   hardening_controls.reason,                      false},
+    });
     runtime.hardening = platform::run_startup_hardening_self_check();
     log_diagnostic("start.complete",
                    {

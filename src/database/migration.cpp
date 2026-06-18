@@ -8,6 +8,7 @@
 #include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -23,14 +24,31 @@ namespace
 
     constexpr auto initial_schema_version = std::uint32_t{1U};
 
-    [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table) -> PreparedStatement
+    [[nodiscard]] auto make_create_table_statement(SchemaTableDefinition const& table)
+        -> std::optional<PreparedStatement>
     {
-        return {"create_" + std::string{table.name}, create_table_sql(table), {}};
+        auto sql = create_table_sql(table);
+        if (!sql.has_value())
+        {
+            return std::nullopt;
+        }
+        return PreparedStatement{"create_" + std::string{table.name}, std::move(*sql), {}};
     }
 
-    [[nodiscard]] auto make_drop_table_statement(std::string_view table_name) -> PreparedStatement
+    [[nodiscard]] auto make_drop_table_statement(std::string_view table_name) -> std::optional<PreparedStatement>
     {
-        return {"drop_" + std::string{table_name}, "DROP TABLE " + std::string{table_name}, {}};
+        if (!schema_table_is_core(table_name))
+        {
+            return std::nullopt;
+        }
+
+        auto quoted = quote_sqlite_identifier(table_name);
+        if (!quoted.has_value())
+        {
+            return std::nullopt;
+        }
+
+        return PreparedStatement{"drop_" + std::string{table_name}, "DROP TABLE " + std::move(*quoted), {}};
     }
 
     [[nodiscard]] auto has_table(SchemaState const& state, std::string_view table_name) noexcept -> bool
@@ -48,6 +66,32 @@ namespace
         });
     }
 
+    [[nodiscard]] auto unquote_sqlite_identifier(std::string_view value) -> std::string
+    {
+        if (value.size() >= 2U && value.front() == '"' && value.back() == '"')
+        {
+            value.remove_prefix(1);
+            value.remove_suffix(1);
+        }
+
+        auto result = std::string{};
+        result.reserve(value.size());
+        for (auto index = std::size_t{0U}; index < value.size(); ++index)
+        {
+            if (value[index] == '"' && index + 1U < value.size() && value[index + 1U] == '"')
+            {
+                // SQLite escapes a literal double quote as two double quotes.
+                result.push_back('"');
+                ++index;
+            }
+            else
+            {
+                result.push_back(value[index]);
+            }
+        }
+        return result;
+    }
+
     [[nodiscard]] auto table_from_create_table(std::string_view sql) -> std::string
     {
         auto constexpr prefix = std::string_view{"CREATE TABLE "};
@@ -57,13 +101,17 @@ namespace
         }
         auto const begin = prefix.size();
         auto const end = sql.find(' ', begin);
-        return end == std::string_view::npos ? std::string{} : std::string{sql.substr(begin, end - begin)};
+        if (end == std::string_view::npos)
+        {
+            return {};
+        }
+        return unquote_sqlite_identifier(sql.substr(begin, end - begin));
     }
 
     [[nodiscard]] auto table_from_drop_table(std::string_view sql) -> std::string
     {
         auto constexpr prefix = std::string_view{"DROP TABLE "};
-        return sql.starts_with(prefix) ? std::string{sql.substr(prefix.size())} : std::string{};
+        return sql.starts_with(prefix) ? unquote_sqlite_identifier(sql.substr(prefix.size())) : std::string{};
     }
 
     auto add_table(SchemaState& state, std::string table_name) -> void
@@ -191,7 +239,9 @@ auto initial_schema_migration() -> MigrationStep
     auto statements = std::vector<PreparedStatement>{};
     for (auto const& table : initial_schema_definitions())
     {
-        statements.push_back(make_create_table_statement(table));
+        // Core table definitions are allowlisted at compile time, so the
+        // generated CREATE TABLE SQL is always valid.
+        statements.push_back(make_create_table_statement(table).value());
     }
     return {initial_schema_version, "initial_schema", std::move(statements), MigrationDirection::upgrade};
 }
@@ -204,7 +254,9 @@ auto downgrade_initial_schema_migration() -> MigrationStep
     // before the ones they reference.
     for (auto iterator = definitions.rbegin(); iterator != definitions.rend(); ++iterator)
     {
-        statements.push_back(make_drop_table_statement(iterator->name));
+        // Core table names are allowlisted at compile time, so the generated
+        // DROP TABLE SQL is always valid.
+        statements.push_back(make_drop_table_statement(iterator->name).value());
     }
     return {0U, "drop_initial_schema", std::move(statements), MigrationDirection::downgrade};
 }

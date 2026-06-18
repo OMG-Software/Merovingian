@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build an OpenBSD binary package (.tgz) for merovingian 0.8.17.
+# Build an OpenBSD binary package (.tgz) for merovingian 0.8.18.
 #
 # Standalone pkg_create(1) — no ports tree. The checked-in packaging/openbsd/PLIST
 # is the ports-framework packing list kept for downstream porters; this script
@@ -8,7 +8,7 @@
 # produce and validate an installable package on every run.
 set -e
 
-VERSION="0.8.17"
+VERSION="0.8.18"
 STAGE="staging-openbsd"
 PREFIX=/usr/local
 
@@ -21,7 +21,9 @@ meson setup build-openbsd-pkg \
     --wrap-mode=forcefallback \
     -Dhardening=true \
     -Dbuild_tests=false \
-    -Dbuild_fuzz=false
+    -Dbuild_fuzz=false \
+    -Dcpp_link_args='-pie' \
+    -Dc_link_args='-pie'
 
 meson compile -C build-openbsd-pkg
 meson install -C build-openbsd-pkg --destdir "${PWD}/${STAGE}" --skip-subprojects

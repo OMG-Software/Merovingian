@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.8.17',
+  version: '0.8.18',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -85,13 +85,19 @@ hardening_compile_flags = [
 # -pie is supplied per-platform by the build scripts:
 #   Alpine/musl .deb Ã¢â€ â€™ -static-pie (fully static PIE via cpp_link_args)
 #   Fedora .rpm / FreeBSD .pkg Ã¢â€ â€™ -pie (dynamic-libc PIE via cpp_link_args)
-# -Wl,-z,relro/-z,now are enforced by the dynamic linker; omitted here because
-# fully-static binaries have no dynamic linker to enforce them.
 # -Wl,-z,noexecstack sets the PT_GNU_STACK ELF note; the kernel reads this on
 # both static and dynamic ELF binaries, so it applies universally.
-hardening_link_flags = [
-  '-Wl,-z,noexecstack',
-]
+# -Wl,-z,relro/-z,now are requested for GNU/Linux dynamic ELF builds. Meson's
+# get_supported_link_arguments drops them for fully-static or non-ELF
+# toolchains, and the host-system gate keeps them off BSD package builds where
+# the base linker does not accept these GNU ld options.
+noexecstack_flag = '-Wl,-z,noexecstack'
+relro_now_flags = ['-Wl,-z,relro', '-Wl,-z,now']
+
+hardening_link_flags = [noexecstack_flag]
+if host_machine.system() == 'linux'
+  hardening_link_flags += relro_now_flags
+endif
 
 add_project_arguments(cpp.get_supported_arguments(warning_flags), language: 'cpp')
 

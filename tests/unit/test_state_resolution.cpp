@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/canonicaljson/parser.hpp"
+#include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/events/authorization.hpp"
 #include "merovingian/events/state_resolution.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
@@ -368,6 +369,210 @@ SCENARIO("Reverse topological power sort orders by sender power then timestamp",
                 REQUIRE(sorted.size() == 2U);
                 REQUIRE(sorted[0].event_id == "$high");
                 REQUIRE(sorted[1].event_id == "$low");
+            }
+        }
+    }
+}
+
+SCENARIO("State resolution rejects too many state groups", "[events][state][resolution][limits]")
+{
+    GIVEN("a request with more state groups than the resource cap allows")
+    {
+        auto const key = merovingian::events::StateKey{"m.room.create", ""};
+        auto groups = std::vector<merovingian::events::StateGroup>{};
+        groups.reserve(merovingian::events::max_state_groups + 1U);
+        for (std::size_t i = 0; i < merovingian::events::max_state_groups + 1U; ++i)
+        {
+            groups.push_back(merovingian::events::StateGroup{
+                std::string{"group-"} + std::to_string(i),
+                {{key, "$create", "@server:example.org", 1, 0, {}}},
+            });
+        }
+        auto const request = merovingian::events::StateResolutionRequest{"12", std::move(groups)};
+
+        WHEN("v1 state resolution is applied")
+        {
+            auto const result = merovingian::events::resolve_state(request);
+
+            THEN("it fails fast with a clear resource-limit reason")
+            {
+                REQUIRE_FALSE(result.resolved);
+                REQUIRE(result.reason == "too many state groups");
+            }
+        }
+
+        WHEN("v2 state resolution is applied")
+        {
+            auto const* policy = merovingian::rooms::find_room_version_policy("12");
+            REQUIRE(policy != nullptr);
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("it fails fast with a clear resource-limit reason")
+            {
+                REQUIRE_FALSE(result.resolved);
+                REQUIRE(result.reason == "too many state groups");
+            }
+        }
+    }
+}
+
+SCENARIO("State resolution rejects an oversized state group", "[events][state][resolution][limits]")
+{
+    GIVEN("a single state group with more events than the per-group cap")
+    {
+        auto const key = merovingian::events::StateKey{"m.room.member", "@user:example.org"};
+        auto state = std::vector<merovingian::events::StateEventReference>{};
+        state.reserve(merovingian::events::max_events_per_state_group + 1U);
+        for (std::size_t i = 0; i < merovingian::events::max_events_per_state_group + 1U; ++i)
+        {
+            state.push_back(merovingian::events::StateEventReference{
+                key, "$event-" + std::to_string(i), "@server:example.org", static_cast<std::int64_t>(i), i, {}});
+        }
+        auto const request = merovingian::events::StateResolutionRequest{
+            "12", {merovingian::events::StateGroup{"group-1", std::move(state)}}};
+
+        WHEN("v1 state resolution is applied")
+        {
+            auto const result = merovingian::events::resolve_state(request);
+
+            THEN("it fails fast with a clear resource-limit reason")
+            {
+                REQUIRE_FALSE(result.resolved);
+                REQUIRE(result.reason == "too many events in state group");
+            }
+        }
+
+        WHEN("v2 state resolution is applied")
+        {
+            auto const* policy = merovingian::rooms::find_room_version_policy("12");
+            REQUIRE(policy != nullptr);
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("it fails fast with a clear resource-limit reason")
+            {
+                REQUIRE_FALSE(result.resolved);
+                REQUIRE(result.reason == "too many events in state group");
+            }
+        }
+    }
+}
+
+SCENARIO("State resolution v2 rejects too many conflicted state keys", "[events][state][resolution][v2][limits]")
+{
+    GIVEN("state groups whose distinct state keys exceed the conflicted-key cap")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        // Use the maximum allowed number of groups, each small enough to pass
+        // max_events_per_state_group, but with enough distinct state keys in total
+        // to exceed max_conflicted_state_keys.
+        auto const events_per_group = 11U;
+        auto const groups_needed = merovingian::events::max_state_groups;
+        auto groups = std::vector<merovingian::events::StateGroup>{};
+        groups.reserve(groups_needed);
+
+        for (std::size_t g = 0; g < groups_needed; ++g)
+        {
+            auto state = std::vector<merovingian::events::StateEventReference>{};
+            state.reserve(events_per_group);
+            for (std::size_t i = 0; i < events_per_group; ++i)
+            {
+                auto const key_index = g * events_per_group + i;
+                state.push_back(merovingian::events::StateEventReference{
+                    merovingian::events::StateKey{"m.room.member",
+                                                  "@user" + std::to_string(key_index) + ":example.org"},
+                    "$event-" + std::to_string(key_index),
+                    "@server:example.org",
+                    static_cast<std::int64_t>(key_index),
+                    key_index,
+                    {}
+                });
+            }
+            groups.push_back(
+                merovingian::events::StateGroup{std::string{"group-"} + std::to_string(g), std::move(state)});
+        }
+
+        WHEN("v2 state resolution is applied")
+        {
+            auto const result = merovingian::events::resolve_state_v2(
+                merovingian::events::StateResolutionRequest{"12", std::move(groups)}, *policy);
+
+            THEN("partitioning fails fast with a clear resource-limit reason")
+            {
+                REQUIRE_FALSE(result.resolved);
+                REQUIRE(result.reason == "too many state keys");
+            }
+        }
+    }
+}
+
+SCENARIO("State resolution mainline depth is bounded", "[events][state][resolution][v2][limits][mainline]")
+{
+    GIVEN("a power_levels event with a huge auth_events list")
+    {
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+
+        auto const power_key = merovingian::events::StateKey{"m.room.power_levels", ""};
+
+        // Build a power_levels event whose auth_events list is well beyond the
+        // mainline depth cap. It must still parse and the resolver must not hang.
+        auto auth_array = merovingian::canonicaljson::Array{};
+        for (std::size_t i = 0; i < merovingian::events::max_mainline_auth_chain_depth + 100U; ++i)
+        {
+            auth_array.push_back(merovingian::canonicaljson::Value{std::string{"$auth-"} + std::to_string(i)});
+        }
+
+        auto content = merovingian::canonicaljson::Object{};
+        content.push_back(merovingian::canonicaljson::make_member(
+            "users",
+            merovingian::canonicaljson::Value{
+                merovingian::canonicaljson::Object{merovingian::canonicaljson::make_member(
+                    "@alice:example.org", merovingian::canonicaljson::Value{static_cast<std::int64_t>(100)})}}));
+
+        auto power_json = merovingian::canonicaljson::Object{};
+        power_json.push_back(merovingian::canonicaljson::make_member(
+            "type", merovingian::canonicaljson::Value{std::string{"m.room.power_levels"}}));
+        power_json.push_back(
+            merovingian::canonicaljson::make_member("state_key", merovingian::canonicaljson::Value{std::string{""}}));
+        power_json.push_back(merovingian::canonicaljson::make_member(
+            "sender", merovingian::canonicaljson::Value{std::string{"@alice:example.org"}}));
+        power_json.push_back(merovingian::canonicaljson::make_member(
+            "room_id", merovingian::canonicaljson::Value{std::string{"!room:example.org"}}));
+        power_json.push_back(merovingian::canonicaljson::make_member(
+            "event_id", merovingian::canonicaljson::Value{std::string{"$power"}}));
+        power_json.push_back(merovingian::canonicaljson::make_member(
+            "origin_server_ts", merovingian::canonicaljson::Value{static_cast<std::int64_t>(1)}));
+        power_json.push_back(merovingian::canonicaljson::make_member(
+            "auth_events", merovingian::canonicaljson::Value{std::move(auth_array)}));
+        power_json.push_back(
+            merovingian::canonicaljson::make_member("content", merovingian::canonicaljson::Value{std::move(content)}));
+        power_json.push_back(merovingian::canonicaljson::make_member(
+            "depth", merovingian::canonicaljson::Value{static_cast<std::int64_t>(1)}));
+
+        auto const serialized =
+            merovingian::canonicaljson::serialize_canonical(merovingian::canonicaljson::Value{power_json});
+        REQUIRE(serialized.error == merovingian::canonicaljson::CanonicalJsonError::none);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(serialized.output);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+
+        auto const create_key = merovingian::events::StateKey{"m.room.create", ""};
+        auto const create =
+            merovingian::events::StateEventReference{create_key, "$create", "@server:example.org", 1, 0, {}};
+        auto const power =
+            merovingian::events::StateEventReference{power_key, "$power", "@alice:example.org", 1, 1, parsed.value};
+
+        auto const request = merovingian::events::StateResolutionRequest{
+            "12", {merovingian::events::StateGroup{"group-a", {create, power}}}};
+
+        WHEN("v2 state resolution is applied")
+        {
+            auto const result = merovingian::events::resolve_state_v2(request, *policy);
+
+            THEN("resolution completes despite the oversized mainline input")
+            {
+                REQUIRE(result.resolved);
             }
         }
     }

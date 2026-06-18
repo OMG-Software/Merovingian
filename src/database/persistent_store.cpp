@@ -42,7 +42,8 @@ namespace
 
     [[nodiscard]] auto token_is_hash(std::string_view token_hash) noexcept -> bool
     {
-        return token_hash.starts_with("token-hash:v2:") || token_hash.starts_with("token-hash:v3:");
+        return token_hash.starts_with("token-hash:v2:") || token_hash.starts_with("token-hash:v3:") ||
+               token_hash.starts_with("token-hash:v4:");
     }
 
     [[nodiscard]] auto media_hash_is_valid(std::string_view hash_algorithm, std::string_view digest) noexcept -> bool

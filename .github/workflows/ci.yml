@@ -423,7 +423,26 @@ jobs:
             # the system-CA-trust detection test (and real TLS) has a store.
             /usr/pkg/sbin/mozilla-rootcerts install || true
           run: |
-            sh scripts/build-bsd.sh --builddir build
+            # Capture core dumps so the roaming NetBSD SIGABRT in the unit tests
+            # can be backtraced instead of guessed at. NetBSD writes per-process
+            # cores as <name>.core in the cwd by default; allow them and keep gdb.
+            ulimit -c unlimited || true
+            sysctl -w kern.defcorename=%n.core >/dev/null 2>&1 || true
+            pkgin -y install gdb || true
+            if ! sh scripts/build-bsd.sh --builddir build; then
+                echo "::group::NetBSD core backtraces"
+                for core in $(find build -name '*.core' 2>/dev/null); do
+                    # NetBSD truncates the core name to the first 16 chars of the
+                    # program name, so "merovingian-unit-tests" cores as
+                    # "merovingian-unit.core". Match the binary by that prefix.
+                    name=$(basename "${core%.core}")
+                    bin=$(find build -type f -name "${name}*" -perm -u+x 2>/dev/null | head -n1)
+                    echo "--- backtrace for $core ($bin) ---"
+                    gdb --batch -ex 'thread apply all bt' "$bin" "$core" 2>&1 || true
+                done
+                echo "::endgroup::"
+                exit 1
+            fi
             mkdir -p artifacts/bin artifacts/config artifacts/docs
             cp build/src/merovingian-server artifacts/bin/
             cp config/merovingian.conf.example artifacts/config/

@@ -8,10 +8,12 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <climits>
 #include <cstdint>
 #include <cstring>
 #include <limits>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -21,6 +23,9 @@
 #include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#if defined(__linux__)
+#include <sys/prctl.h>
+#endif
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -50,13 +55,17 @@ namespace
 
     [[nodiscard]] auto monotonic_ms() -> std::int64_t
     {
-        return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+                   std::chrono::steady_clock::now().time_since_epoch())
             .count();
     }
 
     // Writes `payload` to `fd` honouring `deadline_ms`, never blocking longer
-    // than the remaining budget. Returns false on error or timeout.
-    [[nodiscard]] auto write_all_deadline(int fd, std::string_view payload, std::int64_t deadline_ms) -> bool
+    // than the remaining budget. Returns false on error or timeout. On failure
+    // `detail` is set to a short cause string (poll/revents/errno, bytes sent)
+    // so the caller can surface why the worker write stalled.
+    [[nodiscard]] auto write_all_deadline(int fd, std::string_view payload, std::int64_t deadline_ms,
+                                          std::string& detail) -> bool
     {
         std::size_t written = 0U;
         while (written < payload.size())
@@ -64,12 +73,16 @@ namespace
             auto const remaining = deadline_ms - monotonic_ms();
             if (remaining <= 0)
             {
+                detail = "poll deadline elapsed after " + std::to_string(written) + "/" +
+                         std::to_string(payload.size()) + " bytes";
                 return false;
             }
             auto pfd = pollfd{fd, POLLOUT, 0};
             auto const ready = ::poll(&pfd, 1U, static_cast<int>(remaining));
             if (ready <= 0 || (pfd.revents & (POLLERR | POLLNVAL)) != 0)
             {
+                detail = "poll ready=" + std::to_string(ready) + " revents=" + std::to_string(pfd.revents) +
+                         " errno=" + std::to_string(ready < 0 ? errno : 0) + " sent=" + std::to_string(written);
                 return false;
             }
             auto const n = ::write(fd, payload.data() + written, payload.size() - written);
@@ -79,6 +92,7 @@ namespace
                 {
                     continue;
                 }
+                detail = "write errno=" + std::to_string(errno) + " sent=" + std::to_string(written);
                 return false;
             }
             written += static_cast<std::size_t>(n);
@@ -137,6 +151,27 @@ namespace
         }
     }
 
+    // Renders a reaped worker's wait(2) status into a short, human-readable
+    // suffix so a failed thumbnail surfaces *how* the worker died (signalled,
+    // exited non-zero, or still running at the deadline) rather than a generic
+    // timeout. Diagnostics only — the status never changes the HTTP result.
+    [[nodiscard]] auto describe_worker_status(bool reaped, int status) -> std::string
+    {
+        if (!reaped)
+        {
+            return " (worker still running at deadline)";
+        }
+        if (WIFSIGNALED(status))
+        {
+            return " (worker killed by signal " + std::to_string(WTERMSIG(status)) + ")";
+        }
+        if (WIFEXITED(status))
+        {
+            return " (worker exited with code " + std::to_string(WEXITSTATUS(status)) + ")";
+        }
+        return " (worker ended abnormally)";
+    }
+
     auto set_nonblocking(int fd) -> void
     {
         auto const flags = ::fcntl(fd, F_GETFL, 0);
@@ -144,6 +179,44 @@ namespace
         {
             std::ignore = ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
         }
+    }
+
+    // Create a pipe whose ends carry FD_CLOEXEC. On Linux and FreeBSD pipe2() is
+    // atomic; elsewhere we fall back to pipe() + fcntl(F_SETFD). Returns false on
+    // error and leaves both ends set to -1.
+    [[nodiscard]] auto create_cloexec_pipe(std::array<int, 2>& fds) noexcept -> bool
+    {
+        fds = {-1, -1};
+#if defined(__linux__) || defined(__FreeBSD__)
+        if (::pipe2(fds.data(), O_CLOEXEC) == 0)
+        {
+            return true;
+        }
+        // Fall back on kernels/libc that lack pipe2 even on these platforms.
+#endif
+        if (::pipe(fds.data()) != 0)
+        {
+            return false;
+        }
+        // Set FD_CLOEXEC on each end with a raw fcntl. Do NOT wrap the fds in a
+        // temporary core::FileDescriptor here: that temporary owns the fd and
+        // closes it when it is destroyed at the end of the full expression,
+        // which left the caller holding two already-closed pipe ends. On NetBSD
+        // (and any platform taking this non-pipe2 path) the parent then polled
+        // the closed worker-stdin write end and got POLLNVAL, so the request was
+        // never sent and the worker stalled on empty stdin (HTTP 504).
+        auto const set_cloexec = [](int fd) noexcept -> bool {
+            auto const flags = ::fcntl(fd, F_GETFD, 0);
+            return flags >= 0 && ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
+        };
+        if (!set_cloexec(fds[0]) || !set_cloexec(fds[1]))
+        {
+            ::close(fds[0]);
+            ::close(fds[1]);
+            fds = {-1, -1};
+            return false;
+        }
+        return true;
     }
 
 } // namespace
@@ -310,13 +383,13 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     // stdin: parent writes -> child reads; stdout: child writes -> parent reads.
     auto to_child = std::array<int, 2>{-1, -1};
     auto from_child = std::array<int, 2>{-1, -1};
-    if (::pipe(to_child.data()) != 0)
+    if (!create_cloexec_pipe(to_child))
     {
         return {false, 500U, {}, {}, 0U, 0U, "failed to create worker input pipe"};
     }
     auto child_stdin_read = core::FileDescriptor{to_child[0]};
     auto child_stdin_write = core::FileDescriptor{to_child[1]};
-    if (::pipe(from_child.data()) != 0)
+    if (!create_cloexec_pipe(from_child))
     {
         return {false, 500U, {}, {}, 0U, 0U, "failed to create worker output pipe"};
     }
@@ -330,12 +403,33 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     }
     if (pid == 0)
     {
-        // Child: wire pipes to stdio, drop every other descriptor, exec.
+        // Child: wire pipes to stdio, drop every other descriptor, then exec.
         ::dup2(child_stdin_read.get(), STDIN_FILENO);
         ::dup2(child_stdout_write.get(), STDOUT_FILENO);
-        child_stdin_read.reset();
+
+        // The parent write-end and child read-end are not needed after dup2.
+        // Close them explicitly before the sweep so the sweep does not need to
+        // know about them and we avoid double-close on the FileDescriptor reset.
         child_stdin_write.reset();
         child_stdout_read.reset();
+
+        // Close everything except stdio and the pipe ends that are now stdio.
+        // Use the allocation-free span overload: between fork() and exec() the
+        // child must not touch the heap because another thread in the parent may
+        // hold a malloc lock, which would deadlock and leave the parent waiting
+        // until the worker timeout fires.
+        auto const keep_open =
+            std::array<int, 4>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(), child_stdout_write.get()};
+        core::close_all_file_descriptors_except(std::span<int const>{keep_open});
+
+        // Prevent privilege escalation through setuid/setcap helpers before exec.
+        // PR_SET_NO_NEW_PRIVS is Linux-specific; other platforms rely on the
+        // fork/exec model and the worker's own hardening.
+#if defined(__linux__)
+        std::ignore = ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
+#endif
+
+        child_stdin_read.reset();
         child_stdout_write.reset();
         char* const argv[] = {const_cast<char*>(config.worker_path.c_str()), nullptr};
         ::execv(config.worker_path.c_str(), argv);
@@ -350,40 +444,46 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
     set_nonblocking(child_stdin_write.get());
     set_nonblocking(child_stdout_read.get());
 
-    auto const timeout_ms = static_cast<std::int64_t>(config.timeout_seconds == 0U ? 10U : config.timeout_seconds) *
-                            1000;
+    auto const timeout_ms =
+        static_cast<std::int64_t>(config.timeout_seconds == 0U ? 10U : config.timeout_seconds) * 1000;
     auto const deadline_ms = monotonic_ms() + timeout_ms;
 
-    auto const wrote = write_all_deadline(child_stdin_write.get(), frame, deadline_ms);
+    auto write_detail = std::string{};
+    auto const wrote = write_all_deadline(child_stdin_write.get(), frame, deadline_ms, write_detail);
     child_stdin_write.reset(); // signal EOF to the worker
     auto read_ok = false;
     auto const response_bytes =
-        wrote ? read_all_deadline(child_stdout_read.get(), deadline_ms,
-                                  config.max_output_bytes == 0U ? 0U : static_cast<std::size_t>(config.max_output_bytes) +
-                                                                           32U,
-                                  read_ok)
-              : std::string{};
+        wrote
+            ? read_all_deadline(
+                  child_stdout_read.get(), deadline_ms,
+                  config.max_output_bytes == 0U ? 0U : static_cast<std::size_t>(config.max_output_bytes) + 32U, read_ok)
+            : std::string{};
 
     // Reap the worker; kill it if it is still alive (timeout or protocol error).
+    // `alive_at_deadline` distinguishes a hung worker (we had to SIGKILL it) from
+    // one that exited or was signalled on its own, which the diagnostics surface.
     auto status = 0;
-    if (::waitpid(pid, &status, WNOHANG) == 0)
+    auto const alive_at_deadline = ::waitpid(pid, &status, WNOHANG) == 0;
+    if (alive_at_deadline)
     {
         ::kill(pid, SIGKILL);
         std::ignore = ::waitpid(pid, &status, 0);
     }
+    auto const worker_status = describe_worker_status(!alive_at_deadline, status);
 
     if (!wrote)
     {
-        return {false, 504U, {}, {}, 0U, 0U, "timed out sending media to worker"};
+        return {false, 504U, {}, {}, 0U, 0U,
+                "timed out sending media to worker" + worker_status + " [" + write_detail + "]"};
     }
     if (!read_ok)
     {
-        return {false, 504U, {}, {}, 0U, 0U, "worker timed out or output too large"};
+        return {false, 504U, {}, {}, 0U, 0U, "worker timed out or output too large" + worker_status};
     }
     auto const response = parse_thumbnail_response(response_bytes);
     if (!response.has_value())
     {
-        return {false, 502U, {}, {}, 0U, 0U, "malformed worker response"};
+        return {false, 502U, {}, {}, 0U, 0U, "malformed worker response" + worker_status};
     }
     switch (response->status)
     {

@@ -5,13 +5,16 @@
 
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/events/authorization.hpp"
+#include "merovingian/events/limits.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/rooms/room_version_policy.hpp"
 
 #include <algorithm>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <unordered_set>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -159,23 +162,46 @@ namespace
         }
     };
 
+    // Walk the auth_events chain of a power_levels event to build the mainline.
+    // The walk is bounded by max_mainline_auth_chain_depth to prevent cyclic or
+    // adversarially deep auth chains from consuming unbounded time/memory.
     [[nodiscard]] auto collect_mainline_power_events(canonicaljson::Value const& power_levels_event)
         -> std::vector<std::string>
     {
         auto result = std::vector<std::string>{};
-        // Walk the auth_events chain of the power_levels event to find the mainline
-        // For v2, mainline = the power_levels auth chain
-        // Simplified: extract from the event's own prev auth_events references
-        // For now, we just use the power_levels event itself as the mainline head
         auto const* obj = value_is_object(power_levels_event);
         if (obj == nullptr)
         {
             return result;
         }
+
         auto const* event_id = string_member(*obj, "event_id");
-        if (event_id != nullptr)
+        if (event_id == nullptr)
         {
-            result.push_back(*event_id);
+            return result;
+        }
+
+        // Start with the power_levels event itself as the mainline head.
+        result.push_back(*event_id);
+        auto const* auth_events = object_member_as_object(*obj, "auth_events");
+        if (auth_events == nullptr)
+        {
+            return result;
+        }
+
+        auto visited = std::unordered_set<std::string>{*event_id};
+        for (auto const& member : *auth_events)
+        {
+            if (result.size() >= max_mainline_auth_chain_depth)
+            {
+                break;
+            }
+            auto const* id = std::get_if<std::string>(&member.value->storage());
+            if (id == nullptr || !visited.insert(*id).second)
+            {
+                continue;
+            }
+            result.push_back(*id);
         }
         return result;
     }
@@ -247,12 +273,36 @@ auto state_group_event(StateGroup const& group, StateKey const& key) noexcept ->
     return nullptr;
 }
 
+// Validate request size against public resource caps. Returns an explicit error
+// instead of starting the O(N log N) or O(N^2) work on an adversarial payload.
+[[nodiscard]] auto validate_state_resolution_request(StateResolutionRequest const& request)
+    -> std::optional<std::string>
+{
+    if (request.state_groups.size() > max_state_groups)
+    {
+        return "too many state groups";
+    }
+
+    for (auto const& group : request.state_groups)
+    {
+        if (group.state.size() > max_events_per_state_group)
+        {
+            return "too many events in state group";
+        }
+    }
+    return std::nullopt;
+}
+
 auto resolve_state(StateResolutionRequest const& request) -> StateResolutionResult
 {
     auto result = [&]() -> StateResolutionResult {
         if (request.room_version.empty())
         {
             return {false, {}, "room version is required"};
+        }
+        if (auto error = validate_state_resolution_request(request); error.has_value())
+        {
+            return {false, {}, *error};
         }
         if (request.state_groups.empty())
         {
@@ -306,12 +356,18 @@ auto partition_conflicted_state(std::vector<StateGroup> const& groups) -> std::p
     auto unconflicted = StateMap{};
     auto conflicted = StateMap{};
     auto counts = std::unordered_map<StateKey, int, StateKeyHash>{};
+    counts.reserve(groups.size() * 8U);
 
     for (auto const& group : groups)
     {
         for (auto const& event : group.state)
         {
             counts[event.key]++;
+            if (counts.size() > max_conflicted_state_keys)
+            {
+                // Fail fast: too many distinct state keys to resolve safely.
+                return {};
+            }
         }
     }
 
@@ -381,13 +437,25 @@ auto mainline_order(std::vector<StateEventReference>& events, StateMap const& un
         }
     }
 
+    // If the mainline hit the depth cap, sorting by it would be misleading;
+    // treat all such events as depth 0 so we still terminate but do not produce
+    // an ordering that depends on truncated data.
+    auto const mainline_truncated = mainline.size() >= max_mainline_auth_chain_depth;
+
     auto mainline_depth = std::unordered_map<std::string, std::size_t>{};
+    mainline_depth.reserve(mainline.size());
     for (std::size_t i = 0; i < mainline.size(); ++i)
     {
         mainline_depth[mainline[i]] = i;
     }
 
-    auto mainline_compare = [&mainline_depth](StateEventReference const& a, StateEventReference const& b) -> bool {
+    auto mainline_compare = [&mainline_depth, mainline_truncated](StateEventReference const& a,
+                                                                  StateEventReference const& b) -> bool {
+        if (mainline_truncated)
+        {
+            return a.origin_server_ts < b.origin_server_ts;
+        }
+
         auto depth_a = std::size_t{0};
         auto depth_b = std::size_t{0};
 
@@ -448,6 +516,16 @@ auto mainline_order(std::vector<StateEventReference>& events, StateMap const& un
 auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionPolicy const& policy)
     -> StateResolutionResult
 {
+    if (auto error = validate_state_resolution_request(request); error.has_value())
+    {
+        log_diagnostic("resolve_state_v2.rejected",
+                       {
+                           {"room_version", request.room_version, false},
+                           {"reason",       *error,               false}
+        });
+        return {false, {}, *error};
+    }
+
     if (request.state_groups.empty())
     {
         log_diagnostic("resolve_state_v2.empty", {
@@ -463,7 +541,20 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
     auto resolved = unconflicted;
 
     // Step 3: Collect all conflicted events and sort by reverse topological power ordering
+    if (unconflicted.empty() && conflicted_events.empty())
+    {
+        // partition_conflicted_state aborted because there were too many
+        // distinct state keys to process safely.
+        log_diagnostic("resolve_state_v2.rejected",
+                       {
+                           {"room_version", request.room_version,  false},
+                           {"reason",       "too many state keys", false}
+        });
+        return {false, {}, "too many state keys"};
+    }
+
     auto all_conflicted = std::vector<StateEventReference>{};
+    all_conflicted.reserve(conflicted_events.size());
     for (auto const& group : request.state_groups)
     {
         for (auto const& event : group.state)
@@ -479,6 +570,14 @@ auto resolve_state_v2(StateResolutionRequest const& request, rooms::RoomVersionP
             if (!duplicate)
             {
                 all_conflicted.push_back(event);
+                if (all_conflicted.size() > max_conflicted_state_keys)
+                {
+                    log_diagnostic("resolve_state_v2.rejected", {
+                                                                    {"room_version", request.room_version,         false},
+                                                                    {"reason",       "too many conflicted events", false}
+                    });
+                    return {false, {}, "too many conflicted events"};
+                }
             }
         }
     }
