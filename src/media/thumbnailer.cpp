@@ -172,16 +172,6 @@ namespace
         return " (worker ended abnormally)";
     }
 
-    // Temporary NetBSD diagnostics: the worker's own markers never appear, so
-    // the stall is in this fork child before execv() hands control to the
-    // worker binary. Emit async-signal-safe markers (raw write(), no heap) to
-    // the inherited stderr to localise it between the descriptor sweep and the
-    // exec. TODO(netbsd-thumbnail-504): remove once root-caused.
-    auto child_diag(char const* msg) noexcept -> void
-    {
-        std::ignore = ::write(STDERR_FILENO, msg, std::strlen(msg));
-    }
-
     auto set_nonblocking(int fd) -> void
     {
         auto const flags = ::fcntl(fd, F_GETFL, 0);
@@ -428,11 +418,9 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
         // child must not touch the heap because another thread in the parent may
         // hold a malloc lock, which would deadlock and leave the parent waiting
         // until the worker timeout fires.
-        child_diag("[child] before fd sweep\n");
         auto const keep_open =
             std::array<int, 4>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(), child_stdout_write.get()};
         core::close_all_file_descriptors_except(std::span<int const>{keep_open});
-        child_diag("[child] after fd sweep\n");
 
         // Prevent privilege escalation through setuid/setcap helpers before exec.
         // PR_SET_NO_NEW_PRIVS is Linux-specific; other platforms rely on the
@@ -444,9 +432,7 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
         child_stdin_read.reset();
         child_stdout_write.reset();
         char* const argv[] = {const_cast<char*>(config.worker_path.c_str()), nullptr};
-        child_diag("[child] before execv\n");
         ::execv(config.worker_path.c_str(), argv);
-        child_diag("[child] execv failed\n");
         ::_exit(127); // exec failed
     }
 

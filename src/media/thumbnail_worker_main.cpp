@@ -80,17 +80,6 @@ struct Rgba final
     std::uint32_t height{0U};
 };
 
-// Temporary NetBSD diagnostics: the worker spawns but the parent reports
-// "worker still running at deadline", so we need to know how far the worker
-// gets. stderr is inherited by the parent (only stdin/stdout are repointed at
-// pipes), so these markers surface in the integration-test output. Uses a raw
-// write() so it stays valid even after the seccomp filter is installed.
-// TODO(netbsd-thumbnail-504): remove once the stall is root-caused.
-auto diag(char const* msg) -> void
-{
-    std::ignore = ::write(STDERR_FILENO, msg, std::strlen(msg));
-}
-
 // Applies self-imposed resource limits and the syscall filter. Best-effort:
 // a kernel without seccomp still runs, but the rlimits always apply.
 auto harden() -> void
@@ -110,9 +99,7 @@ auto harden() -> void
     apply(RLIMIT_CPU, max_cpu_seconds);
     apply(RLIMIT_FSIZE, max_file_size);
     apply(RLIMIT_CORE, 0U);
-    diag("[worker] rlimits applied (pre-NOFILE)\n");
     apply(RLIMIT_NOFILE, 16U);
-    diag("[worker] RLIMIT_NOFILE applied\n");
 #if defined(__linux__)
     std::ignore = ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0);
     std::ignore = ::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0);
@@ -369,12 +356,9 @@ auto write_all_stdout(std::string const& bytes) -> void
 
 auto main() -> int
 {
-    diag("[worker] main entered\n");
     harden();
-    diag("[worker] harden() returned; reading stdin\n");
 
     auto const input = read_all_stdin();
-    diag("[worker] stdin read complete\n");
     auto const request = merovingian::media::parse_thumbnail_request(input);
     auto image = Rgba{};
     auto response = ThumbnailWorkerResponse{};

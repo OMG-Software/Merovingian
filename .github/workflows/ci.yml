@@ -441,23 +441,6 @@ jobs:
                     gdb --batch -ex 'thread apply all bt' "$bin" "$core" 2>&1 || true
                 done
                 echo "::endgroup::"
-                # The in-test [worker]/[child] markers never appear because Catch2
-                # owns stdout/stderr during each test case. Run the worker binary
-                # standalone (no Catch2) with empty stdin so its startup markers
-                # reach the log directly; this shows whether the worker even
-                # reaches main() on NetBSD or stalls before exec. Bounded by a
-                # background-kill since NetBSD base has no timeout(1).
-                worker=$(find build -type f -name 'merovingian-thumbnail-worker' -perm -u+x 2>/dev/null | head -n1)
-                if [ -n "$worker" ]; then
-                    echo "::group::thumbnail worker standalone probe"
-                    "$worker" </dev/null >worker.out 2>worker.err & wpid=$!
-                    i=0; while kill -0 "$wpid" 2>/dev/null && [ "$i" -lt 10 ]; do sleep 1; i=$((i+1)); done
-                    kill -9 "$wpid" 2>/dev/null || true
-                    wait "$wpid" 2>/dev/null; echo "worker probe exit=$? ran=${i}s"
-                    echo "--- worker stderr ---"; cat worker.err || true
-                    echo "--- worker stdout (bytes) ---"; wc -c worker.out || true
-                    echo "::endgroup::"
-                fi
                 exit 1
             fi
             mkdir -p artifacts/bin artifacts/config artifacts/docs
