@@ -208,9 +208,18 @@ namespace
         {
             return false;
         }
-        auto read_ok = core::FileDescriptor{fds[0]}.set_cloexec();
-        auto write_ok = core::FileDescriptor{fds[1]}.set_cloexec();
-        if (!read_ok || !write_ok)
+        // Set FD_CLOEXEC on each end with a raw fcntl. Do NOT wrap the fds in a
+        // temporary core::FileDescriptor here: that temporary owns the fd and
+        // closes it when it is destroyed at the end of the full expression,
+        // which left the caller holding two already-closed pipe ends. On NetBSD
+        // (and any platform taking this non-pipe2 path) the parent then polled
+        // the closed worker-stdin write end and got POLLNVAL, so the request was
+        // never sent and the worker stalled on empty stdin (HTTP 504).
+        auto const set_cloexec = [](int fd) noexcept -> bool {
+            auto const flags = ::fcntl(fd, F_GETFD, 0);
+            return flags >= 0 && ::fcntl(fd, F_SETFD, flags | FD_CLOEXEC) == 0;
+        };
+        if (!set_cloexec(fds[0]) || !set_cloexec(fds[1]))
         {
             ::close(fds[0]);
             ::close(fds[1]);
