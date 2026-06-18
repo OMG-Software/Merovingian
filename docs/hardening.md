@@ -5,8 +5,8 @@ _time_, at startup, and while serving traffic. It covers defences that are
 cross_platform_ and defences that are _platform_specific_ (Linux, FreeBSD,
 NetBSD, OpenBSD, and the portable/service_manager profile).
 
-For the alpha exception policy and the production_gating rules, see
-[`hardening-alpha-exceptions.md`](hardening-alpha-exceptions.md).
+For open hardening work and production-gating status, see
+[`todos/capability-gaps.md`](todos/capability-gaps.md).
 
 ## Cross_platform defences
 
@@ -232,7 +232,6 @@ The following controls are documented `alpha_exception` placeholders:
 * In_process privilege drop (`setresgid`/`setresuid`).
 * In_process filesystem confinement (Landlock / `unveil` / Capsicum).
 
-They are delegated to the supplied service_manager units during alpha. The
+They are delegated to the supplied service-manager units. The
 production readiness gate will not pass until each is retired. See
-[`hardening-alpha-exceptions.md`](hardening-alpha-exceptions.md) for the retirement
-plan.
+[`todos/capability-gaps.md`](todos/capability-gaps.md) for open hardening items.

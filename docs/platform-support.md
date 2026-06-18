@@ -171,7 +171,7 @@ release-blocking.
 ## Per-platform hardening posture
 
 Runtime hardening is platform-specific and reported by the startup self-check
-(see [hardening-alpha-exceptions.md](hardening-alpha-exceptions.md)).
+(see [hardening.md](hardening.md)).
 
 | Control | Linux | FreeBSD | OpenBSD | NetBSD |
 |---|---|---|---|---|
