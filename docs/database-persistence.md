@@ -36,6 +36,13 @@ remaining work before PostgreSQL-backed production operation.
 - Persistent helpers for refresh-token rotation, global/device access-token
   and refresh-token revocation, device display-name updates, and device
   deletion.
+- `set_user_account_state` updates the `users` table `suspended`/`locked`
+  columns and mirrors the new state into the in-memory `PersistentUser`, used by
+  the admin lock/suspend endpoints.
+- `restore_tokens_for_device` re-activates a single device's access and refresh
+  tokens (setting `revoked = false`) after a user-wide revocation, so a password
+  change with `logout_devices: true` can revoke every other device while keeping
+  the caller's session.
 - SQLite hydration fails closed when a row query cannot be prepared or stepped
   to completion.
 - SQLite connections use a non-zero busy timeout for short-lived lock

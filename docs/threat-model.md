@@ -178,6 +178,49 @@ threat it closes; the controls above are the standing defences these reinforce.
   passed explicitly in `meson.build` and every packaging script, and the startup
   ELF probe verifies `PT_GNU_RELRO` and `DT_BIND_NOW`.
 
+- **Relayed-PDU fail-open with no sender-domain key (#270):** the prior (C1)
+  mitigation only fail-closed when `remote_key_resolver` was wired but returned
+  no key. On a receive-only/locked-down deployment where the resolver is never
+  wired (because `local_http_router.cpp` gates wiring on `outbound && discovery`),
+  `authorize_federation_pdu` fell through to accept the PDU with no cryptographic
+  check, so a known peer could forge events attributed to another server. Fixed
+  by returning `403 "sender domain signing key unavailable"` whenever the
+  sender-domain key is missing or mismatched, and removing the test-only
+  two-arg overload that passed `std::nullopt` so no path can exercise fail-open.
+
+- **Account lock/suspend did not gate already-issued tokens (#271):** suspending
+  or locking a user had no effect on access tokens already issued, so a
+  moderated user retained full API access until token expiry. Fixed per spec
+  v1.18 by gating the request path rather than revoking sessions: locked
+  accounts get `M_USER_LOCKED` (`soft_logout:true`) on all endpoints except
+  `/logout` and `/logout/all`, and suspended accounts get `M_USER_SUSPENDED`
+  on actions outside the spec allowlist. New admin endpoints
+  `/_matrix/client/v1/admin/lock/{userId}` and `/_matrix/client/v1/admin/suspend/{userId}`
+  set the state with anti-enumeration ordering (admin auth before any target
+  lookup), locality, and self/other-admin guards. No proactive token revocation,
+  conforming to spec.
+
+- **Password change left other devices' tokens valid (#272):** `POST /account/password`
+  ignored `logout_devices` (spec default `true`), so a token stolen from another
+  device stayed valid after the victim changed their password. Fixed by reading
+  `logout_devices` (default `true`) and revoking every other device's
+  access/refresh tokens and in-memory sessions while preserving the caller's
+  device; device records are retained.
+
+- **Power-levels sender self-elevation (#273):** the elevation guard in
+  `events/authorization.cpp` exempted the sender (`if (user_entry.key != *sender)`),
+  letting a moderator raise their own power above their current level in a single
+  event and seize admin. Fixed by removing the exemption so spec rule 9.9 applies
+  to the sender's own entry.
+
+- **Power-levels removal/demotion of a superior user unchecked (#274):** the
+  users-map loop iterated only the incoming `content.users`, so omitting a
+  superior user was never checked (they silently fell to `users_default`), and
+  the demotion guard used `>` instead of spec's `>=`. Fixed by iterating the
+  union of old and new `users` keys and rejecting any change or removal of a
+  user at or above the sender's power (spec rule 9.8), excluding the sender's
+  own entry from the demotion check.
+
 ## Security principles
 
 - Fail closed.
