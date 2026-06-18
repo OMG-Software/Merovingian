@@ -43,6 +43,18 @@ remaining work before PostgreSQL-backed production operation.
   tokens (setting `revoked = false`) after a user-wide revocation, so a password
   change with `logout_devices: true` can revoke every other device while keeping
   the caller's session.
+- Access and refresh token rows carry an `expires_at` column (`TEXT NOT NULL
+  DEFAULT ''`, empty = no expiry / legacy) folded into the version-1 initial
+  schema. `store_access_token`, `store_refresh_token`, and
+  `store_device_and_access_token` bind the epoch-millis text of the token's
+  `expires_at`, and SQLite/PostgreSQL hydration parse it back into the
+  `PersistentAccessToken` / `PersistentRefreshToken` `expires_at` field
+  (`std::optional<system_clock::time_point>`, `nullopt` for empty). The runtime
+  enforces expiry at the session/refresh lookup rather than at the store layer.
+- Token-hash equality at the store layer uses constant-time comparison
+  (`crypto::constant_time_equal`, backed by `sodium_memcmp`) for the access and
+  refresh token lookups, so a database-equivalent match does not branch on the
+  fixed-length hash bytes.
 - SQLite hydration fails closed when a row query cannot be prepared or stepped
   to completion.
 - SQLite connections use a non-zero busy timeout for short-lived lock

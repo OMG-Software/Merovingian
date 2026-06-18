@@ -221,6 +221,55 @@ threat it closes; the controls above are the standing defences these reinforce.
   user at or above the sender's power (spec rule 9.8), excluding the sender's
   own entry from the demotion check.
 
+- **Registration-token validity endpoint compared plaintext (#266):**
+  `GET /_matrix/client/v1/register/m.login.registration_token/validity` compared
+  the configured registration token as plaintext, bypassing the Argon2id
+  hashed-token comparator already used by `/register` and leaving token
+  material on the request path. Fixed by loading the hashed token via
+  `load_hashed_registration_token` and verifying the candidate with
+  `registration_token_matches` (`crypto_pwhash_str_verify`); only the hash is
+  consulted.
+
+- **Media SSRF filter diverged from the federation single source of truth
+  (#267):** `media::address_is_private_or_loopback` was a weak string-prefix
+  duplicate of the robust `inet_pton`-based
+  `federation::ip_address_is_private_or_loopback`, so remote-media fetch
+  blocking could drift from the federation path. Fixed by delegating the media
+  helper to the federation helper, eliminating the duplicate SSRF filter and
+  its divergent edge cases.
+
+- **Token-hash lookups compared with `==` (#268):** five fixed-length token-hash
+  comparisons (access/refresh store lookups and the in-memory session match)
+  used `==`, a timing side-channel on secret bytes. Fixed by routing every
+  fixed-length hash match through `crypto::constant_time_equal` /
+  `auth::constant_time_equal` (`sodium_memcmp`), per the crypto-boundary rule.
+
+- **`172.` string fallback over- and under-blocked private ranges (#269):** the
+  string-prefix fallback's `172.` clause (`address[4] >= '1' && address[4] <= '3'`)
+  over-blocked public `172.1`–`172.3` and under-blocked the rest of `172.16/12`.
+  Fixed by removing the clause; the `172.16/12` range is handled correctly by
+  the `inet_pton` numeric path, and the remaining hostname prefixes stay for
+  fail-safe handling of non-IP inputs.
+
+- **Access/refresh tokens never expired server-side (#275):** tokens remained
+  valid indefinitely despite the advertised 1-hour TTL, so a leaked token was
+  usable forever and the advertised lifetime was unenforced. Fixed by adding an
+  `expires_at` field to `PersistentAccessToken`, `PersistentRefreshToken`, and
+  `LocalSession`, set at issuance from configurable
+  `security.access_token_lifetime_ms` (default 1h) and
+  `security.refresh_token_lifetime_ms` (default 30d); `find_session` and the
+  refresh-token lookup reject expired tokens (audit reason `token expired`),
+  forcing re-login/refresh. The advertised `expires_in_ms` now reads from the
+  configured access-token lifetime so advertised == enforced.
+
+- **`SecretBuffer` wipe was elidable and moves left residue (#276):** the
+  destructor used `std::ranges::fill(m_buffer, 0U)`, a dead store the compiler
+  can elide, and default moves did not wipe, so signing-key residue was not
+  reliably cleared and could survive in moved-from objects. Fixed by
+  `sodium_mlock`-ing on construction and `sodium_munlock`-ing (which zeroises
+  and unpins, an optimisation barrier) on destruction, with custom move-ctor /
+  move-assign that transfer the mlock to the destination and wipe the source.
+
 ## Security principles
 
 - Fail closed.

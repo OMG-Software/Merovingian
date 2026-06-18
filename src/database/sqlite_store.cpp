@@ -393,15 +393,17 @@ namespace
                          [&store](sqlite3_stmt& row) {
                              store.devices.push_back({column_text(row, 0), column_text(row, 1), column_text(row, 2)});
                          }) &&
-               load_rows(connection, "SELECT user_id, device_id, token_hash, revoked FROM access_tokens",
+               load_rows(connection, "SELECT user_id, device_id, token_hash, revoked, expires_at FROM access_tokens",
                          [&store](sqlite3_stmt& row) {
                              store.access_tokens.push_back({column_text(row, 0), column_text(row, 1),
-                                                            column_text(row, 2), text_is_true(column_text(row, 3))});
+                                                            column_text(row, 2), text_is_true(column_text(row, 3)),
+                                                            parse_expires_at(column_text(row, 4))});
                          }) &&
-               load_rows(connection, "SELECT user_id, device_id, token_hash, revoked FROM refresh_tokens",
+               load_rows(connection, "SELECT user_id, device_id, token_hash, revoked, expires_at FROM refresh_tokens",
                          [&store](sqlite3_stmt& row) {
                              store.refresh_tokens.push_back({column_text(row, 0), column_text(row, 1),
-                                                             column_text(row, 2), text_is_true(column_text(row, 3))});
+                                                             column_text(row, 2), text_is_true(column_text(row, 3)),
+                                                             parse_expires_at(column_text(row, 4))});
                          }) &&
                load_rows(connection,
                          "SELECT server_name, key_id, public_key, valid_until_ts, secret_key FROM server_signing_keys",

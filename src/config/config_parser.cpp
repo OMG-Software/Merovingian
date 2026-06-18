@@ -252,6 +252,20 @@ namespace
         {
             security.registration.token_file = std::string{value};
         }
+        else if (key == "security.access_token_lifetime_ms")
+        {
+            if (!parse_i64_value(value, security.access_token_lifetime_ms))
+            {
+                add_parse_finding(findings, std::string{key}, "expected integer millisecond value");
+            }
+        }
+        else if (key == "security.refresh_token_lifetime_ms")
+        {
+            if (!parse_i64_value(value, security.refresh_token_lifetime_ms))
+            {
+                add_parse_finding(findings, std::string{key}, "expected integer millisecond value");
+            }
+        }
         else if (key == "security.encryption.default_for_new_rooms")
         {
             if (!parse_bool_value(value, security.encryption.default_for_new_rooms))
@@ -489,6 +503,42 @@ auto parse_u32_value(std::string_view value, std::uint32_t& output) noexcept -> 
     }
 
     output = parsed;
+    return true;
+}
+
+auto parse_i64_value(std::string_view value, std::int64_t& output) noexcept -> bool
+{
+    if (value.empty())
+    {
+        return false;
+    }
+    auto index = std::size_t{0U};
+    auto negative = false;
+    if (value.front() == '+' || value.front() == '-')
+    {
+        negative = (value.front() == '-');
+        index = 1U;
+        if (value.size() == 1U)
+        {
+            return false;
+        }
+    }
+    auto parsed = std::int64_t{0};
+    for (; index < value.size(); ++index)
+    {
+        auto const character = value[index];
+        if (!is_ascii_digit(character))
+        {
+            return false;
+        }
+        auto const digit = static_cast<std::int64_t>(character - '0');
+        if (parsed > (std::numeric_limits<std::int64_t>::max() - digit) / 10LL)
+        {
+            return false;
+        }
+        parsed = (parsed * 10LL) + digit;
+    }
+    output = negative ? -parsed : parsed;
     return true;
 }
 

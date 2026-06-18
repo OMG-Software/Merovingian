@@ -3,6 +3,7 @@
 
 #include "merovingian/media/security.hpp"
 
+#include "merovingian/federation/security.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
@@ -20,11 +21,6 @@ namespace
         LOG_DEBUG(observability::diagnostic_log_summary("media_security", event, std::move(fields)));
     }
 
-    [[nodiscard]] auto starts_with(std::string_view value, std::string_view prefix) noexcept -> bool
-    {
-        return value.size() >= prefix.size() && value.substr(0U, prefix.size()) == prefix;
-    }
-
     [[nodiscard]] auto matrix_id_is_valid(std::string_view id) noexcept -> bool
     {
         return id.size() >= 3U && id.front() == '@' && id.find(':') != std::string_view::npos;
@@ -38,10 +34,12 @@ namespace
 
     [[nodiscard]] auto address_is_private_or_loopback(std::string_view address) noexcept -> bool
     {
-        return address == "localhost" || address == "::1" || starts_with(address, "127.") ||
-               starts_with(address, "10.") || starts_with(address, "192.168.") || starts_with(address, "169.254.") ||
-               starts_with(address, "fc") || starts_with(address, "fd") ||
-               (starts_with(address, "172.") && address.size() >= 6U && address[4] >= '1' && address[4] <= '3');
+        // Delegate to the federation helper, which uses inet_pton for exact
+        // numeric private/loopback range checks (including 172.16/12, IPv4-mapped
+        // IPv6, ULA, and link-local) and is the single source of truth for SSRF
+        // address filtering. The prior string-prefix duplicate over-blocked public
+        // 172.1-172.3 and under-blocked the rest of 172.16/12.
+        return federation::ip_address_is_private_or_loopback(address);
     }
 
     [[nodiscard]] auto server_name_is_valid(std::string_view server_name) noexcept -> bool

@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <type_traits>
@@ -765,9 +766,9 @@ SCENARIO("Persistent store rejects duplicate token hashes before recording inser
         WHEN("the same token hash is stored twice")
         {
             auto const first = merovingian::database::store_access_token(
-                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:abc", false});
+                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:abc", false, std::nullopt});
             auto const duplicate = merovingian::database::store_access_token(
-                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:abc", false});
+                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:abc", false, std::nullopt});
 
             THEN("only one token row and statement are recorded")
             {
@@ -794,7 +795,7 @@ SCENARIO("Persistent store commits login device and token rows atomically",
         {
             auto const rejected = merovingian::database::store_device_and_access_token(
                 store, merovingian::database::PersistentDevice{"@alice:example.org", "DEVICE1", "Alice laptop"},
-                {"@alice:example.org", "DEVICE1", "plaintext", false});
+                {"@alice:example.org", "DEVICE1", "plaintext", false, std::nullopt});
 
             THEN("neither durable side effect is recorded")
             {
@@ -809,7 +810,7 @@ SCENARIO("Persistent store commits login device and token rows atomically",
         {
             auto const stored = merovingian::database::store_device_and_access_token(
                 store, merovingian::database::PersistentDevice{"@alice:example.org", "DEVICE1", "Alice laptop"},
-                {"@alice:example.org", "DEVICE1", "token-hash:v2:abc", false});
+                {"@alice:example.org", "DEVICE1", "token-hash:v2:abc", false, std::nullopt});
 
             THEN("the device and access token become visible together")
             {

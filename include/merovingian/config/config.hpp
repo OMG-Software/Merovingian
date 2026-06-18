@@ -185,6 +185,12 @@ struct SecurityConfig final
     TrustSafetySecurityConfig trust_safety{};
     LoggingSecurityConfig logging{};
     SecretsSecurityConfig secrets{};
+    // Server-side token expiry, in milliseconds. 0 disables expiry for that
+    // token kind (treated as no expiry). Defaults: access 1h, refresh 30d. The
+    // advertised expires_in_ms reads from access_token_lifetime_ms so the
+    // advertised TTL matches the enforced one.
+    std::int64_t access_token_lifetime_ms{3600000};
+    std::int64_t refresh_token_lifetime_ms{2592000000};
 };
 
 class Config final

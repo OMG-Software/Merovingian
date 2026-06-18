@@ -5,11 +5,16 @@
 
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
+#include "merovingian/crypto/constant_time.hpp"
 #include "merovingian/observability/logger.hpp"
 #include "merovingian/observability/observability.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <chrono>
+#include <cstdlib>
 #include <optional>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -155,14 +160,14 @@ namespace
     [[nodiscard]] auto access_token_exists(PersistentStore const& store, std::string_view token_hash) -> bool
     {
         return std::ranges::any_of(store.access_tokens, [token_hash](PersistentAccessToken const& existing) {
-            return existing.token_hash == token_hash;
+            return crypto::constant_time_equal(existing.token_hash, token_hash);
         });
     }
 
     [[nodiscard]] auto refresh_token_exists(PersistentStore const& store, std::string_view token_hash) -> bool
     {
         return std::ranges::any_of(store.refresh_tokens, [token_hash](PersistentRefreshToken const& existing) {
-            return existing.token_hash == token_hash;
+            return crypto::constant_time_equal(existing.token_hash, token_hash);
         });
     }
 
@@ -227,6 +232,42 @@ namespace
     }
 
 } // namespace
+
+// Serialise a token expiry time_point to the TEXT column form: epoch
+// milliseconds as a decimal string, or the empty string for "no expiry"
+// (nullopt / legacy rows). Round-trips with parse_expires_at. Exposed so the
+// SQLite/PostgreSQL store hydration can use the same encoding.
+[[nodiscard]] auto expires_at_text(std::optional<std::chrono::system_clock::time_point> const& expires_at)
+    -> std::string
+{
+    if (!expires_at.has_value())
+    {
+        return {};
+    }
+    auto const ms = std::chrono::duration_cast<std::chrono::milliseconds>(expires_at->time_since_epoch()).count();
+    return std::to_string(ms);
+}
+
+// Parse the TEXT column form back into a time_point. Empty string means no
+// expiry (nullopt). A malformed value is treated as no expiry rather than
+// rejecting the token, so a corrupt row never locks a user out.
+[[nodiscard]] auto parse_expires_at(std::string_view text)
+    -> std::optional<std::chrono::system_clock::time_point>
+{
+    if (text.empty())
+    {
+        return std::nullopt;
+    }
+    auto buffer = std::string{text};
+    char* end = nullptr;
+    errno = 0;
+    auto const ms = std::strtoll(buffer.c_str(), &end, 10);
+    if (end == buffer.c_str() || *end != '\0' || errno != 0)
+    {
+        return std::nullopt;
+    }
+    return std::chrono::system_clock::time_point{std::chrono::milliseconds{ms}};
+}
 
 [[nodiscard]] auto open_persistent_store(SchemaState existing_state) -> PersistentStoreOpenResult
 {
@@ -425,12 +466,14 @@ namespace
         return false;
     }
     if (!record_and_persist(store,
-                            record_statement("insert_access_token", "INSERT INTO access_tokens VALUES ($1, $2, $3, $4)",
+                            record_statement("insert_access_token",
+                                             "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5)",
                                              {
                                                  {token.user_id,                    false},
                                                  {token.device_id,                  false},
                                                  {token.token_hash,                 true },
-                                                 {token.revoked ? "true" : "false", false}
+                                                 {token.revoked ? "true" : "false", false},
+                                                 {expires_at_text(token.expires_at), false}
     })))
     {
         return false;
@@ -446,12 +489,13 @@ namespace
         return false;
     }
     if (!record_and_persist(store, record_statement("insert_refresh_token",
-                                                    "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4)",
+                                                    "INSERT INTO refresh_tokens VALUES ($1, $2, $3, $4, $5)",
                                                     {
                                                         {token.token_hash,                 true },
                                                         {token.user_id,                    false},
                                                         {token.device_id,                  false},
-                                                        {token.revoked ? "true" : "false", false}
+                                                        {token.revoked ? "true" : "false", false},
+                                                        {expires_at_text(token.expires_at), false}
     })))
     {
         return false;
@@ -482,12 +526,14 @@ namespace
                                  {device->display_name, false}
         }));
     }
-    statements.push_back(record_statement("insert_access_token", "INSERT INTO access_tokens VALUES ($1, $2, $3, $4)",
+    statements.push_back(record_statement("insert_access_token",
+                                          "INSERT INTO access_tokens VALUES ($1, $2, $3, $4, $5)",
                                           {
                                               {token.user_id,                    false},
                                               {token.device_id,                  false},
                                               {token.token_hash,                 true },
-                                              {token.revoked ? "true" : "false", false}
+                                              {token.revoked ? "true" : "false", false},
+                                              {expires_at_text(token.expires_at), false}
     }));
     if (!commit_persistent_transaction(store, statements))
     {
@@ -515,7 +561,7 @@ namespace
     auto revoked = std::size_t{0U};
     for (auto& token : store.access_tokens)
     {
-        if (token.token_hash == token_hash && !token.revoked)
+        if (crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked)
         {
             token.revoked = true;
             ++revoked;
@@ -538,7 +584,7 @@ namespace
     auto revoked = std::size_t{0U};
     for (auto& token : store.refresh_tokens)
     {
-        if (token.token_hash == token_hash && !token.revoked)
+        if (crypto::constant_time_equal(token.token_hash, token_hash) && !token.revoked)
         {
             token.revoked = true;
             ++revoked;

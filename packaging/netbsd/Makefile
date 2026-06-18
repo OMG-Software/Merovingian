@@ -1,4 +1,4 @@
-DISTNAME=       merovingian-0.8.19
+DISTNAME=       merovingian-0.8.20
 CATEGORIES=    net
 MASTER_SITES=   ${MASTER_SITE_GITHUB:=OMG-Software/}
 GITHUB_PROJECT= Merovingian

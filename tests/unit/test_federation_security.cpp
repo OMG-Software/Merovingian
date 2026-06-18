@@ -37,6 +37,54 @@ SCENARIO("Federation discovery accepts public TLS remotes and rejects SSRF targe
     }
 }
 
+SCENARIO("ip_address_is_private_or_loopback classifies RFC1918, 172.16/12, loopback, ULA, and link-local exactly",
+         "[federation][security][ssrf]")
+{
+    GIVEN("a range of IPv4 and IPv6 address literals")
+    {
+        WHEN("each address is classified by the inet_pton-based helper")
+        {
+            // IPv4 private / loopback / link-local that must be blocked.
+            THEN("private and loopback IPv4 addresses are private or loopback")
+            {
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("127.0.0.1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("10.0.0.1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("192.168.1.1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("169.254.1.1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("172.16.0.1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("172.31.255.255"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("0.0.0.0"));
+            }
+            THEN("public IPv4 addresses outside the private ranges are not private or loopback")
+            {
+                REQUIRE_FALSE(merovingian::federation::ip_address_is_private_or_loopback("8.8.8.8"));
+                REQUIRE_FALSE(merovingian::federation::ip_address_is_private_or_loopback("172.1.0.1"));
+                REQUIRE_FALSE(merovingian::federation::ip_address_is_private_or_loopback("172.10.0.1"));
+                REQUIRE_FALSE(merovingian::federation::ip_address_is_private_or_loopback("172.32.0.1"));
+                REQUIRE_FALSE(merovingian::federation::ip_address_is_private_or_loopback("203.0.113.10"));
+            }
+            THEN("IPv6 loopback, ULA, link-local, and IPv4-mapped private addresses are private or loopback")
+            {
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("::1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("fc00::1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("fd00::1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("fe80::1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("::ffff:127.0.0.1"));
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("::ffff:172.16.0.1"));
+            }
+            THEN("public IPv6 addresses are not private or loopback")
+            {
+                REQUIRE_FALSE(merovingian::federation::ip_address_is_private_or_loopback("2001:4860:4860::8888"));
+                REQUIRE_FALSE(merovingian::federation::ip_address_is_private_or_loopback("::ffff:8.8.8.8"));
+            }
+            THEN("the localhost hostname is treated as private or loopback (fail-safe)")
+            {
+                REQUIRE(merovingian::federation::ip_address_is_private_or_loopback("localhost"));
+            }
+        }
+    }
+}
+
 SCENARIO("Federation discovery rejects DNS rebinding host drift", "[federation][security][discovery]")
 {
     GIVEN("a remote whose well-known host differs from the resolved host")

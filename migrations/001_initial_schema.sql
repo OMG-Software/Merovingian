@@ -6,9 +6,9 @@ CREATE TABLE users (user_id TEXT PRIMARY KEY, password_hash TEXT NOT NULL, locke
 -- statement create_devices
 CREATE TABLE devices (user_id TEXT NOT NULL, device_id TEXT NOT NULL, display_name TEXT NOT NULL, PRIMARY KEY (user_id, device_id))
 -- statement create_access_tokens
-CREATE TABLE access_tokens (user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL)
+CREATE TABLE access_tokens (user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL, expires_at TEXT NOT NULL DEFAULT '')
 -- statement create_refresh_tokens
-CREATE TABLE refresh_tokens (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL)
+CREATE TABLE refresh_tokens (token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, expires_at TEXT NOT NULL DEFAULT '')
 -- statement create_server_signing_keys
 CREATE TABLE server_signing_keys (server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, valid_until_ts TEXT NOT NULL, secret_key TEXT, PRIMARY KEY (server_name, key_id))
 -- statement create_rooms

@@ -110,10 +110,14 @@ auto ip_address_is_private_or_loopback(std::string_view address) noexcept -> boo
     {
         return ipv6_is_private_or_loopback(v6);
     }
+    // Fallback for inputs inet_pton cannot parse as a literal IP (e.g. the
+    // hostname "localhost"). The numeric private ranges — including 172.16/12 —
+    // are handled exactly by the inet_pton path above; a string-prefix guess for
+    // 172. here would both over-block public 172.1-172.3 and under-block the rest
+    // of 172.16/12, so it is intentionally omitted.
     return address == "localhost" || starts_with(address, "127.") || starts_with(address, "10.") ||
            starts_with(address, "192.168.") || starts_with(address, "169.254.") || starts_with(address, "fc") ||
-           starts_with(address, "fd") ||
-           (starts_with(address, "172.") && address.size() >= 6U && address[4] >= '1' && address[4] <= '3');
+           starts_with(address, "fd");
 }
 
 auto federation_discovery_policy(RemoteServerRecord const& remote) -> FederationDiscoveryDecision

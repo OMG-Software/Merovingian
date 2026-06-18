@@ -37,6 +37,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -514,6 +515,51 @@ SCENARIO("Homeserver local auth stores hardened password and token hashes", "[ho
                 // Do NOT remove - identical hashes allow one token to authenticate as another.
                 REQUIRE(runtime.database.sessions.front().access_token_hash !=
                         runtime.database.sessions.back().access_token_hash);
+            }
+        }
+    }
+}
+
+SCENARIO("Homeserver rejects expired access tokens even when the session is not revoked",
+         "[homeserver][vertical][auth][security][expiry]")
+{
+    GIVEN("a started runtime with a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_runtime(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_pipe("expiryalice", "CorrectHorse7!")});
+        REQUIRE(user.status == 200U);
+        auto const login = merovingian::homeserver::handle_local_http_request(
+            runtime, {"POST", "/_matrix/client/v3/login", {}, user.body + "|CorrectHorse7!|EXPIRY1"});
+        REQUIRE(login.status == 200U);
+        REQUIRE(runtime.database.sessions.size() == 1U);
+
+        WHEN("the session's access-token expiry is forced into the past")
+        {
+            auto const fresh = merovingian::homeserver::authenticated_user(runtime, login.body);
+            runtime.database.sessions.front().expires_at =
+                std::chrono::system_clock::now() - std::chrono::hours{1};
+            auto const expired = merovingian::homeserver::authenticated_user(runtime, login.body);
+
+            // A legacy / non-expiring session must still authenticate.
+            runtime.database.sessions.front().expires_at = std::nullopt;
+            auto const non_expiring = merovingian::homeserver::authenticated_user(runtime, login.body);
+
+            THEN("the fresh token authenticates, the expired one is rejected, and no-expiry still works")
+            {
+                // Spec MUST: a valid, unexpired token MUST resolve to its user.
+                REQUIRE(fresh.has_value());
+                REQUIRE(*fresh == user.body);
+                // Spec MUST: an expired token MUST NOT authenticate even when not revoked.
+                REQUIRE_FALSE(expired.has_value());
+                // Spec MUST: a legacy session without an expiry MUST remain usable.
+                REQUIRE(non_expiring.has_value());
+                REQUIRE(*non_expiring == user.body);
             }
         }
     }

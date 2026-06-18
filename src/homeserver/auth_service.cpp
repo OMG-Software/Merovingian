@@ -17,6 +17,7 @@
 #include <cstdint>
 #include <fstream>
 #include <mutex>
+#include <chrono>
 #include <optional>
 #include <span>
 #include <string>
@@ -335,13 +336,54 @@ namespace
         });
     }
 
-    [[nodiscard]] auto find_session(LocalDatabase const& database, std::vector<std::string> const& token_hashes)
-        -> LocalSession const*
+    // A session is expired when it has a finite expires_at that is now in the
+    // past. nullopt means no expiry (legacy or explicitly non-expiring). Mirrors
+    // the canonical policy in `auth::session::session_is_active` (src/auth/session.cpp).
+    [[nodiscard]] auto is_expired(std::optional<std::chrono::system_clock::time_point> const& expires_at,
+                                  std::chrono::system_clock::time_point now) noexcept -> bool
     {
-        auto const iterator = std::ranges::find_if(database.sessions, [&token_hashes](LocalSession const& session) {
-            return matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked;
-        });
+        return expires_at.has_value() && *expires_at <= now;
+    }
+
+    // Computes the expiry timestamp for a freshly issued token from its
+    // configured lifetime in milliseconds. A non-positive lifetime disables
+    // expiry for that token kind (returns nullopt), matching the config doc.
+    [[nodiscard]] auto token_expires_at(std::int64_t lifetime_ms) noexcept
+        -> std::optional<std::chrono::system_clock::time_point>
+    {
+        if (lifetime_ms <= 0)
+        {
+            return std::nullopt;
+        }
+        return std::chrono::system_clock::now() + std::chrono::milliseconds{lifetime_ms};
+    }
+
+    [[nodiscard]] auto find_session(LocalDatabase const& database, std::vector<std::string> const& token_hashes,
+                                    std::chrono::system_clock::time_point now) -> LocalSession const*
+    {
+        auto const iterator =
+            std::ranges::find_if(database.sessions, [&token_hashes, now](LocalSession const& session) {
+                return matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked &&
+                       !is_expired(session.expires_at, now);
+            });
         return iterator == database.sessions.end() ? nullptr : &(*iterator);
+    }
+
+    // Disambiguates a find_session miss for audit reporting: returns true when a
+    // session matching the token hash exists, is not revoked, but is expired —
+    // i.e. the rejection reason is expiry rather than "no session". Distinct
+    // reason strings keep the audit log actionable for #275.
+    [[nodiscard]] auto session_expired_for_token(LocalDatabase const& database,
+                                                 std::vector<std::string> const& token_hashes,
+                                                 std::chrono::system_clock::time_point now) -> bool
+    {
+        auto const now_value = now;
+        auto const iterator =
+            std::ranges::find_if(database.sessions, [&token_hashes, now_value](LocalSession const& session) {
+                return matches_any_token_hash(session.access_token_hash, token_hashes) && !session.revoked &&
+                       is_expired(session.expires_at, now_value);
+            });
+        return iterator != database.sessions.end();
     }
 
     // One-shot migration of a v3 access token to the master-key-derived v4 hash.
@@ -366,13 +408,15 @@ namespace
         auto upgraded_any = false;
         auto user_id = std::string{};
         auto device_id = std::string{};
+        auto expires_at = std::optional<std::chrono::system_clock::time_point>{};
         for (auto& session : runtime.database.sessions)
         {
-            if (!session.revoked && session.access_token_hash == matched_v3_hash)
+            if (!session.revoked && token_hash_matches(session.access_token_hash, matched_v3_hash))
             {
                 session.access_token_hash = *v4_hash;
                 user_id = session.user_id;
                 device_id = session.device_id;
+                expires_at = session.expires_at;
                 upgraded_any = true;
             }
         }
@@ -385,7 +429,7 @@ namespace
         {
             return;
         }
-        auto const new_row = database::PersistentAccessToken{user_id, device_id, *v4_hash, false};
+        auto const new_row = database::PersistentAccessToken{user_id, device_id, *v4_hash, false, expires_at};
         std::ignore = database::store_access_token(runtime.database.persistent_store, new_row);
     }
 
@@ -413,69 +457,6 @@ namespace
             return std::nullopt;
         }
         return std::string{output.data()};
-    }
-
-    // Load the registration token from disk once, hash it with Argon2id, and cache
-    // only the hash keyed by the file path.  The plaintext token is zeroised after
-    // hashing so it does not remain in server memory.
-    [[nodiscard]] auto load_hashed_registration_token(config::RegistrationSecurityConfig const& registration)
-        -> std::optional<std::string>
-    {
-        if (registration.token_file.empty())
-        {
-            return std::nullopt;
-        }
-
-        static auto mutex = std::mutex{};
-        static auto cache = std::unordered_map<std::string, std::string>{};
-
-        auto lock = std::lock_guard<std::mutex>{mutex};
-        auto const it = cache.find(registration.token_file);
-        if (it != cache.end())
-        {
-            return it->second;
-        }
-
-        auto input = std::ifstream{registration.token_file};
-        if (!input)
-        {
-            return std::nullopt;
-        }
-
-        auto token = std::string{};
-        std::getline(input, token);
-        trim_line_ending(token);
-        if (token.empty())
-        {
-            return std::nullopt;
-        }
-
-        auto hash = hash_registration_token(token);
-        // Best-effort memory clearing of the plaintext token after hashing.  This
-        // reduces the window in which a memory disclosure would reveal the raw secret.
-        std::ignore = sodium_mlock(token.data(), token.size());
-        std::fill(token.begin(), token.end(), '\0');
-        sodium_munlock(token.data(), token.size());
-
-        if (!hash.has_value())
-        {
-            return std::nullopt;
-        }
-
-        auto const [inserted, ok] = cache.emplace(registration.token_file, std::move(*hash));
-        std::ignore = ok;
-        return inserted->second;
-    }
-
-    [[nodiscard]] auto registration_token_matches(std::string_view expected_hash, std::string_view presented) noexcept
-        -> bool
-    {
-        if (!sodium_is_ready() || expected_hash.empty() || presented.empty())
-        {
-            return false;
-        }
-        return crypto_pwhash_str_verify(expected_hash.data(), presented.data(),
-                                        static_cast<unsigned long long>(presented.size())) == 0;
     }
 
     [[nodiscard]] auto make_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
@@ -513,6 +494,71 @@ namespace
     }
 
 } // namespace
+
+// Load the registration token from disk once, hash it with Argon2id, and cache
+// only the hash keyed by the file path.  The plaintext token is zeroised after
+// hashing so it does not remain in server memory.  Exposed in auth_service.hpp so
+// the registration-token validity endpoint compares via the hash rather than
+// holding the plaintext token on the request path.
+[[nodiscard]] auto load_hashed_registration_token(config::RegistrationSecurityConfig const& registration)
+    -> std::optional<std::string>
+{
+    if (registration.token_file.empty())
+    {
+        return std::nullopt;
+    }
+
+    static auto mutex = std::mutex{};
+    static auto cache = std::unordered_map<std::string, std::string>{};
+
+    auto lock = std::lock_guard<std::mutex>{mutex};
+    auto const it = cache.find(registration.token_file);
+    if (it != cache.end())
+    {
+        return it->second;
+    }
+
+    auto input = std::ifstream{registration.token_file};
+    if (!input)
+    {
+        return std::nullopt;
+    }
+
+    auto token = std::string{};
+    std::getline(input, token);
+    trim_line_ending(token);
+    if (token.empty())
+    {
+        return std::nullopt;
+    }
+
+    auto hash = hash_registration_token(token);
+    // Best-effort memory clearing of the plaintext token after hashing.  This
+    // reduces the window in which a memory disclosure would reveal the raw secret.
+    std::ignore = sodium_mlock(token.data(), token.size());
+    std::fill(token.begin(), token.end(), '\0');
+    sodium_munlock(token.data(), token.size());
+
+    if (!hash.has_value())
+    {
+        return std::nullopt;
+    }
+
+    auto const [inserted, ok] = cache.emplace(registration.token_file, std::move(*hash));
+    std::ignore = ok;
+    return inserted->second;
+}
+
+[[nodiscard]] auto registration_token_matches(std::string_view expected_hash, std::string_view presented) noexcept
+    -> bool
+{
+    if (!sodium_is_ready() || expected_hash.empty() || presented.empty())
+    {
+        return false;
+    }
+    return crypto_pwhash_str_verify(expected_hash.data(), presented.data(),
+                                    static_cast<unsigned long long>(presented.size())) == 0;
+}
 
 auto register_local_user(HomeserverRuntime& runtime, std::string_view localpart, std::string_view password,
                          std::string_view registration_token) -> OperationResult
@@ -657,8 +703,10 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     {
         device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{device_id}};
     }
-    if (!database::store_device_and_access_token(runtime.database.persistent_store, std::move(device),
-                                                 {user->user_id, std::string{device_id}, *token_hash, false}))
+    auto const access_expires_at = token_expires_at(runtime.config.security().access_token_lifetime_ms);
+    if (!database::store_device_and_access_token(
+            runtime.database.persistent_store, std::move(device),
+            {user->user_id, std::string{device_id}, *token_hash, false, access_expires_at}))
     {
         log_diagnostic_audit(runtime.database, "auth", "login.rejected",
                              {
@@ -672,7 +720,7 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
         return make_operation_result(false, {}, "login persistence failed", 500U);
     }
     ++runtime.database.next_session_id;
-    runtime.database.sessions.push_back({user->user_id, std::string{device_id}, *token_hash, false});
+    runtime.database.sessions.push_back({user->user_id, std::string{device_id}, *token_hash, false, access_expires_at});
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.login", user->user_id,
                        std::string{device_id}, "accepted");
     log_diagnostic("login.accepted",
@@ -701,8 +749,10 @@ auto issue_refresh_token_for_session(HomeserverRuntime& runtime, std::string_vie
     {
         return make_operation_result(false, {}, "refresh token hashing failed", 500U);
     }
+    auto const refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
     if (!database::store_refresh_token(runtime.database.persistent_store,
-                                       {std::string{user_id}, std::string{device_id}, *refresh_hash, false}))
+                                       {std::string{user_id}, std::string{device_id}, *refresh_hash, false,
+                                        refresh_expires_at}))
     {
         return make_operation_result(false, {}, "refresh token persistence failed", 500U);
     }
@@ -719,10 +769,12 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
         return {false, 401U, {}, {}, {}, {}, "unauthenticated"};
     }
 
+    auto const now = std::chrono::system_clock::now();
     auto const refresh =
         std::ranges::find_if(runtime.database.persistent_store.refresh_tokens,
-                             [&refresh_hashes](database::PersistentRefreshToken const& row) {
-                                 return matches_any_token_hash(row.token_hash, refresh_hashes) && !row.revoked;
+                             [&refresh_hashes, now](database::PersistentRefreshToken const& row) {
+                                 return matches_any_token_hash(row.token_hash, refresh_hashes) && !row.revoked &&
+                                        !is_expired(row.expires_at, now);
                              });
     if (refresh == runtime.database.persistent_store.refresh_tokens.end())
     {
@@ -760,15 +812,18 @@ auto refresh_local_session(HomeserverRuntime& runtime, std::string_view refresh_
     {
         return {false, 500U, {}, {}, {}, {}, "token hashing failed"};
     }
-    if (!database::store_access_token(runtime.database.persistent_store, {user_id, device_id, *access_hash, false}) ||
+    auto const new_access_expires_at = token_expires_at(runtime.config.security().access_token_lifetime_ms);
+    auto const new_refresh_expires_at = token_expires_at(runtime.config.security().refresh_token_lifetime_ms);
+    if (!database::store_access_token(
+            runtime.database.persistent_store, {user_id, device_id, *access_hash, false, new_access_expires_at}) ||
         !database::store_refresh_token(runtime.database.persistent_store,
-                                       {user_id, device_id, *new_refresh_hash, false}))
+                                       {user_id, device_id, *new_refresh_hash, false, new_refresh_expires_at}))
     {
         return {false, 500U, {}, {}, {}, {}, "refreshed token persistence failed"};
     }
 
     ++runtime.database.next_session_id;
-    runtime.database.sessions.push_back({user_id, device_id, *access_hash, false});
+    runtime.database.sessions.push_back({user_id, device_id, *access_hash, false, new_access_expires_at});
     append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.refresh", user_id, device_id,
                        "rotated");
     return {true, 200U, *access_token, *new_refresh_token, user_id, device_id, {}};
@@ -789,16 +844,22 @@ auto authenticated_user(HomeserverRuntime& runtime, std::string_view access_toke
                              "access_token.rejected", "<unknown>", "<unknown>", "token hashing failed");
         return std::nullopt;
     }
-    auto const* session = find_session(runtime.database, token_hashes);
+    auto const now = std::chrono::system_clock::now();
+    auto const* session = find_session(runtime.database, token_hashes, now);
     if (session == nullptr)
     {
-        // Security: no session for this token hash — report without leaking the raw token.
+        // Security: no live session for this token hash — report without leaking the raw token.
+        // Distinguish an expired (but otherwise valid) token from a genuinely unknown one so
+        // the audit log is actionable for #275 server-side token expiry.
+        auto const rejection_reason =
+            session_expired_for_token(runtime.database, token_hashes, now) ? std::string{"token expired"} :
+                                                                             std::string{"session not found"};
         log_diagnostic_audit(runtime.database, "auth", "access_token.rejected",
                              {
-                                 {"reason", "session not found", false}
+                                 {"reason", rejection_reason, false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::auth,
-                             "access_token.rejected", "<unknown>", "<unknown>", "session not found");
+                             "access_token.rejected", "<unknown>", "<unknown>", rejection_reason);
         return std::nullopt;
     }
     // If the session still uses the legacy v3 hash, opportunistically rehash to
@@ -833,7 +894,7 @@ auto authenticated_session(HomeserverRuntime const& runtime, std::string_view ac
     {
         return std::nullopt;
     }
-    auto const* session = find_session(runtime.database, token_hashes);
+    auto const* session = find_session(runtime.database, token_hashes, std::chrono::system_clock::now());
     if (session == nullptr || find_user(runtime.database, session->user_id) == nullptr)
     {
         return std::nullopt;

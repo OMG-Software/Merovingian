@@ -5635,8 +5635,11 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_MISSING_PARAM", "token is required");
         }
-        auto const configured_token = configured_registration_token(rt.homeserver.config);
-        auto const valid = !configured_token.empty() && configured_token == *token;
+        // Compare via the Argon2id hash rather than holding the plaintext token on
+        // the request path (matches /register).  Only the hash is consulted; a missing
+        // or unreadable token file means no token is configured -> valid:false.
+        auto const expected_hash = load_hashed_registration_token(rt.homeserver.config.security().registration);
+        auto const valid = expected_hash.has_value() && registration_token_matches(*expected_hash, *token);
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("valid", canonicaljson::Value{valid})})));
     }
@@ -5820,7 +5823,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 return dispatch_err(req, rt, refresh_token.status, "M_UNKNOWN", refresh_token.reason);
             }
             response_body.push_back(json_member("refresh_token", json_str(refresh_token.value)));
-            response_body.push_back(json_member("expires_in_ms", json_int(3600000)));
+            response_body.push_back(json_member("expires_in_ms",
+                                                json_int(rt.homeserver.config.security().access_token_lifetime_ms)));
         }
         return dispatch_resp(req, rt, 200U, json_serialize(json_obj(std::move(response_body))));
     }
@@ -5845,7 +5849,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              json_serialize(json_obj({
                                  json_member("access_token", json_str(refreshed.access_token)),
                                  json_member("refresh_token", json_str(refreshed.refresh_token)),
-                                 json_member("expires_in_ms", json_int(3600000)),
+                                 json_member("expires_in_ms",
+                                            json_int(rt.homeserver.config.security().access_token_lifetime_ms)),
                              })));
     }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout")
