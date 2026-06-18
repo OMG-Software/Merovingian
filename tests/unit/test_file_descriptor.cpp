@@ -111,11 +111,19 @@ SCENARIO("close_all_file_descriptors_except preserves stdio and selected descrip
         {
             // The sweep closes every descriptor in the table except stdio and
             // the kept fd. Running it in this process would also close fds owned
-            // by libraries linked into the test binary — most damagingly,
-            // libsodium's cached /dev/urandom descriptor, after which the next
-            // keypair generation in any later scenario aborts via sodium_misuse.
-            // So exercise the helper in a forked child and observe its verdict
-            // through the exit code; the parent's fd table is left intact.
+            // by libraries linked into the test binary.
+            //
+            // NetBSD deviation: there libsodium draws randomness from a *cached
+            // /dev/urandom file descriptor* opened on first use, so the sweep
+            // closes it and the next Ed25519 keypair generation in any later
+            // (randomly ordered) Catch2 scenario aborts via sodium_misuse ->
+            // abort(). Linux/FreeBSD do not hit this because libsodium there
+            // uses the getrandom(2)/arc4random syscalls and holds no persistent
+            // fd, so there is nothing for the sweep to break. The fork below is
+            // platform-uniform (we do not branch on __NetBSD__) — it simply
+            // contains any such fd damage in a throwaway child on every OS, and
+            // we observe the helper's verdict through the child's exit code so
+            // the parent's fd table (and libsodium's RNG fd) is left intact.
             auto const pid = ::fork();
             REQUIRE(pid >= 0);
             if (pid == 0)
