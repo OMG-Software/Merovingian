@@ -418,6 +418,13 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
 [[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
     -> bool;
+// Sets the locked/suspended flags of a server-local user. Used by the admin
+// account-moderation endpoints (PUT /v1/admin/lock and /suspend). Persists the
+// change and mirrors it into the in-memory store. Returns false if the user is
+// not found. Does NOT revoke access tokens — per spec v1.18, locking and
+// suspending keep existing sessions intact and enforce via request-path gates.
+[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended,
+                                          bool locked) -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;

@@ -112,7 +112,11 @@ SCENARIO("Auth user ID validator enforces lowercase-only localparts for new IDs"
     }
 }
 
-SCENARIO("Auth login policy blocks locked and suspended accounts", "[auth]")
+// Spec: Matrix Client-Server API v1.18 §"Account suspension"
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#account-suspension
+// Suspended users SHOULD be permitted to log in and create additional sessions
+// (which are themselves suspended); only locked accounts are denied a new login.
+SCENARIO("Auth login policy blocks locked accounts but permits suspended login", "[auth]")
 {
     GIVEN("active, locked, and suspended users")
     {
@@ -127,13 +131,16 @@ SCENARIO("Auth login policy blocks locked and suspended accounts", "[auth]")
             auto const locked_decision = merovingian::auth::login_policy(locked);
             auto const suspended_decision = merovingian::auth::login_policy(suspended);
 
-            THEN("only the active account can proceed")
+            THEN("active and suspended accounts may proceed; only locked is denied")
             {
+                // Spec MUST: locked accounts are denied a new login.
                 REQUIRE(active_decision.allowed);
                 REQUIRE_FALSE(locked_decision.allowed);
-                REQUIRE_FALSE(suspended_decision.allowed);
                 REQUIRE(locked_decision.reason == "account locked");
-                REQUIRE(suspended_decision.reason == "account suspended");
+                // Spec SHOULD: suspended users may log in; the new session is
+                // itself suspended and enforced by the request-path gate.
+                REQUIRE(suspended_decision.allowed);
+                REQUIRE(suspended_decision.reason.empty());
             }
         }
     }

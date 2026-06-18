@@ -138,6 +138,30 @@ using namespace merovingian::tests;
     return *value;
 }
 
+// Bootstraps a server administrator (with the given localpart) and logs them
+// in, returning the admin access token. Used by the account moderation
+// (lock/suspend) conformance scenarios, whose endpoints require a server admin
+// caller per spec v1.18. The localpart lets a scenario create a second, distinct
+// administrator to exercise the "target is another administrator" guard.
+[[nodiscard]] auto admin_token(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& localpart)
+    -> std::string
+{
+    auto const boot =
+        merovingian::homeserver::bootstrap_admin_user(runtime.homeserver, localpart, "CorrectHorse7!");
+    REQUIRE(boot.ok);
+    auto const login_body =
+        std::string{"{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"@"} + localpart +
+        ":example.org\"},\"password\":\"CorrectHorse7!\",\"device_id\":\"" + localpart + "_DEV\"}";
+    auto const login = merovingian::homeserver::handle_client_server_request(
+        runtime, {"POST", "/_matrix/client/v3/login", {}, login_body});
+    REQUIRE(login.response.status == 200U);
+    auto const body = parse_object(login.response.body);
+    auto const* token = string_member(body, "access_token");
+    REQUIRE(token != nullptr);
+    REQUIRE(!token->empty());
+    return *token;
+}
+
 auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
                         std::string_view user_id, std::string_view device_id, std::string_view curve25519_key,
                         std::string_view ed25519_key) -> void
@@ -3094,122 +3118,492 @@ SCENARIO("GET /admin/whois/{userId} returns 404 M_UNRECOGNIZED (implementation g
 }
 
 // --- GET /_matrix/client/v1/admin/lock/{userId} -------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1adminlockuserid
-// IMPLEMENTATION GAP: admin user lock not yet implemented.
-SCENARIO("GET /v1/admin/lock/{userId} returns 404 M_UNRECOGNIZED (implementation gap)",
+// Spec: Matrix Client-Server API v1.18
+// Endpoint: GET /_matrix/client/v1/admin/lock/{userId}
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1adminlockuserid
+//
+// The caller MUST be a server admin. To prevent user enumeration, authorization
+// MUST be checked before any account lookup. Responses: 200 {"locked":bool},
+// 400 M_INVALID_PARAM (non-local userId), 403 M_FORBIDDEN (non-admin, or target
+// is another administrator), 404 M_NOT_FOUND (unknown/deactivated).
+SCENARIO("GET /v1/admin/lock/{userId} enforces admin auth and anti-enumeration",
          "[conformance][client-server][server-admin]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server with an admin and a target user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
+        auto const non_admin = logged_in_token(started.runtime); // alice, non-admin
+        auto const admin = admin_token(started.runtime, "admin");
 
-        WHEN("GET /_matrix/client/v1/admin/lock/@alice:example.org is called")
+        WHEN("a non-admin requests another user's lock status")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", non_admin, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 403 M_FORBIDDEN")
             {
-                // IMPLEMENTATION GAP: admin user lock not supported.
+                // Spec MUST: the calling user MUST be a server admin.
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_FORBIDDEN");
+            }
+        }
+
+        WHEN("an admin requests an existing user's lock status")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", admin, {}});
+
+            THEN("the server returns 200 with the locked flag (false by default)")
+            {
+                // Spec MUST: 200 with required "locked" boolean.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* locked = bool_member(body, "locked");
+                REQUIRE(locked != nullptr);
+                REQUIRE(*locked == false);
+            }
+        }
+
+        WHEN("an admin requests the status of another administrator")
+        {
+            // A second, distinct administrator is bootstrapped so the caller
+            // can target a different admin account.
+            std::ignore = admin_token(started.runtime, "ops");
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/admin/lock/%40ops%3Aexample.org", admin, {}});
+
+            THEN("the server returns 403 M_FORBIDDEN")
+            {
+                // Spec MUST: 403 M_FORBIDDEN when the target is another administrator.
+                REQUIRE(response.response.status == 403U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_FORBIDDEN");
+            }
+        }
+
+        WHEN("an admin requests the status of an unknown user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/admin/lock/%40ghost%3Aexample.org", admin, {}});
+
+            THEN("the server returns 404 M_NOT_FOUND")
+            {
+                // Spec MUST: 404 M_NOT_FOUND when the user is not found.
                 REQUIRE(response.response.status == 404U);
                 auto const body = parse_object(response.response.body);
                 auto const* errcode = string_member(body, "errcode");
                 REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*errcode == "M_NOT_FOUND");
+            }
+        }
+
+        WHEN("an admin requests the status of a non-local userId")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/admin/lock/%40alice%3Aother.server", admin, {}});
+
+            THEN("the server returns 400 M_INVALID_PARAM")
+            {
+                // Spec MUST: 400 M_INVALID_PARAM when the userId is not local.
+                REQUIRE(response.response.status == 400U);
+                auto const body = parse_object(response.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                REQUIRE(*errcode == "M_INVALID_PARAM");
             }
         }
     }
 }
 
 // --- PUT /_matrix/client/v1/admin/lock/{userId} -------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv1adminlockuserid
-// IMPLEMENTATION GAP: admin user lock not yet implemented.
-SCENARIO("PUT /v1/admin/lock/{userId} returns 404 M_UNRECOGNIZED (implementation gap)",
+// Spec: Matrix Client-Server API v1.18
+// Endpoint: PUT /_matrix/client/v1/admin/lock/{userId}
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv1adminlockuserid
+//
+// Sets the locked status of a server-local user. The caller MUST be a server
+// admin and MUST NOT lock their own account or another administrator's account
+// (403 M_FORBIDDEN, checked before lookup). Body member "locked" is required.
+SCENARIO("PUT /v1/admin/lock/{userId} locks and unlocks a target account",
          "[conformance][client-server][server-admin]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server with an admin and a target user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
+        auto const non_admin = logged_in_token(started.runtime);
+        auto const admin = admin_token(started.runtime, "admin");
 
-        WHEN("PUT /_matrix/client/v1/admin/lock/@alice:example.org is called")
+        WHEN("a non-admin tries to lock a user")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", token, R"({"locked":true})"});
+                {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", non_admin, R"({"locked":true})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 403 M_FORBIDDEN before any lookup")
             {
-                // IMPLEMENTATION GAP: admin user lock not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: caller MUST be a server admin; auth checked before lookup.
+                REQUIRE(response.response.status == 403U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*string_member(body, "errcode") == "M_FORBIDDEN");
+            }
+        }
+
+        WHEN("an admin locks an existing user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", admin, R"({"locked":true})"});
+
+            THEN("the server returns 200 with the locked flag set to true")
+            {
+                // Spec MUST: 200 with required "locked" boolean echoing the new state.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* locked = bool_member(body, "locked");
+                REQUIRE(locked != nullptr);
+                REQUIRE(*locked == true);
+
+                // And a subsequent GET reflects the persisted state.
+                auto const get = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", admin, {}});
+                REQUIRE(get.response.status == 200U);
+                REQUIRE(*bool_member(parse_object(get.response.body), "locked") == true);
+            }
+        }
+
+        WHEN("an admin unlocks a previously locked user")
+        {
+            std::ignore = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", admin, R"({"locked":true})"});
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", admin, R"({"locked":false})"});
+
+            THEN("the server returns 200 with the locked flag set to false")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(*bool_member(parse_object(response.response.body), "locked") == false);
+            }
+        }
+
+        WHEN("an admin tries to lock their own account")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v1/admin/lock/%40admin%3Aexample.org", admin, R"({"locked":true})"});
+
+            THEN("the server returns 403 M_FORBIDDEN")
+            {
+                // Spec MUST: 403 when the admin targets their own account.
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(*string_member(parse_object(response.response.body), "errcode") == "M_FORBIDDEN");
+            }
+        }
+
+        WHEN("an admin sends a PUT without the required locked body member")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", admin, R"({})"});
+
+            THEN("the server returns 400 M_BAD_JSON")
+            {
+                // Spec MUST: "locked" is a required request body member.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(*string_member(parse_object(response.response.body), "errcode") == "M_BAD_JSON");
             }
         }
     }
 }
 
 // --- GET /_matrix/client/v1/admin/suspend/{userId} ----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1adminsuspenduserid
-// IMPLEMENTATION GAP: admin user suspend not yet implemented.
-SCENARIO("GET /v1/admin/suspend/{userId} returns 404 M_UNRECOGNIZED (implementation gap)",
+// Spec: Matrix Client-Server API v1.18
+// Endpoint: GET /_matrix/client/v1/admin/suspend/{userId}
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv1adminsuspenduserid
+//
+// Gets the suspended status of a server-local user. Same admin-auth and
+// anti-enumeration rules as the lock endpoint. 200 {"suspended":bool}.
+SCENARIO("GET /v1/admin/suspend/{userId} enforces admin auth and returns status",
          "[conformance][client-server][server-admin]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server with an admin and a target user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
+        auto const non_admin = logged_in_token(started.runtime);
+        auto const admin = admin_token(started.runtime, "admin");
 
-        WHEN("GET /_matrix/client/v1/admin/suspend/@alice:example.org is called")
+        WHEN("a non-admin requests another user's suspend status")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", token, {}});
+                started.runtime, {"GET", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", non_admin, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 403 M_FORBIDDEN")
             {
-                // IMPLEMENTATION GAP: admin user suspend not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: the calling user MUST be a server admin.
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(*string_member(parse_object(response.response.body), "errcode") == "M_FORBIDDEN");
+            }
+        }
+
+        WHEN("an admin requests an existing user's suspend status")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", admin, {}});
+
+            THEN("the server returns 200 with the suspended flag (false by default)")
+            {
+                // Spec MUST: 200 with required "suspended" boolean.
+                REQUIRE(response.response.status == 200U);
+                // Parse into a named variable first — bool_member returns a
+                // pointer into the Object, so the Object must outlive the pointer.
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* suspended = bool_member(body, "suspended");
+                REQUIRE(suspended != nullptr);
+                REQUIRE(*suspended == false);
+            }
+        }
+
+        WHEN("an admin requests the status of a non-local userId")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v1/admin/suspend/%40alice%3Aother.server", admin, {}});
+
+            THEN("the server returns 400 M_INVALID_PARAM")
+            {
+                // Spec MUST: 400 M_INVALID_PARAM when the userId is not local.
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(*string_member(parse_object(response.response.body), "errcode") == "M_INVALID_PARAM");
             }
         }
     }
 }
 
 // --- PUT /_matrix/client/v1/admin/suspend/{userId} ----------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv1adminsuspenduserid
-// IMPLEMENTATION GAP: admin user suspend not yet implemented.
-SCENARIO("PUT /v1/admin/suspend/{userId} returns 404 M_UNRECOGNIZED (implementation gap)",
+// Spec: Matrix Client-Server API v1.18
+// Endpoint: PUT /_matrix/client/v1/admin/suspend/{userId}
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv1adminsuspenduserid
+//
+// Sets the suspended status of a server-local user. The caller MUST be a server
+// admin and MUST NOT suspend their own account or another administrator's
+// account (403 M_FORBIDDEN, checked before lookup). Body member "suspended" is
+// required.
+SCENARIO("PUT /v1/admin/suspend/{userId} suspends and unsuspends a target account",
          "[conformance][client-server][server-admin]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server with an admin and a target user")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
+        auto const non_admin = logged_in_token(started.runtime);
+        auto const admin = admin_token(started.runtime, "admin");
 
-        WHEN("PUT /_matrix/client/v1/admin/suspend/@alice:example.org is called")
+        WHEN("a non-admin tries to suspend a user")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"PUT", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", token, R"({"suspended":true})"});
+                {"PUT", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", non_admin, R"({"suspended":true})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 403 M_FORBIDDEN before any lookup")
             {
-                // IMPLEMENTATION GAP: admin user suspend (PUT) not supported.
-                REQUIRE(response.response.status == 404U);
+                // Spec MUST: caller MUST be a server admin; auth checked before lookup.
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(*string_member(parse_object(response.response.body), "errcode") == "M_FORBIDDEN");
+            }
+        }
+
+        WHEN("an admin suspends an existing user")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", admin, R"({"suspended":true})"});
+
+            THEN("the server returns 200 with the suspended flag set to true")
+            {
+                // Spec MUST: 200 with required "suspended" boolean echoing the new state.
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(*bool_member(parse_object(response.response.body), "suspended") == true);
+            }
+        }
+
+        WHEN("an admin tries to suspend their own account")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"PUT", "/_matrix/client/v1/admin/suspend/%40admin%3Aexample.org", admin, R"({"suspended":true})"});
+
+            THEN("the server returns 403 M_FORBIDDEN")
+            {
+                // Spec MUST: 403 when the admin targets their own account.
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(*string_member(parse_object(response.response.body), "errcode") == "M_FORBIDDEN");
+            }
+        }
+    }
+}
+
+// --- Account locking: request-path enforcement (M_USER_LOCKED) ----------------
+// Spec: Matrix Client-Server API v1.18
+// Section: Account locking
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#account-locking
+//
+// When an account is locked, servers MUST return 401 M_USER_LOCKED with
+// soft_logout:true on all Client-Server APIs except POST /logout and
+// POST /logout/all. Servers SHOULD NOT invalidate access tokens.
+SCENARIO("A locked account receives M_USER_LOCKED on all APIs except logout",
+         "[conformance][client-server][server-admin][account]")
+{
+    GIVEN("a running client-server with a locked user holding a valid token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime); // alice, DEVICE1
+        auto const admin = admin_token(started.runtime, "admin");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", admin, R"({"locked":true})"})
+                    .response.status == 200U);
+
+        WHEN("the locked user calls a general API (GET /sync)")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("the server returns 401 M_USER_LOCKED with soft_logout:true")
+            {
+                // Spec MUST: 401 M_USER_LOCKED with soft_logout:true on all but logout.
+                REQUIRE(response.response.status == 401U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(*string_member(body, "errcode") == "M_USER_LOCKED");
+                auto const* soft = bool_member(body, "soft_logout");
+                REQUIRE(soft != nullptr);
+                REQUIRE(*soft == true);
+            }
+        }
+
+        WHEN("the locked user calls POST /logout")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/logout", token, {}});
+
+            THEN("the server allows the logout")
+            {
+                // Spec MUST: POST /logout is exempt from M_USER_LOCKED.
+                REQUIRE(response.response.status == 200U);
+            }
+        }
+    }
+}
+
+// --- Account suspension: request-path enforcement (M_USER_SUSPENDED) ----------
+// Spec: Matrix Client-Server API v1.18
+// Section: Account suspension
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#account-suspension
+//
+// Suspended users MUST receive 403 M_USER_SUSPENDED on disallowed actions
+// (sending messages, joining rooms, etc.) but SHOULD still be able to /sync,
+// /messages, and /logout. Suspended users may log in and create new sessions.
+SCENARIO("A suspended account receives M_USER_SUSPENDED on disallowed actions only",
+         "[conformance][client-server][server-admin][account]")
+{
+    GIVEN("a running client-server with a suspended user holding a valid token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const token = logged_in_token(started.runtime); // alice, DEVICE1
+        auto const admin = admin_token(started.runtime, "admin");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"PUT", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", admin, R"({"suspended":true})"})
+                    .response.status == 200U);
+
+        WHEN("the suspended user calls GET /sync")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/sync", token, {}});
+
+            THEN("the server allows the sync")
+            {
+                // Spec SHOULD: suspended users may see and receive messages via /sync.
+                REQUIRE(response.response.status == 200U);
+            }
+        }
+
+        WHEN("the suspended user attempts to create a room")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/createRoom", token, R"({"name":"new room"})"});
+
+            THEN("the server returns 403 M_USER_SUSPENDED")
+            {
+                // Spec MUST: 403 M_USER_SUSPENDED on disallowed actions (joining/creating rooms).
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(*string_member(parse_object(response.response.body), "errcode") == "M_USER_SUSPENDED");
+            }
+        }
+
+        WHEN("the suspended user calls POST /logout")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/logout", token, {}});
+
+            THEN("the server allows the logout")
+            {
+                // Spec SHOULD: suspended users may log out.
+                REQUIRE(response.response.status == 200U);
+            }
+        }
+    }
+}
+
+// --- Account suspension: login still permitted --------------------------------
+// Spec: Matrix Client-Server API v1.18
+// Section: Account suspension
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#account-suspension
+//
+// Suspended users SHOULD be permitted to log in and create additional sessions
+// (which are themselves suspended). The request-path gate enforces suspension
+// on subsequent use of those sessions.
+SCENARIO("A suspended account may still log in and create a new session",
+         "[conformance][client-server][server-admin][account]")
+{
+    GIVEN("a running client-server with a suspended user")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        std::ignore = logged_in_token(started.runtime); // register alice
+        auto const admin = admin_token(started.runtime, "admin");
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime,
+                    {"PUT", "/_matrix/client/v1/admin/suspend/%40alice%3Aexample.org", admin, R"({"suspended":true})"})
+                    .response.status == 200U);
+
+        WHEN("the suspended user logs in on a new device")
+        {
+            auto const login = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/login",
+                 {},
+                 R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"NEWDEV"})"});
+
+            THEN("the login succeeds and the new session is suspended on use")
+            {
+                // Spec SHOULD: suspended users may log in and create additional sessions.
+                REQUIRE(login.response.status == 200U);
+                auto const new_token = *string_member(parse_object(login.response.body), "access_token");
+                // The new session is itself suspended: a disallowed action is blocked.
+                auto const create = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/createRoom", new_token, R"({"name":"x"})"});
+                REQUIRE(create.response.status == 403U);
+                REQUIRE(*string_member(parse_object(create.response.body), "errcode") == "M_USER_SUSPENDED");
             }
         }
     }

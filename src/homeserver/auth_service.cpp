@@ -1027,4 +1027,26 @@ auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     return password_matches(user->password_hash, password);
 }
 
+auto account_state_for_user(HomeserverRuntime const& runtime, std::string_view user_id)
+    -> std::optional<auth::AccountState>
+{
+    auto const* user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        return std::nullopt;
+    }
+    // Locked takes precedence over suspended: a locked account is fully gated
+    // (M_USER_LOCKED on all but logout), whereas a suspended account keeps a
+    // spec-defined allowlist of permitted actions.
+    if (user->locked)
+    {
+        return auth::AccountState::locked;
+    }
+    if (user->suspended)
+    {
+        return auth::AccountState::suspended;
+    }
+    return auth::AccountState::active;
+}
+
 } // namespace merovingian::homeserver

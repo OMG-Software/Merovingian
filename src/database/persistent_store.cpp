@@ -371,6 +371,28 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended,
+                                          bool locked) -> bool
+{
+    auto const it = std::ranges::find_if(store.users, [user_id](PersistentUser const& u) {
+        return u.user_id == user_id;
+    });
+    if (it == store.users.end())
+    {
+        return false;
+    }
+    auto const statement = record_statement(
+        "update_user_account_state", "UPDATE users SET suspended = $2, locked = $3 WHERE user_id = $1",
+        {public_value(user_id), public_value(suspended ? "true" : "false"), public_value(locked ? "true" : "false")});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    it->suspended = suspended;
+    it->locked = locked;
+    return true;
+}
+
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool
 {
     if (device_exists(store, device))
