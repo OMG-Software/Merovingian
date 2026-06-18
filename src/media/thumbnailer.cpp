@@ -61,8 +61,11 @@ namespace
     }
 
     // Writes `payload` to `fd` honouring `deadline_ms`, never blocking longer
-    // than the remaining budget. Returns false on error or timeout.
-    [[nodiscard]] auto write_all_deadline(int fd, std::string_view payload, std::int64_t deadline_ms) -> bool
+    // than the remaining budget. Returns false on error or timeout. On failure
+    // `detail` is set to a short cause string (poll/revents/errno, bytes sent)
+    // so the caller can surface why the worker write stalled.
+    [[nodiscard]] auto write_all_deadline(int fd, std::string_view payload, std::int64_t deadline_ms,
+                                          std::string& detail) -> bool
     {
         std::size_t written = 0U;
         while (written < payload.size())
@@ -70,12 +73,16 @@ namespace
             auto const remaining = deadline_ms - monotonic_ms();
             if (remaining <= 0)
             {
+                detail = "poll deadline elapsed after " + std::to_string(written) + "/" +
+                         std::to_string(payload.size()) + " bytes";
                 return false;
             }
             auto pfd = pollfd{fd, POLLOUT, 0};
             auto const ready = ::poll(&pfd, 1U, static_cast<int>(remaining));
             if (ready <= 0 || (pfd.revents & (POLLERR | POLLNVAL)) != 0)
             {
+                detail = "poll ready=" + std::to_string(ready) + " revents=" + std::to_string(pfd.revents) +
+                         " errno=" + std::to_string(ready < 0 ? errno : 0) + " sent=" + std::to_string(written);
                 return false;
             }
             auto const n = ::write(fd, payload.data() + written, payload.size() - written);
@@ -85,6 +92,7 @@ namespace
                 {
                     continue;
                 }
+                detail = "write errno=" + std::to_string(errno) + " sent=" + std::to_string(written);
                 return false;
             }
             written += static_cast<std::size_t>(n);
@@ -445,7 +453,8 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
         static_cast<std::int64_t>(config.timeout_seconds == 0U ? 10U : config.timeout_seconds) * 1000;
     auto const deadline_ms = monotonic_ms() + timeout_ms;
 
-    auto const wrote = write_all_deadline(child_stdin_write.get(), frame, deadline_ms);
+    auto write_detail = std::string{};
+    auto const wrote = write_all_deadline(child_stdin_write.get(), frame, deadline_ms, write_detail);
     child_stdin_write.reset(); // signal EOF to the worker
     auto read_ok = false;
     auto const response_bytes =
@@ -469,7 +478,8 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
 
     if (!wrote)
     {
-        return {false, 504U, {}, {}, 0U, 0U, "timed out sending media to worker" + worker_status};
+        return {false, 504U, {}, {}, 0U, 0U,
+                "timed out sending media to worker" + worker_status + " [" + write_detail + "]"};
     }
     if (!read_ok)
     {
