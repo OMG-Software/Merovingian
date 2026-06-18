@@ -70,6 +70,9 @@ SCENARIO("the sandboxed worker resamples a PNG to the requested size", "[media][
             request.height = 4U;
             request.method = merovingian::media::ThumbnailMethod::scale;
             auto const result = merovingian::media::generate_thumbnail(config, request);
+            // Surface how the worker fared so a CI failure shows the worker's
+            // exit/signal status (the reason suffix) instead of a bare 504.
+            INFO("status=" << result.status << " reason=" << result.reason);
 
             THEN("a real, smaller PNG of the requested dimensions is produced")
             {
@@ -97,6 +100,7 @@ SCENARIO("the sandboxed worker resamples a PNG to the requested size", "[media][
             request.height = 4U;
             request.method = merovingian::media::ThumbnailMethod::crop;
             auto const result = merovingian::media::generate_thumbnail(config, request);
+            INFO("status=" << result.status << " reason=" << result.reason);
 
             THEN("the crop result fills the requested box exactly")
             {
@@ -131,6 +135,7 @@ SCENARIO("the sandboxed worker resamples a PNG to the requested size", "[media][
             request.width = 4U;
             request.height = 4U;
             auto const result = merovingian::media::generate_thumbnail(config, request);
+            INFO("status=" << result.status << " reason=" << result.reason);
 
             THEN("the worker reports a decode failure rather than crashing the host")
             {

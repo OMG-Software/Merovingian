@@ -432,8 +432,11 @@ jobs:
             if ! sh scripts/build-bsd.sh --builddir build; then
                 echo "::group::NetBSD core backtraces"
                 for core in $(find build -name '*.core' 2>/dev/null); do
+                    # NetBSD truncates the core name to the first 16 chars of the
+                    # program name, so "merovingian-unit-tests" cores as
+                    # "merovingian-unit.core". Match the binary by that prefix.
                     name=$(basename "${core%.core}")
-                    bin=$(find build -type f -name "$name" -perm -u+x 2>/dev/null | head -n1)
+                    bin=$(find build -type f -name "${name}*" -perm -u+x 2>/dev/null | head -n1)
                     echo "--- backtrace for $core ($bin) ---"
                     gdb --batch -ex 'thread apply all bt' "$bin" "$core" 2>&1 || true
                 done
