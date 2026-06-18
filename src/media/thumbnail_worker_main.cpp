@@ -65,7 +65,7 @@ using merovingian::media::ThumbnailWorkerStatus;
 // malformed frame or hostile image cannot exhaust the host.
 constexpr std::size_t max_input_bytes = 64U * 1024U * 1024U;      // 64 MiB source
 constexpr std::uint64_t max_address_space = 768U * 1024U * 1024U; // 768 MiB RSS+heap
-constexpr std::uint64_t max_cpu_seconds = 15U;
+constexpr std::uint64_t max_cpu_seconds = sanitizer_build ? 120U : 15U;
 constexpr std::uint64_t max_file_size = 64U * 1024U * 1024U;
 constexpr std::uint32_t absolute_max_dimension = 4096U;
 

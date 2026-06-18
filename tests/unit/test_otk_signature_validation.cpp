@@ -32,6 +32,7 @@
 
 #include <algorithm>
 #include <array>
+#include <iostream>
 #include <string>
 
 #include <sodium.h>
@@ -423,27 +424,37 @@ SCENARIO("E2EE /keys/upload rejects signed_curve25519 OTKs when no device identi
 {
     GIVEN("a logged-in inviter that has never uploaded device_keys")
     {
+        std::cerr << "[netbsd-diag] otk-no-identity: start_client_server\n" << std::flush;
         auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
         REQUIRE(started.started);
+        std::cerr << "[netbsd-diag] otk-no-identity: runtime started\n" << std::flush;
         auto& runtime = started.runtime;
 
+        std::cerr << "[netbsd-diag] otk-no-identity: register\n" << std::flush;
         REQUIRE(merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", "/_matrix/client/v3/register", {},
                               register_body("inviter", "CorrectHorse7!")})
                     .response.status == 200U);
+        std::cerr << "[netbsd-diag] otk-no-identity: registered\n" << std::flush;
 
+        std::cerr << "[netbsd-diag] otk-no-identity: login\n" << std::flush;
         auto const inviter_login = merovingian::homeserver::handle_client_server_request(
             runtime, {"POST", "/_matrix/client/v3/login", {},
                       login_body("@inviter:example.org", "CorrectHorse7!", "INVITER_DEV")});
         REQUIRE(inviter_login.response.status == 200U);
+        std::cerr << "[netbsd-diag] otk-no-identity: logged in\n" << std::flush;
         auto const inviter_token = login_token(inviter_login.response.body);
 
         WHEN("the inviter uploads a signed_curve25519 one_time_key with no device_keys in the body or store")
         {
+            std::cerr << "[netbsd-diag] otk-no-identity: upload\n" << std::flush;
             auto const otk_upload = merovingian::homeserver::handle_client_server_request(
                 runtime,
                 {"POST", "/_matrix/client/v3/keys/upload", inviter_token,
                  R"({"one_time_keys":{"signed_curve25519:AAAA":{"key":"OTK_KEY_1","signatures":{"@inviter:example.org":{"ed25519:INVITER_DEV":"OTK_SIG_1"}}}}})"});
+            std::cerr << "[netbsd-diag] otk-no-identity: upload returned status=" << otk_upload.response.status
+                      << "\n"
+                      << std::flush;
 
             THEN("the upload is rejected because the signature cannot be verified without a device identity")
             {
@@ -460,6 +471,7 @@ SCENARIO("E2EE /keys/upload rejects signed_curve25519 OTKs when no device identi
                     });
                 REQUIRE(stored == store.one_time_keys.end());
             }
+            std::cerr << "[netbsd-diag] otk-no-identity: scenario end\n" << std::flush;
         }
     }
 }

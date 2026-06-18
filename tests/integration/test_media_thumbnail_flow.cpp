@@ -60,7 +60,7 @@ SCENARIO("the sandboxed worker resamples a PNG to the requested size", "[media][
     {
         auto config = merovingian::media::ThumbnailerConfig{};
         config.worker_path = MEROVINGIAN_TEST_THUMBNAIL_WORKER;
-        config.timeout_seconds = 15U;
+        config.timeout_seconds = 60U;
 
         WHEN("a 4x4 scale thumbnail is requested")
         {

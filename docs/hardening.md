@@ -112,11 +112,11 @@ and `src/media/thumbnail_worker_main.cpp`):
   * uses `/proc/self/fd` on Linux;
   * skips `/dev/fd` directory walks on FreeBSD, NetBSD, and OpenBSD (those
     directories contain an entry for every *possible* fd, not only open ones);
-  * falls back to a capped `fcntl(F_GETFD)` scan of at most 4096 descriptors.
+  * falls back to a capped `fcntl(F_GETFD)` scan of at most 1024 descriptors.
 * Before `execv()` the child sets `prctl(PR_SET_NO_NEW_PRIVS, 1, ...)` on Linux
   so a compromised worker cannot escalate through setuid/setcap helpers.
 * Inside the worker, `harden()` clamps resources:
-  * `RLIMIT_CPU` = 15 s;
+  * `RLIMIT_CPU` = 15 s in production builds, 120 s under sanitizers (ASan/UBSan/TSan are slow on CI QEMU);
   * `RLIMIT_FSIZE` = 64 MiB;
   * `RLIMIT_CORE` = 0;
   * `RLIMIT_NOFILE` = 16;
