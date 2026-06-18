@@ -105,8 +105,10 @@ and `src/media/thumbnail_worker_main.cpp`):
 * Parent and child communicate through `O_CLOEXEC` pipes (`pipe2()` on Linux,
   `pipe()` + `fcntl(F_SETFD, FD_CLOEXEC)` elsewhere).
 * The child `dup2()`s the pipe ends onto stdio, then calls
-  `core::close_all_file_descriptors_except()` to close every inherited fd other
-  than stdio. The sweep:
+  `core::close_all_file_descriptors_except()` with a `std::span<int const>` to
+  close every inherited fd other than stdio. The span overload is allocation-free
+  and async-signal-safe so it can run immediately after `fork()` in a
+  multi-threaded parent. The sweep:
   * uses `/proc/self/fd` on Linux;
   * skips `/dev/fd` directory walks on FreeBSD, NetBSD, and OpenBSD (those
     directories contain an entry for every *possible* fd, not only open ones);

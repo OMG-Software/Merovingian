@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <set>
+#include <span>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -208,6 +209,61 @@ auto close_all_file_descriptors_except(std::set<int> const& keep_open) noexcept 
 #endif
 
     close_from_max_nfiles(keep);
+}
+
+auto close_all_file_descriptors_except(std::span<int const> keep_open) noexcept -> void
+{
+    // Do not close the stdio descriptors the worker inherits; callers list the
+    // pipe ends that will become stdio after dup2, but add the standard ones
+    // explicitly in case a caller forgot.
+    auto const is_kept = [keep_open](int fd) noexcept -> bool {
+        if (fd == STDIN_FILENO || fd == STDOUT_FILENO || fd == STDERR_FILENO)
+        {
+            return true;
+        }
+        for (auto const keep_fd : keep_open)
+        {
+            if (fd == keep_fd)
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+
+    // On BSDs, F_MAXFD gives the highest currently open descriptor, so we can
+    // scan a bounded range. On other platforms, sysconf(_SC_OPEN_MAX) may be
+    // huge; cap the scan to the range a short-lived worker actually inherits.
+    auto limit = int{0};
+#ifdef F_MAXFD
+    auto const max_fd = ::fcntl(0, F_MAXFD);
+    if (max_fd >= 0)
+    {
+        limit = max_fd + 1;
+    }
+    else
+#endif
+    {
+        auto const open_max = ::sysconf(_SC_OPEN_MAX);
+        if (open_max <= 0)
+        {
+            return;
+        }
+        constexpr auto max_scan = 1024L;
+        limit = static_cast<int>(std::min({open_max, static_cast<long>(INT_MAX), max_scan}));
+    }
+
+    for (int fd = 0; fd < limit; ++fd)
+    {
+        if (is_kept(fd))
+        {
+            continue;
+        }
+        if (::fcntl(fd, F_GETFD, 0) >= 0)
+        {
+            std::ignore = ::close(fd);
+        }
+    }
 }
 
 } // namespace merovingian::core

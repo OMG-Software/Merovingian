@@ -3,6 +3,7 @@
 #pragma once
 
 #include <set>
+#include <span>
 #include <utility>
 
 namespace merovingian::core
@@ -52,5 +53,12 @@ private:
 // walked. Best-effort: individual close() errors are ignored so the sweep
 // completes.
 auto close_all_file_descriptors_except(std::set<int> const& keep_open) noexcept -> void;
+
+// Allocation-free overload for use after fork() in a multi-threaded process.
+// It scans only a bounded range of descriptors using fcntl(F_MAXFD) when
+// available, or sysconf(_SC_OPEN_MAX) capped at 1024, so it is safe to call
+// between fork() and exec(). It never walks a directory or allocates heap
+// memory.
+auto close_all_file_descriptors_except(std::span<int const> keep_open) noexcept -> void;
 
 } // namespace merovingian::core

@@ -13,7 +13,7 @@
 #include <cstring>
 #include <limits>
 #include <optional>
-#include <set>
+#include <span>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -376,8 +376,13 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
         child_stdout_read.reset();
 
         // Close everything except stdio and the pipe ends that are now stdio.
-        auto keep_open = std::set<int>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(), child_stdout_write.get()};
-        core::close_all_file_descriptors_except(keep_open);
+        // Use the allocation-free span overload: between fork() and exec() the
+        // child must not touch the heap because another thread in the parent may
+        // hold a malloc lock, which would deadlock and leave the parent waiting
+        // until the worker timeout fires.
+        auto const keep_open =
+            std::array<int, 4>{STDIN_FILENO, STDOUT_FILENO, child_stdin_read.get(), child_stdout_write.get()};
+        core::close_all_file_descriptors_except(std::span<int const>{keep_open});
 
         // Prevent privilege escalation through setuid/setcap helpers before exec.
         // PR_SET_NO_NEW_PRIVS is Linux-specific; other platforms rely on the
