@@ -3313,6 +3313,122 @@ SCENARIO("POST /account/password returns 200 with empty JSON object", "[conforma
     }
 }
 
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpassword
+//
+// logout_devices defaults to true. When a user changes their password the server
+// MUST revoke the access tokens of all OTHER devices/sessions; the caller's own
+// session survives. This prevents a token stolen from another device from
+// surviving a password change.
+SCENARIO("POST /account/password with logout_devices true revokes other devices' tokens",
+         "[conformance][client-server][account][security]")
+{
+    GIVEN("alice logged in on DEVICE1 (caller) and DEVICE2 (another device)")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const caller_token = logged_in_token(started.runtime); // alice on DEVICE1
+        auto const other_token = login_existing_user(started.runtime, "alice", "DEVICE2");
+        REQUIRE(!other_token.empty());
+
+        WHEN("alice changes her password with logout_devices: true")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/account/password", caller_token,
+                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"NewHorse7!+Ab","logout_devices":true})"});
+
+            THEN("the response is 200, the caller's token works, the other device's token is revoked")
+            {
+                // Spec MUST: 200 on success; other devices' tokens are revoked.
+                REQUIRE(response.response.status == 200U);
+                auto const caller_probe = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/account/whoami", caller_token, {}});
+                REQUIRE(caller_probe.response.status == 200U);
+                auto const other_probe = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/account/whoami", other_token, {}});
+                REQUIRE(other_probe.response.status == 401U);
+                auto const body = parse_object(other_probe.response.body);
+                auto const* errcode = string_member(body, "errcode");
+                REQUIRE(errcode != nullptr);
+                // Spec MUST: a revoked token is rejected with M_UNKNOWN_TOKEN.
+                REQUIRE(*errcode == "M_UNKNOWN_TOKEN");
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpassword
+//
+// When logout_devices is explicitly false the server MUST NOT revoke other
+// devices' tokens — only the password changes.
+SCENARIO("POST /account/password with logout_devices false keeps other devices' tokens",
+         "[conformance][client-server][account]")
+{
+    GIVEN("alice logged in on DEVICE1 (caller) and DEVICE2 (another device)")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const caller_token = logged_in_token(started.runtime);
+        auto const other_token = login_existing_user(started.runtime, "alice", "DEVICE2");
+        REQUIRE(!other_token.empty());
+
+        WHEN("alice changes her password with logout_devices: false")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/account/password", caller_token,
+                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"NewHorse7!+Ab","logout_devices":false})"});
+
+            THEN("the response is 200 and both tokens remain valid")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const caller_probe = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/account/whoami", caller_token, {}});
+                REQUIRE(caller_probe.response.status == 200U);
+                auto const other_probe = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/account/whoami", other_token, {}});
+                REQUIRE(other_probe.response.status == 200U);
+            }
+        }
+    }
+}
+
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpassword
+//
+// When logout_devices is omitted it defaults to true, so other devices' tokens
+// are revoked exactly as if it had been set explicitly.
+SCENARIO("POST /account/password with logout_devices omitted defaults to revoking other devices",
+         "[conformance][client-server][account][security]")
+{
+    GIVEN("alice logged in on DEVICE1 (caller) and DEVICE2 (another device)")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const caller_token = logged_in_token(started.runtime);
+        auto const other_token = login_existing_user(started.runtime, "alice", "DEVICE2");
+        REQUIRE(!other_token.empty());
+
+        WHEN("alice changes her password with no logout_devices field in the body")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime,
+                {"POST", "/_matrix/client/v3/account/password", caller_token,
+                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"NewHorse7!+Ab"})"});
+
+            THEN("the response is 200 and the other device's token is revoked (default true)")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const caller_probe = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/account/whoami", caller_token, {}});
+                REQUIRE(caller_probe.response.status == 200U);
+                auto const other_probe = merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"GET", "/_matrix/client/v3/account/whoami", other_token, {}});
+                REQUIRE(other_probe.response.status == 401U);
+            }
+        }
+    }
+}
+
 // --- POST /_matrix/client/v3/account/deactivate -------------------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountdeactivate
 // IMPLEMENTATION GAP: account deactivation not yet implemented.

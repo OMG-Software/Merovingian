@@ -33,7 +33,8 @@ namespace merovingian::homeserver
 [[nodiscard]] auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
     -> OperationResult;
 [[nodiscard]] auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
-                                              std::string_view new_password) -> OperationResult;
+                                              std::string_view new_password, bool logout_devices = true)
+    -> OperationResult;
 [[nodiscard]] auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view password) -> bool;
 

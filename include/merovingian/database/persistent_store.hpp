@@ -431,6 +431,11 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto revoke_refresh_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t;
 [[nodiscard]] auto revoke_refresh_tokens_for_device(PersistentStore& store, std::string_view user_id,
                                                     std::string_view device_id) -> std::size_t;
+// Un-revokes the access and refresh tokens for one device. Companion to the
+// per-device revoke helpers, used by the password-change logout_devices flow to
+// keep the caller's own session alive after revoking the user's other devices.
+[[nodiscard]] auto restore_tokens_for_device(PersistentStore& store, std::string_view user_id,
+                                             std::string_view device_id) -> std::size_t;
 [[nodiscard]] auto update_device_display_name(PersistentStore& store, std::string_view user_id,
                                               std::string_view device_id, std::string_view display_name) -> bool;
 [[nodiscard]] auto delete_device(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> bool;

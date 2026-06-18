@@ -5942,7 +5942,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
-        auto const result = change_local_user_password(rt.homeserver, req.access_token, *new_password);
+        // Spec §5.5: logout_devices defaults to true — the server MUST revoke the
+        // access tokens of the user's other devices when the password changes. The
+        // caller's own session survives. Explicit false preserves other devices.
+        auto const* logout_devices_member = boolean_member(*object, "logout_devices");
+        auto const logout_devices = logout_devices_member == nullptr ? true : *logout_devices_member;
+        auto const result =
+            change_local_user_password(rt.homeserver, req.access_token, *new_password, logout_devices);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
