@@ -830,10 +830,23 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
         // Check that the sender can set the new event's content power levels.
         if (value_has_content(auth_events.power_levels))
         {
-            auto const old_users = object_member_as_object(*value_is_object(auth_events.power_levels), "users");
+            auto const* old_event_obj = value_is_object(auth_events.power_levels);
+            auto const* old_content = old_event_obj == nullptr ? nullptr : object_member_as_object(*old_event_obj, "content");
+            auto const old_users = old_content == nullptr ? nullptr : object_member_as_object(*old_content, "users");
 
-            // Check users map: cannot elevate anyone above own level, cannot demote
-            // anyone above own level.
+            // Spec v1.18 authorization rules 9.8 and 9.9 (room v12):
+            //   9.9 — For each entry added to or changed in content.users: if the new
+            //         value is greater than the sender's current power level, reject.
+            //         Unlike 9.8 there is NO "other than the sender's own entry"
+            //         carve-out, so the sender cannot self-elevate (#273).
+            //   9.8 — For each entry changed in or removed from content.users, other
+            //         than the sender's own entry: if the current (old) value is
+            //         greater than or equal to the sender's current power level,
+            //         reject. This covers removal (key absent from the new event) and
+            //         uses ">=" so demoting an equal-power peer is also rejected (#274).
+            // An entry is "added or changed" when absent from the old event or when its
+            // new integer value differs from the old; "changed or removed" when absent
+            // from the new event or when its value differs from the old.
             if (new_users != nullptr)
             {
                 for (auto const& user_entry : *new_users)
@@ -844,18 +857,36 @@ auto authorize_event_against_auth_events(canonicaljson::Value const& event, room
                         continue;
                     }
                     auto const old_level =
-                        old_users == nullptr ? 0 : extract_user_level_from_users(*old_users, user_entry.key);
-                    auto const user_old = old_level >= 0 ? old_level : 0;
-                    if (*new_level > pl_sender_power && user_old <= pl_sender_power)
+                        old_users == nullptr ? -1 : extract_user_level_from_users(*old_users, user_entry.key);
+                    auto const added_or_changed = (old_level < 0) || (*new_level != old_level);
+                    // Rule 9.9 — applies to the sender's own entry too (no self-exemption).
+                    if (added_or_changed && *new_level > pl_sender_power)
                     {
-                        if (user_entry.key != *sender)
-                        {
-                            return make_denied("11", "cannot elevate user above own power level");
-                        }
+                        return make_denied("11", "cannot elevate user above own power level");
                     }
-                    if (user_old > pl_sender_power && *new_level != user_old)
+                }
+            }
+            if (old_users != nullptr)
+            {
+                for (auto const& old_entry : *old_users)
+                {
+                    if (old_entry.key == *sender)
                     {
-                        return make_denied("11", "cannot change power level of user above own power level");
+                        continue; // Rule 9.8 exempts the sender's own entry.
+                    }
+                    auto const old_level = extract_user_level_from_users(*old_users, old_entry.key);
+                    if (old_level < 0)
+                    {
+                        continue;
+                    }
+                    auto const* new_level =
+                        new_users == nullptr ? nullptr : integer_member(*new_users, old_entry.key);
+                    auto const removed = (new_level == nullptr);
+                    auto const changed = !removed && (*new_level != old_level);
+                    if ((removed || changed) && old_level >= pl_sender_power)
+                    {
+                        return make_denied("11",
+                                           "cannot change or remove power level of user at or above own power level");
                     }
                 }
             }
