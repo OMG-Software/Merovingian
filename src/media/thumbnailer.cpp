@@ -143,6 +143,27 @@ namespace
         }
     }
 
+    // Renders a reaped worker's wait(2) status into a short, human-readable
+    // suffix so a failed thumbnail surfaces *how* the worker died (signalled,
+    // exited non-zero, or still running at the deadline) rather than a generic
+    // timeout. Diagnostics only — the status never changes the HTTP result.
+    [[nodiscard]] auto describe_worker_status(bool reaped, int status) -> std::string
+    {
+        if (!reaped)
+        {
+            return " (worker still running at deadline)";
+        }
+        if (WIFSIGNALED(status))
+        {
+            return " (worker killed by signal " + std::to_string(WTERMSIG(status)) + ")";
+        }
+        if (WIFEXITED(status))
+        {
+            return " (worker exited with code " + std::to_string(WEXITSTATUS(status)) + ")";
+        }
+        return " (worker ended abnormally)";
+    }
+
     auto set_nonblocking(int fd) -> void
     {
         auto const flags = ::fcntl(fd, F_GETFL, 0);
@@ -421,25 +442,29 @@ auto generate_thumbnail(ThumbnailerConfig const& config, ThumbnailRequest const&
             : std::string{};
 
     // Reap the worker; kill it if it is still alive (timeout or protocol error).
+    // `alive_at_deadline` distinguishes a hung worker (we had to SIGKILL it) from
+    // one that exited or was signalled on its own, which the diagnostics surface.
     auto status = 0;
-    if (::waitpid(pid, &status, WNOHANG) == 0)
+    auto const alive_at_deadline = ::waitpid(pid, &status, WNOHANG) == 0;
+    if (alive_at_deadline)
     {
         ::kill(pid, SIGKILL);
         std::ignore = ::waitpid(pid, &status, 0);
     }
+    auto const worker_status = describe_worker_status(!alive_at_deadline, status);
 
     if (!wrote)
     {
-        return {false, 504U, {}, {}, 0U, 0U, "timed out sending media to worker"};
+        return {false, 504U, {}, {}, 0U, 0U, "timed out sending media to worker" + worker_status};
     }
     if (!read_ok)
     {
-        return {false, 504U, {}, {}, 0U, 0U, "worker timed out or output too large"};
+        return {false, 504U, {}, {}, 0U, 0U, "worker timed out or output too large" + worker_status};
     }
     auto const response = parse_thumbnail_response(response_bytes);
     if (!response.has_value())
     {
-        return {false, 502U, {}, {}, 0U, 0U, "malformed worker response"};
+        return {false, 502U, {}, {}, 0U, 0U, "malformed worker response" + worker_status};
     }
     switch (response->status)
     {
