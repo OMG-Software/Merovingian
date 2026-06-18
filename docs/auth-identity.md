@@ -11,7 +11,7 @@ production-gated.
 - Device ID validation.
 - Password policy shape for future local-password authentication.
 - Account state model for active, locked, and suspended users.
-- Login policy decisions that fail closed for invalid, locked, suspended, or password-disabled accounts.
+- Login policy decisions that fail closed for invalid, locked, or password-disabled accounts; suspended accounts MAY still log in per spec v1.18 §"Account suspension" (the new session is itself suspended and enforced by the request-path gate).
 - Access-token record shape bound to user and device identity.
 - Token hash persistence validation.
 - Token expiry and revocation policy decisions.
@@ -30,11 +30,20 @@ production-gated.
   and device delete routes use runtime token validation.
 - Access-token hashes are durable and hydrate back into runtime sessions after
   restart.
-- Refresh-token hashes are persisted, rotated, and revoked on global logout or
-  device deletion without storing plaintext token material.
-- Login failures for unknown users, wrong passwords, and locked/suspended
-  accounts collapse to the same external `invalid login` result while still
-  recording the internal rejection reason in audit logs.
+- Refresh-token hashes are persisted, rotated, and revoked on global logout,
+  device deletion, or password change with `logout_devices: true` (spec default)
+  without storing plaintext token material; the caller's own device is preserved.
+- Account lock/suspend admin endpoints `GET/PUT /_matrix/client/v1/admin/lock/{userId}`
+  and `/_matrix/client/v1/admin/suspend/{userId}` (admin-gated, anti-enumeration,
+  locality and self/other-admin guards) set the persisted and in-memory account
+  state. The request path enforces spec semantics without revoking sessions: a
+  locked account gets `401 M_USER_LOCKED` with `soft_logout: true` on all
+  endpoints except `/logout` and `/logout/all`; a suspended account gets
+  `403 M_USER_SUSPENDED` on actions outside the spec allowlist. Locked takes
+  precedence over suspended.
+- Login failures for unknown users, wrong passwords, and locked accounts
+  collapse to the same external `invalid login` result while still recording
+  the internal rejection reason in audit logs.
 - Newly issued access and refresh tokens are persisted as keyed
   `token-hash:v3:` digests derived from runtime secret material; token lookup
   still accepts legacy `token-hash:v2:` rows during migration.
@@ -56,7 +65,9 @@ The boundary establishes these guarantees:
 - Plaintext tokens are not a persistable representation.
 - Token logging emits only redacted metadata.
 - Revoked and expired tokens fail closed.
-- Locked and suspended accounts cannot pass the login policy gate.
+- Locked accounts cannot pass the login policy gate; suspended accounts may
+  still log in, and their new session is itself suspended and gated by the
+  request-path `M_USER_SUSPENDED` check.
 - Password login can be disabled per account.
 - Device IDs reject whitespace/control-shaped values.
 - Key API runtime records store route metadata and redacted payload summaries,

@@ -371,6 +371,28 @@ namespace
     return true;
 }
 
+[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended,
+                                          bool locked) -> bool
+{
+    auto const it = std::ranges::find_if(store.users, [user_id](PersistentUser const& u) {
+        return u.user_id == user_id;
+    });
+    if (it == store.users.end())
+    {
+        return false;
+    }
+    auto const statement = record_statement(
+        "update_user_account_state", "UPDATE users SET suspended = $2, locked = $3 WHERE user_id = $1",
+        {public_value(user_id), public_value(suspended ? "true" : "false"), public_value(locked ? "true" : "false")});
+    if (!record_and_persist(store, statement))
+    {
+        return false;
+    }
+    it->suspended = suspended;
+    it->locked = locked;
+    return true;
+}
+
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool
 {
     if (device_exists(store, device))
@@ -625,6 +647,56 @@ namespace
         }
     }
     return revoked;
+}
+
+// Un-revokes the access and refresh tokens belonging to one device. Used by the
+// password-change flow (logout_devices): revoke_access_tokens_for_user /
+// revoke_refresh_tokens_for_user flip every token for the user, then this
+// restores the caller's own device so its session survives the change. Mirrors
+// the per-device revoke helpers with the inverted revoked flag.
+[[nodiscard]] auto restore_tokens_for_device(PersistentStore& store, std::string_view user_id,
+                                             std::string_view device_id) -> std::size_t
+{
+    auto restored = std::size_t{0U};
+    if (record_and_persist(store,
+                           record_statement("restore_device_access_tokens",
+                                            "UPDATE access_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                                            "device_id = $3",
+                                            {
+                                                {"false",                false},
+                                                {std::string{user_id},   false},
+                                                {std::string{device_id}, false}
+    })))
+    {
+        for (auto& token : store.access_tokens)
+        {
+            if (token.user_id == user_id && token.device_id == device_id && token.revoked)
+            {
+                token.revoked = false;
+                ++restored;
+            }
+        }
+    }
+    if (record_and_persist(store,
+                           record_statement("restore_device_refresh_tokens",
+                                            "UPDATE refresh_tokens SET revoked = $1 WHERE user_id = $2 AND "
+                                            "device_id = $3",
+                                            {
+                                                {"false",                false},
+                                                {std::string{user_id},   false},
+                                                {std::string{device_id}, false}
+    })))
+    {
+        for (auto& token : store.refresh_tokens)
+        {
+            if (token.user_id == user_id && token.device_id == device_id && token.revoked)
+            {
+                token.revoked = false;
+                ++restored;
+            }
+        }
+    }
+    return restored;
 }
 
 [[nodiscard]] auto update_device_display_name(PersistentStore& store, std::string_view user_id,

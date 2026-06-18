@@ -114,27 +114,34 @@ SCENARIO("parse_federation_pdu extracts required fields from a valid room v3+ PD
 // The spec-required validation is therefore: "does the PDU have a valid signature
 // from domain_of(sender)?" — NOT "does the transport origin equal domain_of(sender)?".
 //
-// Merovingian additionally enforces that the transport origin matches domain_of(sender)
-// as a hardening policy; that behaviour is NOT a spec MUST and is tested in the
-// unit tests (test_federation_inbound_request.cpp: "Federation PDU authorization
-// rejects sender origin and event signature mismatches").
+// Merovingian fail-closes the signature check: a PDU is accepted only when the
+// sender domain's published Ed25519 key is available AND the signature verifies
+// against it. A signature that is merely present (but cannot be verified for lack
+// of the key) MUST be rejected — otherwise an unverified event enters the event
+// graph. This closes the relayed-PDU fail-open path (#270). The cryptographically
+// verified accepted path (real Ed25519 key material) is exercised in the unit
+// tests — test_federation_inbound_request.cpp:
+//   "Federation PDU authorization verifies JSON event signatures with the remote
+//    signing key" and "...accepts relayed PDUs from non-originating servers".
 SCENARIO("authorize_federation_pdu validates sender-server signatures (spec requirement)",
          "[pdu][format][conformance]")
 {
-    GIVEN("a PDU from @alice:example.org signed by example.org")
+    GIVEN("a PDU from @alice:example.org carrying a signature entry from example.org")
     {
         auto const pdu = merovingian::federation::parse_federation_pdu(valid_pdu);
 
-        WHEN("the expected origin is 'example.org' — the sender's server domain")
+        WHEN("the PDU is authorized with no signing key available for the sender domain")
         {
             auto const decision =
                 merovingian::federation::authorize_federation_pdu(pdu, "example.org");
 
-            THEN("the PDU is accepted — sender-server signature is present and valid")
+            THEN("the PDU is rejected — a present signature is not a verified signature")
             {
-                // Spec MUST: a PDU that carries a valid signature from domain_of(sender)
-                // MUST be accepted. '@alice:example.org' → sender server is 'example.org'.
-                REQUIRE(decision.accepted);
+                // Spec MUST: a PDU MUST carry a VERIFIABLE signature from domain_of(sender).
+                // Without the sender domain's key the signature cannot be verified, so the
+                // event MUST NOT be admitted to the event graph (fail-closed, #270).
+                REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.reason == "sender domain signing key unavailable");
             }
         }
 
@@ -150,6 +157,7 @@ SCENARIO("authorize_federation_pdu validates sender-server signatures (spec requ
                 // Spec MUST: a PDU without a valid signature from domain_of(sender)
                 // MUST be rejected. Unsigned events cannot be attributed to any server.
                 REQUIRE_FALSE(decision.accepted);
+                REQUIRE(decision.reason == "missing event signature for expected server");
             }
         }
     }

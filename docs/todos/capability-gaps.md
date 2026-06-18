@@ -46,7 +46,7 @@ Open work per capability area. Status column reflects the current level in the
 | `POST /_matrix/client/v3/user_directory/search` | `spec-covered` | |
 | `POST /_matrix/client/v3/delete_devices` | `spec-covered` | |
 | `GET /_matrix/client/v3/sync` | `spec-covered` | Unread-notification/summary semantics. `filter_id` parameter now wired and conformance-covered; sync-only stream tokens now bound to the response snapshot for to-device delivery so room keys queued during response construction remain pending for the next sync. |
-| `POST /_matrix/client/v3/account/password` | `spec-covered` | UI-auth re-authentication and `logout_devices` handling. |
+| `POST /_matrix/client/v3/account/password` | `spec-covered` | UI-auth re-authentication. `logout_devices` revocation (other devices' access/refresh tokens and sessions) landed in 0.8.19. |
 | `POST /_matrix/client/v3/createRoom` | `spec-covered` | Broader conformance fixtures. |
 | `POST /_matrix/client/v3/rooms/{roomId}/join` | `spec-covered` | Federation-aware joins. |
 | `POST /_matrix/client/v3/join/{roomIdOrAlias}` | `spec-covered` | Room-alias resolution, `?server_name` hint, federation-aware joins. |
@@ -77,5 +77,7 @@ Open work per capability area. Status column reflects the current level in the
 | `GET /_merovingian/admin/health` | `partial` | Real admin auth model, JSON response shape, deployment checks. |
 | Admin media moderation | `partial` | Richer authorization model, operator docs. |
 | Admin trust and safety review | `runtime-wired` | Matrix v1.18 fixtures, moderator queues, and broader workflow coverage. |
+| `GET/PUT /_matrix/client/v1/admin/lock/{userId}` | `runtime-wired` | Account lock admin endpoint with anti-enumeration (auth before lookup), locality, and self/other-admin guards; request-path `M_USER_LOCKED` (`soft_logout:true`) enforcement landed in 0.8.19. |
+| `GET/PUT /_matrix/client/v1/admin/suspend/{userId}` | `runtime-wired` | Account suspend admin endpoint; request-path `M_USER_SUSPENDED` enforcement with the spec allowlist of permitted actions landed in 0.8.19. |
 | Exported metrics | `runtime-wired` | Stable Prometheus text exposition contract documented in `docs/observability-audit.md`; `X-Merovingian-Request-Id` and `Traceparent` correlation headers landed in 0.8.11. Remaining: operator dashboards and retention/export policy. |
 | Debug logging | `runtime-wired` | Per-module level filtering, wall-clock rate limits, and structured diagnostics with `request_id`/`trace_id`/`span_id` fields landed in 0.5.0/0.8.11. Remaining: formal log-format stability commitment. |

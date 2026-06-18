@@ -372,10 +372,10 @@ auto login_policy(UserIdentity const& user) -> LoginPolicyDecision
         {
             return {false, "account locked"};
         }
-        if (user.state == AccountState::suspended)
-        {
-            return {false, "account suspended"};
-        }
+        // Suspended accounts MAY still log in and create additional sessions per
+        // spec v1.18 §"Account suspension"; the new session is itself suspended
+        // and enforced by the request-path M_USER_SUSPENDED gate. Only locked
+        // accounts are denied a new login.
         return {true, {}};
     }();
     log_diagnostic(result.allowed ? "login_policy.allowed" : "login_policy.denied",

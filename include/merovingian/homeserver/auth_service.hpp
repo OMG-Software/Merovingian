@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include "merovingian/auth/identity.hpp"
 #include "merovingian/homeserver/runtime.hpp"
 
 #include <optional>
@@ -28,12 +29,19 @@ namespace merovingian::homeserver
     -> std::optional<LocalSession>;
 [[nodiscard]] auto authenticated_admin_user(HomeserverRuntime const& runtime, std::string_view access_token)
     -> std::optional<std::string>;
+// Returns the account state (active/locked/suspended) of a server-local user,
+// or std::nullopt if the user is unknown. Used by the request-path moderation
+// gate in the client-server dispatcher to enforce M_USER_LOCKED / M_USER_SUSPENDED
+// per spec v1.18 without revoking the user's access tokens.
+[[nodiscard]] auto account_state_for_user(HomeserverRuntime const& runtime, std::string_view user_id)
+    -> std::optional<auth::AccountState>;
 [[nodiscard]] auto logout_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto logout_all_local_user(HomeserverRuntime& runtime, std::string_view access_token) -> OperationResult;
 [[nodiscard]] auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, std::string_view device_id)
     -> OperationResult;
 [[nodiscard]] auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
-                                              std::string_view new_password) -> OperationResult;
+                                              std::string_view new_password, bool logout_devices = true)
+    -> OperationResult;
 [[nodiscard]] auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view password) -> bool;
 

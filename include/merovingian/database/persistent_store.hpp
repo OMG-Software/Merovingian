@@ -418,6 +418,13 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto store_user(PersistentStore& store, PersistentUser user) -> bool;
 [[nodiscard]] auto update_user_password(PersistentStore& store, std::string_view user_id, std::string_view new_hash)
     -> bool;
+// Sets the locked/suspended flags of a server-local user. Used by the admin
+// account-moderation endpoints (PUT /v1/admin/lock and /suspend). Persists the
+// change and mirrors it into the in-memory store. Returns false if the user is
+// not found. Does NOT revoke access tokens — per spec v1.18, locking and
+// suspending keep existing sessions intact and enforce via request-path gates.
+[[nodiscard]] auto set_user_account_state(PersistentStore& store, std::string_view user_id, bool suspended,
+                                          bool locked) -> bool;
 [[nodiscard]] auto store_device(PersistentStore& store, PersistentDevice device) -> bool;
 [[nodiscard]] auto store_access_token(PersistentStore& store, PersistentAccessToken token) -> bool;
 [[nodiscard]] auto store_refresh_token(PersistentStore& store, PersistentRefreshToken token) -> bool;
@@ -431,6 +438,11 @@ struct PersistentStoreOpenResult final
 [[nodiscard]] auto revoke_refresh_tokens_for_user(PersistentStore& store, std::string_view user_id) -> std::size_t;
 [[nodiscard]] auto revoke_refresh_tokens_for_device(PersistentStore& store, std::string_view user_id,
                                                     std::string_view device_id) -> std::size_t;
+// Un-revokes the access and refresh tokens for one device. Companion to the
+// per-device revoke helpers, used by the password-change logout_devices flow to
+// keep the caller's own session alive after revoking the user's other devices.
+[[nodiscard]] auto restore_tokens_for_device(PersistentStore& store, std::string_view user_id,
+                                             std::string_view device_id) -> std::size_t;
 [[nodiscard]] auto update_device_display_name(PersistentStore& store, std::string_view user_id,
                                               std::string_view device_id, std::string_view display_name) -> bool;
 [[nodiscard]] auto delete_device(PersistentStore& store, std::string_view user_id, std::string_view device_id) -> bool;

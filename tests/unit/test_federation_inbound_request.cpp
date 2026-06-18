@@ -82,14 +82,6 @@ namespace
     return std::string{"{\"origin\":\""} + origin + R"(","origin_server_ts":1000,"pdus":[)" + pdu_json + "]}";
 }
 
-[[nodiscard]] auto comma_delimited_pdu(std::string const& origin) -> std::string
-{
-    // Legacy comma-delimited single-PDU encoding accepted by
-    // parse_federation_pdu: event_id,room_id,type,sender,origin,key_id,signature.
-    return "$event1:example.org,!room1:example.org,m.room.message,@alice:" + origin + ',' + origin +
-           ",ed25519:auto,signature";
-}
-
 [[nodiscard]] auto sodium_is_ready() noexcept -> bool
 {
     static auto const ready = sodium_init() >= 0;
@@ -661,16 +653,19 @@ SCENARIO("Inbound federation applies backoff and increments failure count", "[fe
 SCENARIO("Federation PDU authorization validates the sender server's signature, not the transport origin's",
          "[federation][inbound][pdu][conformance]")
 {
-    GIVEN("PDUs where the sender domain lacks a signature entry in the PDU")
+    GIVEN("a signed JSON PDU from matrix.example.org and variants that lack a sender-server signature")
     {
-        // valid: sender=@alice:matrix.example.org, sig from matrix.example.org
+        // valid: a real Ed25519-signed PDU authored by matrix.example.org.
         // bad_sender: sender changed to @alice:elsewhere — the PDU still only
-        //   has a sig from matrix.example.org, not from elsewhere.example.org
-        // spoofed_sender: sender changed to @alice:matrix.example.org.evil —
-        //   no sig from matrix.example.org.evil in the PDU
-        // bad_signature: sig entry changed to elsewhere.example.org — sender
-        //   @alice:matrix.example.org now has no sig from matrix.example.org
-        auto valid = merovingian::federation::parse_federation_pdu(comma_delimited_pdu("matrix.example.org"));
+        //   carries a signature from matrix.example.org, not elsewhere.example.org.
+        // spoofed_sender: sender changed to @alice:matrix.example.org.evil — no
+        //   signature from matrix.example.org.evil in the PDU.
+        // bad_signature: signature entry changed to elsewhere.example.org — sender
+        //   @alice:matrix.example.org now has no signature from matrix.example.org.
+        auto const origin = std::string{"matrix.example.org"};
+        auto const key_id = std::string{"ed25519:auto"};
+        auto const token  = std::string{"verify-token"};
+        auto valid = merovingian::federation::parse_federation_pdu(signed_json_pdu(origin, key_id, token));
         auto bad_sender = valid;
         bad_sender.sender = "@alice:elsewhere.example.org";
         auto spoofed_sender = valid;
@@ -678,21 +673,27 @@ SCENARIO("Federation PDU authorization validates the sender server's signature, 
         auto bad_signature = valid;
         bad_signature.signatures.front().server_name = "elsewhere.example.org";
 
-        WHEN("PDUs are authorized against origin 'matrix.example.org'")
+        auto key = merovingian::federation::FederationKeyRecord{};
+        key.server_name      = origin;
+        key.key_id           = key_id;
+        key.valid_until_ts   = 2000U;
+        key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
+
+        WHEN("the PDUs are authorized with the matrix.example.org signing key")
         {
-            auto const accepted = merovingian::federation::authorize_federation_pdu(valid, "matrix.example.org");
+            auto const accepted = merovingian::federation::authorize_federation_pdu(valid, origin, key);
             auto const rejected_sender =
-                merovingian::federation::authorize_federation_pdu(bad_sender, "matrix.example.org");
+                merovingian::federation::authorize_federation_pdu(bad_sender, origin, key);
             auto const rejected_spoofed_sender =
-                merovingian::federation::authorize_federation_pdu(spoofed_sender, "matrix.example.org");
+                merovingian::federation::authorize_federation_pdu(spoofed_sender, origin, key);
             auto const rejected_signature =
-                merovingian::federation::authorize_federation_pdu(bad_signature, "matrix.example.org");
+                merovingian::federation::authorize_federation_pdu(bad_signature, origin, key);
 
             THEN("only a PDU whose sender server has signed the event is accepted")
             {
                 // Spec MUST: signature from sender_domain(pdu.sender) is required.
-                // bad_sender/spoofed_sender: sender domain changed, no matching
-                // signature entry → rejected for missing sender-server signature.
+                // bad_sender/spoofed_sender/bad_signature: sender domain has no
+                // matching signature entry → rejected at the structural signature check.
                 REQUIRE(accepted.accepted);
                 REQUIRE_FALSE(rejected_sender.accepted);
                 REQUIRE(rejected_sender.reason == "missing event signature for expected server");
@@ -706,32 +707,50 @@ SCENARIO("Federation PDU authorization validates the sender server's signature, 
     }
 }
 
-SCENARIO("Federation PDU authorization accepts relayed PDUs from non-originating servers",
+SCENARIO("Federation PDU authorization fail-closes relayed PDUs whose sender-domain key is unavailable",
          "[federation][inbound][pdu][conformance]")
 {
-    GIVEN("a JSON PDU created and signed by alice.example.org but delivered by relay.example.org")
+    GIVEN("a JSON PDU authored and signed by alice.example.org but delivered by relay.example.org")
     {
-        // The spec allows any server to be the transport origin for a PDU.
-        // The event was authored by alice.example.org; relay.example.org is
-        // forwarding it. The PDU carries a signature from alice.example.org.
+        // The spec allows any server to be the transport origin for a PDU. The event
+        // was authored by alice.example.org; relay.example.org is forwarding it. The
+        // PDU carries a real Ed25519 signature from alice.example.org.
         auto const event_server = std::string{"alice.example.org"};
         auto const relay_origin  = std::string{"relay.example.org"};
         auto const key_id        = std::string{"ed25519:auto"};
         auto const token         = std::string{"alice-server-key"};
         auto const pdu = merovingian::federation::parse_federation_pdu(
             signed_json_pdu(event_server, key_id, token));
+        auto key = merovingian::federation::FederationKeyRecord{};
+        key.server_name      = event_server;
+        key.key_id           = key_id;
+        key.valid_until_ts   = 2000U;
+        key.public_key_bytes = merovingian::federation::test::keypair_from_seed(token).public_key;
 
-        WHEN("the PDU is authorized with relay.example.org as the transport origin")
+        WHEN("the PDU is authorized with the sender domain's signing key")
         {
-            // No signing key for the relay is provided; structural check only.
-            auto const accepted = merovingian::federation::authorize_federation_pdu(pdu, relay_origin);
+            auto const accepted =
+                merovingian::federation::authorize_federation_pdu(pdu, relay_origin, key);
 
-            THEN("the PDU is accepted because alice.example.org signed the event")
+            THEN("the PDU is accepted because alice.example.org's signature verifies")
             {
-                // Spec conformance: transport origin != sender_domain is permitted.
-                // The signature entry from alice.example.org is present in the
-                // PDU, so the structural check passes.
+                // Spec conformance: transport origin != sender_domain is permitted
+                // when the sender domain's signature cryptographically verifies.
                 REQUIRE(accepted.accepted);
+            }
+        }
+
+        WHEN("the PDU is authorized with no sender-domain signing key available")
+        {
+            // Fail-closed (#270): a relayed PDU whose sender-domain key was not
+            // resolved MUST be rejected — the signature cannot be verified.
+            auto const rejected =
+                merovingian::federation::authorize_federation_pdu(pdu, relay_origin);
+
+            THEN("the PDU is rejected because the sender domain key is unavailable")
+            {
+                REQUIRE_FALSE(rejected.accepted);
+                REQUIRE(rejected.reason == "sender domain signing key unavailable");
             }
         }
     }

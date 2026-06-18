@@ -16,6 +16,17 @@ This capability note describes runtime-wired observability and audit behavior.
 - Durable audit rows for runtime startup, authentication, session, device, key
   API, room, media, federation, and trust-and-safety actions.
 - Durable admin action rows for moderation and trust-and-safety review actions.
+- Account-moderation audit rows: `account.locked` and `account.suspended`
+  (admin category) are appended when an admin locks/unlocks or
+  suspends/unsuspends a user via `/_matrix/client/v1/admin/lock/{userId}` or
+  `/_matrix/client/v1/admin/suspend/{userId}`, keyed by admin actor, target
+  user, and a `locked`/`unlocked`/`suspended`/`unsuspended` reason code.
+- Request-path account-state audit rows: `request.user_locked` and
+  `request.user_suspended` (auth category) are appended when an authenticated
+  request is rejected because the caller is locked (`M_USER_LOCKED`) or
+  suspended (`M_USER_SUSPENDED`), keyed by actor, target path, and reason.
+- `auth.password_changed` (auth category) records a password change and notes
+  when `logout_devices: true` revoked the user's other device tokens/sessions.
 
 ## Failure routing (0.5.0)
 
@@ -30,6 +41,8 @@ to `audit_log`:
 | Login rejected | `auth` | `auth` | `login.rejected` |
 | Access-token rejected | `auth` | `auth` | `access_token.rejected` |
 | Client-server request rejected | `client_server` | `policy` | `request.rejected` |
+| Locked-user request rejected | `client_server` | `auth` | `request.user_locked` |
+| Suspended-user request rejected | `client_server` | `auth` | `request.user_suspended` |
 | Registration policy denied | `auth` | `policy` | `registration_policy.denied` |
 
 The audit row is keyed by the same actor / target / reason that

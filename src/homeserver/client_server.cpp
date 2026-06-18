@@ -955,6 +955,75 @@ namespace
         return std::get_if<bool>(&value->storage());
     }
 
+    // Spec v1.18 §"Account suspension": the actions a suspended user MAY
+    // perform is an implementation detail, but servers SHOULD permit at least:
+    // login + new sessions, /sync and /messages, key verification/cross-signing,
+    // key backup, leaving rooms / rejecting invites, redacting their own events,
+    // logout, deleting devices, account deactivation, and adding admin contacts.
+    // Everything else (joining/knocking, invites, sending messages, profile
+    // changes, redacting others' events, creating rooms) is blocked by the
+    // request-path gate with M_USER_SUSPENDED. `path` is the query-stripped
+    // request path. Best-effort prefix matching; the spec leaves the exact
+    // disallowed set to the implementation.
+    [[nodiscard]] auto action_allowed_while_suspended(std::string_view method, std::string_view path) noexcept -> bool
+    {
+        // Login is unauthenticated (handled before the gate) but is listed for
+        // completeness: a suspended user creating a new session is permitted.
+        if (path == "/_matrix/client/v3/login" || path == "/_matrix/client/v3/sync")
+        {
+            return true;
+        }
+        // Logout and logout/all are always permitted (also exempt from locking).
+        if (path == "/_matrix/client/v3/logout" || path == "/_matrix/client/v3/logout/all")
+        {
+            return true;
+        }
+        // Device key verification / cross-signing / key claiming & querying.
+        if (starts_with(path, "/_matrix/client/v3/keys"))
+        {
+            return true;
+        }
+        // Server-side room key backup (read + populate).
+        if (starts_with(path, "/_matrix/client/v3/room_keys"))
+        {
+            return true;
+        }
+        // Cross-signing key storage and device management endpoints.
+        if (starts_with(path, "/_matrix/client/v3/keys/device_signing")
+            || starts_with(path, "/_matrix/client/v3/account/deactivate"))
+        {
+            return true;
+        }
+        if (path == "/_matrix/client/v3/devices" || path == "/_matrix/client/v3/delete_devices"
+            || starts_with(path, "/_matrix/client/v3/devices/"))
+        {
+            return true;
+        }
+        // Per-room allowed actions: leave/reject invites, read /messages, redact.
+        if (starts_with(path, "/_matrix/client/v3/rooms/"))
+        {
+            auto constexpr leave_marker = std::string_view{"/leave"};
+            auto constexpr messages_marker = std::string_view{"/messages"};
+            auto constexpr redact_marker = std::string_view{"/redact"};
+            // PUT /rooms/{roomId}/redact/{eventId} — redacting (own events).
+            if (method == "PUT" && path.find(redact_marker) != std::string_view::npos)
+            {
+                return true;
+            }
+            // POST /rooms/{roomId}/leave — leave a room or reject an invite.
+            if (method == "POST" && path.find(leave_marker) != std::string_view::npos)
+            {
+                return true;
+            }
+            // GET /rooms/{roomId}/messages — see and receive messages.
+            if (method == "GET" && path.find(messages_marker) != std::string_view::npos)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     [[nodiscard]] auto integer_member(canonicaljson::Object const& object, std::string_view key) noexcept
         -> std::int64_t const*
     {
@@ -1190,6 +1259,103 @@ namespace
             return std::nullopt;
         }
         return *object;
+    }
+
+    // Handles GET/PUT /_matrix/client/v1/admin/lock/{userId} and
+    // /_matrix/client/v1/admin/suspend/{userId} (spec v1.18 §"Account locking"
+    // and §"Account suspension"). `is_lock` selects the lock endpoint (and the
+    // "locked" body/response field); otherwise the suspend endpoint is handled.
+    // Authorization (caller MUST be a server admin) is checked before any target
+    // lookup to prevent user enumeration. Self-targeting and targeting another
+    // administrator are forbidden on PUT (self) and on both verbs (other admin).
+    [[nodiscard]] auto handle_account_moderation(ClientServerRuntime& rt, LocalHttpRequest const& req,
+                                                 std::string_view request_path, bool is_lock) -> DispatchResult
+    {
+        auto const admin = authenticated_admin_user(rt.homeserver, req.access_token);
+        if (!admin.has_value())
+        {
+            // Spec MUST: caller MUST be a server admin; checked before lookup.
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "Requesting user is not a server administrator.");
+        }
+        auto constexpr lock_prefix = std::string_view{"/_matrix/client/v1/admin/lock/"};
+        auto constexpr suspend_prefix = std::string_view{"/_matrix/client/v1/admin/suspend/"};
+        auto const prefix = is_lock ? lock_prefix : suspend_prefix;
+        if (!starts_with(request_path, prefix))
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        auto const encoded_user_id = request_path.substr(prefix.size());
+        auto const target_user_id = core::percent_decode_path_component(encoded_user_id);
+        // Spec MUST: 400 M_INVALID_PARAM when the userId is not local. A
+        // syntactically invalid or non-local ID is rejected without a lookup.
+        auto const& local_server = rt.homeserver.config.server().server_name;
+        if (!auth::user_id_is_valid(target_user_id) || server_name_from_user_id(target_user_id) != local_server)
+        {
+            return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "User does not belong to the local server.");
+        }
+        // PUT must not target the caller's own account (spec MUST: 403).
+        if (req.method == "PUT" && target_user_id == *admin)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "Cannot moderate your own account.");
+        }
+        // Locate the target user (anti-enumeration: only after caller auth).
+        auto const target = std::ranges::find_if(rt.homeserver.database.users,
+                                                 [&target_user_id](LocalUser const& current) {
+                                                     return current.user_id == target_user_id;
+                                                 });
+        if (target == rt.homeserver.database.users.end())
+        {
+            // Spec MUST: 404 M_NOT_FOUND when the user is unknown (or deactivated).
+            return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "User not found.");
+        }
+        // Spec MUST: 403 M_FORBIDDEN when the target is another administrator.
+        if (target->admin && target_user_id != *admin)
+        {
+            return dispatch_err(req, rt, 403U, "M_FORBIDDEN", "Cannot moderate another administrator.");
+        }
+        auto const field_name = is_lock ? std::string{"locked"} : std::string{"suspended"};
+        if (req.method == "GET")
+        {
+            auto const value = is_lock ? target->locked : target->suspended;
+            return dispatch_resp(req, rt, 200U,
+                                 json_serialize(json_obj({json_member(field_name, json_bool(value))})));
+        }
+        if (req.method != "PUT")
+        {
+            return dispatch_err(req, rt, 404U, "M_UNRECOGNIZED", "route not found");
+        }
+        // PUT: the boolean body member is required (spec MUST: 400 M_BAD_JSON).
+        auto const body = parsed_json_object(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "Request body must be a JSON object.");
+        }
+        auto const* flag = boolean_member(*body, field_name);
+        if (flag == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                is_lock ? "Missing required 'locked' body member."
+                                        : "Missing required 'suspended' body member.");
+        }
+        // Preserve the other moderation flag when updating one of the two.
+        auto const new_suspended = is_lock ? target->suspended : *flag;
+        auto const new_locked = is_lock ? *flag : target->locked;
+        if (!database::set_user_account_state(rt.homeserver.database.persistent_store, target_user_id,
+                                              new_suspended, new_locked))
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "Failed to persist account state.");
+        }
+        // Mirror into the in-memory LocalUser vector so the request-path gate
+        // (account_state_for_user) and subsequent GET reads see the new state
+        // without a restart. set_user_account_state persists + updates the
+        // PersistentUser vector; this updates the authoritative LocalUser vector.
+        target->suspended = new_suspended;
+        target->locked = new_locked;
+        auto const audit_event = is_lock ? std::string_view{"account.locked"} : std::string_view{"account.suspended"};
+        auto const reason_code = *flag ? (is_lock ? "locked" : "suspended") : (is_lock ? "unlocked" : "unsuspended");
+        append_local_audit(rt.homeserver.database, observability::AuditCategory::admin, audit_event, *admin,
+                           target_user_id, reason_code);
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member(field_name, json_bool(*flag))})));
     }
 
     [[nodiscard]] auto serialized_value(canonicaljson::Value const& value) -> std::optional<std::string>
@@ -5811,6 +5977,50 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                 {"target", observability::sanitized_http_target(req.target), false},
                                                 {"actor",  *user,                                            false}
     });
+    // Account moderation request-path gate (spec v1.18 §"Account locking" /
+    // §"Account suspension"). Enforced after authentication succeeds and before
+    // route dispatch. Tokens are NOT revoked — the spec says locking/suspending
+    // keep existing sessions intact; enforcement is per-request.
+    auto const account_state = account_state_for_user(rt.homeserver, *user);
+    if (account_state.has_value())
+    {
+        // Locked: M_USER_LOCKED with soft_logout:true on all but POST /logout
+        // and POST /logout/all (spec MUST). Locked takes precedence over
+        // suspended.
+        if (*account_state == auth::AccountState::locked
+            && !((req.method == "POST" && request_path == "/_matrix/client/v3/logout")
+                 || (req.method == "POST" && request_path == "/_matrix/client/v3/logout/all")))
+        {
+            log_diagnostic_audit(rt.homeserver.database, "auth", "request.user_locked",
+                                 {
+                                     {"actor",  *user,                                            false},
+                                     {"target", observability::sanitized_http_target(req.target), false},
+                                     {"status", "401",                                            false}
+                                 },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "request.user_locked", *user, std::string{*user}, "account locked");
+            auto const body = json_serialize(json_obj({
+                json_member("errcode", json_str("M_USER_LOCKED")),
+                json_member("error", json_str("This account has been locked")),
+                json_member("soft_logout", json_bool(true)),
+            }));
+            return dispatch_resp(req, rt, 401U, std::move(body));
+        }
+        // Suspended: M_USER_SUSPENDED on actions outside the spec's allowlist.
+        if (*account_state == auth::AccountState::suspended
+            && !action_allowed_while_suspended(req.method, request_path))
+        {
+            log_diagnostic_audit(rt.homeserver.database, "auth", "request.user_suspended",
+                                 {
+                                     {"actor",  *user,                                            false},
+                                     {"target", observability::sanitized_http_target(req.target), false},
+                                     {"status", "403",                                            false}
+                                 },
+                                 observability::LogEventSeverity::warning, observability::AuditCategory::auth,
+                                 "request.user_suspended", *user, std::string{*user}, "account suspended");
+            return dispatch_err(req, rt, 403U, "M_USER_SUSPENDED", "You cannot perform this action while suspended.");
+        }
+    }
     if (req.method == "POST" && req.target == "/_matrix/client/v3/logout/all")
     {
         auto const r = logout_all_local_user(rt.homeserver, req.access_token);
@@ -5942,7 +6152,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
         }
-        auto const result = change_local_user_password(rt.homeserver, req.access_token, *new_password);
+        // Spec §5.5: logout_devices defaults to true — the server MUST revoke the
+        // access tokens of the user's other devices when the password changes. The
+        // caller's own session survives. Explicit false preserves other devices.
+        auto const* logout_devices_member = boolean_member(*object, "logout_devices");
+        auto const logout_devices = logout_devices_member == nullptr ? true : *logout_devices_member;
+        auto const result =
+            change_local_user_password(rt.homeserver, req.access_token, *new_password, logout_devices);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, result.status == 401U ? "M_UNKNOWN_TOKEN" : "M_FORBIDDEN",
@@ -7862,6 +8078,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
         }
         return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room summary not found");
+    }
+
+    // Account moderation endpoints (spec v1.18 §"Account locking" / §"Account
+    // suspension"). Matched after all other routes; the handler enforces admin
+    // auth, anti-enumeration, and lookup rules.
+    if (starts_with(request_path, "/_matrix/client/v1/admin/lock/")
+        || starts_with(request_path, "/_matrix/client/v1/admin/suspend/"))
+    {
+        return handle_account_moderation(rt, req, request_path,
+                                         starts_with(request_path, "/_matrix/client/v1/admin/lock/"));
     }
 
     log_diagnostic("request.route_not_found", {

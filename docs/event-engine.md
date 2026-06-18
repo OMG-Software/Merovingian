@@ -27,7 +27,12 @@ Implemented now:
 - full Matrix v6+ event authorization rules (14-step algorithm per spec
   section 10): create events, sender-domain validation, member joins/invites/
   leaves/bans with join-rule and power-level checks, power-level elevation
-  guard, state-default and events-default power enforcement, redaction power
+  guard (applied to the sender's own entry too, per spec rule 9.9 — a user
+  cannot self-elevate above their current level in a single event), removal
+  and demotion guard over the union of old and new `users` keys (per spec
+  rule 9.8 — a user at or above the sender's power cannot be changed or
+  removed by a non-superior sender), state-default and events-default power
+  enforcement, redaction power
 - auth-event map construction from current room state for authorization
 - auth checking wired into the event sending path: composed events are
   authorized against current room state before persistence; auth is

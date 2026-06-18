@@ -958,13 +958,14 @@ auto delete_local_device(HomeserverRuntime& runtime, std::string_view user_id, s
 }
 
 auto change_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
-                                std::string_view new_password) -> OperationResult
+                                std::string_view new_password, bool logout_devices) -> OperationResult
 {
-    auto const user_id = authenticated_user(runtime, access_token);
-    if (!user_id.has_value())
+    auto const session = authenticated_session(runtime, access_token);
+    if (!session.has_value())
     {
         return make_operation_result(false, {}, "unauthenticated", 401U);
     }
+    auto const& user_id = session->user_id;
     if (!auth::password_is_acceptable(new_password))
     {
         return make_operation_result(false, {}, "password rejected", 400U);
@@ -974,21 +975,40 @@ auto change_local_user_password(HomeserverRuntime& runtime, std::string_view acc
     {
         return make_operation_result(false, {}, "password hashing failed", 500U);
     }
-    if (!database::update_user_password(runtime.database.persistent_store, *user_id, *new_hash))
+    if (!database::update_user_password(runtime.database.persistent_store, user_id, *new_hash))
     {
         return make_operation_result(false, {}, "password update failed", 500U);
     }
     // Mirror the change into the in-memory LocalUser so subsequent logins see the new hash.
     auto const it = std::ranges::find_if(runtime.database.users, [&](LocalUser const& u) {
-        return u.user_id == *user_id;
+        return u.user_id == user_id;
     });
     if (it != runtime.database.users.end())
     {
         it->password_hash = *new_hash;
     }
-    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.password_changed", *user_id, {},
-                       "changed");
-    return make_operation_result(true, *user_id);
+    if (logout_devices)
+    {
+        // Spec §5.5 (POST /account/password, logout_devices defaults to true): the
+        // server MUST revoke the access tokens of all the user's OTHER devices. A
+        // token stolen from another device must not survive a password change.
+        // Revoke every token for the user, then restore the caller's own device so
+        // its session survives, and flip the in-memory sessions of the other devices.
+        std::ignore = database::revoke_access_tokens_for_user(runtime.database.persistent_store, user_id);
+        std::ignore = database::revoke_refresh_tokens_for_user(runtime.database.persistent_store, user_id);
+        std::ignore =
+            database::restore_tokens_for_device(runtime.database.persistent_store, user_id, session->device_id);
+        for (auto& candidate : runtime.database.sessions)
+        {
+            if (candidate.user_id == user_id && candidate.device_id != session->device_id)
+            {
+                candidate.revoked = true;
+            }
+        }
+    }
+    append_local_audit(runtime.database, observability::AuditCategory::auth, "auth.password_changed", user_id,
+                       session->device_id, logout_devices ? "changed; revoked other devices" : "changed");
+    return make_operation_result(true, std::string{user_id});
 }
 
 auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token, std::string_view password)
@@ -1005,6 +1025,28 @@ auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view acc
         return false;
     }
     return password_matches(user->password_hash, password);
+}
+
+auto account_state_for_user(HomeserverRuntime const& runtime, std::string_view user_id)
+    -> std::optional<auth::AccountState>
+{
+    auto const* user = find_user(runtime.database, user_id);
+    if (user == nullptr)
+    {
+        return std::nullopt;
+    }
+    // Locked takes precedence over suspended: a locked account is fully gated
+    // (M_USER_LOCKED on all but logout), whereas a suspended account keeps a
+    // spec-defined allowlist of permitted actions.
+    if (user->locked)
+    {
+        return auth::AccountState::locked;
+    }
+    if (user->suspended)
+    {
+        return auth::AccountState::suspended;
+    }
+    return auth::AccountState::active;
 }
 
 } // namespace merovingian::homeserver

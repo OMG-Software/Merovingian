@@ -1180,43 +1180,45 @@ auto authorize_federation_pdu(FederationPdu const& pdu,
     {
         return make_decision(false, 403U, signature.reason);
     }
-    // Verify the sender's signature when we hold a key for the sender's domain.
-    // For direct connections, key->server_name == pdu_sender_domain (transport peer
-    // is the event author). For relayed PDUs, the caller resolves the sender domain's
-    // key via remote_key_resolver and passes it here before calling this function.
-    // Matching on key->server_name (not expected_origin) ensures the right signatures
-    // entry is used for both direct and relayed PDUs without changing the API contract.
-    if (key.has_value() && key->server_name == pdu_sender_domain)
+    // Fail-closed (#270): the sender's Ed25519 signature cannot be verified without
+    // the sender domain's public signing key, so a PDU whose key is unavailable MUST
+    // be rejected rather than admitted to the event graph. This closes the relayed-PDU
+    // fail-open path (a transport origin forwards an event whose sender-domain key was
+    // never resolved) and the test-only no-key path. Spec §signing-events: every PDU
+    // MUST carry a verifiable signature from the sender's homeserver; unverified events
+    // are silently dropped (src/federation/CLAUDE.md rule 2).
+    if (!key.has_value() || key->server_name != pdu_sender_domain)
     {
-        auto const room_ver = pdu.room_version.empty() ? std::string{"12"} : pdu.room_version;
-        auto const* room_version = rooms::find_room_version_policy(room_ver);
-        if (room_version == nullptr)
+        return make_decision(false, 403U, "sender domain signing key unavailable");
+    }
+    auto const room_ver = pdu.room_version.empty() ? std::string{"12"} : pdu.room_version;
+    auto const* room_version = rooms::find_room_version_policy(room_ver);
+    if (room_version == nullptr)
+    {
+        return make_decision(false, 500U, "room version policy is unavailable");
+    }
+    if (!pdu.json.empty())
+    {
+        auto const parsed = canonicaljson::parse_lossless(pdu.json);
+        if (parsed.error != canonicaljson::ParseError::none)
         {
-            return make_decision(false, 500U, "room version policy is unavailable");
+            return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
         }
-        if (!pdu.json.empty())
+        auto const& public_key = key->public_key_bytes;
+        auto verifier = FederationEd25519Verifier{};
+        // Use key->server_name (the sender domain) to look up the right signature
+        // entry in the PDU's signatures object — correct for both direct and relayed PDUs.
+        auto const verified =
+            events::verify_event_signature(parsed.value, *room_version, {key->server_name, key->key_id},
+                                           crypto::Ed25519PublicKey{public_key}, verifier);
+        if (!verified.valid)
         {
-            auto const parsed = canonicaljson::parse_lossless(pdu.json);
-            if (parsed.error != canonicaljson::ParseError::none)
-            {
-                return make_decision(false, 400U, "PDU JSON is not canonical-parseable");
-            }
-            auto const& public_key = key->public_key_bytes;
-            auto verifier = FederationEd25519Verifier{};
-            // Use key->server_name (the sender domain) to look up the right signature
-            // entry in the PDU's signatures object — correct for both direct and relayed PDUs.
-            auto const verified =
-                events::verify_event_signature(parsed.value, *room_version, {key->server_name, key->key_id},
-                                               crypto::Ed25519PublicKey{public_key}, verifier);
-            if (!verified.valid)
-            {
-                return make_decision(false, 403U, verified.error);
-            }
+            return make_decision(false, 403U, verified.error);
         }
-        else
-        {
-            return make_decision(false, 400U, "comma-delimited PDUs require JSON for cryptographic verification");
-        }
+    }
+    else
+    {
+        return make_decision(false, 400U, "comma-delimited PDUs require JSON for cryptographic verification");
     }
     // Event-authorization rules (authorize_event_against_auth_events) are enforced
     // in the pdu_sink before persistence — see local_http_router.cpp wire_federation_callbacks_impl.

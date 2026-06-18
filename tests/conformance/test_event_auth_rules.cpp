@@ -7,6 +7,8 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -77,6 +79,33 @@ namespace
            "\":" + std::to_string(user_level) +
            "}},\"origin_server_ts\":2,\"depth\":1,\"prev_events\":[],\"auth_events\":[],\"hashes\":{"
            "\"sha256\":\"hash\"}}";
+}
+
+[[nodiscard]] auto make_power_levels_event_users(
+    std::string_view sender, std::int64_t ban_level, std::int64_t invite_level, std::int64_t kick_level,
+    std::int64_t redact_level, std::int64_t users_default, std::int64_t state_default,
+    std::int64_t events_default, std::vector<std::pair<std::string, std::int64_t>> const& users) -> std::string
+{
+    // Like make_power_levels_event() but allows multiple entries in content.users,
+    // so auth-rule 9.8 ("changed in, or removed from") can be exercised by omitting
+    // a user that was present in the prior power_levels event.
+    auto users_json = std::string{};
+    for (auto const& [user_id, level] : users)
+    {
+        if (!users_json.empty())
+        {
+            users_json += ',';
+        }
+        users_json += "\"" + user_id + "\":" + std::to_string(level);
+    }
+    return "{\"type\":\"m.room.power_levels\",\"state_key\":\"\",\"sender\":\"" + std::string{sender} +
+           "\",\"room_id\":\"!room:example.org\",\"content\":{\"ban\":" + std::to_string(ban_level) +
+           ",\"invite\":" + std::to_string(invite_level) + ",\"kick\":" + std::to_string(kick_level) +
+           ",\"redact\":" + std::to_string(redact_level) + ",\"users_default\":" + std::to_string(users_default) +
+           ",\"state_default\":" + std::to_string(state_default) +
+           ",\"events_default\":" + std::to_string(events_default) + ",\"users\":{" + users_json +
+           "}},\"origin_server_ts\":2,\"depth\":1,\"prev_events\":[],\"auth_events\":[],\"hashes\":{\"sha256\":"
+           "\"hash\"}}";
 }
 
 [[nodiscard]] auto make_member_event(std::string_view sender, std::string_view state_key,
@@ -773,6 +802,235 @@ SCENARIO("Auth rules reject power level changes that elevate a user above the se
             THEN("the event is rejected because it elevates a user above the sender")
             {
                 REQUIRE_FALSE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Room Version 12 (MSC4289) — Authorization Rules, rule 9.9
+// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md
+//
+// "For each entry being added to, or changed in, the users property: If the new
+// value is greater than the sender's current power level, reject." Unlike rule 9.8
+// (demotion), rule 9.9 carries NO "other than the sender's own entry" carve-out, so
+// the sender MUST NOT be able to elevate their own power above their current level.
+SCENARIO("Auth rules reject a sender self-elevating their own power above their current level",
+         "[events][auth][power-levels][conformance]")
+{
+    GIVEN("a v12 room where non-creator @alice has power=50 and tries to set herself to power=100")
+    {
+        auto const pl_json =
+            make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 100);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        // @alice must NOT be the creator (creators have infinite power in v12).
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels = merovingian::canonicaljson::parse_lossless(
+                                       make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                                               "@alice:example.org", 50))
+                                       .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — rule 9.9 has no sender self-exemption")
+            {
+                // Spec MUST: the new value (100) is greater than the sender's current
+                // power level (50); the sender is NOT exempt from rule 9.9.
+                REQUIRE_FALSE(decision.allowed);
+                REQUIRE(decision.rule_step == "11");
+            }
+        }
+    }
+
+    GIVEN("a v12 room where non-creator @alice has power=50 and keeps herself at power=50")
+    {
+        auto const pl_json =
+            make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0, "@alice:example.org", 50);
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels = merovingian::canonicaljson::parse_lossless(
+                                       make_power_levels_event("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                                               "@alice:example.org", 50))
+                                       .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed — the sender may keep or demote their own level")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+}
+
+// Spec: Matrix Room Version 12 (MSC4289) — Authorization Rules, rule 9.8
+// URL: ../../docs/matrix-v1.18-spec/rooms/v12.md
+//
+// "For each entry being changed in, or removed from, the users property, other than
+// the sender's own entry: If the current value is greater than or equal to the
+// sender's current power level, reject." This covers both modification AND removal
+// (a user omitted from the new content.users is "removed from" the property) and
+// uses "greater than or equal to" — so demoting an equal-power peer is also rejected.
+SCENARIO("Auth rules reject removal or demotion of a user at or above the sender's power",
+         "[events][auth][power-levels][conformance]")
+{
+    GIVEN("a v12 room where @admin has power=100, @alice has power=50, and @alice omits @admin from the new event")
+    {
+        // Prior power_levels: @admin=100, @alice=50. New event from @alice (50, meeting
+        // state_default=50) lists only herself — @admin is REMOVED from content.users.
+        auto const pl_json = make_power_levels_event_users("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                                           {{"@alice:example.org", 50}});
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                              {{"@admin:example.org", 100}, {"@alice:example.org", 50}}))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — removing a superior user is forbidden by rule 9.8")
+            {
+                // Spec MUST: the current value (100) is >= the sender's power (50); the
+                // removed entry is "removed from" the users property and is not the
+                // sender's own entry.
+                REQUIRE_FALSE(decision.allowed);
+                REQUIRE(decision.rule_step == "11");
+            }
+        }
+    }
+
+    GIVEN("a v12 room where @bob and @alice both have power=50, and @alice demotes @bob to 0")
+    {
+        // Prior power_levels lists only the two equal-power peers (no superior). The
+        // room creator @admin (infinite power) is intentionally absent from users so
+        // that the only rule in play is 9.8's "greater than or equal to" demotion check.
+        auto const pl_json = make_power_levels_event_users("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                                           {{"@alice:example.org", 50}, {"@bob:example.org", 0}});
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                              {{"@alice:example.org", 50}, {"@bob:example.org", 50}}))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is rejected — demoting an equal-power peer is forbidden (>=)")
+            {
+                // Spec MUST: the current value (50) is >= the sender's power (50); the
+                // "greater than or equal to" wording forbids demoting an equal-power peer.
+                REQUIRE_FALSE(decision.allowed);
+                REQUIRE(decision.rule_step == "11");
+            }
+        }
+    }
+
+    GIVEN("a v12 room where @alice has power=50 and demotes a lower-power @carol from 20 to 0")
+    {
+        auto const pl_json = make_power_levels_event_users("@alice:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                                           {{"@alice:example.org", 50}, {"@carol:example.org", 0}});
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        // No superior present: only @alice (50) and the lower-power @carol (20). The
+        // creator @admin (infinite power) is absent from users so nothing else triggers.
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                              {{"@alice:example.org", 50}, {"@carol:example.org", 20}}))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@alice:example.org", "@alice:example.org", "join"))
+                                        .value;
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed — demoting a lower-power user is permitted")
+            {
+                REQUIRE(decision.allowed);
+            }
+        }
+    }
+
+    GIVEN("a v12 room where @admin is the creator and removes a lower-power @alice (50) from the new event")
+    {
+        // @admin (the creator, infinite power) authors a new power_levels event with an
+        // empty users map — @alice (50) is removed and the creator is NOT listed (a
+        // creator must not appear in content.users). Since 50 < infinite, rule 9.8 does
+        // not forbid the removal.
+        auto const pl_json = make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                                           {});
+        auto const parsed = merovingian::canonicaljson::parse_lossless(pl_json);
+        REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+        auto const* policy = merovingian::rooms::find_room_version_policy("12");
+        REQUIRE(policy != nullptr);
+        auto auth_events = merovingian::events::AuthEventMap{};
+        auth_events.create = merovingian::canonicaljson::parse_lossless(make_create_event("@admin:example.org")).value;
+        auth_events.power_levels =
+            merovingian::canonicaljson::parse_lossless(
+                make_power_levels_event_users("@admin:example.org", 50, 0, 50, 50, 0, 50, 0,
+                                              {{"@admin:example.org", 100}, {"@alice:example.org", 50}}))
+                .value;
+        auth_events.sender_member = merovingian::canonicaljson::parse_lossless(
+                                        make_member_event("@admin:example.org", "@admin:example.org", "join"))
+                                        .value;
+
+        WHEN("the power_levels event is authorized")
+        {
+            auto const decision =
+                merovingian::events::authorize_event_against_auth_events(parsed.value, *policy, auth_events);
+
+            THEN("the event is allowed — removing a lower-power user is permitted")
+            {
+                REQUIRE(decision.allowed);
             }
         }
     }
