@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.18
+Version:        0.8.19
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -96,6 +96,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 18 2026 James Chapman <claude@ping.me.uk> - 0.8.19-1
+- Security: fail-closed federation relayed-PDU signature verification, account lock/suspend admin endpoints with M_USER_LOCKED/M_USER_SUSPENDED enforcement, password-change logout_devices revocation, m.room.power_levels self-elevation and superior-user-removal auth-rule fixes.
+
 * Wed Jun 17 2026 James Chapman <claude@ping.me.uk> - 0.8.18-1
 - Security hardening: seccomp fail-closed, thumbnail worker fd sandbox, state caps, token key separation, atomic migrations.
 
