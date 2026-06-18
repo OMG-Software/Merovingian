@@ -8,6 +8,7 @@
 #include <tuple>
 
 #include <fcntl.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 SCENARIO("FileDescriptor defaults to invalid", "[core][file_descriptor]")
@@ -95,7 +96,7 @@ SCENARIO("FileDescriptor can set FD_CLOEXEC", "[core][file_descriptor]")
 
 SCENARIO("close_all_file_descriptors_except preserves stdio and selected descriptors", "[core][file_descriptor]")
 {
-    GIVEN("three extra file descriptors beyond stdio")
+    GIVEN("two extra file descriptors beyond stdio")
     {
         int raw_fds[2]{};
         REQUIRE(::pipe(raw_fds) == 0);
@@ -108,15 +109,32 @@ SCENARIO("close_all_file_descriptors_except preserves stdio and selected descrip
 
         WHEN("the helper is asked to keep stdio and one of the extra descriptors")
         {
-            merovingian::core::close_all_file_descriptors_except(std::set<int>{keep_fd});
-
-            THEN("the preserved descriptor is still open, the other is closed, and stdio remains")
+            // The sweep closes every descriptor in the table except stdio and
+            // the kept fd. Running it in this process would also close fds owned
+            // by libraries linked into the test binary — most damagingly,
+            // libsodium's cached /dev/urandom descriptor, after which the next
+            // keypair generation in any later scenario aborts via sodium_misuse.
+            // So exercise the helper in a forked child and observe its verdict
+            // through the exit code; the parent's fd table is left intact.
+            auto const pid = ::fork();
+            REQUIRE(pid >= 0);
+            if (pid == 0)
             {
-                REQUIRE(::fcntl(keep_fd, F_GETFD, 0) >= 0);
-                REQUIRE(::fcntl(close_fd, F_GETFD, 0) < 0);
-                REQUIRE(::fcntl(STDIN_FILENO, F_GETFD, 0) >= 0);
-                REQUIRE(::fcntl(STDOUT_FILENO, F_GETFD, 0) >= 0);
-                REQUIRE(::fcntl(STDERR_FILENO, F_GETFD, 0) >= 0);
+                merovingian::core::close_all_file_descriptors_except(std::set<int>{keep_fd});
+                auto const ok = ::fcntl(keep_fd, F_GETFD, 0) >= 0 &&     // kept fd open
+                                ::fcntl(close_fd, F_GETFD, 0) < 0 &&     // other fd closed
+                                ::fcntl(STDIN_FILENO, F_GETFD, 0) >= 0 && // stdio preserved
+                                ::fcntl(STDOUT_FILENO, F_GETFD, 0) >= 0 &&
+                                ::fcntl(STDERR_FILENO, F_GETFD, 0) >= 0;
+                ::_exit(ok ? 0 : 1);
+            }
+
+            THEN("the child reports the kept fd and stdio survived while the other was closed")
+            {
+                auto status = 0;
+                REQUIRE(::waitpid(pid, &status, 0) == pid);
+                REQUIRE(WIFEXITED(status));
+                REQUIRE(WEXITSTATUS(status) == 0);
             }
         }
 
