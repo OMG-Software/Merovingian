@@ -24,14 +24,12 @@ require_file packaging/netbsd/Makefile
 require_file packaging/systemd/merovingian.service
 require_file packaging/openrc/merovingian
 require_file packaging/rc.d/merovingian
-require_file docs/todos/priorities.md
 require_file docs/todos/production-milestone.md
 require_file docs/release-process.md
 require_file docs/security-review-checklist.md
 require_file docs/build-warning-policy.md
 require_file docs/observability-audit.md
 require_file docs/trust-safety.md
-require_file docs/hardening-alpha-exceptions.md
 require_file docs/dependencies/index.md
 require_file docs/dependencies/catch2.md
 require_file docs/dependencies/libcurl.md
