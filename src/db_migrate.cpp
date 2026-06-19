@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 James Chapman
+﻿// SPDX-FileCopyrightText: 2026 James Chapman
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "merovingian/config/config.hpp"
@@ -14,7 +14,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.8.20"};
+constexpr auto version = std::string_view{"0.8.21"};
 
 auto print_help() -> void
 {

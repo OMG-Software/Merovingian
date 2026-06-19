@@ -1,3 +1,8 @@
+## 0.8.21
+
+### Fixed
+- **fix(platform): add missing SQLite syscalls to seccomp allowlist (#280):** the seccomp-bpf filter was applied in `run_server` before `start_client_server` opened the database, but `ftruncate`, `unlink`, `unlinkat`, `rename`, `renameat`, `renameat2`, `fstatfs`, and `statfs` were absent from the allowlist. SQLite's DELETE journal mode calls `unlinkat` to remove the journal file on every write-transaction commit; `ftruncate` is required for WAL checkpoint and rollback; `fstatfs`/`statfs` are probed during WAL-mode open for device sector-size detection. The server crashed with `SIGSYS` (Bad system call, core dumped) immediately after logging `store.opening` on any first-run or migration path. The path-based `truncate` and privilege-mutation calls (`chmod`, `fchmod`, `fchmodat`, `umask`, `mkdir`) remain blocked. Tests updated to assert the new allowances and the surviving denials.
+
 ## 0.8.20
 
 ### Security

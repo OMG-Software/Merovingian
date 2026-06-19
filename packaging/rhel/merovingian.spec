@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.20
+Version:        0.8.21
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -96,6 +96,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Thu Jun 19 2026 James Chapman <claude@ping.me.uk> - 0.8.21-1
+- Fix: add ftruncate, unlink, unlinkat, rename, renameat, fstatfs, statfs to seccomp allowlist; SQLite journal commit crashed with SIGSYS on first write transaction.
+
 * Wed Jun 18 2026 James Chapman <claude@ping.me.uk> - 0.8.20-1
 - Security: hashed registration-token validity endpoint, media SSRF single-source with 172.16/12 fix, constant-time token-hash lookups, server-side access/refresh token expiry with configurable lifetimes, SecretBuffer mlock/non-elidable wipe.
 

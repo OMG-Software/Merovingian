@@ -126,6 +126,23 @@ namespace
         ALLOW_SYSCALL(__NR_pipe),
         ALLOW_SYSCALL(__NR_pipe2),
         ALLOW_SYSCALL(__NR_memfd_create),
+        // File deletion and truncation — SQLite requires these for every write
+        // transaction: the journal is deleted via unlinkat on commit, and WAL
+        // files are truncated via ftruncate during checkpoints and rollbacks.
+        // std::filesystem::rename also uses renameat on modern glibc.
+        // The writable path set is bounded by the service-manager sandbox.
+        ALLOW_SYSCALL(__NR_ftruncate),
+        ALLOW_SYSCALL(__NR_unlink),
+        ALLOW_SYSCALL(__NR_unlinkat),
+        ALLOW_SYSCALL(__NR_rename),
+        ALLOW_SYSCALL(__NR_renameat),
+#ifdef __NR_renameat2
+        ALLOW_SYSCALL(__NR_renameat2),
+#endif
+        // Filesystem type probe — SQLite calls fstatfs/statfs early in WAL-mode
+        // open to detect the device sector size and platform I/O capabilities.
+        ALLOW_SYSCALL(__NR_fstatfs),
+        ALLOW_SYSCALL(__NR_statfs),
 #ifdef __NR_statx
         ALLOW_SYSCALL(__NR_statx),
 #endif
