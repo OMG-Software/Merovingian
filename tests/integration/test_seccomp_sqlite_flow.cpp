@@ -142,6 +142,24 @@ SCENARIO("SQLite write transactions complete without SIGSYS under the seccomp al
                 ::close(pipefd[0]); // close read end in the child
                 g_blocked_pipe_wr = pipefd[1];
 
+                // Production runs as a non-root service user: privilege drop is
+                // performed externally by the service manager (systemd User=,
+                // OpenRC, etc.) before the process starts, so the database is
+                // always opened while non-root. The CI Docker containers run
+                // this test as root, which would make SQLite's robustFchown()
+                // issue fchown() — it only does so when geteuid()==0 (see
+                // sqlite3.c robustFchown) — and fchown is a privilege-mutation
+                // call that is intentionally NOT on the allowlist. Dropping to
+                // an unprivileged uid/gid when running as root makes the test
+                // exercise the real production (non-root) syscall set and keeps
+                // the allowlist minimal. These calls run before the filter is
+                // installed, so they are not subject to it; nobody is 65534.
+                if (::geteuid() == 0)
+                {
+                    std::ignore = ::setresgid(65534, 65534, 65534);
+                    std::ignore = ::setresuid(65534, 65534, 65534);
+                }
+
                 struct ::sigaction sa{};
                 sa.sa_sigaction = on_seccomp_sigsys;
                 sa.sa_flags = SA_SIGINFO | SA_RESTART;
