@@ -417,13 +417,18 @@ jobs:
         with:
           usesh: true
           prepare: |
-            # Install build deps directly with pkg_add. The pkgin bootstrap
-            # (pkg_add -U pkgin) currently fails on the NetBSD 10.1 pkgsrc
-            # snapshot because its pkg_install>=20200701 dependency is
-            # unavailable in the repo, leaving no pkgin to drive a batch
-            # install (the subsequent `pkgin install` exits 127 and the whole
-            # job aborts before building). Bypass pkgin and install the same
-            # package set directly — the proven pattern the FreeBSD job uses.
+            # NetBSD's pkg_add cannot resolve package stems without PKG_PATH
+            # pointing at a binary-package repository (unlike FreeBSD, which
+            # ships a default repo). The vmaction image exports none, so bare
+            # `pkg_add clang` fails with "no pkg found for 'clang'" and the
+            # build step then aborts with "missing command: clang". Point pkg_add
+            # at the pkgsrc repo for this OS release/arch. ftp.netbsd.org (the
+            # origin) is used because cdn.netbsd.org's Fastly backend has been
+            # returning 503 "Backend is unhealthy". pkgin is not used: its
+            # bootstrap (pkg_add -U pkgin) fails on this snapshot because the
+            # pkg_install>=20200701 dependency is unavailable, and it is not
+            # needed once PKG_PATH is set.
+            export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
             # `|| true` tolerates a single missing/already-installed package so
             # one repo hiccup does not abort the run; the build step below will
             # fail with a clear "tool: not found" if any critical dep is absent.
@@ -437,8 +442,9 @@ jobs:
             # cores as <name>.core in the cwd by default; allow them and keep gdb.
             ulimit -c unlimited || true
             sysctl -w kern.defcorename=%n.core >/dev/null 2>&1 || true
-            # gdb for core backtraces (best-effort; pkg_add, same reason as the
-            # prepare step — pkgin is not installed on this snapshot).
+            # gdb for core backtraces (best-effort). The run step is a separate
+            # shell from prepare, so PKG_PATH must be re-exported here.
+            export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
             /usr/sbin/pkg_add -U gdb || true
             if ! sh scripts/build-bsd.sh --builddir build; then
                 echo "::group::NetBSD core backtraces"
