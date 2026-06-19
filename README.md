@@ -1,6 +1,6 @@
 # Merovingian
 
-**Note: Merovingian is still in active development and is not ready for real-world use yet. Do not deploy it as a production Matrix homeserver.**
+**Note: Merovingian is now in beta. It is suitable for evaluation and testing, but is not yet ready for production use. Do not deploy it as a production Matrix homeserver.**
 
 Merovingian is a Matrix homeserver written in modern C++26 with a security-first design. The project goal is not just to speak Matrix protocol, but to do it with a narrow attack surface, fail-closed behavior, strong operational visibility, and explicit security boundaries around federation, storage, media, and administration.
 
@@ -82,4 +82,4 @@ python build.py wsl --builddir build-tsan --buildtype debug --sanitize thread
 
 ## Project Status
 
-Merovingian is beyond a toy prototype, but it is still an in-development homeserver with incomplete production gates. Federation, persistence, packaging, and security controls are actively being built out and corrected. The project should be treated as test-only until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
+Merovingian has reached **beta** (v0.9.0). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
