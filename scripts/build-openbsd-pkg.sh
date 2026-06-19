@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build an OpenBSD binary package (.tgz) for merovingian 0.8.21.
+# Build an OpenBSD binary package (.tgz) for merovingian 0.9.0.
 #
 # Standalone pkg_create(1) — no ports tree. The checked-in packaging/openbsd/PLIST
 # is the ports-framework packing list kept for downstream porters; this script

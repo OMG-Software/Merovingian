@@ -1,6 +1,6 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build a NetBSD binary package (.tgz) for merovingian 0.8.21.
+# Build a NetBSD binary package (.tgz) for merovingian 0.9.0.
 #
 # The checked-in packaging/netbsd/Makefile is the pkgsrc recipe kept for
 # downstream porters.  This script generates a framework-free package so CI
