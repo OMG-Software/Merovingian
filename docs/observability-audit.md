@@ -45,6 +45,13 @@ to `audit_log`:
 | Suspended-user request rejected | `client_server` | `auth` | `request.user_suspended` |
 | Registration policy denied | `auth` | `policy` | `registration_policy.denied` |
 
+The `access_token.rejected` row carries a `reason` that distinguishes the
+failure mode: `token hashing failed`, `session not found`, `user not found`,
+and — for an expired-but-not-revoked token (#275) — `token expired`. The
+expired reason is emitted only when a session matching the token hash exists,
+is not revoked, but is past its `expires_at`, so operators can tell a stale
+TTL from a genuinely unknown token.
+
 The audit row is keyed by the same actor / target / reason that
 appears in the structured log line, so an operator can pivot from
 `stderr` to `audit_log` without re-parsing. The log side and the

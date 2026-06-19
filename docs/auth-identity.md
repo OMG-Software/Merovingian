@@ -51,7 +51,22 @@ production-gated.
   logging plaintext credentials, bearer tokens, or key payloads.
 - Unit coverage for identity validation, account lock/suspension behavior, password policy, token activity, and log redaction.
 - Registration token verification using Argon2id (`crypto_pwhash_str` / `crypto_pwhash_str_verify`);
-  only the password hash is retained, and the plaintext token is zeroised after hashing.
+  only the password hash is retained, and the plaintext token is zeroised after hashing. The
+  `GET /_matrix/client/v1/register/m.login.registration_token/validity` endpoint verifies the
+  candidate through the same Argon2id hash (`registration_token_matches`) rather than comparing
+  plaintext, so the token material never sits on the request path.
+- Server-side access and refresh token expiry is enforced. `PersistentAccessToken`,
+  `PersistentRefreshToken`, and `LocalSession` carry an `expires_at` field set at issuance from
+  configurable `security.access_token_lifetime_ms` (default 1h) and
+  `security.refresh_token_lifetime_ms` (default 30d); `0` disables expiry for that kind.
+  `find_session` and the refresh-token lookup reject expired tokens (failing closed toward
+  re-login/refresh) even when the session is not revoked, and the advertised `expires_in_ms`
+  reads from the configured access-token lifetime so advertised == enforced. Legacy/no-expiry
+  rows (`expires_at` empty / `nullopt`) remain valid.
+- Token-hash lookups route through constant-time comparison (`crypto::constant_time_equal` /
+  `auth::constant_time_equal`, backed by `sodium_memcmp`) on every fixed-length hash match —
+  the access/refresh store lookups and the in-memory session match — not just the canonical
+  policy helper.
 
 ## Security posture
 
@@ -64,7 +79,10 @@ The boundary establishes these guarantees:
 
 - Plaintext tokens are not a persistable representation.
 - Token logging emits only redacted metadata.
-- Revoked and expired tokens fail closed.
+- Revoked and expired tokens fail closed. Server-side token expiry is enforced on
+  both access and refresh tokens via the configurable lifetimes above, distinct from
+  revocation: an expired-but-not-revoked session is rejected with audit reason
+  `token expired`.
 - Locked accounts cannot pass the login policy gate; suspended accounts may
   still log in, and their new session is itself suspended and gated by the
   request-path `M_USER_SUSPENDED` check.

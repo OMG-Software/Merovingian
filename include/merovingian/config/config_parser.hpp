@@ -25,6 +25,7 @@ struct ConfigParseResult final
 [[nodiscard]] auto trim_ascii(std::string_view value) noexcept -> std::string_view;
 [[nodiscard]] auto parse_bool_value(std::string_view value, bool& output) noexcept -> bool;
 [[nodiscard]] auto parse_u32_value(std::string_view value, std::uint32_t& output) noexcept -> bool;
+[[nodiscard]] auto parse_i64_value(std::string_view value, std::int64_t& output) noexcept -> bool;
 [[nodiscard]] auto parse_string_list(std::string_view value) -> std::vector<std::string>;
 [[nodiscard]] auto parse_key_value_config(std::string_view input) -> ConfigParseResult;
 

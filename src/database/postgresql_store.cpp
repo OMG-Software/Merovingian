@@ -364,7 +364,7 @@ namespace
 
         auto tokens =
             query_rows(connection, "postgresql_load_access_tokens",
-                       "SELECT user_id, device_id, token_hash, revoked FROM access_tokens ORDER BY token_hash");
+                       "SELECT user_id, device_id, token_hash, revoked, expires_at FROM access_tokens ORDER BY token_hash");
         if (!tokens.ok)
         {
             return false;
@@ -373,13 +373,14 @@ namespace
         {
             if (row.size() >= 4U)
             {
-                store.access_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3])});
+                store.access_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3]),
+                                               row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt});
             }
         }
 
         auto refresh_tokens =
             query_rows(connection, "postgresql_load_refresh_tokens",
-                       "SELECT user_id, device_id, token_hash, revoked FROM refresh_tokens ORDER BY token_hash");
+                       "SELECT user_id, device_id, token_hash, revoked, expires_at FROM refresh_tokens ORDER BY token_hash");
         if (!refresh_tokens.ok)
         {
             return false;
@@ -388,7 +389,8 @@ namespace
         {
             if (row.size() >= 4U)
             {
-                store.refresh_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3])});
+                store.refresh_tokens.push_back({row[0], row[1], row[2], text_is_true(row[3]),
+                                                row.size() >= 5U ? parse_expires_at(row[4]) : std::nullopt});
             }
         }
 

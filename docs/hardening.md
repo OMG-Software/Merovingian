@@ -47,8 +47,13 @@ The project uses C++26 with strict rules that reduce memory_safety bugs:
 * Smart pointers for dynamic ownership; references preferred over pointers.
 * `core::FileDescriptor` is a move_only RAII wrapper that closes its fd on
   destruction and provides `set_cloexec()`.
-* `core::SecretBuffer` zeroises its contents on destruction and is move_only
-  and non_copyable.
+* `core::SecretBuffer` holds signing-key material mlocked via `sodium_mlock`
+  on construction and wiped on destruction with `sodium_munlock` (which
+  zeroises and unpins and is an optimisation barrier the compiler cannot
+  elide, unlike the prior `std::ranges::fill` dead store). Custom move-ctor
+  and move-assign transfer the mlock to the destination and wipe the source,
+  so the secret is never duplicated and never left pinned in a moved-from
+  object. It is move_only and non_copyable. `src/core` links libsodium.
 
 ### Cryptographic boundary
 

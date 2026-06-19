@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.19
+Version:        0.8.20
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -96,6 +96,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Wed Jun 18 2026 James Chapman <claude@ping.me.uk> - 0.8.20-1
+- Security: hashed registration-token validity endpoint, media SSRF single-source with 172.16/12 fix, constant-time token-hash lookups, server-side access/refresh token expiry with configurable lifetimes, SecretBuffer mlock/non-elidable wipe.
+
 * Wed Jun 18 2026 James Chapman <claude@ping.me.uk> - 0.8.19-1
 - Security: fail-closed federation relayed-PDU signature verification, account lock/suspend admin endpoints with M_USER_LOCKED/M_USER_SUSPENDED enforcement, password-change logout_devices revocation, m.room.power_levels self-elevation and superior-user-removal auth-rule fixes.
 

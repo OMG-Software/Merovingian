@@ -21,9 +21,11 @@ namespace
         SchemaTableDefinition{"devices",                 "user_id TEXT NOT NULL, device_id TEXT NOT NULL, display_name TEXT NOT NULL, "
                                          "PRIMARY KEY (user_id, device_id)"                                            },
         SchemaTableDefinition{
-                              "access_tokens",           "user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL"  },
+                              "access_tokens",           "user_id TEXT NOT NULL, device_id TEXT NOT NULL, token_hash TEXT PRIMARY KEY, revoked TEXT NOT NULL, "
+                                       "expires_at TEXT NOT NULL DEFAULT ''"                            },
         SchemaTableDefinition{
-                              "refresh_tokens",          "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL"  },
+                              "refresh_tokens",          "token_hash TEXT PRIMARY KEY, user_id TEXT NOT NULL, device_id TEXT NOT NULL, revoked TEXT NOT NULL, "
+                                       "expires_at TEXT NOT NULL DEFAULT ''"                            },
         SchemaTableDefinition{"server_signing_keys",
                               "server_name TEXT NOT NULL, key_id TEXT NOT NULL, public_key TEXT NOT NULL, "
                               "valid_until_ts TEXT NOT NULL, secret_key TEXT, PRIMARY KEY (server_name, key_id)"                                               },

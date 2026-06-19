@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -186,7 +187,7 @@ SCENARIO("PostgreSQL users tokens rooms and events survive an open/close/reopen 
         // store_access_token requires the versioned hash prefix; a bare string
         // is rejected before the row is ever written.
         REQUIRE(merovingian::database::store_access_token(
-            opened.store, {user_id, "device1", "token-hash:v2:restart-" + suffix, false}));
+            opened.store, {user_id, "device1", "token-hash:v2:restart-" + suffix, false, std::nullopt}));
         REQUIRE(merovingian::database::store_room(opened.store, {room_id, user_id}));
         REQUIRE(merovingian::database::store_membership(opened.store, {room_id, user_id, "join", 1U}) ==
                 merovingian::database::MembershipStoreResult::stored);

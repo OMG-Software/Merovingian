@@ -15,7 +15,11 @@ current in-process runtime path.
   `GET /_matrix/media/v3/download/{server}/{mediaId}` against the resolved
   host, and ingests the response bytes through the local blob store. Remote
   host/IP policy is checked before bytes enter the store; rejected fetches are
-  counted and audited. `security.media.remote_fetch_timeout` is parsed today,
+  counted and audited. The private/loopback filter reuses the single source of
+  truth `federation::ip_address_is_private_or_loopback` (the `inet_pton`-based
+  numeric path, which handles `172.16/12` correctly) rather than a divergent
+  string-prefix check, so media SSRF blocking and federation SSRF blocking
+  cannot drift apart. `security.media.remote_fetch_timeout` is parsed today,
   but the live fetch path still uses hard-coded discovery/HTTP timeout values.
 - Upload and remote-ingest bytes pass through the same hardened processing
   boundary: upstream-supplied AV scanner result, sandboxed worker requirement,

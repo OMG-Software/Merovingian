@@ -942,6 +942,27 @@ Successful public registration creates a normal user only. Admin users must be
 created through the explicit operator bootstrap path, not by being the first
 public registrant.
 
+## Token expiry policy
+
+Access and refresh tokens expire server-side. The enforced lifetimes are
+configurable in milliseconds; `0` disables expiry for that token kind (treated
+as no expiry):
+
+```text
+security.access_token_lifetime_ms=3600000
+security.refresh_token_lifetime_ms=2592000000
+```
+
+Defaults are 1 hour for access tokens and 30 days for refresh tokens. The
+`expires_in_ms` value advertised by `/login` and `/refresh` reads from
+`security.access_token_lifetime_ms`, so the advertised TTL matches the
+enforced one. A token past its TTL is rejected even when its session is not
+revoked — the request path returns `401 M_UNKNOWN_TOKEN` and the audit log
+records `access_token.rejected` with reason `token expired`, forcing the
+client to refresh or re-login. Existing rows written without an expiry (empty
+`expires_at`, or `nullopt` in memory) remain valid, so legacy sessions are not
+invalidated by the upgrade.
+
 ## Federation exposure policy
 
 Federation can be disabled globally:

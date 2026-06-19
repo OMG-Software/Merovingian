@@ -45,4 +45,16 @@ namespace merovingian::homeserver
 [[nodiscard]] auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view password) -> bool;
 
+// Load the configured registration token from disk, Argon2id-hash it, and cache
+// only the hash keyed by the file path. The plaintext token is zeroised after
+// hashing. Returns std::nullopt when no token file is configured or it cannot be
+// read/hashed. Exposed so the registration-token validity endpoint compares via
+// the hash rather than holding the plaintext token on the request path.
+[[nodiscard]] auto load_hashed_registration_token(config::RegistrationSecurityConfig const& registration)
+    -> std::optional<std::string>;
+// Constant-time verify a presented registration token against an Argon2id hash
+// produced by load_hashed_registration_token (crypto_pwhash_str_verify).
+[[nodiscard]] auto registration_token_matches(std::string_view expected_hash, std::string_view presented) noexcept
+    -> bool;
+
 } // namespace merovingian::homeserver

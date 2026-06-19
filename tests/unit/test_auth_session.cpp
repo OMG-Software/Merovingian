@@ -133,6 +133,35 @@ SCENARIO("Session invalidation covers device logout and global logout", "[auth][
     }
 }
 
+SCENARIO("Session liveness rejects expired tokens even when not revoked", "[auth][client-api][tokens][expiry]")
+{
+    GIVEN("an active session and an expired-but-not-revoked variant")
+    {
+        auto const now = std::chrono::system_clock::now();
+        auto active = active_session(now);
+        auto expired = active;
+        // Same identity and hash, not revoked — only the TTL has elapsed.
+        expired.access_token.expires_at = now - std::chrono::hours{1};
+        auto non_expiring = active;
+        non_expiring.access_token.expires_at = std::chrono::system_clock::time_point::max();
+
+        WHEN("session liveness is evaluated against the current time")
+        {
+            auto const active_decision = merovingian::auth::session_is_active(active, now);
+            auto const expired_decision = merovingian::auth::session_is_active(expired, now);
+            auto const non_expiring_decision = merovingian::auth::session_is_active(non_expiring, now);
+
+            THEN("only the unexpired sessions remain usable")
+            {
+                REQUIRE(active_decision.active);
+                REQUIRE_FALSE(expired_decision.active);
+                REQUIRE(expired_decision.reason == "token expired");
+                REQUIRE(non_expiring_decision.active);
+            }
+        }
+    }
+}
+
 SCENARIO("Client auth audit summaries do not include plaintext access tokens", "[auth][client-api][audit]")
 {
     GIVEN("a client auth decision and a plaintext access token outside the audit event")

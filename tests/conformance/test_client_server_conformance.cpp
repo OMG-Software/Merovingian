@@ -38,6 +38,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <optional>
 #include <string>
 #include <vector>
@@ -2830,6 +2831,107 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token", "[conform
                 auto const* expires = int_member(body, "expires_in_ms");
                 REQUIRE(expires != nullptr);
                 REQUIRE(*expires > 0);
+            }
+        }
+    }
+}
+
+// --- POST /_matrix/client/v3/refresh — advertised TTL matches enforced TTL ---
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3refresh
+//
+// The expires_in_ms the server advertises MUST be the lifetime it actually
+// enforces server-side, so a client can refresh before the access token stops
+// working. This guards #275: the advertised value is read from the configured
+// access_token_lifetime_ms rather than a hardcoded constant.
+SCENARIO("POST /refresh advertises the configured access-token lifetime",
+         "[conformance][client-server][session][expiry]")
+{
+    GIVEN("a running client-server and a user who logged in with refresh_token support")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+        auto const configured_lifetime = started.runtime.homeserver.config.security().access_token_lifetime_ms;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("ttluser", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        auto const login_resp = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@ttluser:example.org"},"password":"CorrectHorse7!","device_id":"TDEV","refresh_token":true})"});
+        REQUIRE(login_resp.response.status == 200U);
+
+        WHEN("the login response is inspected")
+        {
+            auto const login_body = parse_object(login_resp.response.body);
+
+            THEN("the advertised expires_in_ms equals the configured access-token lifetime")
+            {
+                // Spec MUST: expires_in_ms reflects the server-enforced access-token TTL.
+                auto const* expires = int_member(login_body, "expires_in_ms");
+                REQUIRE(expires != nullptr);
+                REQUIRE(*expires == configured_lifetime);
+            }
+        }
+    }
+}
+
+// --- POST /_matrix/client/v3/refresh — expired refresh tokens are rejected ---
+// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3refresh
+//
+// A refresh token past its TTL MUST NOT rotate into a new access token; the
+// client MUST re-authenticate. Guards #275 server-side refresh-token expiry.
+SCENARIO("POST /refresh rejects an expired refresh token",
+         "[conformance][client-server][session][expiry]")
+{
+    GIVEN("a running client-server and a user holding a refresh token")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST",
+                                      "/_matrix/client/v3/register",
+                                      {},
+                                      merovingian::tests::registration_json("expiredrt", "CorrectHorse7!")})
+                    .response.status == 200U);
+
+        auto const login_resp = merovingian::homeserver::handle_client_server_request(
+            started.runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@expiredrt:example.org"},"password":"CorrectHorse7!","device_id":"ERTDEV","refresh_token":true})"});
+        REQUIRE(login_resp.response.status == 200U);
+        auto const login_body = parse_object(login_resp.response.body);
+        auto const* rt_ptr = string_member(login_body, "refresh_token");
+        REQUIRE(rt_ptr != nullptr);
+        auto const refresh_tok = *rt_ptr;
+
+        WHEN("the refresh token's expiry is forced into the past and /refresh is called")
+        {
+            // Force every stored refresh row for this device into the past.
+            for (auto& row : started.runtime.homeserver.database.persistent_store.refresh_tokens)
+            {
+                row.expires_at = std::chrono::system_clock::time_point{};
+            }
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/refresh",
+                                  {},
+                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"});
+
+            THEN("the response is 401 M_UNKNOWN_TOKEN, not a rotation")
+            {
+                // Spec MUST: an expired/invalid refresh token MUST be rejected.
+                REQUIRE(response.response.status == 401U);
+                REQUIRE(response.response.body.find("M_UNKNOWN_TOKEN") != std::string::npos);
             }
         }
     }

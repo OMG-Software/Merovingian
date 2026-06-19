@@ -20,8 +20,12 @@ public:
     SecretBuffer(SecretBuffer const&) = delete;
     auto operator=(SecretBuffer const&) -> SecretBuffer& = delete;
 
-    SecretBuffer(SecretBuffer&&) noexcept = default;
-    auto operator=(SecretBuffer&&) noexcept -> SecretBuffer& = default;
+    // Custom moves keep the sodium_mlock/munlock pair aligned: the mlocked buffer
+    // transfers to the destination and the source is left empty (not mlocked), so
+    // neither a move nor a move-assignment over an existing secret can leak the
+    // lock or leave residue unwiped.
+    SecretBuffer(SecretBuffer&& other) noexcept;
+    auto operator=(SecretBuffer&& other) noexcept -> SecretBuffer&;
 
     ~SecretBuffer();
 
@@ -29,7 +33,12 @@ public:
     [[nodiscard]] auto bytes() const noexcept -> std::span<std::uint8_t const>;
 
 private:
+    // Zeroise (and unpin, if mlocked) the current buffer in place. Used by the
+    // destructor and move-assignment before the buffer is replaced or freed.
+    auto wipe_current() noexcept -> void;
+
     std::vector<std::uint8_t> m_buffer{};
+    bool m_mlocked{false};
 };
 
 } // namespace merovingian::core

@@ -9,7 +9,11 @@ implementing custom cryptographic primitives.
 - Variable-length comparison uses domain-separated hashing so it does not leak
   input length through a premature length check.
 - Runtime signing secret material is held in `core::SecretBuffer` (mlocked,
-  zeroised-on-destruction) while in process memory.
+  zeroised-on-destruction) while in process memory. The destructor and custom
+  move operations use `sodium_munlock`/`sodium_memzero`, which are optimisation
+  barriers the compiler cannot elide, and the `mlock`/`munlock` pair stays
+  aligned across moves so a move over a mlocked buffer neither leaks the lock
+  nor leaves the source bytes unwiped.
 - Random-source interface for future reviewed RNG integration.
 - Ed25519 provider interface for reviewed signing and verification integration.
 - Server signing-key store interface.
@@ -41,7 +45,10 @@ persisted rows.
 - Variable-length secret comparison does not branch on input length before
   computing a fixed-size digest, removing a timing side-channel on secret size.
 - Signing secret material is held in a `core::SecretBuffer` while in process memory
-  and is zeroised when the buffer is destroyed or moved-from.
+  and is zeroised when the buffer is destroyed or moved-from. The wipe is non-elidable
+  (`sodium_munlock`/`sodium_memzero`), and custom move-ctor/move-assign transfer the
+  mlock to the destination while wiping the source, so the secret is never duplicated
+  in memory and never left pinned in a moved-from object.
 
 The runtime signing key is generated using `crypto_sign_keypair`, which produces
 a cryptographically random keypair. When `security.secrets.master_key_file` is

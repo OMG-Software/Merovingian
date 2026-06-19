@@ -16,6 +16,7 @@
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <memory>
@@ -74,6 +75,9 @@ struct LocalSession final
     std::string device_id{};
     std::string access_token_hash{};
     bool revoked{false};
+    // Server-side access-token expiry mirrored from PersistentAccessToken. nullopt
+    // = no expiry. find_session rejects an expired session even when not revoked.
+    std::optional<std::chrono::system_clock::time_point> expires_at{};
 };
 
 struct LocalRoom final

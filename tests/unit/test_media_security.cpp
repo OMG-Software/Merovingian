@@ -110,6 +110,54 @@ SCENARIO("Remote media fetch policy isolates remotes and blocks private addresse
     }
 }
 
+SCENARIO("Remote media fetch policy blocks 172.16/12 and IPv6 private ranges and allows public 172.1",
+         "[media][security][remote][ssrf]")
+{
+    GIVEN("remote media fetch requests resolved to private and public addresses")
+    {
+        auto base = merovingian::media::RemoteMediaFetchRequest{};
+        base.origin_server = "media.example.org";
+        base.media_id = "abc123";
+        base.resolved_host = "media.example.org";
+        base.isolate_remote_media = true;
+        base.private_address_fetches_blocked = true;
+
+        auto rfc1918_172 = base;
+        rfc1918_172.resolved_addresses = {"172.16.0.1"};
+        auto rfc1918_172_high = base;
+        rfc1918_172_high.resolved_addresses = {"172.31.255.255"};
+        auto public_172 = base;
+        public_172.resolved_addresses = {"172.1.0.1"};
+        auto link_local_v6 = base;
+        link_local_v6.resolved_addresses = {"fe80::1"};
+        auto ula_v6 = base;
+        ula_v6.resolved_addresses = {"fc00::1"};
+        auto v4_mapped_private = base;
+        v4_mapped_private.resolved_addresses = {"::ffff:127.0.0.1"};
+
+        WHEN("the consolidated private/loopback filter is applied")
+        {
+            auto const blocked_172 = merovingian::media::remote_media_fetch_policy(rfc1918_172);
+            auto const blocked_172_high = merovingian::media::remote_media_fetch_policy(rfc1918_172_high);
+            auto const allowed_public_172 = merovingian::media::remote_media_fetch_policy(public_172);
+            auto const blocked_link_local = merovingian::media::remote_media_fetch_policy(link_local_v6);
+            auto const blocked_ula = merovingian::media::remote_media_fetch_policy(ula_v6);
+            auto const blocked_mapped = merovingian::media::remote_media_fetch_policy(v4_mapped_private);
+
+            THEN("172.16/12, IPv6 link-local, ULA, and IPv4-mapped private are rejected and public 172.1 is allowed")
+            {
+                REQUIRE(blocked_172.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(blocked_172.reason == "remote media address is private or loopback");
+                REQUIRE(blocked_172_high.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(allowed_public_172.disposition == merovingian::media::MediaDisposition::accept);
+                REQUIRE(blocked_link_local.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(blocked_ula.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(blocked_mapped.disposition == merovingian::media::MediaDisposition::reject);
+            }
+        }
+    }
+}
+
 SCENARIO("Sandboxed media worker plans require hardened isolation controls", "[media][security][worker]")
 {
     GIVEN("hardened and weakened worker plans")

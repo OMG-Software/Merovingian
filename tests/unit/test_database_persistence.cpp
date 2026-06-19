@@ -438,12 +438,12 @@ SCENARIO("Persistent store records MVP homeserver data with hashed tokens only",
                 store, {"@alice:example.org", "password-hash:v1:1", false, false, true});
             auto const device_ok =
                 merovingian::database::store_device(store, {"@alice:example.org", "DEVICE1", "Alice laptop"});
-            auto const bad_token_ok =
-                merovingian::database::store_access_token(store, {"@alice:example.org", "DEVICE1", "plaintext", false});
+            auto const bad_token_ok = merovingian::database::store_access_token(
+                store, {"@alice:example.org", "DEVICE1", "plaintext", false, std::nullopt});
             auto const token_ok = merovingian::database::store_access_token(
-                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:123", false});
+                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:123", false, std::nullopt});
             auto const refresh_ok = merovingian::database::store_refresh_token(
-                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:refresh123", false});
+                store, {"@alice:example.org", "DEVICE1", "token-hash:v2:refresh123", false, std::nullopt});
             auto const room_ok = merovingian::database::store_room(store, {"!room1:example.org", "@alice:example.org"});
             auto const membership_ok =
                 merovingian::database::store_membership(store, {"!room1:example.org", "@alice:example.org"}) ==

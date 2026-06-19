@@ -6,6 +6,7 @@
 #include "merovingian/database/statement.hpp"
 #include "merovingian/events/event.hpp"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -45,6 +46,10 @@ struct PersistentAccessToken final
     std::string device_id{};
     std::string token_hash{};
     bool revoked{false};
+    // Server-side expiry. nullopt = no expiry (legacy rows / unset). Enforced by
+    // find_session and the refresh-token lookup so an expired token is rejected
+    // even when not revoked, forcing the refresh/re-login flow.
+    std::optional<std::chrono::system_clock::time_point> expires_at{};
 };
 
 struct PersistentRefreshToken final
@@ -53,6 +58,7 @@ struct PersistentRefreshToken final
     std::string device_id{};
     std::string token_hash{};
     bool revoked{false};
+    std::optional<std::chrono::system_clock::time_point> expires_at{};
 };
 
 struct PersistentServerSigningKey final
@@ -409,6 +415,14 @@ struct PersistentStoreOpenResult final
     std::string reason{};
     PersistentStore store{};
 };
+
+// Serialise a token expiry time_point to its TEXT column form (epoch-ms decimal
+// string, empty for no expiry) and parse it back. Shared by the INSERT paths and
+// the SQLite/PostgreSQL store hydration so the encoding stays consistent.
+[[nodiscard]] auto expires_at_text(std::optional<std::chrono::system_clock::time_point> const& expires_at)
+    -> std::string;
+[[nodiscard]] auto parse_expires_at(std::string_view text)
+    -> std::optional<std::chrono::system_clock::time_point>;
 
 [[nodiscard]] auto open_persistent_store(SchemaState existing_state = {}) -> PersistentStoreOpenResult;
 [[nodiscard]] auto open_sqlite_persistent_store(std::string const& path) -> PersistentStoreOpenResult;
