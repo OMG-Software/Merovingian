@@ -1,4 +1,4 @@
-﻿#!/bin/sh
+#!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build an RPM package for merovingian 0.8.21 using rpmbuild.
 set -e

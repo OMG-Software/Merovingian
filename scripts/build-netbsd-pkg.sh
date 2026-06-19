@@ -1,4 +1,4 @@
-﻿#!/bin/sh
+#!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Build a NetBSD binary package (.tgz) for merovingian 0.8.21.
 #
