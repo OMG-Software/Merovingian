@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.8.21
+Version:        0.9.0
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -47,7 +47,7 @@ Requires:       libturbojpeg0
 %global optflags %(echo %{optflags} | sed 's/-D_FORTIFY_SOURCE=[^ ]*//g')
 
 %description
-Merovingian is an alpha Matrix Protocol homeserver focused on secure
+Merovingian is a beta Matrix Protocol homeserver focused on secure
 implementation, runtime hardening, and auditable dependency boundaries.
 
 %prep
@@ -111,32 +111,5 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Thu Jun 19 2026 James Chapman <claude@ping.me.uk> - 0.8.21-1
-- Fix: add ftruncate, unlink, unlinkat, rename, renameat, fstatfs, statfs to seccomp allowlist; SQLite journal commit crashed with SIGSYS on first write transaction.
-
-* Wed Jun 18 2026 James Chapman <claude@ping.me.uk> - 0.8.20-1
-- Security: hashed registration-token validity endpoint, media SSRF single-source with 172.16/12 fix, constant-time token-hash lookups, server-side access/refresh token expiry with configurable lifetimes, SecretBuffer mlock/non-elidable wipe.
-
-* Wed Jun 18 2026 James Chapman <claude@ping.me.uk> - 0.8.19-1
-- Security: fail-closed federation relayed-PDU signature verification, account lock/suspend admin endpoints with M_USER_LOCKED/M_USER_SUSPENDED enforcement, password-change logout_devices revocation, m.room.power_levels self-elevation and superior-user-removal auth-rule fixes.
-
-* Wed Jun 17 2026 James Chapman <claude@ping.me.uk> - 0.8.18-1
-- Security hardening: seccomp fail-closed, thumbnail worker fd sandbox, state caps, token key separation, atomic migrations.
-
-* Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.18-1
-- fix(crypto): encrypt the Ed25519 server signing secret at rest when a master key is configured
-- fix(auth): hash the registration token with Argon2id instead of storing/comparing plaintext
-- fix(ci): harden OpenSUSE Tumbleweed dependency install against transient zypper refresh timeouts
-
-* Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.16-1
-- fix: pin federation auth destination server-side in the local router to close a relay/replay vector
-- fix: back constant_time_equal with libsodium sodium_memcmp; auth delegates to the crypto wrapper
-* Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.15-1
-- fix: guard curl write callback against unsigned underflow when body exceeds cap
-- fix: guard thumbnailer framing against size_t-to-uint32_t silent truncation for large payloads
-- fix: use saturating multiply for thumbnail worker memory limit to prevent uint64_t overflow
-* Mon Jun 16 2026 James Chapman <claude@ping.me.uk> - 0.8.14-1
-- feat: add fuzz targets for sync filter, config parser, stream token, query params, and SRV record parsing
-* Mon Jun 15 2026 James Chapman <claude@ping.me.uk> - 0.8.12-1
-- Initial OpenSUSE Tumbleweed package
-- ci: add Debian trixie, RHEL-compatible, and OpenSUSE Tumbleweed CI and packaging jobs
+* Thu Jun 19 2026 James Chapman <claude@ping.me.uk> - 0.9.0-1
+- Beta milestone: promote from pre-beta (0.8.x) to beta phase.

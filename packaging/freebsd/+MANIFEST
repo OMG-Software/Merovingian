@@ -1,8 +1,8 @@
 name: "merovingian"
-version: "0.8.21"
+version: "0.9.0"
 origin: net/merovingian
 comment: Secure Matrix Protocol homeserver
-desc: "Merovingian is an alpha Matrix Protocol homeserver."
+desc: "Merovingian is a beta Matrix Protocol homeserver."
 maintainer: james@merovingian-homeserver.example
 www: https://github.com/OMG-Software/Merovingian
 prefix: /usr/local
