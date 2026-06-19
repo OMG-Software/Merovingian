@@ -24,6 +24,9 @@
 #include <string>
 #include <system_error>
 
+#include <linux/seccomp.h>
+#include <signal.h>
+#include <sys/prctl.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -55,6 +58,59 @@ auto remove_sqlite_files(std::string const& path) -> void
     std::filesystem::remove(path + "-shm", ec);
 }
 
+// Write end of a pipe the child uses to report any syscall the filter blocks.
+// Set in the child before the filter is installed; read by the SIGSYS handler,
+// which runs under the filter, so it must only use syscalls on the allowlist
+// (write is allowed). Plain sig_atomic_t is sufficient: it is written once,
+// before any signal can be delivered.
+volatile sig_atomic_t g_blocked_pipe_wr = -1;
+
+// SIGSYS handler installed under a SECCOMP_RET_TRAP variant of the production
+// allowlist. When a syscall is not on the allowlist the kernel traps here with
+// si_syscall set to the blocked syscall number; the handler writes that number
+// (as decimal, newline-terminated) to the pipe and returns. Returning (rather
+// than terminating) lets every missing syscall in the open path be reported in
+// a single run. The trapped syscall itself fails with -1, so the caller sees
+// an error and the run eventually ends via exit_group.
+extern "C" auto on_seccomp_sigsys(int /*signum*/, siginfo_t* info, void* /*ucontext*/) -> void
+{
+    auto nr = (info != nullptr) ? static_cast<int>(info->si_syscall) : -1;
+    auto negative = nr < 0;
+    if (negative)
+    {
+        nr = -nr;
+    }
+    // Async-signal-safe decimal conversion (snprintf is not guaranteed safe).
+    char digits[12];
+    int digit_count = 0;
+    if (nr == 0)
+    {
+        digits[digit_count++] = '0';
+    }
+    while (nr > 0 && digit_count < static_cast<int>(sizeof(digits)))
+    {
+        digits[digit_count++] = static_cast<char>('0' + (nr % 10));
+        nr /= 10;
+    }
+    char msg[16];
+    int msg_len = 0;
+    if (negative)
+    {
+        msg[msg_len++] = '-';
+    }
+    while (digit_count > 0)
+    {
+        msg[msg_len++] = digits[--digit_count];
+    }
+    msg[msg_len++] = '\n';
+    auto const wr = g_blocked_pipe_wr;
+    if (wr >= 0)
+    {
+        auto const written = ::write(wr, msg, static_cast<std::size_t>(msg_len));
+        (void)written;
+    }
+}
+
 } // namespace
 
 SCENARIO("SQLite write transactions complete without SIGSYS under the seccomp allowlist",
@@ -67,15 +123,32 @@ SCENARIO("SQLite write transactions complete without SIGSYS under the seccomp al
 
         WHEN("the subprocess opens the store and initialises the schema under the filter")
         {
+            // The pipe carries any blocked-syscall numbers from child to parent.
+            // The parent closes both ends after collecting the child.
+            int pipefd[2] = {-1, -1};
+            REQUIRE(::pipe(pipefd) == 0);
+
             auto const pid = ::fork();
             REQUIRE(pid >= 0);
 
             if (pid == 0)
             {
-                // Child: install the syscall allowlist, then exercise the full
-                // open + migrate path that crashed before the fix.  The filter
-                // is irreversible, so this must run in a forked process.
-                std::ignore = merovingian::platform::apply_seccomp_filter();
+                // Child: install the production allowlist with SECCOMP_RET_TRAP
+                // (instead of KILL_PROCESS) and a SIGSYS handler that reports
+                // each blocked syscall number through the pipe. This validates
+                // the exact production allowlist while making any gap diagnosable
+                // instead of an opaque SIGSYS death. The filter is irreversible,
+                // so this must run in a forked process.
+                ::close(pipefd[0]); // close read end in the child
+                g_blocked_pipe_wr = pipefd[1];
+
+                struct ::sigaction sa{};
+                sa.sa_sigaction = on_seccomp_sigsys;
+                sa.sa_flags = SA_SIGINFO | SA_RESTART;
+                ::sigemptyset(&sa.sa_mask);
+                std::ignore = ::sigaction(SIGSYS, &sa, nullptr);
+
+                std::ignore = merovingian::platform::apply_seccomp_filter_with_default(SECCOMP_RET_TRAP);
                 auto const result = merovingian::database::open_sqlite_persistent_store(db_path);
                 // Use the raw exit_group syscall rather than _exit() so that
                 // ASan/LSan's _exit hook — which runs leak-checker cleanup code
@@ -85,15 +158,30 @@ SCENARIO("SQLite write transactions complete without SIGSYS under the seccomp al
                 __builtin_unreachable();
             }
 
-            // Parent: collect child exit status then clean up regardless.
+            // Parent: close the write end, collect the child, then read any
+            // blocked-syscall numbers it reported before cleaning up the files.
+            ::close(pipefd[1]);
             auto status = int{};
             ::waitpid(pid, &status, 0);
+            auto report = std::string{};
+            char buf[128];
+            for (auto r = ::read(pipefd[0], buf, sizeof(buf)); r > 0; r = ::read(pipefd[0], buf, sizeof(buf)))
+            {
+                report.append(buf, static_cast<std::size_t>(r));
+            }
+            ::close(pipefd[0]);
             remove_sqlite_files(db_path);
 
             THEN("the subprocess exits cleanly and is not killed by SIGSYS")
             {
-                // WIFSIGNALED would be true and WTERMSIG would return SIGSYS (31)
-                // if the seccomp filter blocked a syscall with KILL_PROCESS.
+                // If the allowlist is missing a syscall SQLite/glibc needs, the
+                // child's SIGSYS handler writes the offending number(s) here and
+                // the run ends with a non-zero or signalled status. Fail with
+                // the numbers so the gap is named directly in the test output.
+                if (!report.empty())
+                {
+                    FAIL("seccomp filter blocked syscall(s) not in the allowlist: " << report);
+                }
                 REQUIRE(WIFEXITED(status));
                 REQUIRE_FALSE(WIFSIGNALED(status));
                 REQUIRE(WEXITSTATUS(status) == 0);

@@ -23,6 +23,14 @@ struct SeccompProbeResult final
 // the hardening self-check probe then reports `unknown`.
 [[nodiscard]] auto apply_seccomp_filter() noexcept -> bool;
 
+// Applies the same syscall allowlist as apply_seccomp_filter() but with a
+// caller-chosen default action for syscalls not on the list. Exposed so the
+// integration test can install SECCOMP_RET_TRAP plus a SIGSYS handler and
+// report the exact blocked syscall number instead of dying opaquely under
+// SECCOMP_RET_KILL_PROCESS, which makes allowlist gaps diagnosable. Production
+// code must use apply_seccomp_filter(); only tests pass a non-kill default.
+[[nodiscard]] auto apply_seccomp_filter_with_default(std::uint32_t default_action) noexcept -> bool;
+
 // Reads /proc/self/status to detect whether a seccomp-bpf filter is active.
 // Returns probed=true and seccomp_active=true when "Seccomp: 2" is found
 // (SECCOMP_MODE_FILTER). On non-Linux, returns probed=false.

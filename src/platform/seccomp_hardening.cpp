@@ -304,11 +304,25 @@ namespace
     // clang-format on
 #undef ALLOW_SYSCALL
 
-    [[nodiscard]] auto install_seccomp_filter() noexcept -> bool
+    [[nodiscard]] auto install_seccomp_filter_with_default(std::uint32_t default_action) noexcept -> bool
     {
+        // Reuse the production allowlist exactly (no drift between the filter
+        // under test and the one shipped in production) but override the final
+        // fail-closed statement with the caller's default action. The
+        // integration test installs SECCOMP_RET_TRAP here so a blocked syscall
+        // is delivered to a SIGSYS handler and reported, instead of killing the
+        // process opaquely under SECCOMP_RET_KILL_PROCESS.
+        constexpr auto k_filter_len = sizeof(k_seccomp_filter) / sizeof(k_seccomp_filter[0]);
+        ::sock_filter filt[k_filter_len]; // NOLINT(*-avoid-c-arrays)
+        for (std::size_t i = 0; i < k_filter_len; ++i)
+        {
+            filt[i] = k_seccomp_filter[i];
+        }
+        filt[k_filter_len - 1U] = BPF_STMT(BPF_RET | BPF_K, default_action);
+
         auto const prog = ::sock_fprog{
-            .len = static_cast<unsigned short>(sizeof(k_seccomp_filter) / sizeof(k_seccomp_filter[0])),
-            .filter = k_seccomp_filter,
+            .len = static_cast<unsigned short>(k_filter_len),
+            .filter = filt,
         };
 
         if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
@@ -316,6 +330,11 @@ namespace
             return false;
         }
         return ::syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) == 0;
+    }
+
+    [[nodiscard]] auto install_seccomp_filter() noexcept -> bool
+    {
+        return install_seccomp_filter_with_default(k_seccomp_ret_kill_process);
     }
 
     [[nodiscard]] auto read_seccomp_status() -> SeccompProbeResult
@@ -356,6 +375,15 @@ auto apply_seccomp_filter() noexcept -> bool
 {
 #ifdef __linux__
     return install_seccomp_filter();
+#else
+    return false;
+#endif
+}
+
+auto apply_seccomp_filter_with_default([[maybe_unused]] std::uint32_t default_action) noexcept -> bool
+{
+#ifdef __linux__
+    return install_seccomp_filter_with_default(default_action);
 #else
     return false;
 #endif
