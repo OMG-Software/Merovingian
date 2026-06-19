@@ -143,6 +143,12 @@ namespace
         // open to detect the device sector size and platform I/O capabilities.
         ALLOW_SYSCALL(__NR_fstatfs),
         ALLOW_SYSCALL(__NR_statfs),
+        // posix_fallocate path: SQLite amalgamation calls posix_fallocate to
+        // pre-allocate space for database and WAL files; on Linux glibc maps
+        // this to fallocate(2) on filesystems that support it.
+#ifdef __NR_fallocate
+        ALLOW_SYSCALL(__NR_fallocate),
+#endif
 #ifdef __NR_statx
         ALLOW_SYSCALL(__NR_statx),
 #endif
@@ -228,6 +234,23 @@ namespace
 #endif
 #ifdef __NR_futex_waitv
         ALLOW_SYSCALL(__NR_futex_waitv),
+#endif
+        // glibc 2.35+ per-thread restartable-sequence registration. The child
+        // process re-registers its rseq area after fork(), and glibc 2.36+
+        // also uses rseq inside the malloc per-CPU cache implementation.
+#ifdef __NR_rseq
+        ALLOW_SYSCALL(__NR_rseq),
+#endif
+        // glibc 2.31+ issues membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED) in
+        // the malloc fast path on multi-processor systems. Without this the
+        // call gets SIGSYS on distros whose glibc enables it by default.
+#ifdef __NR_membarrier
+        ALLOW_SYSCALL(__NR_membarrier),
+#endif
+        // getcpu: returns the running CPU and NUMA node; used by glibc's
+        // per-CPU TLS cache and malloc implementation.
+#ifdef __NR_getcpu
+        ALLOW_SYSCALL(__NR_getcpu),
 #endif
 
         // ── Signals ────────────────────────────────────────────────────────

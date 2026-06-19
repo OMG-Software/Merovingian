@@ -142,12 +142,13 @@ SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalati
 
         WHEN("SQLite journal and WAL syscalls are checked")
         {
-            THEN("ftruncate, unlink, unlinkat, rename, renameat, statfs and fstatfs are allowed")
+            THEN("ftruncate, unlink, unlinkat, rename, renameat, statfs, fstatfs, and fallocate are allowed")
             {
                 // SQLite DELETE journal mode calls unlinkat to remove the journal
                 // on commit, ftruncate during rollback and WAL checkpoint, and
                 // rename/renameat in some commit paths. fstatfs/statfs is used
-                // early in WAL-mode open to probe device sector size.
+                // early in WAL-mode open to probe device sector size. fallocate
+                // is issued by glibc's posix_fallocate on filesystems that support it.
                 REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_ftruncate));
                 REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_unlink));
                 REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_unlinkat));
@@ -155,6 +156,30 @@ SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalati
                 REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_renameat));
                 REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fstatfs));
                 REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_statfs));
+#ifdef __NR_fallocate
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fallocate));
+#endif
+            }
+        }
+
+        WHEN("glibc per-CPU and memory-barrier syscalls are checked")
+        {
+            THEN("rseq, membarrier, and getcpu are allowed")
+            {
+                // glibc 2.35+ registers a per-thread rseq area after fork() and
+                // uses rseq in the malloc per-CPU cache on 2.36+. membarrier is
+                // used in the malloc fast path on SMP systems. getcpu feeds the
+                // per-CPU TLS cache. All three are blocked by default in a tight
+                // filter and must be explicitly allowed.
+#ifdef __NR_rseq
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_rseq));
+#endif
+#ifdef __NR_membarrier
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_membarrier));
+#endif
+#ifdef __NR_getcpu
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_getcpu));
+#endif
             }
         }
 

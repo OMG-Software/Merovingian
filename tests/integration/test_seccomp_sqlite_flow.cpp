@@ -76,7 +76,12 @@ SCENARIO("SQLite write transactions complete without SIGSYS under the seccomp al
                 // is irreversible, so this must run in a forked process.
                 std::ignore = merovingian::platform::apply_seccomp_filter();
                 auto const result = merovingian::database::open_sqlite_persistent_store(db_path);
-                ::_exit(result.ok ? 0 : 1);
+                // Use the raw exit_group syscall rather than _exit() so that
+                // ASan/LSan's _exit hook — which runs leak-checker cleanup code
+                // requiring syscalls outside the filter — cannot fire under the
+                // installed seccomp policy and trigger SIGSYS.
+                ::syscall(__NR_exit_group, result.ok ? 0 : 1);
+                __builtin_unreachable();
             }
 
             // Parent: collect child exit status then clean up regardless.

@@ -161,11 +161,22 @@ filesystem-mutating calls because SQLite requires them for correct operation:
 | `unlink`, `unlinkat` | Journal file deletion on commit in DELETE journal mode. |
 | `rename`, `renameat`, `renameat2` | Atomic commit in some SQLite configurations; `std::filesystem::rename`. |
 | `fstatfs`, `statfs` | Device sector-size probe during WAL-mode open. |
+| `fallocate` | `posix_fallocate(3)` path: SQLite pre-allocates database and WAL file space; glibc maps this to `fallocate(2)` on filesystems that support it. |
 
 The path-based `truncate` and permission-mutation calls (`chmod`, `fchmod`,
 `fchmodat`, `umask`, `mkdir`) remain blocked. The service-manager sandbox
 (`ProtectSystem=strict`, writable paths limited to `/var/lib/merovingian` and
-`/run/merovingian`) bounds what `unlink`/`rename`/`ftruncate` can actually reach.
+`/run/merovingian`) bounds what `unlink`/`rename`/`ftruncate`/`fallocate` can
+actually reach.
+
+**glibc per-CPU and synchronisation syscalls** — allowed because modern glibc
+(2.35+) calls these from `malloc`, thread initialisation, and after `fork()`:
+
+| Syscall | Reason |
+| --- | --- |
+| `rseq` | glibc 2.35+ registers a per-thread restartable-sequence area after `fork()`. glibc 2.36+ also uses `rseq` inside the `malloc` per-CPU cache. |
+| `membarrier` | glibc 2.31+ issues `MEMBARRIER_CMD_PRIVATE_EXPEDITED` from the `malloc` fast path on multi-processor systems. |
+| `getcpu` | Returns the running CPU/NUMA node; used by glibc's per-CPU TLS and `malloc` implementation. |
 
 ### FreeBSD / NetBSD / OpenBSD (BSD)
 
