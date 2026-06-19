@@ -224,8 +224,11 @@ jobs:
         with:
           usesh: true
           prepare: |
-            /usr/sbin/pkg_add -U pkgin || true
-            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+            # Install build deps directly with pkg_add. The pkgin bootstrap
+            # (pkg_add -U pkgin) currently fails on the NetBSD 10.1 pkgsrc
+            # snapshot (pkg_install>=20200701 unavailable), leaving no pkgin
+            # to drive a batch install — bypass it like the FreeBSD job does.
+            /usr/sbin/pkg_add -U clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo || true
           run: sh scripts/build-netbsd-pkg.sh
       - name: Attest NetBSD package
         uses: actions/attest-build-provenance@v2
@@ -256,8 +259,11 @@ jobs:
         with:
           usesh: true
           prepare: |
-            /usr/sbin/pkg_add -U pkgin || true
-            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+            # Install build deps directly with pkg_add. The pkgin bootstrap
+            # (pkg_add -U pkgin) currently fails on the NetBSD 10.1 pkgsrc
+            # snapshot (pkg_install>=20200701 unavailable), leaving no pkgin
+            # to drive a batch install — bypass it like the FreeBSD job does.
+            /usr/sbin/pkg_add -U clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo || true
           run: sh scripts/build-netbsd-pkg.sh
       - name: Attest NetBSD package
         uses: actions/attest-build-provenance@v2
