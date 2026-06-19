@@ -224,8 +224,14 @@ jobs:
         with:
           usesh: true
           prepare: |
-            /usr/sbin/pkg_add -U pkgin || true
-            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+            # NetBSD's pkg_add needs PKG_PATH pointing at a binary-package
+            # repository (the vmaction image exports none); without it every
+            # stem fails with "no pkg found". Use the pkgsrc origin —
+            # cdn.netbsd.org's Fastly backend has been returning 503. pkgin is
+            # not used: its bootstrap fails on this snapshot
+            # (pkg_install>=20200701 unavailable) and is unneeded with PKG_PATH.
+            export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
+            /usr/sbin/pkg_add -U clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo || true
           run: sh scripts/build-netbsd-pkg.sh
       - name: Attest NetBSD package
         uses: actions/attest-build-provenance@v2
@@ -256,8 +262,14 @@ jobs:
         with:
           usesh: true
           prepare: |
-            /usr/sbin/pkg_add -U pkgin || true
-            pkgin -y install clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo
+            # NetBSD's pkg_add needs PKG_PATH pointing at a binary-package
+            # repository (the vmaction image exports none); without it every
+            # stem fails with "no pkg found". Use the pkgsrc origin —
+            # cdn.netbsd.org's Fastly backend has been returning 503. pkgin is
+            # not used: its bootstrap fails on this snapshot
+            # (pkg_install>=20200701 unavailable) and is unneeded with PKG_PATH.
+            export PKG_PATH="https://ftp.netbsd.org/pub/pkgsrc/packages/NetBSD/$(uname -m)/$(uname -r | sed 's/_.*//')/All/"
+            /usr/sbin/pkg_add -U clang meson ninja-build pkgconf git bison flex gmake openssl libsodium postgresql17-client curl png libjpeg-turbo || true
           run: sh scripts/build-netbsd-pkg.sh
       - name: Attest NetBSD package
         uses: actions/attest-build-provenance@v2

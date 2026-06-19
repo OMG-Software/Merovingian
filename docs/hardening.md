@@ -148,10 +148,35 @@ Linux receives the richest set of in_process controls.
 | systemd sandboxing | `packaging/systemd/merovingian.service` | `PrivateTmp=true`, `ProtectSystem=strict`, `ProtectHome=true`, `NoNewPrivileges=true`, `CapabilityBoundingSet=`, `SystemCallArchitectures=native`, `MemoryDenyWriteExecute=true`, etc. |
 
 The seccomp_bpf filter is deliberately narrow: it allows only the syscalls the
-runtime actually needs (I/O, memory mapping, networking, polling, futex,
-threads/signals, and a small set of process identity and resource calls). Broad
-mutating filesystem syscalls (`chmod`, `unlink`, `rename`, `truncate`, etc.) are
-not allowed after the filter is installed.
+runtime actually needs. The filter is installed in `main.cpp` before
+`start_client_server` is called, so the database layer (SQLite) runs under the
+filter from its first access onwards.
+
+**Filesystem syscalls in the allowlist** — the filter permits the following
+filesystem-mutating calls because SQLite requires them for correct operation:
+
+| Syscall | Reason |
+| --- | --- |
+| `ftruncate` | WAL file truncation during checkpoints and journal rollback. |
+| `unlink`, `unlinkat` | Journal file deletion on commit in DELETE journal mode. |
+| `rename`, `renameat`, `renameat2` | Atomic commit in some SQLite configurations; `std::filesystem::rename`. |
+| `fstatfs`, `statfs` | Device sector-size probe during WAL-mode open. |
+| `fallocate` | `posix_fallocate(3)` path: SQLite pre-allocates database and WAL file space; glibc maps this to `fallocate(2)` on filesystems that support it. |
+
+The path-based `truncate` and permission-mutation calls (`chmod`, `fchmod`,
+`fchmodat`, `umask`, `mkdir`) remain blocked. The service-manager sandbox
+(`ProtectSystem=strict`, writable paths limited to `/var/lib/merovingian` and
+`/run/merovingian`) bounds what `unlink`/`rename`/`ftruncate`/`fallocate` can
+actually reach.
+
+**glibc per-CPU and synchronisation syscalls** — allowed because modern glibc
+(2.35+) calls these from `malloc`, thread initialisation, and after `fork()`:
+
+| Syscall | Reason |
+| --- | --- |
+| `rseq` | glibc 2.35+ registers a per-thread restartable-sequence area after `fork()`. glibc 2.36+ also uses `rseq` inside the `malloc` per-CPU cache. |
+| `membarrier` | glibc 2.31+ issues `MEMBARRIER_CMD_PRIVATE_EXPEDITED` from the `malloc` fast path on multi-processor systems. |
+| `getcpu` | Returns the running CPU/NUMA node; used by glibc's per-CPU TLS and `malloc` implementation. |
 
 ### FreeBSD / NetBSD / OpenBSD (BSD)
 
@@ -221,7 +246,8 @@ advertises:
 Hardening is exercised by automated tests:
 
 * `tests/unit/test_seccomp_hardening.cpp` asserts the fail_closed default action,
-  the architecture guard, and that removed syscalls are denied.
+  the architecture guard, that SQLite journal syscalls are allowed, and that
+  privilege-mutation syscalls (chmod, fchmod, fchmodat, umask, mkdir, truncate) remain denied.
 * `tests/unit/test_file_descriptor.cpp` exercises `FileDescriptor::set_cloexec()`
   and `close_all_file_descriptors_except()`.
 * `tests/unit/test_media_thumbnailer.cpp` covers the CLOEXEC pipe path and the

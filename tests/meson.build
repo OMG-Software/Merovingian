@@ -212,6 +212,7 @@ if get_option ('build_tests')
       'integration/test_persistent_homeserver_flow.cpp',
       'integration/test_postgresql_persistence_flow.cpp',
       'integration/test_runtime_hardening_flow.cpp',
+      'integration/test_seccomp_sqlite_flow.cpp',
       'integration/test_sync_complement_fixture.cpp',
       'integration/test_trust_safety_policy_flow.cpp',
     ),

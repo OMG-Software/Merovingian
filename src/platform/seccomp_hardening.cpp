@@ -126,6 +126,29 @@ namespace
         ALLOW_SYSCALL(__NR_pipe),
         ALLOW_SYSCALL(__NR_pipe2),
         ALLOW_SYSCALL(__NR_memfd_create),
+        // File deletion and truncation — SQLite requires these for every write
+        // transaction: the journal is deleted via unlinkat on commit, and WAL
+        // files are truncated via ftruncate during checkpoints and rollbacks.
+        // std::filesystem::rename also uses renameat on modern glibc.
+        // The writable path set is bounded by the service-manager sandbox.
+        ALLOW_SYSCALL(__NR_ftruncate),
+        ALLOW_SYSCALL(__NR_unlink),
+        ALLOW_SYSCALL(__NR_unlinkat),
+        ALLOW_SYSCALL(__NR_rename),
+        ALLOW_SYSCALL(__NR_renameat),
+#ifdef __NR_renameat2
+        ALLOW_SYSCALL(__NR_renameat2),
+#endif
+        // Filesystem type probe — SQLite calls fstatfs/statfs early in WAL-mode
+        // open to detect the device sector size and platform I/O capabilities.
+        ALLOW_SYSCALL(__NR_fstatfs),
+        ALLOW_SYSCALL(__NR_statfs),
+        // posix_fallocate path: SQLite amalgamation calls posix_fallocate to
+        // pre-allocate space for database and WAL files; on Linux glibc maps
+        // this to fallocate(2) on filesystems that support it.
+#ifdef __NR_fallocate
+        ALLOW_SYSCALL(__NR_fallocate),
+#endif
 #ifdef __NR_statx
         ALLOW_SYSCALL(__NR_statx),
 #endif
@@ -212,6 +235,23 @@ namespace
 #ifdef __NR_futex_waitv
         ALLOW_SYSCALL(__NR_futex_waitv),
 #endif
+        // glibc 2.35+ per-thread restartable-sequence registration. The child
+        // process re-registers its rseq area after fork(), and glibc 2.36+
+        // also uses rseq inside the malloc per-CPU cache implementation.
+#ifdef __NR_rseq
+        ALLOW_SYSCALL(__NR_rseq),
+#endif
+        // glibc 2.31+ issues membarrier(MEMBARRIER_CMD_PRIVATE_EXPEDITED) in
+        // the malloc fast path on multi-processor systems. Without this the
+        // call gets SIGSYS on distros whose glibc enables it by default.
+#ifdef __NR_membarrier
+        ALLOW_SYSCALL(__NR_membarrier),
+#endif
+        // getcpu: returns the running CPU and NUMA node; used by glibc's
+        // per-CPU TLS cache and malloc implementation.
+#ifdef __NR_getcpu
+        ALLOW_SYSCALL(__NR_getcpu),
+#endif
 
         // ── Signals ────────────────────────────────────────────────────────
         ALLOW_SYSCALL(__NR_rt_sigaction),
@@ -264,11 +304,25 @@ namespace
     // clang-format on
 #undef ALLOW_SYSCALL
 
-    [[nodiscard]] auto install_seccomp_filter() noexcept -> bool
+    [[nodiscard]] auto install_seccomp_filter_with_default(std::uint32_t default_action) noexcept -> bool
     {
+        // Reuse the production allowlist exactly (no drift between the filter
+        // under test and the one shipped in production) but override the final
+        // fail-closed statement with the caller's default action. The
+        // integration test installs SECCOMP_RET_TRAP here so a blocked syscall
+        // is delivered to a SIGSYS handler and reported, instead of killing the
+        // process opaquely under SECCOMP_RET_KILL_PROCESS.
+        constexpr auto k_filter_len = sizeof(k_seccomp_filter) / sizeof(k_seccomp_filter[0]);
+        ::sock_filter filt[k_filter_len]; // NOLINT(*-avoid-c-arrays)
+        for (std::size_t i = 0; i < k_filter_len; ++i)
+        {
+            filt[i] = k_seccomp_filter[i];
+        }
+        filt[k_filter_len - 1U] = BPF_STMT(BPF_RET | BPF_K, default_action);
+
         auto const prog = ::sock_fprog{
-            .len = static_cast<unsigned short>(sizeof(k_seccomp_filter) / sizeof(k_seccomp_filter[0])),
-            .filter = k_seccomp_filter,
+            .len = static_cast<unsigned short>(k_filter_len),
+            .filter = filt,
         };
 
         if (::prctl(PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0) != 0)
@@ -276,6 +330,11 @@ namespace
             return false;
         }
         return ::syscall(__NR_seccomp, SECCOMP_SET_MODE_FILTER, 0, &prog) == 0;
+    }
+
+    [[nodiscard]] auto install_seccomp_filter() noexcept -> bool
+    {
+        return install_seccomp_filter_with_default(k_seccomp_ret_kill_process);
     }
 
     [[nodiscard]] auto read_seccomp_status() -> SeccompProbeResult
@@ -316,6 +375,15 @@ auto apply_seccomp_filter() noexcept -> bool
 {
 #ifdef __linux__
     return install_seccomp_filter();
+#else
+    return false;
+#endif
+}
+
+auto apply_seccomp_filter_with_default([[maybe_unused]] std::uint32_t default_action) noexcept -> bool
+{
+#ifdef __linux__
+    return install_seccomp_filter_with_default(default_action);
 #else
     return false;
 #endif

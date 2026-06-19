@@ -114,7 +114,7 @@ SCENARIO("seccomp probe reads /proc/self/status successfully on Linux", "[platfo
     }
 }
 
-SCENARIO("seccomp filter defaults to kill-process and blocks removed filesystem syscalls",
+SCENARIO("seccomp filter allows SQLite journal ops and blocks privilege-escalation syscalls",
          "[platform][hardening][seccomp][linux]")
 {
     GIVEN("the seccomp allowlist constants")
@@ -129,9 +129,9 @@ SCENARIO("seccomp filter defaults to kill-process and blocks removed filesystem 
             }
         }
 
-        WHEN("required syscalls are checked")
+        WHEN("common I/O and directory-creation syscalls are checked")
         {
-            THEN("common I/O and directory-creation syscalls are allowed")
+            THEN("read, write, openat, and mkdirat are allowed")
             {
                 REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_read));
                 REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_write));
@@ -140,22 +140,62 @@ SCENARIO("seccomp filter defaults to kill-process and blocks removed filesystem 
             }
         }
 
-        WHEN("removed filesystem syscalls are checked")
+        WHEN("SQLite journal and WAL syscalls are checked")
         {
-            THEN("chmod, fchmod, fchmodat, umask, mkdir, unlink, unlinkat, rename, renameat, truncate and ftruncate "
-                 "are not allowed")
+            THEN("ftruncate, unlink, unlinkat, rename, renameat, statfs, fstatfs, and fallocate are allowed")
             {
+                // SQLite DELETE journal mode calls unlinkat to remove the journal
+                // on commit, ftruncate during rollback and WAL checkpoint, and
+                // rename/renameat in some commit paths. fstatfs/statfs is used
+                // early in WAL-mode open to probe device sector size. fallocate
+                // is issued by glibc's posix_fallocate on filesystems that support it.
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_ftruncate));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_unlink));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_unlinkat));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_rename));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_renameat));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fstatfs));
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_statfs));
+#ifdef __NR_fallocate
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fallocate));
+#endif
+            }
+        }
+
+        WHEN("glibc per-CPU and memory-barrier syscalls are checked")
+        {
+            THEN("rseq, membarrier, and getcpu are allowed")
+            {
+                // glibc 2.35+ registers a per-thread rseq area after fork() and
+                // uses rseq in the malloc per-CPU cache on 2.36+. membarrier is
+                // used in the malloc fast path on SMP systems. getcpu feeds the
+                // per-CPU TLS cache. All three are blocked by default in a tight
+                // filter and must be explicitly allowed.
+#ifdef __NR_rseq
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_rseq));
+#endif
+#ifdef __NR_membarrier
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_membarrier));
+#endif
+#ifdef __NR_getcpu
+                REQUIRE(merovingian::platform::seccomp_is_syscall_allowed(__NR_getcpu));
+#endif
+            }
+        }
+
+        WHEN("privilege-modification filesystem syscalls are checked")
+        {
+            THEN("chmod, fchmod, fchmodat, umask, mkdir, and truncate remain blocked")
+            {
+                // Permission bits, ownership, and umask changes are not required
+                // after startup. truncate (path-based) is blocked; only the fd-based
+                // ftruncate (needed by SQLite) is permitted.
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_chmod));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fchmod));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_fchmodat));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_umask));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_mkdir));
-                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_unlink));
-                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_unlinkat));
-                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_rename));
-                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_renameat));
                 REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_truncate));
-                REQUIRE_FALSE(merovingian::platform::seccomp_is_syscall_allowed(__NR_ftruncate));
             }
         }
 
