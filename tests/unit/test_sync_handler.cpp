@@ -917,3 +917,103 @@ SCENARIO("Incremental sync surfaces newly-joined federated room when user had a 
         }
     }
 }
+
+// --- Long-poll timeout semantics (Sec. 9.4: timeout parameter) -------------------
+// Spec: Matrix Client-Server API v1.18, Sec. 9.4 /sync
+// URL:  ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3sync
+//
+// Spec MUST: when `timeout` is provided, the server MUST park the request until
+// the timeout expires or new data arrives.
+// Spec MUST: when `timeout` is NOT provided, the server MUST respond immediately.
+// `timeout=0` is equivalent to no timeout: respond immediately with current data.
+SCENARIO("Sync long-poll respects an explicit client-provided timeout", "[sync][handler][long-poll]")
+{
+    GIVEN("a registered user who has already consumed their initial sync data")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const next_batch = extract(initial.response.body, "next_batch");
+
+        WHEN("Alice sends /sync?since=<next_batch>&timeout=30000 with no new events")
+        {
+            auto const target = "/_matrix/client/v3/sync?since=" + next_batch + "&timeout=30000";
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", target, token, {}});
+
+            // Spec MUST: server MUST park the connection for the full client-requested
+            // timeout, not an internal cap. Previously the server silently capped to 5 s.
+            // Do NOT change — a shorter wait.timeout here means the cap bug regressed.
+            THEN("the handler returns needs_wait with the full client-requested 30-second timeout")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                REQUIRE(result.wait.timeout == std::chrono::milliseconds{30000});
+            }
+        }
+    }
+}
+
+SCENARIO("Sync with no timeout parameter returns immediately per spec", "[sync][handler][long-poll]")
+{
+    GIVEN("a registered user who has already consumed their initial sync data")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const next_batch = extract(initial.response.body, "next_batch");
+
+        WHEN("Alice sends /sync?since=<next_batch> with no timeout and no new events")
+        {
+            auto const target = "/_matrix/client/v3/sync?since=" + next_batch;
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", target, token, {}});
+
+            // Spec MUST: omitting `timeout` means respond immediately with current data.
+            // Do NOT change — returning needs_wait here would violate spec §9.4.
+            THEN("the handler returns immediately with a complete 200 response")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+            }
+        }
+    }
+}
+
+SCENARIO("Sync with timeout=0 returns immediately without long-polling", "[sync][handler][long-poll]")
+{
+    GIVEN("a registered user who has already consumed their initial sync data")
+    {
+        auto started = merovingian::homeserver::start_client_server(sync_config());
+        REQUIRE(started.started);
+        auto& rt = started.runtime;
+        auto const [alice_id, token] = register_and_login(rt);
+
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            rt, {"GET", "/_matrix/client/v3/sync", token, {}});
+        REQUIRE(initial.response.status == 200U);
+        auto const next_batch = extract(initial.response.body, "next_batch");
+
+        WHEN("Alice sends /sync?since=<next_batch>&timeout=0")
+        {
+            auto const target = "/_matrix/client/v3/sync?since=" + next_batch + "&timeout=0";
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt, {"GET", target, token, {}});
+
+            THEN("the handler returns immediately with a complete 200 response")
+            {
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+            }
+        }
+    }
+}

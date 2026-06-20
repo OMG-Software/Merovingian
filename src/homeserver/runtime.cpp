@@ -33,9 +33,10 @@ namespace merovingian::homeserver
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("runtime", event, std::move(fields)));
+        observability::log_diagnostic("runtime", event, std::move(fields), severity);
     }
 
     [[nodiscard]] auto make_metric(std::string name, std::int64_t value, observability::MetricType type,
@@ -451,7 +452,8 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     }
     log_diagnostic("start.listeners_ready", {
                                                 {"listener_count", std::to_string(runtime.listeners.count()), false}
-    });
+    },
+                   observability::LogEventSeverity::info);
 
     runtime.database = bootstrap_local_database(config, std::move(existing_state));
     // The default ctor installed `audit_sink_scope` against the
@@ -491,7 +493,8 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
                    {
                        {"schema_version", std::to_string(runtime.database.schema_version), false},
                        {"table_count",    std::to_string(runtime.database.tables.size()),  false}
-    });
+    },
+                   observability::LogEventSeverity::info);
 
     runtime.federation = federation::make_federation_runtime_state(federation::make_runtime_federation_config(config));
     runtime.outbound_client = std::make_unique<http::OutboundClient>();
@@ -510,14 +513,16 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
     log_diagnostic("start.hardening_controls", {
                                                    {"accepted", hardening_controls.accepted ? "true" : "false", false},
                                                    {"reason",   hardening_controls.reason,                      false},
-    });
+    },
+                   observability::LogEventSeverity::info);
     runtime.hardening = platform::run_startup_hardening_self_check();
     log_diagnostic("start.complete",
                    {
                        {"hardening_checks",      std::to_string(runtime.hardening.count()),             false},
                        {"hardening_alpha_ready", runtime.hardening.is_alpha_ready() ? "true" : "false", false},
                        {"federation_enabled",    runtime.federation.config.enabled ? "true" : "false",  false}
-    });
+    },
+                   observability::LogEventSeverity::info);
     append_local_audit(runtime.database, observability::AuditCategory::admin, "runtime.started", "server", "homeserver",
                        "startup");
     runtime.started = true;

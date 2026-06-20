@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.2
+Version:        0.9.3
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -96,6 +96,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 20 2026 James Chapman <claude@ping.me.uk> - 0.9.3-1
+- fix(sync): server now respects client-requested timeout; defaults to 20 s when omitted
+- fix(log): promote major auth and server lifecycle events from DEBUG to INFO
+
 * Fri Jun 20 2026 James Chapman <claude@ping.me.uk> - 0.9.2-1
 - fix(auth): access tokens no longer silently expire for clients that did not opt into refresh tokens
 
