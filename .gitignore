@@ -2,6 +2,7 @@
 .idea/
 .vscode/
 .worktrees/
+plans/
 __pycache__/
 *.py[cod]
 native.ini
