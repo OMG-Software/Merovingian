@@ -1,3 +1,9 @@
+## 0.9.4
+
+### Added
+- **feat(sync): MSC4186 Simplified Sliding Sync (unstable) — `POST /_matrix/client/unstable/org.matrix.msc4186/sync`:** implements the full MSC4186 Simplified Sliding Sync proposal as an unstable extension. The endpoint is advertised via `unstable_features["org.matrix.msc4186"] = true` in `/_matrix/client/versions`. Features: named room lists with windowed ranges, sort criteria (`by_recency`, `by_notification_count`, `by_name`), list operations (SYNC / INVALIDATE / INSERT / DELETE / UPDATE), per-room state and timeline with `required_state` wildcards, explicit room subscriptions with independent parameters, and all five MSC4186 extensions (to_device, e2ee, account_data, receipts, typing). Long-polling reuses the dedicated sync thread pool with the same slice-and-deadline pattern as `v3/sync`. Per-connection state is keyed by `user_id/device_id/conn_id` and tracks previous list windows so subsequent requests return only incremental ops. Position tokens (`pos`) reuse the existing hex-encoded `StreamToken` triplet. Overlapping or inverted ranges are rejected with 400 M_BAD_JSON.
+- **test(sync): MSC4186 sliding sync integration test suite (`tests/integration/test_sliding_sync_flow.cpp`):** seven integration scenarios exercising the full HTTP handler end-to-end — advertisement in `/_matrix/client/versions`, initial SYNC op with `initial:true`, `required_state` wildcard filtering, `timeline_limit` enforcement, incremental sync without `initial:true` on already-seen rooms, `to_device` extension delivery, and `e2ee` extension key counts. Also adds unit tests (`tests/unit/test_sliding_sync.cpp`) covering the parser layer and MSC4186 conformance tests (`tests/conformance/test_sliding_sync_conformance.cpp`) for all MUST requirements verifiable at the parser boundary.
+
 ## 0.9.3
 
 ### Fixed

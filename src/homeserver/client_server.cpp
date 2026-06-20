@@ -32,6 +32,11 @@
 #include "merovingian/rooms/room_version_policy.hpp"
 #include "merovingian/sync/stream_token.hpp"
 #include "merovingian/sync/sync_filter.hpp"
+#include "merovingian/sync/sliding_sync.hpp"
+#include "merovingian/sync/sliding_sync_extensions.hpp"
+#include "merovingian/sync/sliding_sync_parser.hpp"
+#include "merovingian/sync/sliding_sync_room_builder.hpp"
+#include "merovingian/sync/sliding_sync_room_list.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
@@ -2884,6 +2889,383 @@ namespace
         };
     }
 
+    // ── MSC4186 Sliding Sync serialisation helpers ────────────────────────────
+
+    [[nodiscard]] auto sliding_sync_op_to_value(sync::SlidingSyncOp const& op) -> canonicaljson::Value
+    {
+        auto obj = canonicaljson::Object{};
+        obj.push_back(json_member("op", json_str(op.op)));
+        if (op.range.has_value())
+        {
+            auto range_arr = canonicaljson::Array{};
+            range_arr.push_back(json_int(static_cast<std::int64_t>(op.range->start)));
+            range_arr.push_back(json_int(static_cast<std::int64_t>(op.range->end)));
+            obj.push_back(json_member("range", json_arr(std::move(range_arr))));
+        }
+        if (!op.room_ids.empty())
+        {
+            auto ids = canonicaljson::Array{};
+            for (auto const& id : op.room_ids)
+            {
+                ids.push_back(json_str(id));
+            }
+            obj.push_back(json_member("room_ids", json_arr(std::move(ids))));
+        }
+        if (op.index.has_value())
+        {
+            obj.push_back(json_member("index", json_int(static_cast<std::int64_t>(*op.index))));
+        }
+        if (op.room_id.has_value())
+        {
+            obj.push_back(json_member("room_id", json_str(*op.room_id)));
+        }
+        return canonicaljson::Value{std::move(obj)};
+    }
+
+    [[nodiscard]] auto sliding_sync_room_to_value(sync::SlidingSyncRoomResponse room) -> canonicaljson::Value
+    {
+        auto parse_json = [](std::string const& json) -> canonicaljson::Value {
+            auto result = canonicaljson::parse_lossless(json);
+            return result.error == canonicaljson::ParseError::none
+                       ? std::move(result.value)
+                       : canonicaljson::Value{canonicaljson::Object{}};
+        };
+
+        auto obj = canonicaljson::Object{};
+        if (room.name.has_value())
+        {
+            obj.push_back(json_member("name", json_str(*room.name)));
+        }
+        if (room.avatar.has_value())
+        {
+            obj.push_back(json_member("avatar", json_str(*room.avatar)));
+        }
+        obj.push_back(json_member("initial",   json_bool(room.initial)));
+        obj.push_back(json_member("is_dm",     json_bool(room.is_dm)));
+        obj.push_back(json_member("num_live",  json_int(static_cast<std::int64_t>(room.num_live))));
+        obj.push_back(json_member("timestamp", json_int(static_cast<std::int64_t>(room.timestamp))));
+        if (room.joined_count.has_value())
+        {
+            obj.push_back(json_member("joined_count",
+                                      json_int(static_cast<std::int64_t>(*room.joined_count))));
+        }
+        if (room.invited_count.has_value())
+        {
+            obj.push_back(json_member("invited_count",
+                                      json_int(static_cast<std::int64_t>(*room.invited_count))));
+        }
+        if (room.notification_count.has_value())
+        {
+            obj.push_back(json_member("notification_count",
+                                      json_int(static_cast<std::int64_t>(*room.notification_count))));
+        }
+        if (room.highlight_count.has_value())
+        {
+            obj.push_back(json_member("highlight_count",
+                                      json_int(static_cast<std::int64_t>(*room.highlight_count))));
+        }
+        if (!room.heroes.empty())
+        {
+            auto heroes_arr = canonicaljson::Array{};
+            for (auto const& hero : room.heroes)
+            {
+                auto hero_obj = canonicaljson::Object{};
+                hero_obj.push_back(json_member("user_id", json_str(hero.user_id)));
+                if (hero.display_name.has_value())
+                {
+                    hero_obj.push_back(json_member("display_name", json_str(*hero.display_name)));
+                }
+                if (hero.avatar_url.has_value())
+                {
+                    hero_obj.push_back(json_member("avatar_url", json_str(*hero.avatar_url)));
+                }
+                heroes_arr.push_back(canonicaljson::Value{std::move(hero_obj)});
+            }
+            obj.push_back(json_member("heroes", json_arr(std::move(heroes_arr))));
+        }
+        auto req_state = canonicaljson::Array{};
+        for (auto& json : room.required_state_json)
+        {
+            req_state.push_back(parse_json(json));
+        }
+        obj.push_back(json_member("required_state", json_arr(std::move(req_state))));
+        auto tl_events = canonicaljson::Array{};
+        for (auto& json : room.timeline_json)
+        {
+            tl_events.push_back(parse_json(json));
+        }
+        auto tl_obj = canonicaljson::Object{};
+        tl_obj.push_back(json_member("events",  json_arr(std::move(tl_events))));
+        tl_obj.push_back(json_member("limited", json_bool(room.limited)));
+        if (room.prev_batch.has_value())
+        {
+            tl_obj.push_back(json_member("prev_batch", json_str(*room.prev_batch)));
+        }
+        obj.push_back(json_member("timeline", json_obj(std::move(tl_obj))));
+        if (room.invite_state_json.has_value())
+        {
+            auto iv_events = canonicaljson::Array{};
+            iv_events.push_back(parse_json(*room.invite_state_json));
+            obj.push_back(json_member("invite_state", json_arr(std::move(iv_events))));
+        }
+        return canonicaljson::Value{std::move(obj)};
+    }
+
+    [[nodiscard]] auto sliding_sync_ext_to_value(sync::SlidingSyncExtensionResponses ext)
+        -> canonicaljson::Object
+    {
+        auto parse_json = [](std::string const& json) -> canonicaljson::Value {
+            auto result = canonicaljson::parse_lossless(json);
+            return result.error == canonicaljson::ParseError::none
+                       ? std::move(result.value)
+                       : canonicaljson::Value{canonicaljson::Object{}};
+        };
+
+        auto obj = canonicaljson::Object{};
+
+        if (ext.to_device.has_value())
+        {
+            auto events = canonicaljson::Array{};
+            for (auto& json : ext.to_device->events_json)
+            {
+                events.push_back(parse_json(json));
+            }
+            auto td = canonicaljson::Object{};
+            td.push_back(json_member("events",     json_arr(std::move(events))));
+            td.push_back(json_member("next_batch", json_str(ext.to_device->next_batch)));
+            obj.push_back(json_member("to_device", json_obj(std::move(td))));
+        }
+
+        if (ext.e2ee.has_value())
+        {
+            auto& e = *ext.e2ee;
+            auto changed_arr = canonicaljson::Array{};
+            for (auto& uid : e.changed) { changed_arr.push_back(json_str(uid)); }
+            auto left_arr = canonicaljson::Array{};
+            for (auto& uid : e.left) { left_arr.push_back(json_str(uid)); }
+            auto otk_obj = canonicaljson::Object{};
+            for (auto const& [algo, count] : e.device_one_time_keys_count)
+            {
+                otk_obj.push_back(json_member(algo, json_int(static_cast<std::int64_t>(count))));
+            }
+            auto fallback_arr = canonicaljson::Array{};
+            for (auto& algo : e.device_unused_fallback_key_types) { fallback_arr.push_back(json_str(algo)); }
+            auto dl_obj = canonicaljson::Object{};
+            dl_obj.push_back(json_member("changed", json_arr(std::move(changed_arr))));
+            dl_obj.push_back(json_member("left",    json_arr(std::move(left_arr))));
+            auto e2ee_obj = canonicaljson::Object{};
+            e2ee_obj.push_back(json_member("device_lists",
+                                           json_obj(std::move(dl_obj))));
+            e2ee_obj.push_back(json_member("device_one_time_keys_count",
+                                           json_obj(std::move(otk_obj))));
+            e2ee_obj.push_back(json_member("device_unused_fallback_key_types",
+                                           json_arr(std::move(fallback_arr))));
+            obj.push_back(json_member("e2ee", json_obj(std::move(e2ee_obj))));
+        }
+
+        if (ext.account_data.has_value())
+        {
+            auto global_arr = canonicaljson::Array{};
+            for (auto& json : ext.account_data->global_json) { global_arr.push_back(parse_json(json)); }
+            auto rooms_obj = canonicaljson::Object{};
+            for (auto& [rid, jsons] : ext.account_data->rooms_json)
+            {
+                auto events = canonicaljson::Array{};
+                for (auto& json : jsons) { events.push_back(parse_json(json)); }
+                rooms_obj.push_back(json_member(rid, json_arr(std::move(events))));
+            }
+            auto ad_obj = canonicaljson::Object{};
+            ad_obj.push_back(json_member("global", json_arr(std::move(global_arr))));
+            ad_obj.push_back(json_member("rooms",  json_obj(std::move(rooms_obj))));
+            obj.push_back(json_member("account_data", json_obj(std::move(ad_obj))));
+        }
+
+        if (ext.receipts.has_value())
+        {
+            auto rooms_obj = canonicaljson::Object{};
+            for (auto& [rid, json] : ext.receipts->rooms_json)
+            {
+                rooms_obj.push_back(json_member(rid, parse_json(json)));
+            }
+            auto rec_obj = canonicaljson::Object{};
+            rec_obj.push_back(json_member("rooms", json_obj(std::move(rooms_obj))));
+            obj.push_back(json_member("receipts", json_obj(std::move(rec_obj))));
+        }
+
+        if (ext.typing.has_value())
+        {
+            auto rooms_obj = canonicaljson::Object{};
+            for (auto& [rid, json] : ext.typing->rooms_json)
+            {
+                rooms_obj.push_back(json_member(rid, parse_json(json)));
+            }
+            auto typ_obj = canonicaljson::Object{};
+            typ_obj.push_back(json_member("rooms", json_obj(std::move(rooms_obj))));
+            obj.push_back(json_member("typing", json_obj(std::move(typ_obj))));
+        }
+
+        return obj;
+    }
+
+    [[nodiscard]] auto sliding_sync_json(
+        ClientServerRuntime&                    rt,
+        std::string_view                        user,
+        std::string_view                        device_id,
+        sync::SlidingSyncRequest const&         ssreq,
+        std::optional<sync::StreamToken> const& pos,
+        std::uint64_t                           timeout_ms,
+        bool                                    can_wait) -> DispatchResult
+    {
+        auto const since_event_ordering = pos.has_value() ? pos->event_ordering : std::uint64_t{0U};
+        auto const since_sync_stream_id = pos.has_value() ? pos->sync_stream_id : std::uint64_t{0U};
+        auto& store = rt.homeserver.database.persistent_store;
+
+        // Long-poll: hold when nothing is new and the client is willing to wait.
+        if (can_wait && timeout_ms > 0U)
+        {
+            auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
+            auto const cur_sync  = store.next_sync_stream_id;
+            if (cur_event <= since_event_ordering && cur_sync <= since_sync_stream_id)
+            {
+                return DispatchResult{
+                    DispatchResult::Status::needs_wait,
+                    {},
+                    {since_event_ordering, since_sync_stream_id, std::chrono::milliseconds{timeout_ms}}
+                };
+            }
+        }
+
+        // Per-connection state keyed user/device/conn_id.
+        auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
+                              (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
+        auto& conn     = rt.homeserver.sliding_sync_connections[conn_key];
+        conn.last_used = std::chrono::steady_clock::now();
+
+        // ── Build list windows ───────────────────────────────────────────────
+
+        auto list_results = std::map<std::string, sync::RoomListResult>{};
+        for (auto const& [list_name, list] : ssreq.lists)
+        {
+            auto const empty_prev = std::vector<std::string>{};
+            auto const it         = conn.list_prev_windows.find(list_name);
+            auto const& prev_win  = (it != conn.list_prev_windows.end()) ? it->second : empty_prev;
+            list_results[list_name] = sync::compute_room_list(rt.homeserver, user, list, prev_win, store);
+        }
+
+        // Collect ordered unique room IDs: lists first, then explicit subscriptions.
+        auto response_room_ids = std::vector<std::string>{};
+        auto seen_rooms        = std::unordered_set<std::string>{};
+        for (auto const& [lname, result] : list_results)
+        {
+            for (auto const& room_id : result.windowed_room_ids)
+            {
+                if (seen_rooms.insert(room_id).second)
+                {
+                    response_room_ids.push_back(room_id);
+                }
+            }
+        }
+        for (auto const& [room_id, sub_unused] : ssreq.room_subscriptions)
+        {
+            std::ignore = sub_unused;
+            if (seen_rooms.insert(room_id).second)
+            {
+                response_room_ids.push_back(room_id);
+            }
+        }
+
+        // ── Per-room responses ───────────────────────────────────────────────
+
+        auto rooms_obj = canonicaljson::Object{};
+        for (auto const& room_id : response_room_ids)
+        {
+            auto sub = sync::SlidingSyncRoomSubscription{};
+            if (auto const sit = ssreq.room_subscriptions.find(room_id);
+                sit != ssreq.room_subscriptions.end())
+            {
+                sub = sit->second;
+            }
+            else
+            {
+                for (auto const& [lname, result] : list_results)
+                {
+                    if (std::ranges::find(result.windowed_room_ids, room_id) !=
+                        result.windowed_room_ids.end())
+                    {
+                        if (auto const lit = ssreq.lists.find(lname); lit != ssreq.lists.end())
+                        {
+                            sub.required_state = lit->second.required_state;
+                            sub.timeline_limit = lit->second.timeline_limit;
+                            sub.include_heroes = lit->second.include_heroes;
+                        }
+                        break;
+                    }
+                }
+            }
+            auto const is_initial = conn.rooms_seen.find(room_id) == conn.rooms_seen.end();
+            auto room = sync::build_room_response(
+                rt.homeserver, room_id, user, sub, since_event_ordering, is_initial, store);
+            rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(room))));
+        }
+
+        // ── Extensions ──────────────────────────────────────────────────────
+
+        auto ext_obj = canonicaljson::Object{};
+        if (ssreq.extensions.has_value())
+        {
+            ext_obj = sliding_sync_ext_to_value(sync::build_extensions(
+                rt.homeserver, user, device_id, *ssreq.extensions,
+                since_sync_stream_id, store.next_sync_stream_id, store, response_room_ids));
+        }
+
+        // ── pos token and list op responses ─────────────────────────────────
+
+        auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
+        auto const cur_sync  = store.next_sync_stream_id;
+        auto const new_pos   = sync::encode_stream_token(sync::StreamToken{cur_event, cur_event, cur_sync});
+
+        auto lists_obj = canonicaljson::Object{};
+        for (auto& [lname, result] : list_results)
+        {
+            auto ops_arr = canonicaljson::Array{};
+            for (auto const& op : result.ops)
+            {
+                ops_arr.push_back(sliding_sync_op_to_value(op));
+            }
+            auto list_resp = canonicaljson::Object{};
+            list_resp.push_back(json_member("count", json_int(static_cast<std::int64_t>(result.count))));
+            list_resp.push_back(json_member("ops",   json_arr(std::move(ops_arr))));
+            lists_obj.push_back(json_member(lname, json_obj(std::move(list_resp))));
+        }
+
+        // ── Assemble response body ───────────────────────────────────────────
+
+        auto response_obj = canonicaljson::Object{};
+        response_obj.push_back(json_member("pos",   json_str(new_pos)));
+        response_obj.push_back(json_member("lists", json_obj(std::move(lists_obj))));
+        response_obj.push_back(json_member("rooms", json_obj(std::move(rooms_obj))));
+        if (!ext_obj.empty())
+        {
+            response_obj.push_back(json_member("extensions", json_obj(std::move(ext_obj))));
+        }
+        auto const body = json_serialize(json_obj(std::move(response_obj)));
+
+        // ── Update connection state ──────────────────────────────────────────
+
+        for (auto const& room_id : response_room_ids)
+        {
+            conn.rooms_seen.insert(room_id);
+        }
+        for (auto& [lname, result] : list_results)
+        {
+            conn.list_prev_windows[lname] = std::move(result.windowed_room_ids);
+        }
+        conn.last_event_ordering = cur_event;
+        conn.last_sync_stream_id = cur_sync;
+
+        return DispatchResult{DispatchResult::Status::complete, {200U, std::move(body)}, {}};
+    }
+
     [[nodiscard]] auto error_code_for_status(std::uint16_t status) -> std::string_view
     {
         if (status == 404U)
@@ -5545,7 +5927,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({
                                  json_member("versions", json_arr(std::move(versions))),
-                                 json_member("unstable_features", json_obj({})),
+                                 json_member("unstable_features", json_obj({json_member("org.matrix.msc4186", json_bool(true))})),
                              })));
     }
 
@@ -6714,6 +7096,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                             {"device_id", device_id, false}
         });
         return sync_json(rt, *user, device_id, sync_request, can_wait);
+    }
+
+    // MSC4186 Simplified Sliding Sync
+    // POST /_matrix/client/unstable/org.matrix.msc4186/sync
+    auto constexpr msc4186_sync_prefix = std::string_view{"/_matrix/client/unstable/org.matrix.msc4186/sync"};
+    if (req.method == "POST" && starts_with(req.target, msc4186_sync_prefix))
+    {
+        auto const session_4186   = authenticated_session(rt.homeserver, req.access_token);
+        auto const device_id_4186 = session_4186.has_value() ? session_4186->device_id : std::string{};
+        auto const sliding_req    = sync::parse_sliding_sync_request(req.body);
+        if (!sliding_req.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "invalid sliding sync request body");
+        }
+        auto const pos     = sync::parse_sliding_sync_pos(req.target);
+        auto const timeout = sync::parse_sliding_sync_timeout(req.target).value_or(0U);
+        log_diagnostic("sliding_sync.dispatch", {
+                                                     {"actor",     *user,           false},
+                                                     {"device_id", device_id_4186,  false}
+        });
+        return sliding_sync_json(rt, *user, device_id_4186, *sliding_req, pos, timeout, can_wait);
     }
 
     auto constexpr room_prefix = std::string_view{"/_matrix/client/v3/rooms/"};

@@ -13,12 +13,14 @@
 #include "merovingian/net/listener.hpp"
 #include "merovingian/observability/observability.hpp"
 #include "merovingian/platform/hardening_self_check.hpp"
+#include "merovingian/sync/sliding_sync.hpp"
 #include "merovingian/sync/sync_notifier.hpp"
 #include "merovingian/trust_safety/policy_engine.hpp"
 
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -172,6 +174,9 @@ struct HomeserverRuntime final
     sync::SyncNotifier* sync_notifier{nullptr};
     std::vector<InboundTypingUser> typing_users{};
     std::vector<InboundReceipt> receipts{};
+    // Per-connection MSC4186 sliding sync state.
+    // Key: user_id + "/" + device_id + "/" + conn_id (or "__default__").
+    std::map<std::string, sync::SlidingSyncConnectionState> sliding_sync_connections{};
     std::uint64_t next_request_sequence{1U};
     // Guards mutable runtime state when requests are handled concurrently.
     // Handlers must release it before outbound network I/O so unrelated
