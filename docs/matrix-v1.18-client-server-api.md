@@ -361,3 +361,82 @@
 | Method | Path | Operation ID | Auth | Request body | Responses |
 | --- | --- | --- | --- | --- | --- |
 | `GET` | `/_matrix/client/v3/voip/turnServer` | `getTurnServer` | access token | - | 200, 429 |
+
+---
+
+## Unstable Extensions
+
+The following endpoints are **not part of the stable v1.18 spec**. They are served under
+`/_matrix/client/unstable/` and are advertised via `unstable_features` in
+`/_matrix/client/versions`. They may change or be removed when finalised by the spec process.
+
+### MSC4186 — Simplified Sliding Sync
+
+- **Proposal**: <https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md>
+- **Advertised via**: `unstable_features["org.matrix.msc4186"] = true` in `/_matrix/client/versions`
+- **Implementation files**:
+  - `include/merovingian/sync/sliding_sync.hpp` — request/response types
+  - `include/merovingian/sync/sliding_sync_parser.hpp` + `src/sync/sliding_sync_parser.cpp` — request parser
+  - `include/merovingian/sync/sliding_sync_room_list.hpp` + `src/sync/sliding_sync_room_list.cpp` — room-list windowing and ops
+  - `include/merovingian/sync/sliding_sync_room_builder.hpp` + `src/sync/sliding_sync_room_builder.cpp` — per-room response builder
+  - `include/merovingian/sync/sliding_sync_extensions.hpp` + `src/sync/sliding_sync_extensions.cpp` — five extensions
+  - `src/homeserver/client_server.cpp` — HTTP handler (`sliding_sync_json`)
+
+| Method | Path | Auth | Request body | Responses |
+| --- | --- | --- | --- | --- |
+| `POST` | `/_matrix/client/unstable/org.matrix.msc4186/sync` | access token | optional `application/json` | 200, 400 |
+
+#### Query parameters
+
+| Parameter | Type | Description |
+| --- | --- | --- |
+| `pos` | string | Opaque position token from the previous response. Absent on first request (initial sync). |
+| `timeout` | integer | Long-poll wait time in milliseconds. Absent or 0 = respond immediately. |
+
+#### Request body fields
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `conn_id` | string | optional | Identifies a logical connection so the server can maintain separate state per client tab. |
+| `lists` | object | optional | Named room lists. Keys are arbitrary list IDs chosen by the client. |
+| `lists.*.ranges` | array of [start, end] pairs | required if list present | Windowed view into the sorted room list. Ranges MUST NOT overlap; start MUST be ≤ end. |
+| `lists.*.sort` | array of strings | optional | Sort criteria applied left-to-right: `by_recency`, `by_notification_count`, `by_name`. |
+| `lists.*.required_state` | array of [type, state_key] pairs | optional | State events to include in each room. `"*"` is a wildcard in either position. |
+| `lists.*.timeline_limit` | integer | optional | Maximum number of timeline events to return per room. |
+| `room_subscriptions` | object | optional | Explicit per-room subscriptions keyed by room ID. |
+| `extensions` | object | optional | Extension requests. Each extension has an `enabled` boolean. |
+| `extensions.to_device` | object | optional | Fetch pending to-device messages. Fields: `enabled`, `limit`, `since`. |
+| `extensions.e2ee` | object | optional | Fetch device list changes and OTK counts. Fields: `enabled`. |
+| `extensions.account_data` | object | optional | Fetch global and per-room account data. Fields: `enabled`. |
+| `extensions.receipts` | object | optional | Fetch read receipts. Fields: `enabled`, `rooms`. |
+| `extensions.typing` | object | optional | Fetch typing notifications. Fields: `enabled`, `rooms`. |
+
+#### Response body fields
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `pos` | string | New opaque position token. MUST be returned on every successful response. |
+| `lists` | object | One entry per list. Contains `count` (total rooms matching the filter) and `ops` (list operations). |
+| `rooms` | object | One entry per room included in the response. Keyed by room ID. |
+| `extensions` | object | Extension responses. Only present for enabled extensions. |
+
+#### List operations (`ops` array)
+
+| Op | Description |
+| --- | --- |
+| `SYNC` | A range window is being sent in full. `range` and `room_ids` are populated. |
+| `INVALIDATE` | A previously sent range is now invalid. `range` is populated; `room_ids` is absent. |
+| `INSERT` | A single room was inserted at `index`. |
+| `DELETE` | The room at `index` was removed. |
+| `UPDATE` | The room at `index` changed without moving. |
+
+#### Connection state
+
+The server maintains per-connection state keyed by `user_id/device_id/conn_id`. This allows
+the server to send only incremental updates on subsequent requests (new rooms, changed rooms,
+updated ops) rather than retransmitting the full window every time.
+
+Connection state is stored in `HomeserverRuntime::sliding_sync_connections`
+(`include/merovingian/homeserver/runtime.hpp`). Connections are keyed by
+`"{user_id}/{device_id}/{conn_id_or___default__}"` and track previous list windows,
+rooms seen, and the last event ordering seen.
