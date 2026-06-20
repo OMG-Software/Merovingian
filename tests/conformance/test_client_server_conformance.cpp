@@ -7093,6 +7093,65 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
     }
 }
 
+// --- GET/POST /_matrix/client/v3/publicRooms?server= (remote proxy) ----------
+// Spec: Matrix Client-Server API v1.18
+// URL: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3publicrooms
+//
+// When the optional `server` query parameter names a different homeserver the
+// local server MUST proxy the request to that server's federation public-rooms
+// endpoint. When the local server names itself as `server` it MUST serve local
+// results without any outbound call.
+SCENARIO("GET /publicRooms?server= proxies to remote or serves locally",
+         "[conformance][client-server][room-discovery]")
+{
+    GIVEN("a running client-server whose server name is example.org")
+    {
+        auto started = merovingian::homeserver::start_client_server(conformance_config());
+        REQUIRE(started.started);
+
+        WHEN("GET /publicRooms?server=example.org is called (own server name)")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/publicRooms?server=example.org", {}, {}});
+
+            THEN("the server returns 200 with local room list — no outbound call is needed")
+            {
+                // Spec MUST: server=<own name> is equivalent to no server parameter.
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                REQUIRE(object_member_as_array(body, "chunk") != nullptr);
+            }
+        }
+
+        WHEN("GET /publicRooms?server=grapheneos.org is called and federation is not configured")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"GET", "/_matrix/client/v3/publicRooms?server=grapheneos.org", {}, {}});
+
+            THEN("the server returns an error — it must not silently return local room data")
+            {
+                // Spec MUST: the server MUST attempt to fetch from the named server.
+                // With no outbound federation available this surfaces as an error, not
+                // a silent fallback that leaks local room data to the wrong server.
+                REQUIRE(response.response.status != 200U);
+                REQUIRE(response.response.body.find("\"chunk\"") == std::string::npos);
+            }
+        }
+
+        WHEN("POST /publicRooms?server=grapheneos.org is called and federation is not configured")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/publicRooms?server=grapheneos.org", {}, "{}"});
+
+            THEN("the server returns an error — it must not silently return local room data")
+            {
+                REQUIRE(response.response.status != 200U);
+                REQUIRE(response.response.body.find("\"chunk\"") == std::string::npos);
+            }
+        }
+    }
+}
+
 // --- GET /_matrix/client/v3/directory/list/room/{roomId} ---------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3directorylistroomroomid
 // The server MUST return {"visibility":"public"|"private"} for a known room.
