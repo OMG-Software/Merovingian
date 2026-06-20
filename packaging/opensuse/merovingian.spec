@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.1
+Version:        0.9.2
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -111,5 +111,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 20 2026 James Chapman <claude@ping.me.uk> - 0.9.2-1
+- fix(auth): access tokens no longer silently expire for clients that did not opt into refresh tokens
+
 * Fri Jun 19 2026 James Chapman <claude@ping.me.uk> - 0.9.1-1
 - Beta milestone: promote from pre-beta (0.8.x) to beta phase.

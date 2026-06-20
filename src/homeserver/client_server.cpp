@@ -5816,7 +5816,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             body->device_id = generate_device_id();
         }
-        auto const result = login_local_user(rt.homeserver, body->user_id, body->password, body->device_id);
+        auto const result = login_local_user(rt.homeserver, body->user_id, body->password, body->device_id,
+                                             body->supports_refresh_tokens);
         if (!result.ok)
         {
             return dispatch_err(req, rt, result.status, "M_FORBIDDEN", result.reason);

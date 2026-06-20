@@ -1,3 +1,8 @@
+## 0.9.2
+
+### Fixed
+- **fix(auth): access tokens no longer silently expire for clients that did not opt into refresh tokens (spec §5.6.2):** `login_local_user` now accepts a `with_ttl` flag; the configured `access_token_lifetime_ms` is applied only when the client explicitly requests refresh-token support (`"refresh_token": true` in the login body). Clients that do not opt in receive a non-expiring access token, conforming to the Matrix spec requirement that servers SHOULD NOT expire access tokens without co-issuing a refresh token. Previously, every login silently set a 1-hour TTL regardless, causing users to be logged out every hour with no warning and no way to recover the session.
+
 ## 0.9.1
 
 ### Fixed
