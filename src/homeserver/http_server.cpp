@@ -184,7 +184,7 @@ namespace
         // Takes shared ownership of the TLS connection so that the stream can be
         // used for reads on the accepting thread while a copy of the shared_ptr is
         // captured by the sync-pool write lambda (see serve_tls_http).
-        explicit TlsConnectionStream(std::shared_ptr<TlsConnection> connection) noexcept
+        explicit TlsConnectionStream(std::shared_ptr<TlsConnection> connection) noexcept // SHARED_PTR: reviewed — split ownership: main-pool reads, sync-pool writes
             : m_connection{std::move(connection)}
         {
         }
@@ -205,7 +205,7 @@ namespace
         }
 
     private:
-        std::shared_ptr<TlsConnection> m_connection;
+        std::shared_ptr<TlsConnection> m_connection; // SHARED_PTR: reviewed — shared by main-pool read and sync-pool write phases
     };
 
     [[nodiscard]] auto header_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
