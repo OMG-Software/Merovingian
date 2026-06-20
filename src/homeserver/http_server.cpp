@@ -181,31 +181,33 @@ namespace
     class TlsConnectionStream final : public ConnectionStream
     {
     public:
-        // Takes shared ownership of the TLS connection so that the stream can be
-        // used for reads on the accepting thread while a copy of the shared_ptr is
-        // captured by the sync-pool write lambda (see serve_tls_http).
-        explicit TlsConnectionStream(std::shared_ptr<TlsConnection> connection) noexcept // SHARED_PTR: reviewed — split ownership: main-pool reads, sync-pool writes
-            : m_connection{std::move(connection)}
+        // Raw reference to a TlsConnection whose lifetime is managed by the
+        // async_write_fn lambda in serve_tls_http (via unique_ptr). The read
+        // phase always completes before the write lambda runs, so this reference
+        // is always valid during serve_stream and is never accessed after it
+        // returns (we only touch the integer fd at that point).
+        explicit TlsConnectionStream(TlsConnection& connection) noexcept
+            : m_connection{connection}
         {
         }
 
         [[nodiscard]] auto fd() const noexcept -> int override
         {
-            return m_connection->fd();
+            return m_connection.fd();
         }
 
         [[nodiscard]] auto read(char* buffer, std::size_t capacity) noexcept -> std::ptrdiff_t override
         {
-            return m_connection->read(buffer, capacity);
+            return m_connection.read(buffer, capacity);
         }
 
         [[nodiscard]] auto write(std::string_view data) noexcept -> std::ptrdiff_t override
         {
-            return m_connection->write(data);
+            return m_connection.write(data);
         }
 
     private:
-        std::shared_ptr<TlsConnection> m_connection; // SHARED_PTR: reviewed — shared by main-pool read and sync-pool write phases
+        TlsConnection& m_connection;
     };
 
     [[nodiscard]] auto header_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
@@ -554,7 +556,7 @@ namespace
     [[nodiscard]] auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, HttpServeStats& stats,
                                     HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool,
                                     std::string_view peer_addr = {},
-                                    std::function<std::ptrdiff_t(std::string_view)> async_write_fn = {}) -> bool
+                                    std::move_only_function<std::ptrdiff_t(std::string_view)> async_write_fn = {}) -> bool
     {
         auto const limits = http::RequestLimits{};
         auto const head_cap = header_size_cap(limits);
@@ -933,45 +935,39 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                     // ~SocketHandle closes fd on both normal and exceptional exit.
                 }
 
-                // Move the TLS connection into shared ownership so the read path
-                // (this thread, via TlsConnectionStream) and the async write path
-                // (the sync pool thread, via async_write_fn) can both use it without
-                // either dangling.
+                // Transfer exclusive ownership of the TLS connection into the
+                // async write lambda via unique_ptr. The read phase (this thread)
+                // holds a raw reference valid for the duration of serve_stream:
+                // async_write_fn owns TlsConnection and outlives all reads.
                 //
-                // GCC 16 false-positive: -Warray-bounds fires inside the
-                // _Sp_counted_ptr_inplace destructor chain when
-                // make_shared<TlsConnection> is inlined.  This is a known
-                // GCC 16 bug; the allocation is correct.
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Warray-bounds"
-#endif
-                auto tls_shared = std::make_shared<TlsConnection>(std::move(*accepted_tls.connection));
-                auto stream = TlsConnectionStream{tls_shared};
+                // On transfer: sync-pool thread owns TlsConnection via the captured
+                // unique_ptr and closes fd after writing.
+                // On non-transfer: async_write_fn is destroyed inside serve_stream,
+                // which runs TlsConnection::~TlsConnection (SSL_free only — fd stays
+                // open) before we return; the guard then closes fd normally.
+                auto tls_owner = std::make_unique<TlsConnection>(std::move(*accepted_tls.connection));
+                auto& tls_ref = *tls_owner;
+                auto stream = TlsConnectionStream{tls_ref};
 
-                // Build the write function that the sync-pool lambda will use.
-                // It captures tls_shared by value (shared ownership); refcount
-                // drops back to 1 if submit() fails so the stream path still works.
-                auto async_write_fn = std::function<std::ptrdiff_t(std::string_view)>{
-                    [tls = tls_shared](std::string_view data) { return tls->write(data); }};
+                auto async_write_fn = std::move_only_function<std::ptrdiff_t(std::string_view)>{
+                    [tls = std::move(tls_owner)](std::string_view data) mutable {
+                        return tls->write(data);
+                    }};
 
                 auto const transferred =
                     serve_stream(stream, runtime, stats, dispatch_mode, sync_pool, tls_peer_addr,
                                  std::move(async_write_fn));
                 if (transferred)
                 {
-                    // The sync pool thread now owns fd and holds a copy of tls_shared.
+                    // The sync-pool thread now owns fd and the TlsConnection.
                     // Release the guard so the fd is not closed on this thread.
                     std::ignore = guard.release();
                 }
                 else
                 {
                     std::ignore = ::shutdown(fd, SHUT_RDWR);
-                    // ~guard closes fd; ~tls_shared frees the TLS connection.
+                    // ~guard closes fd; TlsConnection was cleaned up inside serve_stream.
                 }
-#if defined(__GNUC__) && !defined(__clang__)
-#pragma GCC diagnostic pop
-#endif
             });
         if (!submitted)
         {

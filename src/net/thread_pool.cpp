@@ -96,7 +96,7 @@ ThreadPool::~ThreadPool()
     request_stop();
 }
 
-auto ThreadPool::submit(std::function<void()> work) -> bool
+auto ThreadPool::submit(std::move_only_function<void()> work) -> bool
 {
     {
         auto lock = std::lock_guard{queue_mutex_};
@@ -149,7 +149,7 @@ auto ThreadPool::worker_loop() -> void
     in_worker = true;
     while (true)
     {
-        auto work = std::function<void()>{};
+        auto work = std::move_only_function<void()>{};
         {
             auto lock = std::unique_lock{queue_mutex_};
             queue_cv_.wait(lock, [this] { return stopping_ || !queue_.empty(); });
