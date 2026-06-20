@@ -1524,8 +1524,11 @@ SCENARIO("access token issued with refresh-token consent carries a finite expiry
                 auto const session = merovingian::homeserver::authenticated_session(runtime, login.value);
                 REQUIRE(session.has_value());
                 REQUIRE(session->expires_at.has_value());
-                // expiry must be after 'before' and within (lifetime + slack)
-                auto const max_expiry = before + std::chrono::milliseconds{150LL};
+                // expiry must be after 'before' and within a generous window that
+                // proves the short lifetime was applied (not the default 1-hour TTL).
+                // 2 s is enough slack for slow CI VMs (OpenBSD QEMU) while still
+                // distinguishing a 50 ms lifetime from a 3 600 000 ms one.
+                auto const max_expiry = before + std::chrono::seconds{2};
                 REQUIRE(*session->expires_at > before);
                 REQUIRE(*session->expires_at <= max_expiry);
             }
