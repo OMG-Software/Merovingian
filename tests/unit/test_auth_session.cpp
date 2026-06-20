@@ -162,6 +162,53 @@ SCENARIO("Session liveness rejects expired tokens even when not revoked", "[auth
     }
 }
 
+SCENARIO("Expired and revoked tokens yield distinct rejection reasons for soft-logout routing", "[auth][tokens][expiry][security]")
+{
+    // access_token_is_soft_logout() distinguishes "found-but-expired" (soft logout:
+    // use refresh token) from "found-but-revoked" (hard logout: clear session).
+    // This scenario verifies the underlying token_is_active policy produces the
+    // correct reason string for each case so that distinction remains reliable.
+    GIVEN("an expired-but-not-revoked token and a revoked-but-not-expired token")
+    {
+        auto const now = std::chrono::system_clock::now();
+
+        auto expired_token = merovingian::auth::AccessTokenRecord{
+            "@alice:example.org",
+            "DEVICE123",
+            merovingian::auth::TokenHash{"external-kdf", "abcdefghijklmnopqrstuvwxyz0123456789"},
+            now - std::chrono::hours{1},
+            false,
+        };
+
+        auto revoked_token = merovingian::auth::AccessTokenRecord{
+            "@alice:example.org",
+            "DEVICE123",
+            merovingian::auth::TokenHash{"external-kdf", "abcdefghijklmnopqrstuvwxyz0123456789"},
+            now + std::chrono::hours{1},
+            true,
+        };
+
+        WHEN("each token is checked for activity")
+        {
+            auto const expired_decision = merovingian::auth::token_is_active(expired_token, now);
+            auto const revoked_decision = merovingian::auth::token_is_active(revoked_token, now);
+
+            THEN("expired yields 'token expired' and revoked yields 'token revoked'")
+            {
+                REQUIRE_FALSE(expired_decision.accepted);
+                REQUIRE(expired_decision.reason == "token expired");
+
+                REQUIRE_FALSE(revoked_decision.accepted);
+                REQUIRE(revoked_decision.reason == "token revoked");
+
+                // The two reasons must be distinct: soft_logout routing depends on
+                // "token expired" meaning the token can be refreshed, not revoked.
+                REQUIRE(expired_decision.reason != revoked_decision.reason);
+            }
+        }
+    }
+}
+
 SCENARIO("Client auth audit summaries do not include plaintext access tokens", "[auth][client-api][audit]")
 {
     GIVEN("a client auth decision and a plaintext access token outside the audit event")

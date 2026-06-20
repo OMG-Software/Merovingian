@@ -168,3 +168,79 @@ SCENARIO("An external mutex is releasable while a sync wait is parked",
         }
     }
 }
+
+SCENARIO("A single publish wakes all concurrent waiters simultaneously", "[sync][notifier][concurrency]")
+{
+    // This scenario validates the mechanism that prevents thread-pool starvation:
+    // many sync-pool threads may be parked waiting for new events; a single
+    // federation publish must wake ALL of them, not just one.
+    GIVEN("eight threads parked in wait_for_change at since counters 0,0")
+    {
+        constexpr std::size_t waiter_count = 8U;
+        auto notifier = merovingian::sync::SyncNotifier{};
+        auto woke = std::array<std::atomic<bool>, waiter_count>{};
+        for (auto& flag : woke)
+        {
+            flag.store(false);
+        }
+        auto ready = std::atomic<std::size_t>{0U};
+
+        auto waiters = std::vector<std::thread>{};
+        waiters.reserve(waiter_count);
+        for (std::size_t i = 0U; i < waiter_count; ++i)
+        {
+            waiters.emplace_back([&notifier, &woke, &ready, i] {
+                ready.fetch_add(1U, std::memory_order_release);
+                woke[i].store(notifier.wait_for_change(0U, 0U, std::chrono::milliseconds{3000}),
+                              std::memory_order_release);
+            });
+        }
+
+        WHEN("publish fires once after all threads have entered the wait")
+        {
+            // Spin until all threads are waiting so the publish races against none of them.
+            while (ready.load(std::memory_order_acquire) < waiter_count)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds{5});
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{20});
+            notifier.publish(0U, 1U);
+
+            for (auto& t : waiters)
+            {
+                t.join();
+            }
+
+            THEN("every waiter wakes and reports the change")
+            {
+                for (std::size_t i = 0U; i < waiter_count; ++i)
+                {
+                    REQUIRE(woke[i].load());
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("A to-device publish does not unblock a waiter whose since-token already covers it",
+         "[sync][notifier]")
+{
+    // Guards against a regression where publish() could skip notify_all() when
+    // the new sync_stream_id is not strictly greater than the stored value, while
+    // a waiter's since token is already at or above the stored value.
+    GIVEN("a notifier already at sync_stream_id=5, a waiter parked at since=5")
+    {
+        auto notifier = merovingian::sync::SyncNotifier{};
+        notifier.publish(0U, 5U);
+
+        WHEN("wait_for_change is called with since_sync_stream_id=5 and a short timeout")
+        {
+            auto const woke = notifier.wait_for_change(0U, 5U, std::chrono::milliseconds{40});
+
+            THEN("the wait times out because no new data is available past since=5")
+            {
+                REQUIRE_FALSE(woke);
+            }
+        }
+    }
+}

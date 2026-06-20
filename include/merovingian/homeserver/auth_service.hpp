@@ -44,6 +44,11 @@ namespace merovingian::homeserver
     -> OperationResult;
 [[nodiscard]] auto verify_local_user_password(HomeserverRuntime& runtime, std::string_view access_token,
                                               std::string_view password) -> bool;
+// Returns true when the presented access token exists in the session store but
+// has expired naturally (not revoked). Used by the client-server auth gate to
+// include soft_logout=true in the 401 body so clients use /refresh rather than
+// clearing their session entirely (spec §5.7.2).
+[[nodiscard]] auto access_token_is_soft_logout(HomeserverRuntime& runtime, std::string_view access_token) -> bool;
 
 // Load the configured registration token from disk, Argon2id-hash it, and cache
 // only the hash keyed by the file path. The plaintext token is zeroised after

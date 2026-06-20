@@ -90,9 +90,10 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
                 net::ThreadPool* sync_pool = nullptr) -> void;
 
 // TLS variant of `serve_http`. The accepted socket is upgraded through the
-// supplied OpenSSL-backed context in the worker thread. sync_pool is accepted
-// for API symmetry; TLS async offload is not yet implemented (sync waits use
-// the main pool thread).
+// supplied OpenSSL-backed context in the worker thread. When sync_pool is
+// provided, long-polling /sync connections are offloaded to it via an async
+// write callback so the main pool thread is freed immediately after reading
+// the request — identical behaviour to the plain-HTTP path.
 auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
                     net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode,
                     net::ThreadPool& pool, net::ThreadPool* sync_pool = nullptr) -> void;

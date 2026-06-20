@@ -482,6 +482,22 @@ namespace
         return result.output;
     }
 
+    // 401 with soft_logout=true: token was found-but-expired so the client should
+    // use its refresh token rather than clearing its session (spec §5.7.2).
+    [[nodiscard]] auto dispatch_err_soft_logout(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                                std::uint16_t status, std::string_view errcode,
+                                                std::string_view error) -> DispatchResult
+    {
+        auto body = json_serialize(json_obj({
+            json_member("errcode",      json_str(errcode)),
+            json_member("error",        json_str(error)),
+            json_member("soft_logout",  json_bool(true)),
+        }));
+        auto response = LocalHttpResponse{status, std::move(body), {}};
+        apply_cors_headers(req, response, rt.cors);
+        return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
+    }
+
     // Embeds a pre-built JSON blob (e.g. a stored device key payload) inside
     // a larger response value. The blob is parsed strictly through the
     // canonical JSON parser so any escaping, structure, and UTF-8 issues
@@ -5972,10 +5988,16 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                                     {"status", "401",                                            false},
                                                     {"reason", "unauthenticated",                                false}
         });
-        // Spec §5.7.2: M_MISSING_TOKEN when no token is supplied;
-        // M_UNKNOWN_TOKEN when a token is present but not recognised.
-        return dispatch_err(req, rt, 401U, req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN",
-                            "unauthenticated");
+        // Spec §5.7.2: M_MISSING_TOKEN when no token is supplied; M_UNKNOWN_TOKEN otherwise.
+        // When the token was found-but-expired the client still holds a valid refresh
+        // token: include soft_logout=true so it uses /refresh rather than clearing its
+        // session entirely (spec §5.7.2).
+        auto const errcode = req.access_token.empty() ? "M_MISSING_TOKEN" : "M_UNKNOWN_TOKEN";
+        if (!req.access_token.empty() && access_token_is_soft_logout(rt.homeserver, req.access_token))
+        {
+            return dispatch_err_soft_logout(req, rt, 401U, errcode, "unauthenticated");
+        }
+        return dispatch_err(req, rt, 401U, errcode, "unauthenticated");
     }
     log_diagnostic("request.auth.accepted", {
                                                 {"method", req.method,                                       false},

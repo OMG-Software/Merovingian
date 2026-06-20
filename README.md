@@ -82,4 +82,4 @@ python build.py wsl --builddir build-tsan --buildtype debug --sanitize thread
 
 ## Project Status
 
-Merovingian has reached **beta** (v0.9.0). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
+Merovingian has reached **beta** (v0.9.1). Federation, persistence, packaging, and runtime security controls are implemented and covered by CI. The project is suitable for evaluation and testing; it should not be treated as production-ready until the blocking items in [docs/todos/production-milestone.md](docs/todos/production-milestone.md) are closed.
