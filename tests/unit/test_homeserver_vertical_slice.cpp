@@ -58,6 +58,18 @@ namespace
     };
 }
 
+[[nodiscard]] auto config_with_short_token_lifetime() -> merovingian::config::Config
+{
+    auto security = merovingian::config::SecurityConfig{};
+    merovingian::tests::enable_token_registration(security);
+    security.access_token_lifetime_ms = 50LL;
+    return {
+        merovingian::config::ServerConfig{},           merovingian::config::ListenersConfig{},
+        merovingian::config::DatabaseConfig{},         security,
+        merovingian::config::ClientRateLimitsConfig{}, merovingian::config::LogModulesConfig{},
+    };
+}
+
 [[nodiscard]] auto registration_enabled_config_with_master_key(std::string master_key_path)
     -> merovingian::config::Config
 {
@@ -1450,6 +1462,72 @@ SCENARIO("Audit log never captures raw access token material on auth rejection",
                     return row.actor == "access_token" || row.target == "access_token";
                 });
                 REQUIRE_FALSE(literal_field_name_in_actor);
+            }
+        }
+    }
+}
+
+// Spec: CS API §5.6.2 — "Servers SHOULD NOT expire access tokens without having
+//                        also issued refresh tokens for those sessions."
+SCENARIO("access token issued without refresh-token consent carries no expiry",
+         "[auth][token][spec]")
+{
+    GIVEN("a runtime configured with a short access-token lifetime")
+    {
+        auto started = merovingian::homeserver::start_runtime(config_with_short_token_lifetime());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::register_local_user(
+            runtime, "bob", "CorrectHorse7!", merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+
+        WHEN("the user logs in without requesting refresh-token support")
+        {
+            auto const login =
+                merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1");
+            REQUIRE(login.ok);
+
+            THEN("the issued access token has no expiry")
+            {
+                auto const session = merovingian::homeserver::authenticated_session(runtime, login.value);
+                REQUIRE(session.has_value());
+                // Spec SHOULD NOT: no expiry without co-issued refresh token.
+                REQUIRE_FALSE(session->expires_at.has_value());
+            }
+        }
+    }
+}
+
+// Spec: CS API §5.6.2 — access tokens MAY carry a finite expiry when refresh tokens are co-issued.
+SCENARIO("access token issued with refresh-token consent carries a finite expiry within the configured window",
+         "[auth][token][spec]")
+{
+    GIVEN("a runtime configured with a short access-token lifetime")
+    {
+        auto started = merovingian::homeserver::start_runtime(config_with_short_token_lifetime());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const user = merovingian::homeserver::register_local_user(
+            runtime, "carol", "CorrectHorse7!", merovingian::tests::registration_token);
+        REQUIRE(user.ok);
+
+        WHEN("the user logs in requesting refresh-token support")
+        {
+            auto const before = std::chrono::system_clock::now();
+            auto const login =
+                merovingian::homeserver::login_local_user(runtime, user.value, "CorrectHorse7!", "DEVICE1",
+                                                          /*with_ttl=*/true);
+            REQUIRE(login.ok);
+
+            THEN("the issued token carries a finite expiry within the configured lifetime window")
+            {
+                auto const session = merovingian::homeserver::authenticated_session(runtime, login.value);
+                REQUIRE(session.has_value());
+                REQUIRE(session->expires_at.has_value());
+                // expiry must be after 'before' and within (lifetime + slack)
+                auto const max_expiry = before + std::chrono::milliseconds{150LL};
+                REQUIRE(*session->expires_at > before);
+                REQUIRE(*session->expires_at <= max_expiry);
             }
         }
     }

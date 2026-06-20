@@ -604,7 +604,7 @@ auto bootstrap_admin_user(HomeserverRuntime& runtime, std::string_view localpart
 
 // NOLINTBEGIN(bugprone-easily-swappable-parameters)
 auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std::string_view password,
-                      std::string_view device_id) -> OperationResult
+                      std::string_view device_id, bool with_ttl) -> OperationResult
 {
     log_diagnostic("login.started",
                    {
@@ -703,7 +703,10 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
     {
         device = database::PersistentDevice{user->user_id, std::string{device_id}, std::string{device_id}};
     }
-    auto const access_expires_at = token_expires_at(runtime.config.security().access_token_lifetime_ms);
+    // Only honour the configured TTL when the client opted into refresh tokens.
+    // Spec §5.6.2: servers SHOULD NOT expire tokens without co-issuing a refresh token.
+    auto const access_expires_at =
+        token_expires_at(with_ttl ? runtime.config.security().access_token_lifetime_ms : 0LL);
     if (!database::store_device_and_access_token(
             runtime.database.persistent_store, std::move(device),
             {user->user_id, std::string{device_id}, *token_hash, false, access_expires_at}))
