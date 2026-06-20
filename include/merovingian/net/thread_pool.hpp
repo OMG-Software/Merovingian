@@ -30,7 +30,7 @@ public:
     // Enqueue a work item. Returns true if the work was enqueued, false if
     // the pool has been stopped (the callable is discarded). Safe to call
     // from any thread (including listener threads).
-    [[nodiscard]] auto submit(std::move_only_function<void()> work) -> bool;
+    [[nodiscard]] auto submit(std::function<void()> work) -> bool;
 
     // Signal all workers to stop after draining the queue. No new submissions
     // are accepted after this call. Blocks until all workers have exited.
@@ -44,7 +44,7 @@ private:
 
     mutable std::mutex queue_mutex_{};
     std::condition_variable queue_cv_{};
-    std::queue<std::move_only_function<void()>> queue_{};
+    std::queue<std::function<void()>> queue_{};
     bool stopping_{false};
     std::vector<std::thread> workers_{};
 };

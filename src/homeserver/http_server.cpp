@@ -181,33 +181,34 @@ namespace
     class TlsConnectionStream final : public ConnectionStream
     {
     public:
-        // Raw reference to a TlsConnection whose lifetime is managed by the
-        // async_write_fn lambda in serve_tls_http (via unique_ptr). The read
-        // phase always completes before the write lambda runs, so this reference
-        // is always valid during serve_stream and is never accessed after it
-        // returns (we only touch the integer fd at that point).
-        explicit TlsConnectionStream(TlsConnection& connection) noexcept
-            : m_connection{connection}
+        // Holds shared ownership of the TLS connection so that the read phase
+        // (this thread) and the async write phase (sync-pool thread) can each
+        // hold a reference without one dangling while the other is still running.
+        // Constructed from a shared_ptr built via shared_ptr{std::move(unique_ptr)}
+        // (not make_shared) to avoid GCC 16's spurious -Warray-bounds on the
+        // _Sp_counted_ptr_inplace co-allocation destructor path.
+        explicit TlsConnectionStream(std::shared_ptr<TlsConnection> connection) noexcept // SHARED_PTR: reviewed — split ownership: main-pool reads, sync-pool writes
+            : m_connection{std::move(connection)}
         {
         }
 
         [[nodiscard]] auto fd() const noexcept -> int override
         {
-            return m_connection.fd();
+            return m_connection->fd();
         }
 
         [[nodiscard]] auto read(char* buffer, std::size_t capacity) noexcept -> std::ptrdiff_t override
         {
-            return m_connection.read(buffer, capacity);
+            return m_connection->read(buffer, capacity);
         }
 
         [[nodiscard]] auto write(std::string_view data) noexcept -> std::ptrdiff_t override
         {
-            return m_connection.write(data);
+            return m_connection->write(data);
         }
 
     private:
-        TlsConnection& m_connection;
+        std::shared_ptr<TlsConnection> m_connection; // SHARED_PTR: reviewed — shared by main-pool read and sync-pool write phases
     };
 
     [[nodiscard]] auto header_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
@@ -556,7 +557,7 @@ namespace
     [[nodiscard]] auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, HttpServeStats& stats,
                                     HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool,
                                     std::string_view peer_addr = {},
-                                    std::move_only_function<std::ptrdiff_t(std::string_view)> async_write_fn = {}) -> bool
+                                    std::function<std::ptrdiff_t(std::string_view)> async_write_fn = {}) -> bool
     {
         auto const limits = http::RequestLimits{};
         auto const head_cap = header_size_cap(limits);
@@ -935,38 +936,33 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                     // ~SocketHandle closes fd on both normal and exceptional exit.
                 }
 
-                // Transfer exclusive ownership of the TLS connection into the
-                // async write lambda via unique_ptr. The read phase (this thread)
-                // holds a raw reference valid for the duration of serve_stream:
-                // async_write_fn owns TlsConnection and outlives all reads.
-                //
-                // On transfer: sync-pool thread owns TlsConnection via the captured
-                // unique_ptr and closes fd after writing.
-                // On non-transfer: async_write_fn is destroyed inside serve_stream,
-                // which runs TlsConnection::~TlsConnection (SSL_free only — fd stays
-                // open) before we return; the guard then closes fd normally.
-                auto tls_owner = std::make_unique<TlsConnection>(std::move(*accepted_tls.connection));
-                auto& tls_ref = *tls_owner;
-                auto stream = TlsConnectionStream{tls_ref};
+                // Build shared ownership via unique_ptr → shared_ptr conversion.
+                // Using shared_ptr{std::move(unique_ptr)} (not make_shared) allocates
+                // the control block separately (_Sp_counted_deleter), avoiding the
+                // GCC 16 -Warray-bounds false positive that fires when make_shared's
+                // _Sp_counted_ptr_inplace co-allocation is inlined. Both TlsConnectionStream
+                // (read phase, this thread) and the async_write_fn lambda (write phase,
+                // sync-pool thread) hold a copy; the last one to finish cleans up.
+                auto tls_unique = std::make_unique<TlsConnection>(std::move(*accepted_tls.connection));
+                auto tls_shared = std::shared_ptr<TlsConnection>{std::move(tls_unique)}; // SHARED_PTR: reviewed — cross-thread TLS ownership via separate control block to avoid GCC 16 make_shared bug
+                auto stream = TlsConnectionStream{tls_shared};
 
-                auto async_write_fn = std::move_only_function<std::ptrdiff_t(std::string_view)>{
-                    [tls = std::move(tls_owner)](std::string_view data) mutable {
-                        return tls->write(data);
-                    }};
+                auto async_write_fn = std::function<std::ptrdiff_t(std::string_view)>{
+                    [tls = tls_shared](std::string_view data) { return tls->write(data); }};
 
                 auto const transferred =
                     serve_stream(stream, runtime, stats, dispatch_mode, sync_pool, tls_peer_addr,
                                  std::move(async_write_fn));
                 if (transferred)
                 {
-                    // The sync-pool thread now owns fd and the TlsConnection.
+                    // The sync-pool thread now owns fd and holds tls_shared.
                     // Release the guard so the fd is not closed on this thread.
                     std::ignore = guard.release();
                 }
                 else
                 {
                     std::ignore = ::shutdown(fd, SHUT_RDWR);
-                    // ~guard closes fd; TlsConnection was cleaned up inside serve_stream.
+                    // ~guard closes fd; ~tls_shared frees the TLS connection.
                 }
             });
         if (!submitted)
