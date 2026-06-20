@@ -652,22 +652,37 @@ namespace
                 // is freed immediately. The sync pool thread owns the fd exclusively
                 // from this point and must close it when done.
                 //
-                // Cap the wait so that server shutdown (sync_pool.request_stop()) is
-                // bounded — at most this many ms after the last event. Clients re-poll
-                // immediately after an empty 200, so the cap is invisible to them.
-                constexpr auto max_async_wait = std::chrono::milliseconds{5000U};
+                // Poll in 5-second slices so that server shutdown (sync_pool.request_stop())
+                // is bounded to at most one slice even when clients request long timeouts.
+                // Clients re-poll immediately after an empty 200, so the slicing is transparent.
                 auto const fd = stream.fd();
-                auto wait = result.wait;
-                wait.timeout = std::min(wait.timeout, max_async_wait);
+                auto const wait = result.wait;
                 // async_write_fn is moved into the lambda so that TLS connections
                 // write through the OpenSSL layer rather than via raw ::send().
                 // For plain HTTP the function is null and ::send() is used directly.
                 auto submitted = sync_pool->submit([fd, write_fn = std::move(async_write_fn), &runtime, &stats,
-                                                    request_copy = local_request, wait, notifier]() mutable {
+                                                    request_copy = local_request, wait, notifier,
+                                                    sync_pool]() mutable {
                     try
                     {
-                        std::ignore = notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id,
-                                                                wait.timeout);
+                        // Poll in 5-second slices so shutdown (request_stop()) is bounded
+                        // to one slice even when clients request long timeouts.
+                        constexpr auto poll_interval = std::chrono::milliseconds{5000U};
+                        auto const deadline = std::chrono::steady_clock::now() + wait.timeout;
+                        while (sync_pool->running())
+                        {
+                            auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                deadline - std::chrono::steady_clock::now());
+                            if (remaining.count() <= 0)
+                            {
+                                break;
+                            }
+                            if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id,
+                                                          std::min(remaining, poll_interval)))
+                            {
+                                break;
+                            }
+                        }
                     }
                     catch (...)
                     {

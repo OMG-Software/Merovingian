@@ -2652,6 +2652,7 @@ namespace
         // when the store's sync stream id advances OR a new event appears
         // in the timeline ordering, both of which the mutator helpers below
         // publish through `ensure_sync_notifier(rt).publish(...)`.
+        // Spec §9.4: omitting `timeout` means respond immediately — no default.
         if (can_wait && request.timeout.has_value() && *request.timeout > 0U)
         {
             auto const has_timeline_advance = rt.homeserver.database.next_stream_ordering - 1U > since_ordering;

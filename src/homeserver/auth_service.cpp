@@ -33,9 +33,10 @@ namespace merovingian::homeserver
 namespace
 {
 
-    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields) -> void
+    auto log_diagnostic(std::string_view event, std::vector<observability::StructuredLogField> fields,
+                        observability::LogEventSeverity severity = observability::LogEventSeverity::debug) -> void
     {
-        LOG_DEBUG(observability::diagnostic_log_summary("auth", event, std::move(fields)));
+        observability::log_diagnostic("auth", event, std::move(fields), severity);
     }
 
     auto constexpr token_secret_bytes = std::size_t{32U};
@@ -730,7 +731,8 @@ auto login_local_user(HomeserverRuntime& runtime, std::string_view user_id, std:
                    {
                        {"user_id",   user->user_id,          false},
                        {"device_id", std::string{device_id}, false}
-    });
+    },
+                   observability::LogEventSeverity::info);
     return make_operation_result(true, *token);
 }
 // NOLINTEND(bugprone-easily-swappable-parameters)

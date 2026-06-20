@@ -1,3 +1,9 @@
+## 0.9.3
+
+### Fixed
+- **fix(sync): server respects client-requested `/sync` timeout in full (spec §9.4):** the `/sync` long-poll handler now waits for the full client-requested duration. Previously a hard 5 s cap in the sync-pool dispatch lambda overrode every client timeout, causing connections with `?timeout=30000` to fire after 5 s and re-poll needlessly. The sync pool now polls in 5 s slices internally (so shutdown remains bounded) but each slice counts against the client's actual deadline. Clients that omit `timeout` continue to receive an immediate response per the spec.
+- **fix(log): promote major auth and server lifecycle events from DEBUG to INFO:** `login.accepted`, `start.complete`, `start.database_ready`, `start.listeners_ready`, and `start.hardening_controls` are now logged at INFO level. Previously every structured diagnostic was emitted at DEBUG, making logs uninformative unless debug mode was explicitly enabled. ERROR and WARNING events (login rejections, audit failures) were already routed correctly; this change covers the success-path events that operators need to confirm normal operation.
+
 ## 0.9.2
 
 ### Fixed
