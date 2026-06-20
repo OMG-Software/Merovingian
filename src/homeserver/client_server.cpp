@@ -2304,6 +2304,29 @@ namespace
         return public_rooms_filtered_json(rt, {}, std::nullopt, 0U);
     }
 
+    // Builds the federation target path for /_matrix/federation/v1/publicRooms,
+    // appending limit and since as query parameters when present.
+    [[nodiscard]] auto public_rooms_fed_target(std::optional<std::size_t> limit,
+                                               std::optional<std::string_view> since) -> std::string
+    {
+        auto target = std::string{"/_matrix/federation/v1/publicRooms"};
+        auto sep = char{'?'};
+        if (limit.has_value())
+        {
+            target += sep;
+            target += "limit=";
+            target += std::to_string(*limit);
+            sep = '&';
+        }
+        if (since.has_value() && !since->empty())
+        {
+            target += sep;
+            target += "since=";
+            target += core::percent_encode_path_component(*since);
+        }
+        return target;
+    }
+
     [[nodiscard]] auto joined_rooms_json(ClientServerRuntime const& rt, std::string_view user) -> std::string
     {
         auto rooms = canonicaljson::Array{};
@@ -5932,17 +5955,53 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     }
 
     auto const request_path = std::string_view{req.target}.substr(0U, std::string_view{req.target}.find('?'));
+    // Spec: GET /_matrix/client/v3/publicRooms
+    // ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3publicrooms
+    // When ?server= names a remote homeserver the request must be proxied to
+    // GET /_matrix/federation/v1/publicRooms on that server.
     if (req.method == "GET" && request_path == "/_matrix/client/v3/publicRooms")
     {
+        auto const server_param = query_param_value(req.target, "server");
+        auto const& our_server = rt.homeserver.config.server().server_name;
+        if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
+        {
+            wire_federation_callbacks(rt.homeserver);
+            auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+            auto const key_id    = signing_key.has_value() ? signing_key->key_id : std::string{};
+            auto const secret    = std::string{
+                reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
+                rt.homeserver.database.signing_secret_key.bytes().size()};
+            auto* outbound_client   = rt.homeserver.outbound_client.get();
+            auto* discovery_network = rt.homeserver.discovery_network.get();
+            auto limit = std::optional<std::size_t>{};
+            if (auto const lv = query_param_value(req.target, "limit"); lv.has_value() && !lv->empty())
+            {
+                auto result = std::size_t{0U};
+                auto const [ptr, ec] = std::from_chars(lv->data(), lv->data() + lv->size(), result);
+                if (ec == std::errc{} && result > 0U)
+                    limit = result;
+            }
+            auto const since    = query_param_value(req.target, "since");
+            auto const since_sv = since.has_value() ? std::optional<std::string_view>{*since} : std::nullopt;
+            auto const tx = federation::make_outbound_transaction(
+                *server_param, "GET", public_rooms_fed_target(limit, since_sv), our_server, {});
+            guard.unlock();
+            auto const [ok, body] = perform_sync_outbound_call(
+                outbound_client, discovery_network, tx, key_id, secret, "public_rooms.proxy");
+            if (!ok)
+                return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
+            return dispatch_resp(req, rt, 200U, body);
+        }
         return dispatch_resp(req, rt, 200U, public_rooms_json(rt));
     }
     // Spec: POST /_matrix/client/v3/publicRooms
     // ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3publicrooms
     if (req.method == "POST" && request_path == "/_matrix/client/v3/publicRooms")
     {
-        auto filter_term = std::string{};
-        auto limit = std::optional<std::size_t>{};
-        auto since_offset = std::size_t{0U};
+        auto filter_term  = std::string{};
+        auto limit        = std::optional<std::size_t>{};
+        auto since_raw    = std::string{};   // raw string; forwarded as-is to remote
+        auto since_offset = std::size_t{0U}; // parsed integer for local pagination
 
         if (auto const body = parsed_json_object(req.body); body.has_value())
         {
@@ -5962,11 +6021,54 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             }
             if (auto const* sv = string_member(*body, "since"); sv != nullptr && !sv->empty())
             {
+                since_raw = *sv;
                 auto result = std::size_t{0U};
                 auto const [ptr, ec] = std::from_chars(sv->data(), sv->data() + sv->size(), result);
                 if (ec == std::errc{})
                     since_offset = result;
             }
+        }
+
+        auto const server_param = query_param_value(req.target, "server");
+        auto const& our_server  = rt.homeserver.config.server().server_name;
+        if (server_param.has_value() && !server_param->empty() && *server_param != our_server)
+        {
+            wire_federation_callbacks(rt.homeserver);
+            auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+            auto const key_id    = signing_key.has_value() ? signing_key->key_id : std::string{};
+            auto const secret    = std::string{
+                reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
+                rt.homeserver.database.signing_secret_key.bytes().size()};
+            auto* outbound_client   = rt.homeserver.outbound_client.get();
+            auto* discovery_network = rt.homeserver.discovery_network.get();
+            auto const opt_since = since_raw.empty()
+                ? std::nullopt
+                : std::make_optional<std::string_view>(since_raw);
+            // Use POST when filter_term is set so servers supporting
+            // POST /_matrix/federation/v1/publicRooms can apply the filter.
+            // Fall back to GET for unfiltered requests (wider server compatibility).
+            auto fed_body = std::string{};
+            auto const fed_method = filter_term.empty() ? std::string_view{"GET"} : std::string_view{"POST"};
+            if (!filter_term.empty())
+            {
+                auto filter_obj = canonicaljson::Object{};
+                filter_obj.push_back(json_member("generic_search_term", json_str(filter_term)));
+                auto body_obj = canonicaljson::Object{};
+                body_obj.push_back(json_member("filter", json_obj(std::move(filter_obj))));
+                if (limit.has_value())
+                    body_obj.push_back(json_member("limit", json_int(static_cast<std::int64_t>(*limit))));
+                if (!since_raw.empty())
+                    body_obj.push_back(json_member("since", json_str(since_raw)));
+                fed_body = json_serialize(json_obj(std::move(body_obj)));
+            }
+            auto const tx = federation::make_outbound_transaction(
+                *server_param, fed_method, public_rooms_fed_target(limit, opt_since), our_server, fed_body);
+            guard.unlock();
+            auto const [ok, body] = perform_sync_outbound_call(
+                outbound_client, discovery_network, tx, key_id, secret, "public_rooms.proxy");
+            if (!ok)
+                return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to fetch public rooms from remote server");
+            return dispatch_resp(req, rt, 200U, body);
         }
         return dispatch_resp(req, rt, 200U, public_rooms_filtered_json(rt, filter_term, limit, since_offset));
     }

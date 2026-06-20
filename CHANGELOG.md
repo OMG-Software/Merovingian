@@ -1,3 +1,8 @@
+## 0.9.5
+
+### Fixed
+- **fix(rooms): `GET`/`POST /_matrix/client/v3/publicRooms?server=<remote>` now proxies to the remote homeserver (spec §10.5.1):** both endpoints previously ignored the `server` query parameter and returned an empty local room list, causing "no rooms found" when clients searched a remote server (e.g. `grapheneos.org`). The handlers now check the parameter: when it names a different server the request is forwarded to `GET /_matrix/federation/v1/publicRooms` (unfiltered) or `POST /_matrix/federation/v1/publicRooms` (when a `filter.generic_search_term` is present). When `server` is absent or equals the local server name the existing local-list path is used unchanged. Unauthenticated federation (`outbound_client` not configured) surfaces as 502 M_UNKNOWN rather than a silent empty list. The raw `since` pagination token is now preserved and forwarded to the remote server instead of being parsed as a local integer offset.
+
 ## 0.9.4
 
 ### Added

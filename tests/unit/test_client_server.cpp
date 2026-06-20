@@ -739,7 +739,7 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
     }
 }
 
-SCENARIO("Client-server publicRooms lists local public-chat rooms instead of returning M_UNRECOGNIZED",
+SCENARIO("Client-server publicRooms handles the server query parameter",
          "[homeserver][client-server][public-rooms]")
 {
     GIVEN("a started runtime with one private room and one public room")
@@ -773,8 +773,9 @@ SCENARIO("Client-server publicRooms lists local public-chat rooms instead of ret
         REQUIRE(public_room.response.status == 200U);
         auto const public_room_id = room_id(public_room.response.body);
 
-        WHEN("the client requests GET /_matrix/client/v3/publicRooms with a server query parameter")
+        WHEN("GET /publicRooms is called with server=<own server name>")
         {
+            // server == our own name → serve local room list, no outbound call.
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/v3/publicRooms?server=example.org", {}, {}});
 
@@ -789,6 +790,34 @@ SCENARIO("Client-server publicRooms lists local public-chat rooms instead of ret
                 REQUIRE(response.response.body.find("\"join_rule\":\"public\"") != std::string::npos);
                 REQUIRE(response.response.body.find("\"world_readable\":false") != std::string::npos);
                 REQUIRE(response.response.body.find("\"guest_can_join\":false") != std::string::npos);
+            }
+        }
+
+        WHEN("GET /publicRooms is called with server=<remote server name> and no federation is configured")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/publicRooms?server=grapheneos.org", {}, {}});
+
+            THEN("the response is 502 because the outbound federation client is not available")
+            {
+                REQUIRE(response.response.status == 502U);
+                REQUIRE(response.response.body.find("M_UNKNOWN") != std::string::npos);
+                // Must not leak local room data in an error response.
+                REQUIRE(response.response.body.find(public_room_id) == std::string::npos);
+            }
+        }
+
+        WHEN("POST /publicRooms is called with server=<remote server name> and no federation is configured")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/publicRooms?server=grapheneos.org", token,
+                          R"({"limit":20})"});
+
+            THEN("the response is 502 because the outbound federation client is not available")
+            {
+                REQUIRE(response.response.status == 502U);
+                REQUIRE(response.response.body.find("M_UNKNOWN") != std::string::npos);
+                REQUIRE(response.response.body.find(public_room_id) == std::string::npos);
             }
         }
     }

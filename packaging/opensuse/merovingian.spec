@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.4
+Version:        0.9.5
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -111,6 +111,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Fri Jun 20 2026 James Chapman <claude@ping.me.uk> - 0.9.5-1
+- fix(rooms): GET/POST publicRooms?server= now proxies to remote homeserver via federation
 * Sat Jun 20 2026 James Chapman <claude@ping.me.uk> - 0.9.4-1
 - feat(sync): add MSC4186 Simplified Sliding Sync (POST /_matrix/client/unstable/org.matrix.msc4186/sync)
 * Sat Jun 20 2026 James Chapman <claude@ping.me.uk> - 0.9.3-1
