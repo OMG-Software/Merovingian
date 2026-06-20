@@ -373,7 +373,8 @@ The following endpoints are **not part of the stable v1.18 spec**. They are serv
 ### MSC4186 — Simplified Sliding Sync
 
 - **Proposal**: <https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md>
-- **Advertised via**: `unstable_features["org.matrix.msc4186"] = true` in `/_matrix/client/versions`
+- **Advertised via**: `unstable_features["org.matrix.msc4186"] = true` and
+  `unstable_features["org.matrix.simplified_msc3575"] = true` in `/_matrix/client/versions`
 - **Implementation files**:
   - `include/merovingian/sync/sliding_sync.hpp` — request/response types
   - `include/merovingian/sync/sliding_sync_parser.hpp` + `src/sync/sliding_sync_parser.cpp` — request parser

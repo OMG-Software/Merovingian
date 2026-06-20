@@ -739,8 +739,7 @@ SCENARIO("Client-server runtime room state joined rooms and sync endpoints compo
     }
 }
 
-SCENARIO("Client-server publicRooms handles the server query parameter",
-         "[homeserver][client-server][public-rooms]")
+SCENARIO("Client-server publicRooms handles the server query parameter", "[homeserver][client-server][public-rooms]")
 {
     GIVEN("a started runtime with one private room and one public room")
     {
@@ -810,8 +809,7 @@ SCENARIO("Client-server publicRooms handles the server query parameter",
         WHEN("POST /publicRooms is called with server=<remote server name> and no federation is configured")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime, {"POST", "/_matrix/client/v3/publicRooms?server=grapheneos.org", token,
-                          R"({"limit":20})"});
+                runtime, {"POST", "/_matrix/client/v3/publicRooms?server=grapheneos.org", token, R"({"limit":20})"});
 
             THEN("the response is 502 because the outbound federation client is not available")
             {
@@ -2095,13 +2093,15 @@ SCENARIO("Client-server /versions advertises Matrix spec compatibility to unauth
             auto const response = merovingian::homeserver::handle_client_server_request(
                 runtime, {"GET", "/_matrix/client/versions", {}, {}});
 
-            THEN("the server answers 200 with a versions array and unstable_features object")
+            THEN("the server answers 200 with a versions array and sliding-sync compatibility flags")
             {
                 REQUIRE(response.response.status == 200U);
                 REQUIRE(response.response.body.find("\"versions\"") != std::string::npos);
                 REQUIRE(response.response.body.find("\"v1.18\"") != std::string::npos);
                 REQUIRE(response.response.body.find("\"v1.1\"") != std::string::npos);
                 REQUIRE(response.response.body.find("\"unstable_features\"") != std::string::npos);
+                REQUIRE(response.response.body.find("\"org.matrix.msc4186\":true") != std::string::npos);
+                REQUIRE(response.response.body.find("\"org.matrix.simplified_msc3575\":true") != std::string::npos);
                 REQUIRE_FALSE(merovingian::homeserver::is_matrix_error_response(response.response));
             }
         }

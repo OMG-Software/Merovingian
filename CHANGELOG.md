@@ -2,6 +2,7 @@
 
 ### Fixed
 - **fix(ci): make coverage reporting match the actual project surface:** the Codecov/gcovr path now excludes the real process entrypoint (`src/main.cpp`) rather than the nonexistent `src/homeserver/main.cpp`, and the coverage workflow now filters headers to `include/merovingian/` instead of every file staged under `include/`. This stops vendored/platform headers from diluting the reported percentage and aligns the uploaded report with the code we actually own.
+- **fix(sync): advertise MSC4186 with the compatibility flag Element X actually probes:** `GET /_matrix/client/versions` now exposes both `unstable_features["org.matrix.msc4186"] = true` and `unstable_features["org.matrix.simplified_msc3575"] = true`. Element X's upstream `matrix-rust-sdk` currently autodetects sliding sync via the `org.matrix.simplified_msc3575` flag, so advertising only `org.matrix.msc4186` caused the client to reject the homeserver before ever calling the sliding-sync endpoint.
 
 ### Added
 - **test(sync): add direct MSC4186 room-list and extension coverage:** new unit scenarios exercise `compute_room_list` filtering/sorting/incremental SYNC behavior and `build_extensions` scoping for `to_device`, `e2ee`, `account_data`, `receipts`, and `typing`. A dedicated tooling test now guards the coverage workflow/config so future changes cannot silently widen the measured surface or exclude the wrong entrypoint again.
