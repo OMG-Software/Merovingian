@@ -111,5 +111,5 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Thu Jun 19 2026 James Chapman <claude@ping.me.uk> - 0.9.1-1
+* Fri Jun 19 2026 James Chapman <claude@ping.me.uk> - 0.9.1-1
 - Beta milestone: promote from pre-beta (0.8.x) to beta phase.

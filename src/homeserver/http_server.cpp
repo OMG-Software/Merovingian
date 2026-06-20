@@ -937,6 +937,15 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                 // (this thread, via TlsConnectionStream) and the async write path
                 // (the sync pool thread, via async_write_fn) can both use it without
                 // either dangling.
+                //
+                // GCC 16 false-positive: -Warray-bounds fires inside the
+                // _Sp_counted_ptr_inplace destructor chain when
+                // make_shared<TlsConnection> is inlined.  This is a known
+                // GCC 16 bug; the allocation is correct.
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Warray-bounds"
+#endif
                 auto tls_shared = std::make_shared<TlsConnection>(std::move(*accepted_tls.connection));
                 auto stream = TlsConnectionStream{tls_shared};
 
@@ -960,6 +969,9 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                     std::ignore = ::shutdown(fd, SHUT_RDWR);
                     // ~guard closes fd; ~tls_shared frees the TLS connection.
                 }
+#if defined(__GNUC__) && !defined(__clang__)
+#pragma GCC diagnostic pop
+#endif
             });
         if (!submitted)
         {
