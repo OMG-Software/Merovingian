@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.5
+Version:        0.9.6
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -111,6 +111,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sat Jun 20 2026 James Chapman <claude@ping.me.uk> - 0.9.6-1
+- fix coverage reporting to exclude src/main.cpp and count only Merovingian public headers
+- add tooling guards and sliding sync unit coverage for room-list and extension paths
+
 * Fri Jun 20 2026 James Chapman <claude@ping.me.uk> - 0.9.5-1
 - fix(rooms): GET/POST publicRooms?server= now proxies to remote homeserver via federation
 * Sat Jun 20 2026 James Chapman <claude@ping.me.uk> - 0.9.4-1

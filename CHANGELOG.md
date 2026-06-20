@@ -1,3 +1,11 @@
+## 0.9.6
+
+### Fixed
+- **fix(ci): make coverage reporting match the actual project surface:** the Codecov/gcovr path now excludes the real process entrypoint (`src/main.cpp`) rather than the nonexistent `src/homeserver/main.cpp`, and the coverage workflow now filters headers to `include/merovingian/` instead of every file staged under `include/`. This stops vendored/platform headers from diluting the reported percentage and aligns the uploaded report with the code we actually own.
+
+### Added
+- **test(sync): add direct MSC4186 room-list and extension coverage:** new unit scenarios exercise `compute_room_list` filtering/sorting/incremental SYNC behavior and `build_extensions` scoping for `to_device`, `e2ee`, `account_data`, `receipts`, and `typing`. A dedicated tooling test now guards the coverage workflow/config so future changes cannot silently widen the measured surface or exclude the wrong entrypoint again.
+
 ## 0.9.5
 
 ### Fixed

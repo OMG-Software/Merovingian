@@ -58,6 +58,12 @@ if get_option ('build_tests')
   )
 
   test(
+    'coverage-workflow-tooling',
+    python,
+    args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_coverage_workflow.py'],
+  )
+
+  test(
     'dependency-wrap-tooling',
     python,
     args: [meson.project_source_root() / 'tests' / 'tooling' / 'test_dependency_wraps.py'],
@@ -144,6 +150,7 @@ if get_option ('build_tests')
       'unit/test_state_resolution.cpp',
       'unit/test_stream_token.cpp',
       'unit/test_sliding_sync.cpp',
+      'unit/test_sliding_sync_surfaces.cpp',
       'unit/test_sync_filter.cpp',
       'unit/test_sync_handler.cpp',
       'unit/test_sync_notifier.cpp',
