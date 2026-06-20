@@ -18,6 +18,8 @@
 #include <cstdint>
 #include <cstring>
 #include <exception>
+#include <functional>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -179,28 +181,34 @@ namespace
     class TlsConnectionStream final : public ConnectionStream
     {
     public:
-        explicit TlsConnectionStream(TlsConnection& connection) noexcept
-            : m_connection{connection}
+        // Holds shared ownership of the TLS connection so that the read phase
+        // (this thread) and the async write phase (sync-pool thread) can each
+        // hold a reference without one dangling while the other is still running.
+        // Constructed from a shared_ptr built via shared_ptr{std::move(unique_ptr)}
+        // (not make_shared) to avoid GCC 16's spurious -Warray-bounds on the
+        // _Sp_counted_ptr_inplace co-allocation destructor path.
+        explicit TlsConnectionStream(std::shared_ptr<TlsConnection> connection) noexcept // SHARED_PTR: reviewed — split ownership: main-pool reads, sync-pool writes
+            : m_connection{std::move(connection)}
         {
         }
 
         [[nodiscard]] auto fd() const noexcept -> int override
         {
-            return m_connection.fd();
+            return m_connection->fd();
         }
 
         [[nodiscard]] auto read(char* buffer, std::size_t capacity) noexcept -> std::ptrdiff_t override
         {
-            return m_connection.read(buffer, capacity);
+            return m_connection->read(buffer, capacity);
         }
 
         [[nodiscard]] auto write(std::string_view data) noexcept -> std::ptrdiff_t override
         {
-            return m_connection.write(data);
+            return m_connection->write(data);
         }
 
     private:
-        TlsConnection& m_connection;
+        std::shared_ptr<TlsConnection> m_connection; // SHARED_PTR: reviewed — shared by main-pool read and sync-pool write phases
     };
 
     [[nodiscard]] auto header_size_cap(http::RequestLimits const& limits) noexcept -> std::size_t
@@ -542,9 +550,14 @@ namespace
     // Returns true when the fd has been transferred to sync_pool (caller must
     // NOT shut down or close it). Returns false in all other cases — the caller
     // retains ownership of the fd.
+    //
+    // async_write_fn: if non-null, the sync-pool lambda calls this instead of
+    // ::send(fd,…) to write the response. Used by the TLS path to route the
+    // write through the OpenSSL layer rather than the raw file descriptor.
     [[nodiscard]] auto serve_stream(ConnectionStream& stream, ClientServerRuntime& runtime, HttpServeStats& stats,
                                     HttpDispatchMode dispatch_mode, net::ThreadPool* sync_pool,
-                                    std::string_view peer_addr = {}) -> bool
+                                    std::string_view peer_addr = {},
+                                    std::function<std::ptrdiff_t(std::string_view)> async_write_fn = {}) -> bool
     {
         auto const limits = http::RequestLimits{};
         auto const head_cap = header_size_cap(limits);
@@ -646,8 +659,11 @@ namespace
                 auto const fd = stream.fd();
                 auto wait = result.wait;
                 wait.timeout = std::min(wait.timeout, max_async_wait);
-                auto submitted = sync_pool->submit([fd, &runtime, &stats, request_copy = local_request, wait,
-                                                    notifier]() mutable {
+                // async_write_fn is moved into the lambda so that TLS connections
+                // write through the OpenSSL layer rather than via raw ::send().
+                // For plain HTTP the function is null and ::send() is used directly.
+                auto submitted = sync_pool->submit([fd, write_fn = std::move(async_write_fn), &runtime, &stats,
+                                                    request_copy = local_request, wait, notifier]() mutable {
                     try
                     {
                         std::ignore = notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id,
@@ -668,7 +684,14 @@ namespace
                     });
                     auto const formatted = format_response(final_result.response.status, final_result.response.body,
                                                            final_result.response.headers);
-                    std::ignore = ::send(fd, formatted.data(), formatted.size(), MSG_NOSIGNAL);
+                    if (write_fn)
+                    {
+                        std::ignore = write_fn(formatted);
+                    }
+                    else
+                    {
+                        std::ignore = ::send(fd, formatted.data(), formatted.size(), MSG_NOSIGNAL);
+                    }
                     std::ignore = ::shutdown(fd, SHUT_RDWR);
                     ::close(fd);
                 });
@@ -677,10 +700,14 @@ namespace
                     return true; // fd is now owned by the sync pool thread
                 }
                 // Sync pool is stopping; fall through to synchronous wait.
+                // async_write_fn was moved-from into the rejected lambda; the sync
+                // fallback path below uses stream.write() directly so that is fine.
             }
 
-            // No sync_pool supplied (tests, TLS, or pool shutting down): block
-            // this thread until new events arrive or the timeout expires.
+            // No sync_pool supplied (tests, pool shutting down): block this thread
+            // until new events arrive or the timeout expires.
+            // TLS connections use serve_tls_http which passes a sync_pool and
+            // async_write_fn; they only reach this path if the pool is stopping.
             try
             {
                 std::ignore = notifier->wait_for_change(result.wait.since_stream_ordering,
@@ -835,7 +862,7 @@ auto serve_http(net::TcpAcceptor& acceptor, ClientServerRuntime& runtime, net::S
 
 auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, ClientServerRuntime& runtime,
                     net::ShutdownSignal& shutdown, HttpServeStats& stats, HttpDispatchMode dispatch_mode,
-                    net::ThreadPool& pool, net::ThreadPool* /*sync_pool*/) -> void
+                    net::ThreadPool& pool, net::ThreadPool* sync_pool) -> void
 {
     while (!shutdown.fired() && acceptor.valid() && pool.running())
     {
@@ -893,7 +920,8 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
         auto client = core::SocketHandle{raw_client};
         auto fd = client.release();
         auto submitted =
-            pool.submit([&tls_context, &runtime, &stats, dispatch_mode, fd, tls_peer_addr = std::move(tls_peer_addr)] {
+            pool.submit([&tls_context, &runtime, &stats, dispatch_mode, sync_pool, fd,
+                         tls_peer_addr = std::move(tls_peer_addr)] {
                 auto guard = core::SocketHandle{fd};
                 ++stats.accepted_connections;
                 auto accepted_tls = accept_tls_connection(tls_context, fd, receive_timeout_milliseconds);
@@ -907,12 +935,35 @@ auto serve_tls_http(TlsServerContext& tls_context, net::TcpAcceptor& acceptor, C
                     return;
                     // ~SocketHandle closes fd on both normal and exceptional exit.
                 }
-                auto stream = TlsConnectionStream{*accepted_tls.connection};
-                // TLS async offload is not yet implemented; sync waits block the
-                // pool thread (nullptr sync_pool = fall back to synchronous wait).
-                std::ignore = serve_stream(stream, runtime, stats, dispatch_mode, nullptr, tls_peer_addr);
-                std::ignore = ::shutdown(fd, SHUT_RDWR);
-                // ~SocketHandle closes fd.
+
+                // Build shared ownership via unique_ptr → shared_ptr conversion.
+                // Using shared_ptr{std::move(unique_ptr)} (not make_shared) allocates
+                // the control block separately (_Sp_counted_deleter), avoiding the
+                // GCC 16 -Warray-bounds false positive that fires when make_shared's
+                // _Sp_counted_ptr_inplace co-allocation is inlined. Both TlsConnectionStream
+                // (read phase, this thread) and the async_write_fn lambda (write phase,
+                // sync-pool thread) hold a copy; the last one to finish cleans up.
+                auto tls_unique = std::make_unique<TlsConnection>(std::move(*accepted_tls.connection));
+                auto tls_shared = std::shared_ptr<TlsConnection>{std::move(tls_unique)}; // SHARED_PTR: reviewed — cross-thread TLS ownership via separate control block to avoid GCC 16 make_shared bug
+                auto stream = TlsConnectionStream{tls_shared};
+
+                auto async_write_fn = std::function<std::ptrdiff_t(std::string_view)>{
+                    [tls = tls_shared](std::string_view data) { return tls->write(data); }};
+
+                auto const transferred =
+                    serve_stream(stream, runtime, stats, dispatch_mode, sync_pool, tls_peer_addr,
+                                 std::move(async_write_fn));
+                if (transferred)
+                {
+                    // The sync-pool thread now owns fd and holds tls_shared.
+                    // Release the guard so the fd is not closed on this thread.
+                    std::ignore = guard.release();
+                }
+                else
+                {
+                    std::ignore = ::shutdown(fd, SHUT_RDWR);
+                    // ~guard closes fd; ~tls_shared frees the TLS connection.
+                }
             });
         if (!submitted)
         {

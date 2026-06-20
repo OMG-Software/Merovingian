@@ -31,4 +31,12 @@ reject_pattern '\bmalloc\s*\(' 'malloc'
 reject_pattern '\bcalloc\s*\(' 'calloc'
 reject_pattern '\brealloc\s*\(' 'realloc'
 reject_pattern '\bfree\s*\(' 'free'
-reject_pattern 'std::shared_ptr' 'shared_ptr requires explicit review'
+# std::shared_ptr is allowed only with an explicit per-line annotation.
+# Add "// SHARED_PTR: reviewed — <reason>" on the same line to exempt.
+SHARED_PTR_HITS=$(grep -Rn --perl-regexp "${CPP_INCLUDES[@]}" 'std::shared_ptr' "${ROOTS[@]}" \
+  | grep -v 'SHARED_PTR: reviewed' || true)
+if [ -n "$SHARED_PTR_HITS" ]; then
+  printf '%s\n' "$SHARED_PTR_HITS"
+  echo "Rejected pattern detected: shared_ptr requires explicit review (add '// SHARED_PTR: reviewed — <reason>')"
+  exit 1
+fi

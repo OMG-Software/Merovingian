@@ -1110,4 +1110,19 @@ auto account_state_for_user(HomeserverRuntime const& runtime, std::string_view u
     return auth::AccountState::active;
 }
 
+auto access_token_is_soft_logout(HomeserverRuntime& runtime, std::string_view access_token) -> bool
+{
+    if (access_token.empty())
+    {
+        return false;
+    }
+    auto const token_hashes = lookup_token_hashes(runtime, access_token);
+    if (token_hashes.empty())
+    {
+        return false;
+    }
+    auto const now = std::chrono::system_clock::now();
+    return session_expired_for_token(runtime.database, token_hashes, now);
+}
+
 } // namespace merovingian::homeserver
