@@ -67,12 +67,14 @@ jobs:
           #
           # build-coverage as a positional argument pins gcovr's .gcda search
           # to the build directory so it does not traverse the whole repo tree.
+          # Restrict header coverage to Merovingian's own public API so vendored
+          # or platform headers staged under include/ do not dilute the report.
           gcovr \
             --root . \
             --gcov-executable "llvm-cov gcov" \
             --filter 'src/' \
-            --filter 'include/' \
-            --exclude 'src/homeserver/main.cpp' \
+            --filter 'include/merovingian/' \
+            --exclude 'src/main.cpp' \
             --exclude 'tests/' \
             --xml-pretty \
             --html-details \

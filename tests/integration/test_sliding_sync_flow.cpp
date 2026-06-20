@@ -32,21 +32,18 @@ using namespace merovingian::tests;
 }
 
 // Register and log in; returns the access token for subsequent requests.
-[[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& rt,
-                                      std::string_view localpart,
-                                      std::string_view password,
-                                      std::string_view device_id) -> std::string
+[[nodiscard]] auto register_and_login(merovingian::homeserver::ClientServerRuntime& rt, std::string_view localpart,
+                                      std::string_view password, std::string_view device_id) -> std::string
 {
     auto const reg = merovingian::homeserver::handle_client_server_request(
-        rt, {"POST", "/_matrix/client/v3/register", {},
-             merovingian::tests::registration_json(localpart, password)});
+        rt, {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json(localpart, password)});
     REQUIRE(reg.response.status == 200U);
 
-    auto const login_body = std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"}
-        + std::string{localpart} + ":example.org\"},\"password\":\"" + std::string{password}
-        + "\",\"device_id\":\"" + std::string{device_id} + "\"}";
-    auto const login = merovingian::homeserver::handle_client_server_request(
-        rt, {"POST", "/_matrix/client/v3/login", {}, login_body});
+    auto const login_body = std::string{R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@)"} +
+                            std::string{localpart} + ":example.org\"},\"password\":\"" + std::string{password} +
+                            "\",\"device_id\":\"" + std::string{device_id} + "\"}";
+    auto const login =
+        merovingian::homeserver::handle_client_server_request(rt, {"POST", "/_matrix/client/v3/login", {}, login_body});
     REQUIRE(login.response.status == 200U);
 
     auto const body = parse_object(login.response.body);
@@ -56,12 +53,11 @@ using namespace merovingian::tests;
 }
 
 // Create a private room owned by token; returns the room_id.
-[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& rt,
-                               std::string const& token) -> std::string
+[[nodiscard]] auto create_room(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token)
+    -> std::string
 {
     auto const resp = merovingian::homeserver::handle_client_server_request(
-        rt, {"POST", "/_matrix/client/v3/createRoom", token,
-             R"({"preset":"private_chat"})"});
+        rt, {"POST", "/_matrix/client/v3/createRoom", token, R"({"preset":"private_chat"})"});
     REQUIRE(resp.response.status == 200U);
     auto const body = parse_object(resp.response.body);
     auto const* room_id = string_member(body, "room_id");
@@ -71,16 +67,13 @@ using namespace merovingian::tests;
 
 // Issue a sliding sync POST; returns the DispatchResult (can_wait = false so it
 // never blocks on a long-poll — tests always prime events first).
-[[nodiscard]] auto sliding_sync(merovingian::homeserver::ClientServerRuntime& rt,
-                                std::string const& token,
-                                std::string const& body,
-                                std::string const& pos = {}) -> merovingian::homeserver::DispatchResult
+[[nodiscard]] auto sliding_sync(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+                                std::string const& body, std::string const& pos = {})
+    -> merovingian::homeserver::DispatchResult
 {
-    auto const target = pos.empty()
-        ? std::string{"/_matrix/client/unstable/org.matrix.msc4186/sync"}
-        : "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos;
-    return merovingian::homeserver::handle_client_server_request(
-        rt, {"POST", target, token, body}, /*can_wait=*/false);
+    auto const target = pos.empty() ? std::string{"/_matrix/client/unstable/org.matrix.msc4186/sync"}
+                                    : "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos;
+    return merovingian::homeserver::handle_client_server_request(rt, {"POST", target, token, body}, /*can_wait=*/false);
 }
 
 // Extract the "pos" string from a sliding sync 200 response body.
@@ -96,12 +89,11 @@ using namespace merovingian::tests;
 // Extract the ops array for a named list from a 200 response body.
 // Returns a copy: parse_object is local and destroyed on return, so the caller
 // must not hold raw pointers into the original parse tree.
-[[nodiscard]] auto list_ops(std::string const& response_body,
-                             std::string_view   list_name)
+[[nodiscard]] auto list_ops(std::string const& response_body, std::string_view list_name)
     -> std::optional<merovingian::canonicaljson::Array>
 {
-    auto const obj         = parse_object(response_body);
-    auto const* lists      = object_member_as_object(obj, "lists");
+    auto const obj = parse_object(response_body);
+    auto const* lists = object_member_as_object(obj, "lists");
     if (lists == nullptr)
         return std::nullopt;
     auto const* named_list = object_member_as_object(*lists, list_name);
@@ -116,7 +108,7 @@ using namespace merovingian::tests;
 // Return the "rooms" object from a sliding sync response (may be null if empty).
 [[nodiscard]] auto rooms_object(std::string const& response_body) -> merovingian::canonicaljson::Object
 {
-    auto const obj    = parse_object(response_body);
+    auto const obj = parse_object(response_body);
     auto const* rooms = object_member_as_object(obj, "rooms");
     if (rooms == nullptr)
         return {};
@@ -124,10 +116,8 @@ using namespace merovingian::tests;
 }
 
 // Send an m.room.message event from token into room_id.
-auto send_message(merovingian::homeserver::ClientServerRuntime& rt,
-                  std::string const& token,
-                  std::string const& room_id,
-                  std::string_view text) -> void
+auto send_message(merovingian::homeserver::ClientServerRuntime& rt, std::string const& token,
+                  std::string const& room_id, std::string_view text) -> void
 {
     auto const resp = merovingian::homeserver::handle_client_server_request(
         rt, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/txn1", token,
@@ -144,25 +134,28 @@ SCENARIO("MSC4186 is advertised in /_matrix/client/versions unstable_features",
 {
     GIVEN("a running homeserver")
     {
-        auto const config  = sliding_sync_config();
-        auto       started = merovingian::homeserver::start_client_server(config);
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
         auto& rt = started.runtime;
 
         WHEN("GET /_matrix/client/versions is called")
         {
-            auto const resp = merovingian::homeserver::handle_client_server_request(
-                rt, {"GET", "/_matrix/client/versions", {}, {}});
+            auto const resp =
+                merovingian::homeserver::handle_client_server_request(rt, {"GET", "/_matrix/client/versions", {}, {}});
 
-            THEN("unstable_features contains org.matrix.msc4186 = true")
+            THEN("unstable_features contains both MSC4186 feature names for client compatibility")
             {
                 REQUIRE(resp.response.status == 200U);
-                auto const body             = parse_object(resp.response.body);
-                auto const* unstable        = object_member_as_object(body, "unstable_features");
+                auto const body = parse_object(resp.response.body);
+                auto const* unstable = object_member_as_object(body, "unstable_features");
                 REQUIRE(unstable != nullptr);
-                auto const* msc4186         = bool_member(*unstable, "org.matrix.msc4186");
+                auto const* msc4186 = bool_member(*unstable, "org.matrix.msc4186");
                 REQUIRE(msc4186 != nullptr);
                 REQUIRE(*msc4186 == true);
+                auto const* simplified_3575 = bool_member(*unstable, "org.matrix.simplified_msc3575");
+                REQUIRE(simplified_3575 != nullptr);
+                REQUIRE(*simplified_3575 == true);
             }
         }
     }
@@ -175,17 +168,16 @@ SCENARIO("MSC4186 initial sliding sync returns pos and a SYNC op for each joined
 {
     GIVEN("a user with one joined room")
     {
-        auto const config  = sliding_sync_config();
-        auto       started = merovingian::homeserver::start_client_server(config);
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto&      rt      = started.runtime;
-        auto const token   = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
         auto const room_id = create_room(rt, token);
 
         WHEN("an initial sliding sync is issued (no pos) with the room in the window")
         {
-            auto const result = sliding_sync(rt, token,
-                R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
+            auto const result = sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
 
             THEN("the response is 200 with a pos token")
             {
@@ -223,8 +215,8 @@ SCENARIO("MSC4186 initial sliding sync returns pos and a SYNC op for each joined
             THEN("the rooms object contains an entry for the joined room with initial = true")
             {
                 REQUIRE(result.response.status == 200U);
-                auto const rooms    = rooms_object(result.response.body);
-                auto const* rm      = object_member_as_object(rooms, room_id);
+                auto const rooms = rooms_object(result.response.body);
+                auto const* rm = object_member_as_object(rooms, room_id);
                 REQUIRE(rm != nullptr);
                 auto const* initial = bool_member(*rm, "initial");
                 REQUIRE(initial != nullptr);
@@ -241,23 +233,23 @@ SCENARIO("MSC4186 required_state wildcard [\"*\",\"*\"] returns all room state e
 {
     GIVEN("a user with a joined room")
     {
-        auto const config  = sliding_sync_config();
-        auto       started = merovingian::homeserver::start_client_server(config);
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto&      rt      = started.runtime;
-        auto const token   = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
         auto const room_id = create_room(rt, token);
 
         WHEN("sliding sync requests required_state [[\"*\",\"*\"]]")
         {
-            auto const result = sliding_sync(rt, token,
-                R"({"lists":{"rooms":{"ranges":[[0,9]],"required_state":[["*","*"]]}}})");
+            auto const result =
+                sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]],"required_state":[["*","*"]]}}})");
 
             THEN("the room response includes state events including m.room.create")
             {
                 REQUIRE(result.response.status == 200U);
                 auto const rooms = rooms_object(result.response.body);
-                auto const* rm   = object_member_as_object(rooms, room_id);
+                auto const* rm = object_member_as_object(rooms, room_id);
                 REQUIRE(rm != nullptr);
                 auto const* state = object_member_as_array(*rm, "required_state");
                 REQUIRE(state != nullptr);
@@ -265,7 +257,7 @@ SCENARIO("MSC4186 required_state wildcard [\"*\",\"*\"] returns all room state e
 
                 // m.room.create is always present in any room.
                 auto const has_create = std::ranges::any_of(*state, [](auto const& val) {
-                    auto const* ev   = std::get_if<merovingian::canonicaljson::Object>(&val.storage());
+                    auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&val.storage());
                     if (ev == nullptr)
                         return false;
                     auto const* type = string_member(*ev, "type");
@@ -277,24 +269,25 @@ SCENARIO("MSC4186 required_state wildcard [\"*\",\"*\"] returns all room state e
 
         WHEN("sliding sync requests only m.room.name state")
         {
-            auto const result = sliding_sync(rt, token,
-                R"({"lists":{"rooms":{"ranges":[[0,9]],"required_state":[["m.room.name",""]]}}})");
+            auto const result = sliding_sync(
+                rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]],"required_state":[["m.room.name",""]]}}})");
 
             THEN("the room response does NOT include m.room.create")
             {
                 REQUIRE(result.response.status == 200U);
-                auto const rooms  = rooms_object(result.response.body);
-                auto const* rm    = object_member_as_object(rooms, room_id);
+                auto const rooms = rooms_object(result.response.body);
+                auto const* rm = object_member_as_object(rooms, room_id);
                 REQUIRE(rm != nullptr);
                 // required_state may be absent or empty when no events match.
                 auto const* state = object_member_as_array(*rm, "required_state");
                 auto const has_create = (state != nullptr) && std::ranges::any_of(*state, [](auto const& val) {
-                    auto const* ev   = std::get_if<merovingian::canonicaljson::Object>(&val.storage());
-                    if (ev == nullptr)
-                        return false;
-                    auto const* type = string_member(*ev, "type");
-                    return type != nullptr && *type == "m.room.create";
-                });
+                                            auto const* ev =
+                                                std::get_if<merovingian::canonicaljson::Object>(&val.storage());
+                                            if (ev == nullptr)
+                                                return false;
+                                            auto const* type = string_member(*ev, "type");
+                                            return type != nullptr && *type == "m.room.create";
+                                        });
                 REQUIRE_FALSE(has_create);
             }
         }
@@ -308,11 +301,11 @@ SCENARIO("MSC4186 timeline_limit caps the number of timeline events returned per
 {
     GIVEN("a room with three messages sent")
     {
-        auto const config  = sliding_sync_config();
-        auto       started = merovingian::homeserver::start_client_server(config);
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto&      rt      = started.runtime;
-        auto const token   = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
         auto const room_id = create_room(rt, token);
 
         send_message(rt, token, room_id, "message one");
@@ -321,16 +314,15 @@ SCENARIO("MSC4186 timeline_limit caps the number of timeline events returned per
 
         WHEN("sliding sync is issued with timeline_limit: 1")
         {
-            auto const result = sliding_sync(rt, token,
-                R"({"lists":{"rooms":{"ranges":[[0,9]],"timeline_limit":1}}})");
+            auto const result = sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]],"timeline_limit":1}}})");
 
             THEN("the timeline for the room contains at most 1 event")
             {
                 REQUIRE(result.response.status == 200U);
                 auto const rooms = rooms_object(result.response.body);
-                auto const* rm   = object_member_as_object(rooms, room_id);
+                auto const* rm = object_member_as_object(rooms, room_id);
                 REQUIRE(rm != nullptr);
-                auto const* tl   = object_member_as_object(*rm, "timeline");
+                auto const* tl = object_member_as_object(*rm, "timeline");
                 if (tl != nullptr)
                 {
                     auto const* events = object_member_as_array(*tl, "events");
@@ -351,16 +343,15 @@ SCENARIO("MSC4186 incremental sync does not mark a previously-seen room as initi
 {
     GIVEN("a user who has already received an initial sliding sync for a room")
     {
-        auto const config  = sliding_sync_config();
-        auto       started = merovingian::homeserver::start_client_server(config);
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto&      rt      = started.runtime;
-        auto const token   = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
         auto const room_id = create_room(rt, token);
 
         // Perform the initial sync and capture the pos.
-        auto const first = sliding_sync(rt, token,
-            R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
+        auto const first = sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
         REQUIRE(first.response.status == 200U);
         auto const pos = sliding_sync_pos(first.response.body);
 
@@ -370,8 +361,7 @@ SCENARIO("MSC4186 incremental sync does not mark a previously-seen room as initi
 
         WHEN("a second sliding sync is issued with the captured pos")
         {
-            auto const second = sliding_sync(rt, token,
-                R"({"lists":{"rooms":{"ranges":[[0,9]]}}})", pos);
+            auto const second = sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})", pos);
 
             THEN("the response is 200 with a new pos")
             {
@@ -384,7 +374,7 @@ SCENARIO("MSC4186 incremental sync does not mark a previously-seen room as initi
             {
                 REQUIRE(second.response.status == 200U);
                 auto const rooms = rooms_object(second.response.body);
-                auto const* rm   = object_member_as_object(rooms, room_id);
+                auto const* rm = object_member_as_object(rooms, room_id);
                 if (rm != nullptr)
                 {
                     // If the room is present on the second response, initial must be absent or false.
@@ -398,31 +388,30 @@ SCENARIO("MSC4186 incremental sync does not mark a previously-seen room as initi
 
 // ── to_device extension ───────────────────────────────────────────────────────
 
-SCENARIO("MSC4186 to_device extension delivers pending to-device messages",
-         "[homeserver][sliding-sync][integration]")
+SCENARIO("MSC4186 to_device extension delivers pending to-device messages", "[homeserver][sliding-sync][integration]")
 {
     GIVEN("a pending to-device message queued for alice's device")
     {
-        auto const config  = sliding_sync_config();
-        auto       started = merovingian::homeserver::start_client_server(config);
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt           = started.runtime;
-        auto const token   = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
-        auto const pushed = merovingian::homeserver::push_to_device_message(rt, {
-            .stream_id        = 0U,
-            .sender_user_id   = "@sender:example.org",
-            .target_user_id   = "@alice:example.org",
-            .target_device_id = "ALICE",
-            .message_type     = "m.room_key",
-            .content_json     = R"({"algorithm":"m.megolm.v1.aes-sha2"})",
-        });
+        auto const pushed = merovingian::homeserver::push_to_device_message(
+            rt, {
+                    .stream_id = 0U,
+                    .sender_user_id = "@sender:example.org",
+                    .target_user_id = "@alice:example.org",
+                    .target_device_id = "ALICE",
+                    .message_type = "m.room_key",
+                    .content_json = R"({"algorithm":"m.megolm.v1.aes-sha2"})",
+                });
         REQUIRE(pushed);
 
         WHEN("sliding sync is issued with the to_device extension enabled")
         {
-            auto const result = sliding_sync(rt, token,
-                R"({"extensions":{"to_device":{"enabled":true}}})");
+            auto const result = sliding_sync(rt, token, R"({"extensions":{"to_device":{"enabled":true}}})");
 
             THEN("the response includes the pending message in extensions.to_device.events")
             {
@@ -438,7 +427,7 @@ SCENARIO("MSC4186 to_device extension delivers pending to-device messages",
 
                 // The queued m.room_key event must appear.
                 auto const has_key = std::ranges::any_of(*events, [](auto const& val) {
-                    auto const* ev   = std::get_if<merovingian::canonicaljson::Object>(&val.storage());
+                    auto const* ev = std::get_if<merovingian::canonicaljson::Object>(&val.storage());
                     if (ev == nullptr)
                         return false;
                     auto const* type = string_member(*ev, "type");
@@ -487,11 +476,11 @@ SCENARIO("MSC4186 e2ee extension returns device_one_time_keys_count after key up
 {
     GIVEN("a user who has uploaded one-time keys")
     {
-        auto const config  = sliding_sync_config();
-        auto       started = merovingian::homeserver::start_client_server(config);
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto& rt           = started.runtime;
-        auto const token   = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
 
         // Upload device keys so the server knows about ALICE.
         static constexpr auto keys_body =
@@ -502,8 +491,7 @@ SCENARIO("MSC4186 e2ee extension returns device_one_time_keys_count after key up
 
         WHEN("sliding sync is issued with the e2ee extension enabled")
         {
-            auto const result = sliding_sync(rt, token,
-                R"({"extensions":{"e2ee":{"enabled":true}}})");
+            auto const result = sliding_sync(rt, token, R"({"extensions":{"e2ee":{"enabled":true}}})");
 
             THEN("the response includes extensions.e2ee with device_one_time_keys_count")
             {
@@ -521,8 +509,7 @@ SCENARIO("MSC4186 e2ee extension returns device_one_time_keys_count after key up
 
         WHEN("the e2ee extension is disabled in the request")
         {
-            auto const result = sliding_sync(rt, token,
-                R"({"extensions":{"e2ee":{"enabled":false}}})");
+            auto const result = sliding_sync(rt, token, R"({"extensions":{"e2ee":{"enabled":false}}})");
 
             THEN("the response does not include extensions.e2ee")
             {
@@ -546,20 +533,18 @@ SCENARIO("MSC4186 explicit room_subscriptions include rooms outside the list win
 {
     GIVEN("a user with two rooms and a list window of size 1")
     {
-        auto const config  = sliding_sync_config();
-        auto       started = merovingian::homeserver::start_client_server(config);
+        auto const config = sliding_sync_config();
+        auto started = merovingian::homeserver::start_client_server(config);
         REQUIRE(started.started);
-        auto&      rt      = started.runtime;
-        auto const token   = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
-        auto const room_a  = create_room(rt, token);
-        auto const room_b  = create_room(rt, token);
+        auto& rt = started.runtime;
+        auto const token = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+        auto const room_a = create_room(rt, token);
+        auto const room_b = create_room(rt, token);
 
         WHEN("sliding sync is issued with a 1-room window and an explicit subscription to room_b")
         {
-            auto const body =
-                std::string{"{\"lists\":{\"rooms\":{\"ranges\":[[0,0]]}},\"room_subscriptions\":{\""}
-                + room_b
-                + std::string{"\":{\"required_state\":[[\"m.room.create\",\"\"]]}}}"};
+            auto const body = std::string{"{\"lists\":{\"rooms\":{\"ranges\":[[0,0]]}},\"room_subscriptions\":{\""} +
+                              room_b + std::string{"\":{\"required_state\":[[\"m.room.create\",\"\"]]}}}"};
             auto const result = sliding_sync(rt, token, body);
 
             THEN("the rooms object includes room_b even though it may be outside the list window")

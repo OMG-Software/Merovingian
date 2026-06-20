@@ -18,6 +18,8 @@
 // |                                                                         |
 // |  Served at: POST /_matrix/client/unstable/org.matrix.msc4186/sync      |
 // |  Advertised via: unstable_features["org.matrix.msc4186"] = true        |
+// |                  unstable_features["org.matrix.simplified_msc3575"]    |
+// |                  = true for matrix-rust-sdk compatibility              |
 // +-------------------------------------------------------------------------+
 
 #include "merovingian/sync/sliding_sync.hpp"
@@ -37,8 +39,7 @@ SCENARIO("MSC4186 list ranges MUST be non-overlapping and start <= end", "[sync]
     {
         WHEN("the request is parsed")
         {
-            auto const result = merovingian::sync::parse_sliding_sync_request(
-                R"({"lists":{"x":{"ranges":[[0,19]]}}})");
+            auto const result = merovingian::sync::parse_sliding_sync_request(R"({"lists":{"x":{"ranges":[[0,19]]}}})");
 
             THEN("the request is accepted")
             {
@@ -52,8 +53,8 @@ SCENARIO("MSC4186 list ranges MUST be non-overlapping and start <= end", "[sync]
     {
         WHEN("the request is parsed")
         {
-            auto const result = merovingian::sync::parse_sliding_sync_request(
-                R"({"lists":{"x":{"ranges":[[0,10],[5,20]]}}})");
+            auto const result =
+                merovingian::sync::parse_sliding_sync_request(R"({"lists":{"x":{"ranges":[[0,10],[5,20]]}}})");
 
             THEN("the request is rejected")
             {
@@ -67,8 +68,7 @@ SCENARIO("MSC4186 list ranges MUST be non-overlapping and start <= end", "[sync]
     {
         WHEN("the request is parsed")
         {
-            auto const result = merovingian::sync::parse_sliding_sync_request(
-                R"({"lists":{"x":{"ranges":[[10,5]]}}})");
+            auto const result = merovingian::sync::parse_sliding_sync_request(R"({"lists":{"x":{"ranges":[[10,5]]}}})");
 
             THEN("the request is rejected")
             {
@@ -82,8 +82,8 @@ SCENARIO("MSC4186 list ranges MUST be non-overlapping and start <= end", "[sync]
     {
         WHEN("the request is parsed")
         {
-            auto const result = merovingian::sync::parse_sliding_sync_request(
-                R"({"lists":{"x":{"ranges":[[0,9],[10,19]]}}})");
+            auto const result =
+                merovingian::sync::parse_sliding_sync_request(R"({"lists":{"x":{"ranges":[[0,9],[10,19]]}}})");
 
             THEN("the request is accepted")
             {
@@ -115,7 +115,7 @@ SCENARIO("MSC4186 required_state MUST accept wildcard entries", "[sync][sliding-
                 REQUIRE(result.has_value());
                 auto const& rs = result->lists.at("x").required_state;
                 REQUIRE(rs.size() == 1U);
-                REQUIRE(rs[0].first  == "*");
+                REQUIRE(rs[0].first == "*");
                 REQUIRE(rs[0].second == "*");
             }
         }
@@ -158,9 +158,9 @@ SCENARIO("MSC4186 extension requests parse the enabled field", "[sync][sliding-s
                 auto const& ext = result->extensions;
                 REQUIRE(ext.has_value());
                 REQUIRE(ext->to_device.has_value());
-                REQUIRE(ext->to_device->enabled);      // Spec MUST: enabled = true → active
+                REQUIRE(ext->to_device->enabled); // Spec MUST: enabled = true → active
                 REQUIRE(ext->e2ee.has_value());
-                REQUIRE_FALSE(ext->e2ee->enabled);     // Spec MUST: enabled = false → inactive
+                REQUIRE_FALSE(ext->e2ee->enabled); // Spec MUST: enabled = false → inactive
             }
         }
     }
@@ -176,9 +176,9 @@ SCENARIO("MSC4186 pos token encodes and decodes round-trip", "[sync][sliding-syn
 {
     GIVEN("a pos value included in a target URL")
     {
-        auto const token   = merovingian::sync::StreamToken{100U, 100U, 50U};
+        auto const token = merovingian::sync::StreamToken{100U, 100U, 50U};
         auto const encoded = merovingian::sync::encode_stream_token(token);
-        auto const target  = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + encoded;
+        auto const target = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + encoded;
 
         WHEN("the pos is parsed from the URL")
         {
@@ -198,8 +198,8 @@ SCENARIO("MSC4186 pos token encodes and decodes round-trip", "[sync][sliding-syn
     {
         WHEN("the URL is parsed")
         {
-            auto const result = merovingian::sync::parse_sliding_sync_pos(
-                "/_matrix/client/unstable/org.matrix.msc4186/sync");
+            auto const result =
+                merovingian::sync::parse_sliding_sync_pos("/_matrix/client/unstable/org.matrix.msc4186/sync");
 
             THEN("no pos is returned, indicating an initial sync")
             {
@@ -237,8 +237,8 @@ SCENARIO("MSC4186 timeout parameter is parsed in milliseconds", "[sync][sliding-
     {
         WHEN("the timeout is parsed")
         {
-            auto const result = merovingian::sync::parse_sliding_sync_timeout(
-                "/_matrix/client/unstable/org.matrix.msc4186/sync");
+            auto const result =
+                merovingian::sync::parse_sliding_sync_timeout("/_matrix/client/unstable/org.matrix.msc4186/sync");
 
             THEN("nullopt is returned, meaning respond immediately")
             {
