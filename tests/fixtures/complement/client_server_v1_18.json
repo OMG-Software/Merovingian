@@ -423,7 +423,6 @@
     {
       "method": "POST",
       "path": "/_matrix/media/v3/upload",
-      "raw_body": "text/plain|text/plain|clean|fixture-bytes",
       "expect_status": 401,
       "expect_keys_present": ["errcode", "error"]
     },
@@ -431,18 +430,20 @@
       "method": "POST",
       "path": "/_matrix/media/v3/upload",
       "auth_from": "refreshed_token",
-      "raw_body": "malformed-upload",
-      "expect_status": 400,
-      "expect_keys_present": ["errcode", "error"]
-    },
-    {
-      "method": "POST",
-      "path": "/_matrix/media/v3/upload",
-      "auth_from": "refreshed_token",
-      "raw_body": "text/plain|text/plain|clean|fixture-bytes",
+      "content_type": "text/plain",
+      "raw_body": "fixture-bytes",
       "expect_status": 200,
       "expect_keys_present": ["content_uri"],
       "save_mxc_media_id": {"media_id": "content_uri"}
+    },
+    {
+      "method": "POST",
+      "path": "/_matrix/media/v3/upload?filename=avatar.jpg",
+      "auth_from": "refreshed_token",
+      "content_type": "image/jpeg",
+      "raw_body": "fixture-image-bytes",
+      "expect_status": 200,
+      "expect_keys_present": ["content_uri"]
     },
     {
       "method": "GET",

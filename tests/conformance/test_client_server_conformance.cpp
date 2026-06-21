@@ -6235,11 +6235,11 @@ SCENARIO("POST /media/v3/upload stores media and returns content_uri", "[conform
 
         WHEN("POST /media/v3/upload is called with valid media data")
         {
-            // The internal handler expects pipe-delimited body:
-            // declared_mime|sniffed_mime|scanner_clean|bytes
+            // Spec §13.8.1.1: client sends raw binary body, Content-Type header.
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime,
-                {"POST", "/_matrix/media/v3/upload", token, "image/png|image/png|clean|test-image-data"});
+                {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
+                 {merovingian::http::Header{"Content-Type", "image/png"}}});
 
             THEN("the server returns 200 with a content_uri")
             {
@@ -6267,7 +6267,8 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns uploaded media",
         auto const token = logged_in_token(started.runtime);
 
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "image/png|image/png|clean|test-image-data"});
+            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
+             {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
         auto const* content_uri = string_member(upload_body, "content_uri");
@@ -6397,7 +6398,8 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns thumbnail for u
         auto const token = logged_in_token(started.runtime);
 
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "image/png|image/png|clean|test-image-data"});
+            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
+             {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
         auto const* content_uri = string_member(upload_body, "content_uri");
@@ -6548,7 +6550,8 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId} returns uploaded media",
         auto const token = logged_in_token(started.runtime);
 
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "image/png|image/png|clean|test-image-data"});
+            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
+             {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
         auto const* content_uri = string_member(upload_body, "content_uri");
@@ -6666,7 +6669,8 @@ SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns thumbnail for u
         auto const token = logged_in_token(started.runtime);
 
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "image/png|image/png|clean|test-image-data"});
+            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
+             {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
         auto const* content_uri = string_member(upload_body, "content_uri");
