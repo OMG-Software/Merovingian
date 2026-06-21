@@ -1,3 +1,8 @@
+## 0.9.11
+
+### Added
+- **test(database): add direct coverage for media, policy, and key-backup cleanup helpers:** expand unit coverage for `store_local_media` / `update_local_media_state` / `store_remote_media`, direct `delete_policy_rule` behaviour, and scoped `key_backup_sessions` cleanup paths (`delete_key_backup_session`, `delete_key_backup_room_sessions`, `delete_all_key_backup_sessions`).
+
 ## 0.9.10
 
 ### Fixed
