@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.7
+Version:        0.9.8
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -100,6 +100,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.8-1
+- test(client-server): add joined_members and presence route coverage for current-member gates, profile shaping, defaults, and sync delivery
+
 * Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.7-1
 - fix(sync): route POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync to the MSC4186 handler for matrix-rust-sdk (Element X) compatibility
 

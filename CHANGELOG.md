@@ -1,3 +1,8 @@
+## 0.9.8
+
+### Added
+- **test(client-server): add direct route coverage for `joined_members` and presence updates:** new unit scenarios cover `GET /_matrix/client/v3/rooms/{roomId}/joined_members` for current-member authorization, joined-profile shaping, and left-member exclusion, plus `PUT /_matrix/client/v3/presence/{userId}/status` for explicit online presence, default-offline behavior, malformed-body rejection, forbidden cross-user updates, and `/sync` delivery of `m.presence` events.
+
 ## 0.9.7
 
 ### Fixed

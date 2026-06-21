@@ -39,7 +39,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.9.7"};
+constexpr auto version = std::string_view{"0.9.8"};
 
 struct BootstrapConfigResult final
 {
@@ -48,8 +48,8 @@ struct BootstrapConfigResult final
     std::string source{"defaults"};
 };
 
-[[nodiscard]] auto reject_config(merovingian::bootstrap::ExitCode code, std::string field, std::string message)
-    -> BootstrapConfigResult
+[[nodiscard]] auto reject_config(merovingian::bootstrap::ExitCode code, std::string field,
+                                 std::string message) -> BootstrapConfigResult
 {
     auto result = BootstrapConfigResult{};
     result.failure_code = code;
@@ -57,8 +57,8 @@ struct BootstrapConfigResult final
     return result;
 }
 
-[[nodiscard]] auto classify_config_findings(merovingian::config::ConfigParseResult parsed, std::string source)
-    -> BootstrapConfigResult
+[[nodiscard]] auto classify_config_findings(merovingian::config::ConfigParseResult parsed,
+                                            std::string source) -> BootstrapConfigResult
 {
     if (parsed.findings.empty())
     {
@@ -137,8 +137,8 @@ struct BootstrapConfigResult final
     return {};
 }
 
-[[nodiscard]] auto validate_existing_certificate_file_metadata(std::string const& path, std::string const& field)
-    -> BootstrapConfigResult
+[[nodiscard]] auto validate_existing_certificate_file_metadata(std::string const& path,
+                                                               std::string const& field) -> BootstrapConfigResult
 {
     auto const metadata_result = merovingian::platform::read_posix_file_metadata(path);
     if (!metadata_result.metadata.has_value())
@@ -666,10 +666,9 @@ struct ListenerBinding final
     return true;
 }
 
-[[nodiscard]] auto serve_until_shutdown(merovingian::homeserver::ClientServerRuntime& runtime,
-                                        std::vector<ListenerBinding>& bindings,
-                                        merovingian::net::ShutdownSignal& shutdown)
-    -> merovingian::homeserver::HttpServeStats
+[[nodiscard]] auto serve_until_shutdown(
+    merovingian::homeserver::ClientServerRuntime& runtime, std::vector<ListenerBinding>& bindings,
+    merovingian::net::ShutdownSignal& shutdown) -> merovingian::homeserver::HttpServeStats
 {
     auto stats = merovingian::homeserver::HttpServeStats{};
     // Main pool handles all non-sync request types. Keep this modest so that

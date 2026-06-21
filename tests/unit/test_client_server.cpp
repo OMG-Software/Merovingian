@@ -181,8 +181,8 @@ using namespace merovingian::tests;
 }
 
 [[nodiscard]] auto content_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
-                                     std::string_view event_type, std::string_view state_key = {})
-    -> merovingian::canonicaljson::Object
+                                     std::string_view event_type,
+                                     std::string_view state_key = {}) -> merovingian::canonicaljson::Object
 {
     auto const event = parse_object(event_json_for_state(store, room_id, event_type, state_key));
     auto const* content = object_member_as_object(event, "content");
@@ -2537,8 +2537,8 @@ namespace
 // Lookup helper for LocalHttpResponse::headers (added in 0.4.60). Returns the
 // header value or empty string when the header is absent. Case-sensitive
 // because the wire emitter writes the canonical header name.
-[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response, std::string_view name)
-    -> std::string
+[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response,
+                                   std::string_view name) -> std::string
 {
     for (auto const& [key, value] : response.headers)
     {
@@ -6126,6 +6126,282 @@ SCENARIO("sending a message clears the sender's in-room typing state", "[homeser
                 {
                     REQUIRE_FALSE(typing_after->typing);
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("GET /rooms/{roomId}/joined_members requires a current member and returns joined profiles only",
+         "[homeserver][client-server][rooms][joined-members]")
+{
+    GIVEN("alice owns a private room, bob joins it, and charlie never does")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("charlie", "CorrectHorse9!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto const charlie_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@charlie:example.org"},"password":"CorrectHorse9!","device_id":"CHARLIE_DEV"})"});
+        REQUIRE(charlie_login.response.status == 200U);
+        auto const charlie_token = login_token(charlie_login.response.body);
+
+        auto const create = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token,
+                      R"({"preset":"private_chat","invite":["@bob:example.org"]})"});
+        REQUIRE(create.response.status == 200U);
+        auto const created_room_id = room_id(create.response.body);
+        auto const encoded_room_id = percent_encode_room_identifier(created_room_id);
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + created_room_id + "/join", bob_token, "{}"})
+                    .response.status == 200U);
+
+        REQUIRE(merovingian::database::store_profile(runtime.homeserver.database.persistent_store,
+                                                     {"@alice:example.org", "Alice", "mxc://example.org/alice"}));
+        REQUIRE(merovingian::database::store_profile(runtime.homeserver.database.persistent_store,
+                                                     {"@bob:example.org", "Bob", "mxc://example.org/bob"}));
+
+        WHEN("alice requests joined_members while bob is still joined")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + encoded_room_id + "/joined_members", alice_token, {}});
+
+            THEN("the response includes only currently joined users with their room profile fields")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* joined = object_member_as_object(body, "joined");
+                REQUIRE(joined != nullptr);
+
+                auto const* alice = object_member_as_object(*joined, "@alice:example.org");
+                REQUIRE(alice != nullptr);
+                REQUIRE(string_member(*alice, "display_name") != nullptr);
+                REQUIRE(*string_member(*alice, "display_name") == "Alice");
+                REQUIRE(string_member(*alice, "avatar_url") != nullptr);
+                REQUIRE(*string_member(*alice, "avatar_url") == "mxc://example.org/alice");
+
+                auto const* bob = object_member_as_object(*joined, "@bob:example.org");
+                REQUIRE(bob != nullptr);
+                REQUIRE(string_member(*bob, "display_name") != nullptr);
+                REQUIRE(*string_member(*bob, "display_name") == "Bob");
+                REQUIRE(string_member(*bob, "avatar_url") != nullptr);
+                REQUIRE(*string_member(*bob, "avatar_url") == "mxc://example.org/bob");
+            }
+        }
+
+        WHEN("bob leaves before alice requests joined_members")
+        {
+            REQUIRE(merovingian::homeserver::handle_client_server_request(
+                        runtime, {"POST", "/_matrix/client/v3/rooms/" + created_room_id + "/leave", bob_token, "{}"})
+                        .response.status == 200U);
+
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + encoded_room_id + "/joined_members", alice_token, {}});
+
+            THEN("the left user is omitted from the joined map")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object(response.response.body);
+                auto const* joined = object_member_as_object(body, "joined");
+                REQUIRE(joined != nullptr);
+                REQUIRE(object_member_as_object(*joined, "@alice:example.org") != nullptr);
+                REQUIRE(object_member_as_object(*joined, "@bob:example.org") == nullptr);
+            }
+        }
+
+        WHEN("charlie requests joined_members without being a room member")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/rooms/" + encoded_room_id + "/joined_members", charlie_token, {}});
+
+            THEN("the server fails closed with 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects invalid targets and bodies",
+         "[homeserver][client-server][presence]")
+{
+    GIVEN("alice and bob are registered and logged in")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        WHEN("alice sets online presence with a status message")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", alice_token,
+                          R"({"presence":"online","status_msg":"Working through coverage"})"});
+            auto const sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync", bob_token, {}});
+
+            THEN("the presence snapshot is stored and other clients receive an m.presence event")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const response_body = parse_object(response.response.body);
+                REQUIRE(response_body.empty());
+
+                auto const stored = merovingian::database::find_profile(runtime.homeserver.database.persistent_store,
+                                                                        "@alice:example.org");
+                std::ignore = stored;
+                auto const presence = std::ranges::find_if(runtime.homeserver.database.persistent_store.presence_states,
+                                                           [](auto const& state) {
+                                                               return state.user_id == "@alice:example.org";
+                                                           });
+                REQUIRE(presence != runtime.homeserver.database.persistent_store.presence_states.end());
+                REQUIRE(presence->presence == "online");
+                REQUIRE(presence->status_msg == "Working through coverage");
+                REQUIRE(presence->currently_active);
+
+                REQUIRE(sync.response.status == 200U);
+                auto const sync_body = parse_object(sync.response.body);
+                auto const* presence_obj = object_member_as_object(sync_body, "presence");
+                REQUIRE(presence_obj != nullptr);
+                auto const* events = object_member_as_array(*presence_obj, "events");
+                REQUIRE(events != nullptr);
+
+                auto saw_alice_presence = false;
+                for (auto const& value : *events)
+                {
+                    auto const* event = std::get_if<merovingian::canonicaljson::Object>(&value.storage());
+                    REQUIRE(event != nullptr);
+                    auto const* type = string_member(*event, "type");
+                    auto const* sender = string_member(*event, "sender");
+                    auto const* content = object_member_as_object(*event, "content");
+                    if (type == nullptr || sender == nullptr || content == nullptr || *type != "m.presence" ||
+                        *sender != "@alice:example.org")
+                    {
+                        continue;
+                    }
+                    REQUIRE(string_member(*content, "presence") != nullptr);
+                    REQUIRE(*string_member(*content, "presence") == "online");
+                    REQUIRE(string_member(*content, "status_msg") != nullptr);
+                    REQUIRE(*string_member(*content, "status_msg") == "Working through coverage");
+                    saw_alice_presence = true;
+                }
+                REQUIRE(saw_alice_presence);
+            }
+        }
+
+        WHEN("alice omits presence fields")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", alice_token, "{}"});
+
+            THEN("the server defaults the stored state to offline with no status message")
+            {
+                REQUIRE(response.response.status == 200U);
+                auto const presence = std::ranges::find_if(runtime.homeserver.database.persistent_store.presence_states,
+                                                           [](auto const& state) {
+                                                               return state.user_id == "@alice:example.org";
+                                                           });
+                REQUIRE(presence != runtime.homeserver.database.persistent_store.presence_states.end());
+                REQUIRE(presence->presence == "offline");
+                REQUIRE(presence->status_msg.empty());
+                REQUIRE_FALSE(presence->currently_active);
+            }
+        }
+
+        WHEN("bob tries to set alice's presence")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", bob_token,
+                          R"({"presence":"online"})"});
+
+            THEN("the server returns 403 M_FORBIDDEN")
+            {
+                REQUIRE(response.response.status == 403U);
+                REQUIRE(response.response.body.find("M_FORBIDDEN") != std::string::npos);
+            }
+        }
+
+        WHEN("alice submits a non-object presence body")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"PUT", "/_matrix/client/v3/presence/%40alice%3Aexample.org/status", alice_token, R"(["online"])"});
+
+            THEN("the server returns 400 M_BAD_JSON")
+            {
+                REQUIRE(response.response.status == 400U);
+                REQUIRE(response.response.body.find("M_BAD_JSON") != std::string::npos);
             }
         }
     }
