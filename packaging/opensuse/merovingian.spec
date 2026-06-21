@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.9
+Version:        0.9.10
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -111,6 +111,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.10-1
+- fix(sync): MSC4186 sliding sync long-poll no longer returns early when only another user's device keys were uploaded
+- test(sync): add BDD test verifying sliding sync spurious-wakeup suppression
+
 * Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.9-1
 - fix(sync): incremental MSC4186 sliding sync no longer returns unchanged rooms, ending the Element X tight-poll loop
 - test(sync): add BDD unit tests for build_room_response incremental required_state filtering

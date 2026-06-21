@@ -3144,18 +3144,48 @@ namespace
         auto const since_sync_stream_id = pos.has_value() ? pos->sync_stream_id : std::uint64_t{0U};
         auto& store = rt.homeserver.database.persistent_store;
 
-        // Long-poll: hold when nothing is new and the client is willing to wait.
+        // Long-poll: park when nothing relevant to this connection has changed.
+        // A sync_stream_id advance from another user uploading device keys fires
+        // the global notifier and would otherwise cause an immediate return with
+        // empty data, triggering a client reset loop.  We re-wait past irrelevant
+        // bumps by advancing the since_sync_stream_id in the needs_wait params.
         if (can_wait && timeout_ms > 0U)
         {
             auto const cur_event = rt.homeserver.database.next_stream_ordering - 1U;
             auto const cur_sync = store.next_sync_stream_id;
-            if (cur_event <= since_event_ordering && cur_sync <= since_sync_stream_id)
+            if (cur_event <= since_event_ordering)
             {
-                return DispatchResult{
-                    DispatchResult::Status::needs_wait,
-                    {},
-                    {since_event_ordering, since_sync_stream_id, std::chrono::milliseconds{timeout_ms}}
-                };
+                // No new room events.  Only respond early if the sync_stream_id
+                // advance contains rows relevant to this user/device:
+                //   - device-list changes where this user is the observer
+                //   - to-device messages addressed to this device
+                //   - account-data rows owned by this user
+                bool const has_relevant_dlc = std::ranges::any_of(
+                    store.device_list_changes, [&](auto const& c) {
+                        return c.observer_user_id == user &&
+                               c.stream_id > since_sync_stream_id;
+                    });
+                bool const has_relevant_tdm = std::ranges::any_of(
+                    store.to_device_messages, [&](auto const& m) {
+                        return m.target_user_id == user &&
+                               m.target_device_id == device_id &&
+                               m.stream_id > since_sync_stream_id;
+                    });
+                bool const has_relevant_ad = std::ranges::any_of(
+                    store.account_data, [&](auto const& ad) {
+                        return ad.user_id == user &&
+                               ad.stream_id > since_sync_stream_id;
+                    });
+                if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad)
+                {
+                    // Advance the wait cursor past this irrelevant bump so the
+                    // notifier must fire again before the next wakeup attempt.
+                    return DispatchResult{
+                        DispatchResult::Status::needs_wait,
+                        {},
+                        {since_event_ordering, cur_sync, std::chrono::milliseconds{timeout_ms}}
+                    };
+                }
             }
         }
 
