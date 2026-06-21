@@ -197,6 +197,431 @@ SCENARIO("To-device drain does not acknowledge messages beyond the sync response
     }
 }
 
+SCENARIO("Persistent store upserts sync filters and returns them by user and filter id",
+         "[database][persistence][filter]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("alice stores a sync filter and then replaces it with updated JSON")
+        {
+            auto const first = merovingian::database::PersistentFilter{
+                "@alice:example.org",
+                "filter-1",
+                R"({"room":{"timeline":{"limit":10}}})",
+            };
+            auto const second = merovingian::database::PersistentFilter{
+                "@alice:example.org",
+                "filter-1",
+                R"({"room":{"timeline":{"limit":20}}})",
+            };
+
+            REQUIRE(merovingian::database::store_filter(store, first));
+            REQUIRE(merovingian::database::store_filter(store, second));
+
+            auto const stored = merovingian::database::find_filter(store, "@alice:example.org", "filter-1");
+            auto const missing = merovingian::database::find_filter(store, "@alice:example.org", "missing-filter");
+
+            THEN("the latest JSON replaces the earlier copy without duplicating the filter row")
+            {
+                REQUIRE(store.filters.size() == 1U);
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->user_id == "@alice:example.org");
+                REQUIRE(stored->filter_id == "filter-1");
+                REQUIRE(stored->json == R"({"room":{"timeline":{"limit":20}}})");
+                REQUIRE_FALSE(missing.has_value());
+                REQUIRE(store.prepared_statements.size() == 2U);
+                REQUIRE(store.prepared_statements.back().name == "upsert_filter");
+                REQUIRE(store.prepared_statements.back().parameters.size() == 3U);
+                REQUIRE(store.prepared_statements.back().parameters[2].sensitive);
+            }
+        }
+
+        WHEN("a filter is missing required identity fields or JSON")
+        {
+            auto const empty_user =
+                merovingian::database::store_filter(store, {"", "filter-1", R"({"event_fields":["type"]})"});
+            auto const empty_filter_id =
+                merovingian::database::store_filter(store, {"@alice:example.org", "", R"({"event_fields":["type"]})"});
+            auto const empty_json = merovingian::database::store_filter(store, {"@alice:example.org", "filter-1", ""});
+
+            THEN("the store rejects the malformed filter input")
+            {
+                REQUIRE_FALSE(empty_user);
+                REQUIRE_FALSE(empty_filter_id);
+                REQUIRE_FALSE(empty_json);
+                REQUIRE(store.filters.empty());
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Persistent store profiles upsert and apply targeted displayname and avatar updates",
+         "[database][persistence][profile]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("alice stores a profile and later updates each field through the targeted helpers")
+        {
+            REQUIRE(merovingian::database::store_profile(
+                store, {"@alice:example.org", "Alice", "mxc://example.org/alice-avatar"}));
+            REQUIRE(merovingian::database::update_profile_displayname(store, "@alice:example.org", "Alice Admin"));
+            REQUIRE(merovingian::database::update_profile_avatar_url(store, "@alice:example.org",
+                                                                     "mxc://example.org/alice-avatar-2"));
+
+            auto const stored = merovingian::database::find_profile(store, "@alice:example.org");
+
+            THEN("the profile remains a single row with the updated display name and avatar URL")
+            {
+                REQUIRE(store.profiles.size() == 1U);
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->displayname == "Alice Admin");
+                REQUIRE(stored->avatar_url == "mxc://example.org/alice-avatar-2");
+                REQUIRE(store.prepared_statements.size() == 3U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_profile");
+                REQUIRE(store.prepared_statements[1].name == "update_profile_displayname");
+                REQUIRE(store.prepared_statements[2].name == "update_profile_avatar_url");
+            }
+        }
+
+        WHEN("alice stores the profile again with a new full payload")
+        {
+            REQUIRE(merovingian::database::store_profile(
+                store, {"@alice:example.org", "Alice", "mxc://example.org/alice-avatar"}));
+            REQUIRE(merovingian::database::store_profile(
+                store, {"@alice:example.org", "Alice Updated", "mxc://example.org/alice-avatar-3"}));
+
+            auto const stored = merovingian::database::find_profile(store, "@alice:example.org");
+
+            THEN("upsert replaces the existing stored profile without duplicating the row")
+            {
+                REQUIRE(store.profiles.size() == 1U);
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->displayname == "Alice Updated");
+                REQUIRE(stored->avatar_url == "mxc://example.org/alice-avatar-3");
+            }
+        }
+
+        WHEN("profile helpers target a user with no stored profile or the input has no user id")
+        {
+            auto const empty_user = merovingian::database::store_profile(store, {"", "Alice", "mxc://example.org/a"});
+            auto const missing_display =
+                merovingian::database::update_profile_displayname(store, "@ghost:example.org", "Ghost");
+            auto const missing_avatar =
+                merovingian::database::update_profile_avatar_url(store, "@ghost:example.org", "mxc://example.org/g");
+            auto const missing = merovingian::database::find_profile(store, "@ghost:example.org");
+
+            THEN("the store fails closed and does not synthesize partial profile rows")
+            {
+                REQUIRE_FALSE(empty_user);
+                REQUIRE_FALSE(missing_display);
+                REQUIRE_FALSE(missing_avatar);
+                REQUIRE_FALSE(missing.has_value());
+                REQUIRE(store.profiles.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Persistent client transaction records keep the first response and scope idempotency by room and type",
+         "[database][persistence][client-txn]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("alice stores the same room send transaction twice with different event ids")
+        {
+            auto const first = merovingian::database::PersistentClientTxnRecord{
+                "@alice:example.org", "!room-a:example.org", "m.room.message", "txn-1", "$event-first",
+            };
+            auto const duplicate = merovingian::database::PersistentClientTxnRecord{
+                "@alice:example.org", "!room-a:example.org", "m.room.message", "txn-1", "$event-second",
+            };
+
+            REQUIRE(merovingian::database::store_client_txn(store, first));
+            REQUIRE(merovingian::database::store_client_txn(store, duplicate));
+
+            auto const replay = merovingian::database::find_client_txn_event_id(
+                store, "@alice:example.org", "!room-a:example.org", "m.room.message", "txn-1");
+
+            THEN("the original event id is preserved and the duplicate retry does not add a second row")
+            {
+                REQUIRE(store.client_txn_ids.size() == 1U);
+                REQUIRE(replay.has_value());
+                REQUIRE(*replay == "$event-first");
+                REQUIRE(store.prepared_statements.size() == 1U);
+                REQUIRE(store.prepared_statements.front().name == "insert_client_txn_id");
+            }
+        }
+
+        WHEN("the same txn id is reused for a different room or event type")
+        {
+            REQUIRE(merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "!room-a:example.org", "m.room.message", "txn-1", "$event-a"}));
+            REQUIRE(merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "!room-b:example.org", "m.room.message", "txn-1", "$event-b"}));
+            REQUIRE(merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "!room-a:example.org", "m.reaction", "txn-1", "$event-c"}));
+
+            THEN("each unique (room_id, event_type, txn_id) combination is stored independently")
+            {
+                REQUIRE(store.client_txn_ids.size() == 3U);
+                REQUIRE(merovingian::database::find_client_txn_event_id(
+                            store, "@alice:example.org", "!room-a:example.org", "m.room.message", "txn-1") ==
+                        std::optional<std::string>{"$event-a"});
+                REQUIRE(merovingian::database::find_client_txn_event_id(
+                            store, "@alice:example.org", "!room-b:example.org", "m.room.message", "txn-1") ==
+                        std::optional<std::string>{"$event-b"});
+                REQUIRE(merovingian::database::find_client_txn_event_id(store, "@alice:example.org",
+                                                                        "!room-a:example.org", "m.reaction", "txn-1") ==
+                        std::optional<std::string>{"$event-c"});
+            }
+        }
+
+        WHEN("a client transaction is missing required identifying fields")
+        {
+            auto const missing_user = merovingian::database::store_client_txn(
+                store, {"", "!room-a:example.org", "m.room.message", "txn-1", "$event-a"});
+            auto const missing_type = merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "!room-a:example.org", "", "txn-1", "$event-a"});
+            auto const missing_txn = merovingian::database::store_client_txn(
+                store, {"@alice:example.org", "!room-a:example.org", "m.room.message", "", "$event-a"});
+
+            THEN("the malformed idempotency record is rejected")
+            {
+                REQUIRE_FALSE(missing_user);
+                REQUIRE_FALSE(missing_type);
+                REQUIRE_FALSE(missing_txn);
+                REQUIRE(store.client_txn_ids.empty());
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Device-list change records validate inputs and advance the sync stream monotonically",
+         "[database][persistence][device-list]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("valid changed and left notifications are recorded")
+        {
+            REQUIRE(merovingian::database::record_device_list_change(
+                store, {0U, "@alice:example.org", "@bob:example.org", "changed"}));
+            REQUIRE(merovingian::database::record_device_list_change(
+                store, {0U, "@alice:example.org", "@carol:example.org", "left"}));
+
+            THEN("the rows are appended with increasing stream ids and durable statements")
+            {
+                REQUIRE(store.device_list_changes.size() == 2U);
+                REQUIRE(store.device_list_changes[0].stream_id == 1U);
+                REQUIRE(store.device_list_changes[0].observer_user_id == "@alice:example.org");
+                REQUIRE(store.device_list_changes[0].subject_user_id == "@bob:example.org");
+                REQUIRE(store.device_list_changes[0].change_type == "changed");
+                REQUIRE(store.device_list_changes[1].stream_id == 2U);
+                REQUIRE(store.device_list_changes[1].subject_user_id == "@carol:example.org");
+                REQUIRE(store.device_list_changes[1].change_type == "left");
+                REQUIRE(store.next_sync_stream_id == 2U);
+                REQUIRE(store.prepared_statements.size() == 2U);
+                REQUIRE(store.prepared_statements[0].name == "insert_device_list_change");
+                REQUIRE(store.prepared_statements[1].name == "insert_device_list_change");
+            }
+        }
+
+        WHEN("a device-list change is missing users or uses an unsupported type")
+        {
+            auto const missing_observer =
+                merovingian::database::record_device_list_change(store, {0U, "", "@bob:example.org", "changed"});
+            auto const missing_subject =
+                merovingian::database::record_device_list_change(store, {0U, "@alice:example.org", "", "changed"});
+            auto const bad_type = merovingian::database::record_device_list_change(
+                store, {0U, "@alice:example.org", "@bob:example.org", "deleted"});
+
+            THEN("the malformed change is rejected without advancing the sync stream")
+            {
+                REQUIRE_FALSE(missing_observer);
+                REQUIRE_FALSE(missing_subject);
+                REQUIRE_FALSE(bad_type);
+                REQUIRE(store.device_list_changes.empty());
+                REQUIRE(store.next_sync_stream_id == 0U);
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Presence snapshots upsert per user and keep only the latest stream-shaped state",
+         "[database][persistence][presence]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("alice first appears online and later updates to unavailable")
+        {
+            REQUIRE(merovingian::database::upsert_presence(store,
+                                                           {0U, "@alice:example.org", "online", "Working", 25, true}));
+            REQUIRE(merovingian::database::upsert_presence(
+                store, {0U, "@alice:example.org", "unavailable", "Away", 900, false}));
+
+            THEN("the store keeps one row for alice with the latest content and stream id")
+            {
+                REQUIRE(store.presence_states.size() == 1U);
+                REQUIRE(store.presence_states[0].user_id == "@alice:example.org");
+                REQUIRE(store.presence_states[0].presence == "unavailable");
+                REQUIRE(store.presence_states[0].status_msg == "Away");
+                REQUIRE(store.presence_states[0].last_active_ago == 900);
+                REQUIRE_FALSE(store.presence_states[0].currently_active);
+                REQUIRE(store.presence_states[0].stream_id == 2U);
+                REQUIRE(store.next_sync_stream_id == 2U);
+                REQUIRE(store.prepared_statements.size() == 2U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_presence");
+                REQUIRE(store.prepared_statements[1].name == "upsert_presence");
+            }
+        }
+
+        WHEN("presence data omits the user id or presence state")
+        {
+            auto const missing_user = merovingian::database::upsert_presence(store, {0U, "", "online", {}, 0, true});
+            auto const missing_presence =
+                merovingian::database::upsert_presence(store, {0U, "@alice:example.org", "", {}, 0, false});
+
+            THEN("the malformed snapshot is rejected before it affects the stream state")
+            {
+                REQUIRE_FALSE(missing_user);
+                REQUIRE_FALSE(missing_presence);
+                REQUIRE(store.presence_states.empty());
+                REQUIRE(store.next_sync_stream_id == 0U);
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Room aliases require an existing room and reject duplicate mappings", "[database][persistence][room-alias]")
+{
+    GIVEN("an in-memory persistent store with one known room")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        REQUIRE(merovingian::database::store_room(store, {"!room:example.org", "@alice:example.org"}));
+
+        WHEN("a fresh alias is stored for the existing room")
+        {
+            REQUIRE(merovingian::database::store_room_alias(store, {"#lobby:example.org", "!room:example.org"}));
+            auto const stored = merovingian::database::find_room_alias(store, "#lobby:example.org");
+
+            THEN("the mapping is durable and discoverable by alias")
+            {
+                REQUIRE(store.room_aliases.size() == 1U);
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->room_alias == "#lobby:example.org");
+                REQUIRE(stored->room_id == "!room:example.org");
+                REQUIRE(store.prepared_statements.back().name == "insert_room_alias");
+            }
+        }
+
+        WHEN("the same alias is reused or the target room does not exist")
+        {
+            REQUIRE(merovingian::database::store_room_alias(store, {"#lobby:example.org", "!room:example.org"}));
+            auto const duplicate =
+                merovingian::database::store_room_alias(store, {"#lobby:example.org", "!other-room:example.org"});
+            auto const missing_room =
+                merovingian::database::store_room_alias(store, {"#elsewhere:example.org", "!missing:example.org"});
+            auto const empty_alias = merovingian::database::store_room_alias(store, {"", "!room:example.org"});
+
+            THEN("invalid alias writes are rejected without replacing the original mapping")
+            {
+                REQUIRE_FALSE(duplicate);
+                REQUIRE_FALSE(missing_room);
+                REQUIRE_FALSE(empty_alias);
+                REQUIRE(store.room_aliases.size() == 1U);
+                REQUIRE(merovingian::database::find_room_alias(store, "#lobby:example.org")->room_id ==
+                        "!room:example.org");
+                REQUIRE_FALSE(merovingian::database::find_room_alias(store, "#elsewhere:example.org").has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("Account data upserts global and room-scoped rows while advancing the sync stream",
+         "[database][persistence][account-data]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("alice stores and then replaces both global and room account-data rows")
+        {
+            REQUIRE(merovingian::database::store_account_data(
+                store, {"@alice:example.org", "", "m.push_rules", R"({"global":{"override":[]}})", 0U}));
+            REQUIRE(
+                merovingian::database::store_account_data(store, {"@alice:example.org", "!room:example.org", "m.tag",
+                                                                  R"({"tags":{"u.work":{"order":0.1}}})", 0U}));
+            REQUIRE(merovingian::database::store_account_data(
+                store, {"@alice:example.org", "", "m.push_rules", R"({"global":{"override":["updated"]}})", 0U}));
+            REQUIRE(
+                merovingian::database::store_account_data(store, {"@alice:example.org", "!room:example.org", "m.tag",
+                                                                  R"({"tags":{"u.work":{"order":0.2}}})", 0U}));
+
+            auto const global =
+                std::ranges::find_if(store.account_data, [](merovingian::database::PersistentAccountData const& row) {
+                    return row.user_id == "@alice:example.org" && row.room_id.empty() &&
+                           row.event_type == "m.push_rules";
+                });
+            auto const room =
+                std::ranges::find_if(store.account_data, [](merovingian::database::PersistentAccountData const& row) {
+                    return row.user_id == "@alice:example.org" && row.room_id == "!room:example.org" &&
+                           row.event_type == "m.tag";
+                });
+
+            THEN("each scope keeps one latest row and records the correct backend statement shape")
+            {
+                REQUIRE(store.account_data.size() == 2U);
+                REQUIRE(global != store.account_data.end());
+                REQUIRE(room != store.account_data.end());
+                REQUIRE(global->content_json == R"({"global":{"override":["updated"]}})");
+                REQUIRE(global->stream_id == 3U);
+                REQUIRE(room->content_json == R"({"tags":{"u.work":{"order":0.2}}})");
+                REQUIRE(room->stream_id == 4U);
+                REQUIRE(store.next_sync_stream_id == 4U);
+                REQUIRE(store.prepared_statements.size() == 4U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_account_data");
+                REQUIRE(store.prepared_statements[1].name == "upsert_room_account_data");
+                REQUIRE(store.prepared_statements[2].name == "upsert_account_data");
+                REQUIRE(store.prepared_statements[3].name == "upsert_room_account_data");
+                REQUIRE(store.prepared_statements[0].parameters.size() == 4U);
+                REQUIRE(store.prepared_statements[0].parameters[2].sensitive);
+                REQUIRE(store.prepared_statements[1].parameters.size() == 5U);
+                REQUIRE(store.prepared_statements[1].parameters[4].sensitive);
+            }
+        }
+
+        WHEN("account data omits the user id or event type")
+        {
+            auto const missing_user =
+                merovingian::database::store_account_data(store, {"", "", "m.push_rules", R"({})", 0U});
+            auto const missing_event_type =
+                merovingian::database::store_account_data(store, {"@alice:example.org", "", "", R"({})", 0U});
+
+            THEN("the malformed row is rejected before it can consume a sync stream id")
+            {
+                REQUIRE_FALSE(missing_user);
+                REQUIRE_FALSE(missing_event_type);
+                REQUIRE(store.account_data.empty());
+                REQUIRE(store.next_sync_stream_id == 0U);
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+    }
+}
+
 SCENARIO("Database statement validation enforces placeholder arity", "[database]")
 {
     GIVEN("statements with matching and mismatched placeholder arity")
