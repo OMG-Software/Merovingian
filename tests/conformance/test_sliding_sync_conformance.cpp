@@ -249,6 +249,92 @@ SCENARIO("MSC4186 timeout parameter is parsed in milliseconds", "[sync][sliding-
     }
 }
 
+// Spec: MSC4186 §2 — compatibility alias URL format
+// URL: https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md
+//
+// The server MUST also serve the endpoint at the org.matrix.simplified_msc3575
+// path for matrix-rust-sdk compatibility. The pos and timeout query parameters
+// MUST be parsed identically from this path.
+SCENARIO("MSC4186 pos token is parsed identically from the simplified_msc3575 URL",
+         "[sync][sliding-sync][conformance]")
+{
+    GIVEN("a pos value appended to the simplified_msc3575 target URL")
+    {
+        auto const token  = merovingian::sync::StreamToken{200U, 200U, 75U};
+        auto const encoded = merovingian::sync::encode_stream_token(token);
+        auto const target =
+            "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos=" + encoded;
+
+        WHEN("the pos is parsed from the URL")
+        {
+            auto const result = merovingian::sync::parse_sliding_sync_pos(target);
+
+            THEN("it decodes to the original token — path prefix is irrelevant to pos parsing")
+            {
+                // Spec MUST: pos is an opaque query-parameter; its value is path-independent.
+                REQUIRE(result.has_value());
+                REQUIRE(result->event_ordering == 200U);
+                REQUIRE(result->sync_stream_id == 75U);
+            }
+        }
+    }
+
+    GIVEN("a simplified_msc3575 URL with no pos")
+    {
+        WHEN("the URL is parsed")
+        {
+            auto const result = merovingian::sync::parse_sliding_sync_pos(
+                "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync");
+
+            THEN("no pos is returned, indicating an initial sync")
+            {
+                // Spec MUST: absence of pos means initial sync regardless of which path is used.
+                REQUIRE_FALSE(result.has_value());
+            }
+        }
+    }
+}
+
+// Spec: MSC4186 §2 — compatibility alias URL format (timeout)
+// URL: https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md
+//
+// timeout MUST be parsed from the simplified_msc3575 path identically to the msc4186 path.
+SCENARIO("MSC4186 timeout is parsed identically from the simplified_msc3575 URL",
+         "[sync][sliding-sync][conformance]")
+{
+    GIVEN("a simplified_msc3575 URL with timeout=0")
+    {
+        WHEN("the timeout is parsed")
+        {
+            auto const result = merovingian::sync::parse_sliding_sync_timeout(
+                "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=0");
+
+            THEN("zero is returned — respond immediately")
+            {
+                // Spec MUST: timeout=0 means respond immediately; value is path-independent.
+                REQUIRE(result.has_value());
+                REQUIRE(*result == 0U);
+            }
+        }
+    }
+
+    GIVEN("a simplified_msc3575 URL with timeout=30000")
+    {
+        WHEN("the timeout is parsed")
+        {
+            auto const result = merovingian::sync::parse_sliding_sync_timeout(
+                "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?timeout=30000");
+
+            THEN("30000 ms is returned")
+            {
+                // Spec MUST: timeout in milliseconds; value is path-independent.
+                REQUIRE(result.has_value());
+                REQUIRE(*result == 30000U);
+            }
+        }
+    }
+}
+
 // Spec: MSC4186 §3 — sort order
 // URL: https://github.com/matrix-org/matrix-spec-proposals/blob/main/proposals/4186-simplified-sliding-sync.md
 //

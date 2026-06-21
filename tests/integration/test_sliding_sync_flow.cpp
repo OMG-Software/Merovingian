@@ -592,3 +592,73 @@ SCENARIO("MSC4186 sliding sync is reachable at the org.matrix.simplified_msc3575
         }
     }
 }
+
+SCENARIO("MSC4186 incremental sync works via the simplified_msc3575 path using pos from the prior response",
+         "[homeserver][sliding-sync][integration]")
+{
+    GIVEN("a user whose initial sliding sync was completed via the simplified_msc3575 path")
+    {
+        auto const config = sliding_sync_config();
+        auto started      = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt          = started.runtime;
+        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+
+        auto const initial = merovingian::homeserver::handle_client_server_request(
+            rt,
+            {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", token,
+             R"({"lists":{"rooms":{"ranges":[[0,9]]}}})"},
+            /*can_wait=*/false);
+        REQUIRE(initial.response.status == 200U);
+        auto const pos = sliding_sync_pos(initial.response.body);
+
+        WHEN("an incremental request is sent via simplified_msc3575 with the returned pos")
+        {
+            auto const target = std::string{"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos="} + pos;
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", target, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})"},
+                /*can_wait=*/false);
+
+            THEN("the response is 200 with a new pos token")
+            {
+                REQUIRE(result.response.status == 200U);
+                auto const new_pos = sliding_sync_pos(result.response.body);
+                REQUIRE(!new_pos.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("MSC4186 pos token is interchangeable between the msc4186 and simplified_msc3575 paths",
+         "[homeserver][sliding-sync][integration]")
+{
+    GIVEN("a user whose initial sliding sync was completed via the msc4186 path")
+    {
+        auto const config = sliding_sync_config();
+        auto started      = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt          = started.runtime;
+        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+
+        auto const initial = sliding_sync(rt, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})");
+        REQUIRE(initial.response.status == 200U);
+        auto const pos = sliding_sync_pos(initial.response.body);
+
+        WHEN("an incremental request is sent via the simplified_msc3575 path using the msc4186 pos")
+        {
+            auto const target = std::string{"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync?pos="} + pos;
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt, {"POST", target, token, R"({"lists":{"rooms":{"ranges":[[0,9]]}}})"},
+                /*can_wait=*/false);
+
+            THEN("the response is 200 — pos tokens are path-independent")
+            {
+                // Both paths hit the same handler and share connection state, so
+                // a pos obtained from one path MUST be accepted by the other.
+                REQUIRE(result.response.status == 200U);
+                auto const new_pos = sliding_sync_pos(result.response.body);
+                REQUIRE(!new_pos.empty());
+            }
+        }
+    }
+}
