@@ -7203,10 +7203,13 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return sync_json(rt, *user, device_id, sync_request, can_wait);
     }
 
-    // MSC4186 Simplified Sliding Sync
+    // MSC4186 Simplified Sliding Sync — served at both paths for client compatibility.
     // POST /_matrix/client/unstable/org.matrix.msc4186/sync
+    // POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync  (matrix-rust-sdk alias)
     auto constexpr msc4186_sync_prefix = std::string_view{"/_matrix/client/unstable/org.matrix.msc4186/sync"};
-    if (req.method == "POST" && starts_with(req.target, msc4186_sync_prefix))
+    auto constexpr msc3575_sync_prefix = std::string_view{"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"};
+    if (req.method == "POST" &&
+        (starts_with(req.target, msc4186_sync_prefix) || starts_with(req.target, msc3575_sync_prefix)))
     {
         auto const session_4186 = authenticated_session(rt.homeserver, req.access_token);
         auto const device_id_4186 = session_4186.has_value() ? session_4186->device_id : std::string{};
