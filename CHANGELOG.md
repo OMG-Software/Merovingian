@@ -1,3 +1,11 @@
+## 0.9.9
+
+### Fixed
+- **fix(sync): incremental MSC4186 sliding sync no longer returns unchanged rooms, ending the Element X tight-poll loop:** two complementary bugs caused matrix-rust-sdk to treat every incremental response as carrying new data and immediately re-poll with `timeout=0`. First, `build_room_response` included all `required_state` events unconditionally; it now filters to only events whose `stream_ordering > since_event_ordering` on incremental responses (initial syncs are unaffected). Second, `sliding_sync_json` included every windowed room in the `rooms{}` object regardless of whether anything changed; rooms are now gated by `has_room_updates` — a room appears in `rooms{}` only when it is being seen for the first time, has new timeline events, has changed required_state, or has non-zero notification/highlight counts. Together these ensure that when nothing has changed since the `pos` the incremental response carries `rooms: {}`, which causes the client to honour the 30-second long-poll timeout instead of looping.
+
+### Added
+- **test(sync): add BDD unit tests for `build_room_response` incremental filtering:** six scenarios in `tests/unit/test_sliding_sync_room_builder.cpp` cover the initial-vs-incremental `required_state` filtering: all matching state included on initial sync; state predating the pos omitted on incremental; only post-pos state included when mixed; wildcard `*/*` filter respects the same ordering gate; no-update responses produce empty `required_state_json` and `timeline_json`; new timeline events correctly populate `timeline_json`.
+
 ## 0.9.8
 
 ### Added

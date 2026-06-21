@@ -150,6 +150,7 @@ if get_option ('build_tests')
       'unit/test_state_resolution.cpp',
       'unit/test_stream_token.cpp',
       'unit/test_sliding_sync.cpp',
+      'unit/test_sliding_sync_room_builder.cpp',
       'unit/test_sliding_sync_surfaces.cpp',
       'unit/test_sync_filter.cpp',
       'unit/test_sync_handler.cpp',
