@@ -6407,6 +6407,104 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
     }
 }
 
+// ─── MSC4186 sliding sync no-pos repeated poll returns delta ─────────────────
+// matrix-rust-sdk sends timeout=0 (no pos in URL) alongside every timeout=30000
+// long-poll to get an immediate snapshot.  Before this fix the server used
+// since_event_ordering=0 for all no-pos requests, re-delivering every room
+// event on every cycle (17 KB per call) and causing the SDK to reset and loop.
+// After the fix, the second and subsequent no-pos requests on a connection that
+// already has state use conn.last_event_ordering as the baseline, returning an
+// empty rooms{} when nothing has changed.
+
+SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing changed",
+         "[sync][sliding-sync][msc4186]")
+{
+    // Spec: MSC4186 — the server is expected to return the current snapshot on
+    // timeout=0; when connection state already covers the current pos, the
+    // snapshot is empty (delta since last response = nothing).
+    GIVEN("alice registered and in a room, with one completed no-pos sliding sync")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {},
+             registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token = login_token(alice_reg.response.body);
+
+        // Alice creates a room so there is real room state to sync.
+        auto const create_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create_resp.response.status == 200U);
+
+        // First no-pos poll: connection is fresh → full initial sync.
+        auto const first_resp = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+             R"({"conn_id":"sdk-poll","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+        REQUIRE(first_resp.response.status == 200U);
+
+        // Extract pos from the first response.
+        auto const pos_key   = std::string{"\"pos\":\""};
+        auto const pos_begin = first_resp.response.body.find(pos_key);
+        REQUIRE(pos_begin != std::string::npos);
+        auto const pv_begin = pos_begin + pos_key.size();
+        auto const pv_end   = first_resp.response.body.find('"', pv_begin);
+        REQUIRE(pv_end != std::string::npos);
+        auto const pos_p = first_resp.response.body.substr(pv_begin, pv_end - pv_begin);
+        REQUIRE_FALSE(pos_p.empty());
+
+        // First response must carry rooms (initial=true, full state).
+        REQUIRE(first_resp.response.body.find("\"rooms\":{}" ) == std::string::npos);
+
+        WHEN("a second no-pos timeout=0 is sent on the same conn_id with no intervening events")
+        {
+            auto const second_resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+                 R"({"conn_id":"sdk-poll","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+
+            THEN("the server returns 200 with the same pos and an empty rooms object")
+            {
+                REQUIRE(second_resp.response.status == 200U);
+                // pos must not regress.
+                REQUIRE(second_resp.response.body.find("\"pos\":\"" + pos_p + "\"") != std::string::npos);
+                // No rooms payload when nothing has changed since the last sync.
+                REQUIRE(second_resp.response.body.find("\"rooms\":{}") != std::string::npos);
+            }
+        }
+
+        WHEN("a new event is posted then a second no-pos poll is sent")
+        {
+            // Alice sends a message, creating a new event.
+            auto const rid = room_id(create_resp.response.body);
+            auto const send_url = "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) +
+                                  "/send/m.room.message/txn1";
+            auto const send_resp = merovingian::homeserver::handle_client_server_request(
+                runtime, {"PUT", send_url, alice_token, R"({"msgtype":"m.text","body":"hello"})"});
+            REQUIRE(send_resp.response.status == 200U);
+
+            auto const second_resp = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+                 R"({"conn_id":"sdk-poll","lists":{"0":{"ranges":[[0,19]],"required_state":[],"timeline_limit":1}}})"});
+
+            THEN("the server returns 200 with an advanced pos and the room's new event")
+            {
+                REQUIRE(second_resp.response.status == 200U);
+                // pos must have advanced past the first sync pos.
+                REQUIRE(second_resp.response.body.find("\"pos\":\"" + pos_p + "\"") == std::string::npos);
+                // Room must appear with the new timeline event.
+                REQUIRE(second_resp.response.body.find("\"rooms\":{}" ) == std::string::npos);
+                REQUIRE(second_resp.response.body.find("m.room.message") != std::string::npos);
+            }
+        }
+    }
+}
+
 // ─── MSC4186 sliding sync spurious-wakeup suppression ────────────────────────
 // handle_key_upload fans out PersistentDeviceListChange rows to all co-members
 // with observer_user_id=<co-member>.  Each write advances next_sync_stream_id

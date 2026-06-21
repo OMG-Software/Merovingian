@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.11
+Version:        0.9.12
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -111,7 +111,7 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.11-1
+* Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.12-1
 - test(database): add more direct persistence-helper coverage
 
 * Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.10-1

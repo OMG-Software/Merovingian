@@ -3140,9 +3140,31 @@ namespace
                                          std::optional<sync::StreamToken> const& pos, std::uint64_t timeout_ms,
                                          bool can_wait) -> DispatchResult
     {
-        auto const since_event_ordering = pos.has_value() ? pos->event_ordering : std::uint64_t{0U};
-        auto const since_sync_stream_id = pos.has_value() ? pos->sync_stream_id : std::uint64_t{0U};
         auto& store = rt.homeserver.database.persistent_store;
+
+        // Per-connection state keyed user/device/conn_id.  Looked up early so
+        // that the since values below can fall back to the connection's last
+        // known position when the client omits pos (e.g. timeout=0 polls).
+        auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
+                              (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
+        auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
+        conn.last_used = std::chrono::steady_clock::now();
+
+        // When the client omits pos (a timeout=0 poll that always requests an
+        // immediate snapshot without a since-token) but this connection already
+        // has state from a previous response, use the connection's last-known
+        // cursors rather than 0.  This turns repeated no-pos polls into small
+        // delta responses ("nothing new since your last sync") instead of
+        // re-delivering the full room history on every cycle, which was
+        // causing matrix-rust-sdk to reset its connection state and loop.
+        // The first request for a fresh connection (rooms_seen empty) still
+        // gets since=0 so the SDK receives the full initial room list.
+        auto const since_event_ordering = pos.has_value()
+            ? pos->event_ordering
+            : (conn.rooms_seen.empty() ? std::uint64_t{0U} : conn.last_event_ordering);
+        auto const since_sync_stream_id = pos.has_value()
+            ? pos->sync_stream_id
+            : (conn.rooms_seen.empty() ? std::uint64_t{0U} : conn.last_sync_stream_id);
 
         // Long-poll: park when nothing relevant to this connection has changed.
         // A sync_stream_id advance from another user uploading device keys fires
@@ -3188,12 +3210,6 @@ namespace
                 }
             }
         }
-
-        // Per-connection state keyed user/device/conn_id.
-        auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
-                              (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
-        auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
-        conn.last_used = std::chrono::steady_clock::now();
 
         // ── Build list windows ───────────────────────────────────────────────
 
