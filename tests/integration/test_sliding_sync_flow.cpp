@@ -558,3 +558,37 @@ SCENARIO("MSC4186 explicit room_subscriptions include rooms outside the list win
         }
     }
 }
+
+// ── MSC3575 compatibility alias ───────────────────────────────────────────────
+
+SCENARIO("MSC4186 sliding sync is reachable at the org.matrix.simplified_msc3575 compatibility path",
+         "[homeserver][sliding-sync][integration]")
+{
+    GIVEN("a registered user")
+    {
+        auto const config = sliding_sync_config();
+        auto started      = merovingian::homeserver::start_client_server(config);
+        REQUIRE(started.started);
+        auto& rt          = started.runtime;
+        auto const token  = register_and_login(rt, "alice", "CorrectHorse7!", "ALICE");
+
+        WHEN("POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync is called")
+        {
+            auto const result = merovingian::homeserver::handle_client_server_request(
+                rt,
+                {"POST", "/_matrix/client/unstable/org.matrix.simplified_msc3575/sync", token,
+                 R"({"lists":{"rooms":{"ranges":[[0,9]]}}})"},
+                /*can_wait=*/false);
+
+            THEN("the response is 200 — the alias is routed to the same MSC4186 handler")
+            {
+                // matrix-rust-sdk calls this path; the server MUST serve it.
+                REQUIRE(result.response.status == 200U);
+                auto const obj  = parse_object(result.response.body);
+                auto const* pos = string_member(obj, "pos");
+                REQUIRE(pos != nullptr); // MSC4186 MUST include pos in every response
+                REQUIRE(!pos->empty());
+            }
+        }
+    }
+}

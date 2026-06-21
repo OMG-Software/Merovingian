@@ -1,3 +1,8 @@
+## 0.9.7
+
+### Fixed
+- **fix(sync): route `POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync` to the MSC4186 handler (0.9.7):** Element X (matrix-rust-sdk) probes for sliding sync via the `simplified_msc3575` path, not the `msc4186` path. The `unstable_features` flag `org.matrix.simplified_msc3575 = true` was already advertised in 0.9.6, but the endpoint itself returned 404, causing the client to enter a tight retry loop — hundreds of failed sliding-sync attempts per second with concurrent fallback `v3/sync` calls. The dispatcher now accepts both `/_matrix/client/unstable/org.matrix.msc4186/sync` and `/_matrix/client/unstable/org.matrix.simplified_msc3575/sync`, routing both to the same MSC4186 handler.
+
 ## 0.9.6
 
 ### Fixed
