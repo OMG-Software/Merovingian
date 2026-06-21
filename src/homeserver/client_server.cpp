@@ -3228,7 +3228,7 @@ namespace
             auto room =
                 sync::build_room_response(rt.homeserver, room_id, user, sub, since_event_ordering, is_initial, store);
             // Per MSC4186, only include a room in rooms{} when it has actual
-            // changes: first appearance (initial), new timeline events, changed
+            // changes: first appearance (initial), post-pos timeline events, changed
             // required_state, or non-zero unread counts.
             auto const has_room_updates = is_initial
                 || !room.timeline_json.empty()
