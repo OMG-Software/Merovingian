@@ -622,6 +622,115 @@ SCENARIO("Account data upserts global and room-scoped rows while advancing the s
     }
 }
 
+SCENARIO("Media persistence helpers validate inputs, reject duplicates, and apply moderation state",
+         "[database][persistence][media]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("a local media row is stored, moderated, and the same remote media id appears on two servers")
+        {
+            REQUIRE(merovingian::database::store_local_media(
+                store, {"mxc-local-1", "@alice:example.org", "image/png", 512U, "sha256", "abc123", false, false}));
+            REQUIRE(merovingian::database::update_local_media_state(store, "mxc-local-1", true, true));
+            REQUIRE(merovingian::database::store_remote_media(
+                store, {"remote-a.example.org", "mxc-remote-1", "image/jpeg", 2048U, false}));
+            REQUIRE(merovingian::database::store_remote_media(
+                store, {"remote-b.example.org", "mxc-remote-1", "image/jpeg", 4096U, true}));
+
+            THEN("the local moderation flags mutate in place and remote rows stay scoped by origin server")
+            {
+                REQUIRE(store.local_media.size() == 1U);
+                REQUIRE(store.local_media.front().media_id == "mxc-local-1");
+                REQUIRE(store.local_media.front().quarantined);
+                REQUIRE(store.local_media.front().removed);
+                REQUIRE(store.remote_media.size() == 2U);
+                REQUIRE(store.remote_media[0].server_name == "remote-a.example.org");
+                REQUIRE(store.remote_media[1].server_name == "remote-b.example.org");
+                REQUIRE(store.remote_media[1].quarantined);
+                REQUIRE(store.prepared_statements.size() == 4U);
+                REQUIRE(store.prepared_statements[0].name == "insert_media");
+                REQUIRE(store.prepared_statements[1].name == "update_media_state");
+                REQUIRE(store.prepared_statements[2].name == "insert_remote_media");
+                REQUIRE(store.prepared_statements[3].name == "insert_remote_media");
+            }
+        }
+
+        WHEN("media helpers receive invalid hashes, duplicate identities, or missing rows")
+        {
+            REQUIRE(merovingian::database::store_local_media(
+                store, {"mxc-local-1", "@alice:example.org", "image/png", 512U, "sha256", "abc123", false, false}));
+            REQUIRE(merovingian::database::store_remote_media(
+                store, {"remote-a.example.org", "mxc-remote-1", "image/jpeg", 2048U, false}));
+
+            auto const bad_digest = merovingian::database::store_local_media(
+                store, {"mxc-local-2", "@alice:example.org", "image/png", 256U, "sha256", "bad/digest", false, false});
+            auto const zero_size = merovingian::database::store_local_media(
+                store, {"mxc-local-3", "@alice:example.org", "image/png", 0U, "sha256", "digest", false, false});
+            auto const duplicate_local = merovingian::database::store_local_media(
+                store, {"mxc-local-1", "@bob:example.org", "image/png", 256U, "sha256", "other", false, false});
+            auto const missing_local =
+                merovingian::database::update_local_media_state(store, "missing-media", true, false);
+            auto const duplicate_remote = merovingian::database::store_remote_media(
+                store, {"remote-a.example.org", "mxc-remote-1", "image/jpeg", 2048U, false});
+
+            THEN("the invalid operations fail closed without mutating the stored rows")
+            {
+                REQUIRE_FALSE(bad_digest);
+                REQUIRE_FALSE(zero_size);
+                REQUIRE_FALSE(duplicate_local);
+                REQUIRE_FALSE(missing_local);
+                REQUIRE_FALSE(duplicate_remote);
+                REQUIRE(store.local_media.size() == 1U);
+                REQUIRE(store.remote_media.size() == 1U);
+                REQUIRE(store.prepared_statements.size() == 2U);
+            }
+        }
+    }
+}
+
+SCENARIO("Policy rules upsert by rule id and direct deletion rejects missing identifiers",
+         "[database][persistence][policy-rule]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("a rule is replaced and then deleted by its stable rule id")
+        {
+            REQUIRE(merovingian::database::store_policy_rule(
+                store, {"deny-1", "server", "evil.example.org", "deny", "seed list"}));
+            REQUIRE(merovingian::database::store_policy_rule(
+                store, {"deny-1", "server", "evil.example.org", "muzzle", "operator override"}));
+            REQUIRE(merovingian::database::delete_policy_rule(store, "deny-1"));
+
+            THEN("upsert keeps one durable row and deletion removes it cleanly")
+            {
+                REQUIRE(store.policy_rules.empty());
+                REQUIRE(store.prepared_statements.size() == 3U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_policy_rule");
+                REQUIRE(store.prepared_statements[1].name == "upsert_policy_rule");
+                REQUIRE(store.prepared_statements[2].name == "delete_policy_rule");
+            }
+        }
+
+        WHEN("the caller deletes a missing or empty rule id")
+        {
+            auto const missing = merovingian::database::delete_policy_rule(store, "deny-missing");
+            auto const empty = merovingian::database::delete_policy_rule(store, "");
+
+            THEN("the helper rejects the request")
+            {
+                REQUIRE_FALSE(missing);
+                REQUIRE_FALSE(empty);
+                REQUIRE(store.policy_rules.empty());
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+    }
+}
+
 SCENARIO("Database statement validation enforces placeholder arity", "[database]")
 {
     GIVEN("statements with matching and mismatched placeholder arity")
@@ -1236,6 +1345,85 @@ SCENARIO("delete_key_backup_version removes the version from the store", "[datab
             {
                 REQUIRE(result);
                 REQUIRE(store.key_backup_versions.size() == 1U);
+            }
+        }
+    }
+}
+
+SCENARIO("Key backup session helpers upsert one row per tuple and support scoped cleanup",
+         "[database][persistence][key-backup][sessions]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("the same backup session tuple is stored twice with updated JSON")
+        {
+            REQUIRE(merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "!room:example.org", "SESSION1", R"({"session_data":{"v":1}})"}));
+            REQUIRE(merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "!room:example.org", "SESSION1", R"({"session_data":{"v":2}})"}));
+
+            THEN("the row is upserted in place and the payload stays sensitive")
+            {
+                REQUIRE(store.key_backup_sessions.size() == 1U);
+                REQUIRE(store.key_backup_sessions.front().json == R"({"session_data":{"v":2}})");
+                REQUIRE(store.prepared_statements.size() == 2U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_key_backup_session");
+                REQUIRE(store.prepared_statements[1].name == "upsert_key_backup_session");
+                REQUIRE(store.prepared_statements[0].parameters[4].sensitive);
+                REQUIRE(store.prepared_statements[1].parameters[4].sensitive);
+            }
+        }
+
+        WHEN("one session, one room, or one user scope is deleted")
+        {
+            REQUIRE(merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "!room-a:example.org", "SESSION1", R"({"session_data":{"v":1}})"}));
+            REQUIRE(merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "!room-a:example.org", "SESSION2", R"({"session_data":{"v":2}})"}));
+            REQUIRE(merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "!room-b:example.org", "SESSION3", R"({"session_data":{"v":3}})"}));
+            REQUIRE(merovingian::database::store_key_backup_session(
+                store, {"@bob:example.org", "9", "!room-z:example.org", "SESSION9", R"({"session_data":{"v":9}})"}));
+
+            REQUIRE(merovingian::database::delete_key_backup_session(store, "@alice:example.org", "1",
+                                                                     "!room-a:example.org", "SESSION1"));
+            REQUIRE(merovingian::database::delete_key_backup_room_sessions(store, "@alice:example.org", "1",
+                                                                           "!room-a:example.org"));
+            REQUIRE(merovingian::database::delete_all_key_backup_sessions(store, "@alice:example.org"));
+
+            THEN("cleanup removes only the requested scope and leaves other users untouched")
+            {
+                REQUIRE(store.key_backup_sessions.size() == 1U);
+                REQUIRE(store.key_backup_sessions.front().user_id == "@bob:example.org");
+                REQUIRE(store.key_backup_sessions.front().session_id == "SESSION9");
+                REQUIRE(store.prepared_statements.size() == 7U);
+                REQUIRE(store.prepared_statements[4].name == "delete_key_backup_session");
+                REQUIRE(store.prepared_statements[5].name == "delete_key_backup_room_sessions");
+                REQUIRE(store.prepared_statements[6].name == "delete_all_key_backup_sessions");
+            }
+        }
+
+        WHEN("a backup session payload or identifier is missing")
+        {
+            auto const empty_payload = merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "!room:example.org", "SESSION1", ""});
+            auto const missing_version = merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "", "!room:example.org", "SESSION1", R"({"session_data":{}})"});
+            auto const missing_room = merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "", "SESSION1", R"({"session_data":{}})"});
+            auto const missing_session = merovingian::database::store_key_backup_session(
+                store, {"@alice:example.org", "1", "!room:example.org", "", R"({"session_data":{}})"});
+
+            THEN("the incomplete session is rejected before it reaches the store")
+            {
+                REQUIRE_FALSE(empty_payload);
+                REQUIRE_FALSE(missing_version);
+                REQUIRE_FALSE(missing_room);
+                REQUIRE_FALSE(missing_session);
+                REQUIRE(store.key_backup_sessions.empty());
+                REQUIRE(store.prepared_statements.empty());
             }
         }
     }

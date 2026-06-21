@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.10
+Version:        0.9.11
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -96,6 +96,9 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.11-1
+- test(database): add more direct persistence-helper coverage
+
 * Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.10-1
 - fix(sync): MSC4186 sliding sync long-poll no longer returns early when only another user's device keys were uploaded
 - test(sync): add BDD test verifying sliding sync spurious-wakeup suppression
