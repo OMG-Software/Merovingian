@@ -663,12 +663,21 @@ namespace
                 auto submitted = sync_pool->submit([fd, write_fn = std::move(async_write_fn), &runtime, &stats,
                                                     request_copy = local_request, wait, notifier,
                                                     sync_pool]() mutable {
+                    // Re-wait loop: after each notifier fire, call the handler with
+                    // can_wait=true.  If the handler returns needs_wait the wakeup was
+                    // caused by an event irrelevant to this connection (e.g. another
+                    // user's device key upload); advance wait_params past the irrelevant
+                    // bump and continue polling.  If it returns complete, send immediately.
+                    // `wait` is captured const from the outer scope; use wait_params for
+                    // the mutable cursor that tracks the advancing since-values.
+                    auto dispatched_result = std::optional<DispatchResult>{};
                     try
                     {
                         // Poll in 5-second slices so shutdown (request_stop()) is bounded
                         // to one slice even when clients request long timeouts.
                         constexpr auto poll_interval = std::chrono::milliseconds{5000U};
-                        auto const deadline = std::chrono::steady_clock::now() + wait.timeout;
+                        auto wait_params            = wait; // mutable cursor
+                        auto const deadline          = std::chrono::steady_clock::now() + wait_params.timeout;
                         while (sync_pool->running())
                         {
                             auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -677,10 +686,16 @@ namespace
                             {
                                 break;
                             }
-                            if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id,
+                            if (notifier->wait_for_change(wait_params.since_stream_ordering, wait_params.since_sync_stream_id,
                                                           std::min(remaining, poll_interval)))
                             {
-                                break;
+                                auto interim = handle_client_server_request(runtime, request_copy, true);
+                                if (interim.status == DispatchResult::Status::complete)
+                                {
+                                    dispatched_result = std::move(interim);
+                                    break;
+                                }
+                                wait_params = interim.wait;
                             }
                         }
                     }
@@ -688,7 +703,9 @@ namespace
                     {
                         log_swallowed_exception("sync_pool_dispatch");
                     }
-                    auto const final_result = handle_client_server_request(runtime, request_copy, false);
+                    auto const final_result = dispatched_result.has_value()
+                        ? std::move(*dispatched_result)
+                        : handle_client_server_request(runtime, request_copy, false);
                     ++stats.completed_requests;
                     log_diagnostic("request.completed",
                                    {
@@ -723,16 +740,51 @@ namespace
             // until new events arrive or the timeout expires.
             // TLS connections use serve_tls_http which passes a sync_pool and
             // async_write_fn; they only reach this path if the pool is stopping.
-            try
+            // Re-wait loop mirrors the sync_pool path: after each notifier fire,
+            // call the handler with can_wait=true so it can park again when the
+            // wakeup was not relevant to this connection.
             {
-                std::ignore = notifier->wait_for_change(result.wait.since_stream_ordering,
-                                                        result.wait.since_sync_stream_id, result.wait.timeout);
+                auto wait       = result.wait;
+                auto deadline   = std::chrono::steady_clock::now() + wait.timeout;
+                auto dispatched = false;
+                try
+                {
+                    while (!dispatched)
+                    {
+                        auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                            deadline - std::chrono::steady_clock::now());
+                        if (remaining.count() <= 0)
+                        {
+                            break;
+                        }
+                        if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining))
+                        {
+                            auto interim = handle_client_server_request(runtime, local_request, true);
+                            if (interim.status == DispatchResult::Status::complete)
+                            {
+                                result     = std::move(interim);
+                                dispatched = true;
+                            }
+                            else
+                            {
+                                wait = interim.wait;
+                            }
+                        }
+                        else
+                        {
+                            break; // timeout
+                        }
+                    }
+                }
+                catch (...)
+                {
+                    log_swallowed_exception("serve_stream_sync_wait");
+                }
+                if (!dispatched)
+                {
+                    result = handle_client_server_request(runtime, local_request, false);
+                }
             }
-            catch (...)
-            {
-                log_swallowed_exception("serve_stream_sync_wait");
-            }
-            result = handle_client_server_request(runtime, local_request, false);
         }
 
         ++stats.completed_requests;
@@ -765,16 +817,51 @@ auto dispatch_local_http_request(ClientServerRuntime& runtime, LocalHttpRequest 
         {
             return {503U, matrix_error("M_UNKNOWN", "sync notifier unavailable")};
         }
+        // Re-wait loop: after each notifier fire, call the handler with can_wait=true
+        // so sliding_sync_json can return needs_wait again when the wakeup was caused
+        // by an event not relevant to this connection (e.g. another user uploading
+        // device keys).  The handler advances wait.since_sync_stream_id past the
+        // irrelevant bump, preventing an immediate re-fire.
+        auto wait       = result.wait;
+        auto deadline   = std::chrono::steady_clock::now() + wait.timeout;
+        auto dispatched = false;
         try
         {
-            std::ignore = notifier->wait_for_change(result.wait.since_stream_ordering, result.wait.since_sync_stream_id,
-                                                    result.wait.timeout);
+            while (!dispatched)
+            {
+                auto const remaining = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    deadline - std::chrono::steady_clock::now());
+                if (remaining.count() <= 0)
+                {
+                    break;
+                }
+                if (notifier->wait_for_change(wait.since_stream_ordering, wait.since_sync_stream_id, remaining))
+                {
+                    auto interim = handle_client_server_request(runtime, request, true);
+                    if (interim.status == DispatchResult::Status::complete)
+                    {
+                        result     = std::move(interim);
+                        dispatched = true;
+                    }
+                    else
+                    {
+                        wait = interim.wait;
+                    }
+                }
+                else
+                {
+                    break; // timeout
+                }
+            }
         }
         catch (...)
         {
             log_swallowed_exception("dispatch_local_http_request");
         }
-        result = handle_client_server_request(runtime, request, false);
+        if (!dispatched)
+        {
+            result = handle_client_server_request(runtime, request, false);
+        }
     }
 
     return result.response;

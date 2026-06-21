@@ -6406,3 +6406,132 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
         }
     }
 }
+
+// ─── MSC4186 sliding sync spurious-wakeup suppression ────────────────────────
+// handle_key_upload fans out PersistentDeviceListChange rows to all co-members
+// with observer_user_id=<co-member>.  Each write advances next_sync_stream_id
+// and fires the global SyncNotifier, waking ALL parked sliding sync long-polls
+// — including the uploading user's own.  The fix: sliding_sync_json checks
+// whether any new DLC row is addressed to the current user.  If not, it returns
+// needs_wait with since_sync_stream_id advanced to the current counter so the
+// notifier must fire again before the next wakeup attempt.
+
+SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id advanced only for another user's DLC",
+         "[sync][sliding-sync][e2ee][notifier]")
+{
+    // Spec: MSC4186 §long-polling — server MUST NOT return before timeout when
+    // no changes relevant to the connection have occurred.
+    GIVEN("alice and bob sharing a room, with alice's sliding sync parked at pos P")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        // Register alice.
+        auto const alice_reg = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {},
+             registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(alice_reg.response.status == 200U);
+        auto const alice_token     = login_token(alice_reg.response.body);
+        auto const alice_device_id = login_device_id(alice_reg.response.body);
+
+        // Register bob.
+        auto const bob_reg = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {},
+             registration_json("bob", "CorrectHorse8!")});
+        REQUIRE(bob_reg.response.status == 200U);
+        auto const bob_token     = login_token(bob_reg.response.body);
+        auto const bob_device_id = login_device_id(bob_reg.response.body);
+
+        // Alice creates a room and bob joins, so they share membership.
+        auto const create_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token, R"({"preset":"public_chat"})"});
+        REQUIRE(create_resp.response.status == 200U);
+        auto const rid = room_id(create_resp.response.body);
+
+        auto const join_url = "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/join";
+        auto const bob_join = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", join_url, bob_token, "{}"});
+        REQUIRE(bob_join.response.status == 200U);
+
+        // Alice does an initial sliding sync (timeout=0 → immediate) to get pos P.
+        auto const init_resp = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+             R"({"conn_id":"test"})"});
+        REQUIRE(init_resp.response.status == 200U);
+        auto const pos_key   = std::string{"\"pos\":\""};
+        auto const pos_begin = init_resp.response.body.find(pos_key);
+        REQUIRE(pos_begin != std::string::npos);
+        auto const pos_value_begin = pos_begin + pos_key.size();
+        auto const pos_value_end   = init_resp.response.body.find('"', pos_value_begin);
+        REQUIRE(pos_value_end != std::string::npos);
+        auto const pos_p = init_resp.response.body.substr(pos_value_begin, pos_value_end - pos_value_begin);
+        REQUIRE_FALSE(pos_p.empty());
+
+        WHEN("alice uploads device keys (DLCs are recorded for bob as observer, not alice)")
+        {
+            // Short placeholder key material — the server does not validate length
+            // for basic key storage; only OTK signature tests need real crypto.
+            upload_device_keys(runtime, alice_token, "@alice:example.org", alice_device_id,
+                               "ALICE_CURVE", "ALICE_ED");
+
+            THEN("alice's sliding sync (can_wait=true) returns needs_wait with since_sync advanced past the irrelevant bump")
+            {
+                // With can_wait=true and timeout>0 the handler checks whether the
+                // sync_stream_id advance contains DLCs addressed to alice.  Alice's
+                // own key upload only creates DLCs with observer_user_id=bob, so
+                // the handler must park rather than respond.
+                auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" +
+                                     pos_p + "&timeout=5000";
+                auto const result = merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", inc_url, alice_token, R"({"conn_id":"test"})"}, true);
+
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::needs_wait);
+                // The returned wait params must have advanced past the original
+                // since_sync_stream_id so the notifier does not immediately re-fire.
+                REQUIRE(result.wait.since_sync_stream_id > 0U);
+            }
+        }
+
+        WHEN("bob uploads device keys (a DLC is recorded for alice as observer)")
+        {
+            upload_device_keys(runtime, bob_token, "@bob:example.org", bob_device_id,
+                               "BOB_CURVE", "BOB_ED");
+
+            THEN("alice's sliding sync (can_wait=true) returns complete with bob in device_lists.changed")
+            {
+                // Bob's key upload creates DLC{observer=alice, subject=@bob:example.org}.
+                // sliding_sync_json must detect the relevant DLC and return complete.
+                // The e2ee extension must deliver @bob:example.org in device_lists.changed.
+                auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" +
+                                     pos_p + "&timeout=5000";
+                auto const result = merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", inc_url, alice_token, R"({"conn_id":"test","extensions":{"e2ee":{"enabled":true}}})"},
+                    true);
+
+                REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
+                REQUIRE(result.response.status == 200U);
+
+                auto const body  = parse_object(result.response.body);
+                auto const* ext  = object_member_as_object(body, "extensions");
+                REQUIRE(ext != nullptr);
+                auto const* e2ee_obj = object_member_as_object(*ext, "e2ee");
+                REQUIRE(e2ee_obj != nullptr);
+                auto const* dl = object_member_as_object(*e2ee_obj, "device_lists");
+                REQUIRE(dl != nullptr);
+                auto const* changed = object_member_as_array(*dl, "changed");
+                REQUIRE(changed != nullptr);
+                auto const saw_bob =
+                    std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& v) {
+                        auto const* uid = std::get_if<std::string>(&v.storage());
+                        return uid != nullptr && *uid == "@bob:example.org";
+                    });
+                REQUIRE(saw_bob);
+            }
+        }
+    }
+}
