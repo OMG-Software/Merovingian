@@ -5,12 +5,12 @@
 Merovingian is a Matrix homeserver written in modern C++26 with a security-first design. The project goal is not just to speak Matrix protocol, but to do it with a narrow attack surface, fail-closed behavior, strong operational visibility, and explicit security boundaries around federation, storage, media, and administration.
 
 [![Build](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/ci.yml)
-[![Coverage](https://codecov.io/gh/OMG-Software/Merovingian/graph/badge.svg)](https://codecov.io/gh/OMG-Software/Merovingian)
 [![CodeQL](https://github.com/OMG-Software/Merovingian/actions/workflows/codeql.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/codeql.yml)
-[![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/OMG-Software/Merovingian/security/code-scanning)
 [![Static analysis](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/static-analysis.yml)
 [![Sanitizers](https://github.com/OMG-Software/Merovingian/actions/workflows/sanitizers.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/sanitizers.yml)
-[![FreeBSD](https://github.com/OMG-Software/Merovingian/actions/workflows/bsd.yml/badge.svg)](https://github.com/OMG-Software/Merovingian/actions/workflows/bsd.yml)
+
+[![Coverage](https://codecov.io/gh/OMG-Software/Merovingian/graph/badge.svg)](https://codecov.io/gh/OMG-Software/Merovingian)
+[![Code scanning](https://img.shields.io/badge/code%20scanning-CodeQL-blue)](https://github.com/OMG-Software/Merovingian/security/code-scanning)
 [![License: GPL-3.0-or-later](https://img.shields.io/badge/license-GPL--3.0--or--later-blue.svg)](LICENSE)
 [![C++26](https://img.shields.io/badge/C%2B%2B-26-blue.svg)]()
 [![Meson](https://img.shields.io/badge/build-Meson-blue.svg)]()
