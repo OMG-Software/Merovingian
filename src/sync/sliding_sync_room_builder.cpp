@@ -437,14 +437,19 @@ auto build_room_response(homeserver::HomeserverRuntime const& rt,
             {
                 continue;
             }
-            // Find the event JSON.
+            // On incremental responses include only state that changed since pos.
             for (auto const& ev : store.events)
             {
-                if (ev.event_id == se.event_id)
+                if (ev.event_id != se.event_id)
                 {
-                    resp.required_state_json.push_back(ev.json);
-                    break;
+                    continue;
                 }
+                if (!is_initial && ev.stream_ordering <= since_event_ordering)
+                {
+                    break; // unchanged since last pos — skip
+                }
+                resp.required_state_json.push_back(ev.json);
+                break;
             }
         }
     }

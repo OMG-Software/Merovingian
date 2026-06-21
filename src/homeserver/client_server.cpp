@@ -3227,7 +3227,18 @@ namespace
             auto const is_initial = conn.rooms_seen.find(room_id) == conn.rooms_seen.end();
             auto room =
                 sync::build_room_response(rt.homeserver, room_id, user, sub, since_event_ordering, is_initial, store);
-            rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(room))));
+            // Per MSC4186, only include a room in rooms{} when it has actual
+            // changes: first appearance (initial), post-pos timeline events, changed
+            // required_state, or non-zero unread counts.
+            auto const has_room_updates = is_initial
+                || !room.timeline_json.empty()
+                || !room.required_state_json.empty()
+                || room.notification_count.value_or(0U) > 0U
+                || room.highlight_count.value_or(0U) > 0U;
+            if (has_room_updates)
+            {
+                rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(room))));
+            }
         }
 
         // ── Extensions ──────────────────────────────────────────────────────

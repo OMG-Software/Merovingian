@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.8
+Version:        0.9.9
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -100,6 +100,10 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
+* Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.9-1
+- fix(sync): incremental MSC4186 sliding sync no longer returns unchanged rooms, ending the Element X tight-poll loop
+- test(sync): add BDD unit tests for build_room_response incremental required_state filtering
+
 * Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.8-1
 - test(client-server): add joined_members and presence route coverage for current-member gates, profile shaping, defaults, and sync delivery
 
