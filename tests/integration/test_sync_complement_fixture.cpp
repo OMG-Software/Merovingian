@@ -38,6 +38,7 @@
 #include "merovingian/canonicaljson/value.hpp"
 #include "merovingian/config/config.hpp"
 #include "merovingian/homeserver/client_server.hpp"
+#include "merovingian/http/request.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -233,6 +234,13 @@ auto run_complement_fixture(std::string_view filename, merovingian::homeserver::
         if (auto const* raw_body = object_member(*step, "raw_body"); raw_body != nullptr)
         {
             request.body = interpolate(value_as_string(*raw_body).value_or(""), bindings);
+        }
+        // content_type sets the Content-Type request header so upload tests
+        // can send raw binary bodies the same way a real HTTP client does.
+        if (auto const* ct = object_member(*step, "content_type"); ct != nullptr)
+        {
+            request.headers.push_back(
+                merovingian::http::Header{"Content-Type", value_as_string(*ct).value_or("application/octet-stream")});
         }
         if (auto const* auth = object_member(*step, "auth_from"); auth != nullptr)
         {

@@ -5934,7 +5934,27 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                              "request.rejected", req.access_token, req.target, "503:runtime not started");
         return dispatch_err(req, rt, 503U, "M_UNAVAILABLE", "runtime not started");
     }
-    if (req.body.size() > rt.limits.max_body_bytes)
+    // Media upload routes are governed by security.media.max_upload_size rather
+    // than the smaller general client-API body cap (64 KiB).  Check which limit
+    // applies before enforcing the gate.
+    auto const is_media_upload =
+        req.method == "POST" &&
+        (req.target == "/_matrix/media/v3/upload" ||
+         starts_with(req.target, "/_matrix/media/v3/upload?") ||
+         req.target == "/_matrix/client/v1/media/upload" ||
+         starts_with(req.target, "/_matrix/client/v1/media/upload?"));
+    auto const body_limit = [&]() -> std::size_t {
+        if (is_media_upload)
+        {
+            auto const parsed = config::parse_size_limit(rt.homeserver.config.security().media.max_upload_size);
+            auto const raw    = parsed.valid ? parsed.bytes : std::uint64_t{104857600U};
+            return raw > std::numeric_limits<std::size_t>::max()
+                       ? std::numeric_limits<std::size_t>::max()
+                       : static_cast<std::size_t>(raw);
+        }
+        return rt.limits.max_body_bytes;
+    }();
+    if (req.body.size() > body_limit)
     {
         log_diagnostic_audit(rt.homeserver.database, "client_server", "request.rejected",
                              {
@@ -5942,7 +5962,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                                  {"target",      observability::sanitized_http_target(req.target), false},
                                  {"status",      "413",                                            false},
                                  {"body_bytes",  std::to_string(req.body.size()),                  false},
-                                 {"limit_bytes", std::to_string(rt.limits.max_body_bytes),         false},
+                                 {"limit_bytes", std::to_string(body_limit),                       false},
                                  {"reason",      "request body too large",                         false}
         },
                              observability::LogEventSeverity::warning, observability::AuditCategory::policy,
@@ -6918,12 +6938,26 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({json_member("m.upload.size", json_int(max_upload_bytes))})));
     }
-    if (req.method == "POST" && req.target == "/_matrix/media/v3/upload")
+    if (req.method == "POST" &&
+        (req.target == "/_matrix/media/v3/upload" || starts_with(req.target, "/_matrix/media/v3/upload?")))
     {
-        auto const r = call_local(req);
-        return r.status == 200U
-                   ? dispatch_resp(req, rt, 200U, media_upload_response_json(r.body))
-                   : dispatch_err(req, rt, r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_BAD_REQUEST", r.body);
+        // Real clients send a raw binary body with Content-Type in the request
+        // headers, not the pipe-delimited format the local router expects.
+        // Build declared_mime|sniffed_mime|scanner_clean|bytes from headers + body.
+        auto const ct            = request_header(req, "Content-Type");
+        auto const declared_mime = ct.empty() ? std::string_view{"application/octet-stream"} : ct;
+        auto inner               = req;
+        inner.target             = "/_matrix/media/v3/upload";
+        inner.body               = std::string{declared_mime} + "|" + std::string{declared_mime} + "|clean|" + req.body;
+        auto const r             = call_local(inner);
+        // 200: stored; 202: stored but quarantined by server policy.
+        // Both carry a content_uri. The Matrix spec defines only 200 for this
+        // endpoint, so return 200 in both cases — quarantine is internal.
+        if (r.status == 200U || r.status == 202U)
+        {
+            return dispatch_resp(req, rt, 200U, media_upload_response_json(r.body));
+        }
+        return dispatch_err(req, rt, r.status, r.status == 401U ? "M_UNKNOWN_TOKEN" : "M_BAD_REQUEST", r.body);
     }
 
     // GET /_matrix/client/v3/voip/turnServer

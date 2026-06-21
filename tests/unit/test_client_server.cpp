@@ -1828,7 +1828,8 @@ SCENARIO("Client-server admin safety routes manage persisted policy rules", "[ho
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/media/v3/upload", token, "text/plain|text/plain|clean|hello"});
+            runtime, {"POST", "/_matrix/media/v3/upload", token, "hello",
+                      {merovingian::http::Header{"Content-Type", "text/plain"}}});
         REQUIRE(upload.response.status == 200U);
         auto const content_uri = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
         REQUIRE(!content_uri.empty());
@@ -3190,6 +3191,101 @@ SCENARIO("Media config endpoint returns upload size limit for authenticated clie
             THEN("the response is 401")
             {
                 REQUIRE(response.response.status == 401U);
+            }
+        }
+    }
+}
+
+// ─── Media upload: raw binary body from real HTTP clients ────────────────────
+// Real Matrix clients (Element X, Element Web) send a raw binary body with a
+// Content-Type header — NOT the internal pipe-delimited format used by the
+// local HTTP router.  Before this fix the handler passed req.body verbatim to
+// the local router, which expected declared_mime|sniffed_mime|scanner_clean|bytes
+// and returned 400 for every real upload.  Uploads with ?filename=... also
+// failed with 413 because the exact-match route check missed the query suffix.
+
+SCENARIO("Media upload accepts a raw binary body with a Content-Type header",
+         "[homeserver][client-server][media]")
+{
+    // Spec §13.8.1.1: POST /_matrix/media/v3/upload, Content-Type in request
+    // headers, raw body — no special encoding.
+    GIVEN("a registered and logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST", "/_matrix/client/v3/register", {},
+             merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+        auto const token = login_token(reg.response.body);
+
+        WHEN("POST /_matrix/media/v3/upload is called with a raw PNG body and Content-Type: image/png")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/media/v3/upload", token, "\x89PNG\r\n\x1a\n some png bytes",
+                 {merovingian::http::Header{"Content-Type", "image/png"}}});
+
+            THEN("the response is 200 with a content_uri")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("content_uri") != std::string::npos);
+                REQUIRE(response.response.body.find("mxc://") != std::string::npos);
+            }
+        }
+
+        WHEN("POST /_matrix/media/v3/upload?filename=avatar.jpg is called with raw JPEG bytes")
+        {
+            // The ?filename= variant was rejected before the fix because the
+            // route check was an exact string match with no query-param handling.
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/media/v3/upload?filename=avatar.jpg", token,
+                 "\xff\xd8\xff\xe0 some jpeg bytes",
+                 {merovingian::http::Header{"Content-Type", "image/jpeg"}}});
+
+            THEN("the response is 200 with a content_uri")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("content_uri") != std::string::npos);
+                REQUIRE(response.response.body.find("mxc://") != std::string::npos);
+            }
+        }
+
+        WHEN("POST /_matrix/media/v3/upload is called with a body larger than the 64 KiB client API cap")
+        {
+            // ClientApiLimits::max_body_bytes is 64 KiB; media uploads must use
+            // security.media.max_upload_size (default 100 MiB) instead.
+            auto const body = std::string(100U * 1024U, 'x');
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/media/v3/upload", token, body,
+                 {merovingian::http::Header{"Content-Type", "text/plain"}}});
+
+            THEN("the response is 200, not 413")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body.find("content_uri") != std::string::npos);
+            }
+        }
+
+        WHEN("POST /_matrix/media/v3/upload is called without a Content-Type header")
+        {
+            // Missing Content-Type defaults to application/octet-stream.
+            // The server must not return 400 or 500; the upload is accepted
+            // (200) or quarantined by MIME policy (202) depending on config.
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/media/v3/upload", token, "raw bytes with no content type"});
+
+            THEN("the response is 2xx with a content_uri")
+            {
+                REQUIRE(response.response.status >= 200U);
+                REQUIRE(response.response.status < 300U);
+                REQUIRE(response.response.body.find("content_uri") != std::string::npos);
             }
         }
     }
