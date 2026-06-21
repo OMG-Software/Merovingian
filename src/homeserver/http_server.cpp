@@ -671,12 +671,15 @@ namespace
                     // `wait` is captured const from the outer scope; use wait_params for
                     // the mutable cursor that tracks the advancing since-values.
                     auto dispatched_result = std::optional<DispatchResult>{};
+                    auto client_gone       = false;
                     try
                     {
-                        // Poll in 5-second slices so shutdown (request_stop()) is bounded
-                        // to one slice even when clients request long timeouts.
-                        constexpr auto poll_interval = std::chrono::milliseconds{5000U};
-                        auto wait_params            = wait; // mutable cursor
+                        // Poll in 1-second slices: short enough to detect a dropped
+                        // client connection within one slice, yet not so short that
+                        // it generates excessive wakeups.  Shutdown (request_stop())
+                        // is bounded to one slice (≤1 s) regardless of client timeout.
+                        constexpr auto poll_interval = std::chrono::milliseconds{1000U};
+                        auto wait_params             = wait; // mutable cursor
                         auto const deadline          = std::chrono::steady_clock::now() + wait_params.timeout;
                         while (sync_pool->running())
                         {
@@ -697,11 +700,36 @@ namespace
                                 }
                                 wait_params = interim.wait;
                             }
+                            else
+                            {
+                                // Notifier did not fire (poll-slice timeout).  Check whether
+                                // the TCP peer is still connected via a non-blocking peek.
+                                // When the client closes (FIN or RST), recv returns 0 or a
+                                // connection error — not EAGAIN — so the thread exits
+                                // immediately instead of waiting for the next slice.  This
+                                // prevents sync-pool exhaustion when clients reconnect
+                                // rapidly (e.g. an SDK reset loop sends a new timeout=30000
+                                // every ~90 ms while abandoning the previous one).
+                                auto peek_buf = std::array<char, 1>{};
+                                auto const n  = ::recv(fd, peek_buf.data(), 1U, MSG_PEEK | MSG_DONTWAIT);
+                                if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR))
+                                {
+                                    client_gone = true;
+                                    break;
+                                }
+                            }
                         }
                     }
                     catch (...)
                     {
                         log_swallowed_exception("sync_pool_dispatch");
+                    }
+                    if (client_gone)
+                    {
+                        // Client closed before we could respond; release the fd and
+                        // return the thread to the pool without logging a completed request.
+                        ::close(fd);
+                        return;
                     }
                     auto const final_result = dispatched_result.has_value()
                         ? std::move(*dispatched_result)

@@ -1,3 +1,11 @@
+## 0.9.12
+
+### Fixed
+- **fix(sync): sync pool no longer exhausted by zombie timeout=30000 connections from rapid SDK reconnects:** when a sliding-sync client (e.g. matrix-rust-sdk) sends a new `timeout=30000` long-poll every ~90 ms while abandoning the previous TCP connection, each parked sync-pool thread was blocked in `wait_for_change` for a full 5-second poll slice before detecting the dead socket — even though the peer had already closed. With 11 new connections per second and a 5-second hold time, the 32-thread sync pool became exhausted within ~3 seconds, causing subsequent long-polls to queue behind zombie tasks or fall through to the main pool, stalling all other traffic. The fix reduces the poll-interval from 5 s to 1 s and adds a non-blocking `recv(MSG_PEEK | MSG_DONTWAIT)` liveness check after each slice timeout: a return value of 0 (TCP FIN) or a connection error (not EAGAIN/EWOULDBLOCK) causes the thread to exit immediately and close the fd without building or logging a response. Steady-state thread consumption drops from ~55 to ~11 for this pattern.
+
+### Added
+- **test(sync): add BDD unit tests for sync pool zombie-connection detection:** three scenarios in `tests/unit/test_sync_pool_liveness.cpp` validate the `recv(MSG_PEEK | MSG_DONTWAIT)` liveness mechanism using Unix socket pairs — peer-closed detection (returns 0), live-connection non-detection (returns EAGAIN/EWOULDBLOCK), and abrupt-reset detection via SO_LINGER with l_linger=0.
+
 ## 0.9.11
 
 ### Added
