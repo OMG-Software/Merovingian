@@ -2,7 +2,7 @@
 
 ### Added
 - **test(client-server): add direct route coverage for `joined_members` and presence updates:** new unit scenarios cover `GET /_matrix/client/v3/rooms/{roomId}/joined_members` for current-member authorization, joined-profile shaping, and left-member exclusion, plus `PUT /_matrix/client/v3/presence/{userId}/status` for explicit online presence, default-offline behavior, malformed-body rejection, forbidden cross-user updates, and `/sync` delivery of `m.presence` events.
-- **test(database): add direct persistence-helper coverage for filters, profiles, and client transaction ids:** new unit scenarios exercise `store_filter`/`find_filter` upserts and sensitive JSON handling, `store_profile` with targeted displayname/avatar updates and missing-user rejection, and `store_client_txn` idempotency so the first stored response wins while room/type scoping still permits distinct records.
+- **test(database): add direct persistence-helper coverage for filters, profiles, client transaction ids, account-data upserts, sync-stream rows, and room aliases:** new unit scenarios exercise `store_filter`/`find_filter` upserts and sensitive JSON handling, `store_profile` with targeted displayname/avatar updates and missing-user rejection, `store_client_txn` idempotency so the first stored response wins while room/type scoping still permits distinct records, `store_account_data` global-vs-room upsert behavior, `record_device_list_change` and `upsert_presence` stream-id behavior and validation, and `store_room_alias` lookup/duplicate/missing-room handling.
 
 ## 0.9.7
 

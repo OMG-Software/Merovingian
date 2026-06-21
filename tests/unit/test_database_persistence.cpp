@@ -404,6 +404,224 @@ SCENARIO("Persistent client transaction records keep the first response and scop
     }
 }
 
+SCENARIO("Device-list change records validate inputs and advance the sync stream monotonically",
+         "[database][persistence][device-list]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("valid changed and left notifications are recorded")
+        {
+            REQUIRE(merovingian::database::record_device_list_change(
+                store, {0U, "@alice:example.org", "@bob:example.org", "changed"}));
+            REQUIRE(merovingian::database::record_device_list_change(
+                store, {0U, "@alice:example.org", "@carol:example.org", "left"}));
+
+            THEN("the rows are appended with increasing stream ids and durable statements")
+            {
+                REQUIRE(store.device_list_changes.size() == 2U);
+                REQUIRE(store.device_list_changes[0].stream_id == 1U);
+                REQUIRE(store.device_list_changes[0].observer_user_id == "@alice:example.org");
+                REQUIRE(store.device_list_changes[0].subject_user_id == "@bob:example.org");
+                REQUIRE(store.device_list_changes[0].change_type == "changed");
+                REQUIRE(store.device_list_changes[1].stream_id == 2U);
+                REQUIRE(store.device_list_changes[1].subject_user_id == "@carol:example.org");
+                REQUIRE(store.device_list_changes[1].change_type == "left");
+                REQUIRE(store.next_sync_stream_id == 2U);
+                REQUIRE(store.prepared_statements.size() == 2U);
+                REQUIRE(store.prepared_statements[0].name == "insert_device_list_change");
+                REQUIRE(store.prepared_statements[1].name == "insert_device_list_change");
+            }
+        }
+
+        WHEN("a device-list change is missing users or uses an unsupported type")
+        {
+            auto const missing_observer =
+                merovingian::database::record_device_list_change(store, {0U, "", "@bob:example.org", "changed"});
+            auto const missing_subject =
+                merovingian::database::record_device_list_change(store, {0U, "@alice:example.org", "", "changed"});
+            auto const bad_type = merovingian::database::record_device_list_change(
+                store, {0U, "@alice:example.org", "@bob:example.org", "deleted"});
+
+            THEN("the malformed change is rejected without advancing the sync stream")
+            {
+                REQUIRE_FALSE(missing_observer);
+                REQUIRE_FALSE(missing_subject);
+                REQUIRE_FALSE(bad_type);
+                REQUIRE(store.device_list_changes.empty());
+                REQUIRE(store.next_sync_stream_id == 0U);
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Presence snapshots upsert per user and keep only the latest stream-shaped state",
+         "[database][persistence][presence]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("alice first appears online and later updates to unavailable")
+        {
+            REQUIRE(merovingian::database::upsert_presence(store,
+                                                           {0U, "@alice:example.org", "online", "Working", 25, true}));
+            REQUIRE(merovingian::database::upsert_presence(
+                store, {0U, "@alice:example.org", "unavailable", "Away", 900, false}));
+
+            THEN("the store keeps one row for alice with the latest content and stream id")
+            {
+                REQUIRE(store.presence_states.size() == 1U);
+                REQUIRE(store.presence_states[0].user_id == "@alice:example.org");
+                REQUIRE(store.presence_states[0].presence == "unavailable");
+                REQUIRE(store.presence_states[0].status_msg == "Away");
+                REQUIRE(store.presence_states[0].last_active_ago == 900);
+                REQUIRE_FALSE(store.presence_states[0].currently_active);
+                REQUIRE(store.presence_states[0].stream_id == 2U);
+                REQUIRE(store.next_sync_stream_id == 2U);
+                REQUIRE(store.prepared_statements.size() == 2U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_presence");
+                REQUIRE(store.prepared_statements[1].name == "upsert_presence");
+            }
+        }
+
+        WHEN("presence data omits the user id or presence state")
+        {
+            auto const missing_user = merovingian::database::upsert_presence(store, {0U, "", "online", {}, 0, true});
+            auto const missing_presence =
+                merovingian::database::upsert_presence(store, {0U, "@alice:example.org", "", {}, 0, false});
+
+            THEN("the malformed snapshot is rejected before it affects the stream state")
+            {
+                REQUIRE_FALSE(missing_user);
+                REQUIRE_FALSE(missing_presence);
+                REQUIRE(store.presence_states.empty());
+                REQUIRE(store.next_sync_stream_id == 0U);
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+    }
+}
+
+SCENARIO("Room aliases require an existing room and reject duplicate mappings", "[database][persistence][room-alias]")
+{
+    GIVEN("an in-memory persistent store with one known room")
+    {
+        auto store = merovingian::database::PersistentStore{};
+        REQUIRE(merovingian::database::store_room(store, {"!room:example.org", "@alice:example.org"}));
+
+        WHEN("a fresh alias is stored for the existing room")
+        {
+            REQUIRE(merovingian::database::store_room_alias(store, {"#lobby:example.org", "!room:example.org"}));
+            auto const stored = merovingian::database::find_room_alias(store, "#lobby:example.org");
+
+            THEN("the mapping is durable and discoverable by alias")
+            {
+                REQUIRE(store.room_aliases.size() == 1U);
+                REQUIRE(stored.has_value());
+                REQUIRE(stored->room_alias == "#lobby:example.org");
+                REQUIRE(stored->room_id == "!room:example.org");
+                REQUIRE(store.prepared_statements.back().name == "insert_room_alias");
+            }
+        }
+
+        WHEN("the same alias is reused or the target room does not exist")
+        {
+            REQUIRE(merovingian::database::store_room_alias(store, {"#lobby:example.org", "!room:example.org"}));
+            auto const duplicate =
+                merovingian::database::store_room_alias(store, {"#lobby:example.org", "!other-room:example.org"});
+            auto const missing_room =
+                merovingian::database::store_room_alias(store, {"#elsewhere:example.org", "!missing:example.org"});
+            auto const empty_alias = merovingian::database::store_room_alias(store, {"", "!room:example.org"});
+
+            THEN("invalid alias writes are rejected without replacing the original mapping")
+            {
+                REQUIRE_FALSE(duplicate);
+                REQUIRE_FALSE(missing_room);
+                REQUIRE_FALSE(empty_alias);
+                REQUIRE(store.room_aliases.size() == 1U);
+                REQUIRE(merovingian::database::find_room_alias(store, "#lobby:example.org")->room_id ==
+                        "!room:example.org");
+                REQUIRE_FALSE(merovingian::database::find_room_alias(store, "#elsewhere:example.org").has_value());
+            }
+        }
+    }
+}
+
+SCENARIO("Account data upserts global and room-scoped rows while advancing the sync stream",
+         "[database][persistence][account-data]")
+{
+    GIVEN("an in-memory persistent store")
+    {
+        auto store = merovingian::database::PersistentStore{};
+
+        WHEN("alice stores and then replaces both global and room account-data rows")
+        {
+            REQUIRE(merovingian::database::store_account_data(
+                store, {"@alice:example.org", "", "m.push_rules", R"({"global":{"override":[]}})", 0U}));
+            REQUIRE(
+                merovingian::database::store_account_data(store, {"@alice:example.org", "!room:example.org", "m.tag",
+                                                                  R"({"tags":{"u.work":{"order":0.1}}})", 0U}));
+            REQUIRE(merovingian::database::store_account_data(
+                store, {"@alice:example.org", "", "m.push_rules", R"({"global":{"override":["updated"]}})", 0U}));
+            REQUIRE(
+                merovingian::database::store_account_data(store, {"@alice:example.org", "!room:example.org", "m.tag",
+                                                                  R"({"tags":{"u.work":{"order":0.2}}})", 0U}));
+
+            auto const global =
+                std::ranges::find_if(store.account_data, [](merovingian::database::PersistentAccountData const& row) {
+                    return row.user_id == "@alice:example.org" && row.room_id.empty() &&
+                           row.event_type == "m.push_rules";
+                });
+            auto const room =
+                std::ranges::find_if(store.account_data, [](merovingian::database::PersistentAccountData const& row) {
+                    return row.user_id == "@alice:example.org" && row.room_id == "!room:example.org" &&
+                           row.event_type == "m.tag";
+                });
+
+            THEN("each scope keeps one latest row and records the correct backend statement shape")
+            {
+                REQUIRE(store.account_data.size() == 2U);
+                REQUIRE(global != store.account_data.end());
+                REQUIRE(room != store.account_data.end());
+                REQUIRE(global->content_json == R"({"global":{"override":["updated"]}})");
+                REQUIRE(global->stream_id == 3U);
+                REQUIRE(room->content_json == R"({"tags":{"u.work":{"order":0.2}}})");
+                REQUIRE(room->stream_id == 4U);
+                REQUIRE(store.next_sync_stream_id == 4U);
+                REQUIRE(store.prepared_statements.size() == 4U);
+                REQUIRE(store.prepared_statements[0].name == "upsert_account_data");
+                REQUIRE(store.prepared_statements[1].name == "upsert_room_account_data");
+                REQUIRE(store.prepared_statements[2].name == "upsert_account_data");
+                REQUIRE(store.prepared_statements[3].name == "upsert_room_account_data");
+                REQUIRE(store.prepared_statements[0].parameters.size() == 4U);
+                REQUIRE(store.prepared_statements[0].parameters[2].sensitive);
+                REQUIRE(store.prepared_statements[1].parameters.size() == 5U);
+                REQUIRE(store.prepared_statements[1].parameters[4].sensitive);
+            }
+        }
+
+        WHEN("account data omits the user id or event type")
+        {
+            auto const missing_user =
+                merovingian::database::store_account_data(store, {"", "", "m.push_rules", R"({})", 0U});
+            auto const missing_event_type =
+                merovingian::database::store_account_data(store, {"@alice:example.org", "", "", R"({})", 0U});
+
+            THEN("the malformed row is rejected before it can consume a sync stream id")
+            {
+                REQUIRE_FALSE(missing_user);
+                REQUIRE_FALSE(missing_event_type);
+                REQUIRE(store.account_data.empty());
+                REQUIRE(store.next_sync_stream_id == 0U);
+                REQUIRE(store.prepared_statements.empty());
+            }
+        }
+    }
+}
+
 SCENARIO("Database statement validation enforces placeholder arity", "[database]")
 {
     GIVEN("statements with matching and mismatched placeholder arity")
