@@ -857,12 +857,6 @@ namespace
         std::uint64_t send_attempt{0U};
     };
 
-    struct MatrixAccountThreePidSessionBody final
-    {
-        std::string client_secret{};
-        std::string sid{};
-    };
-
     struct MatrixAccountThreePidAddBody final
     {
         std::string client_secret{};
@@ -1878,23 +1872,6 @@ namespace
             next_link == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*next_link},
             static_cast<std::uint64_t>(*send_attempt),
         };
-    }
-
-    [[nodiscard]] auto parse_account_threepid_session_body(std::string_view body)
-        -> std::optional<MatrixAccountThreePidSessionBody>
-    {
-        auto const object = parsed_json_object(body);
-        if (!object.has_value())
-        {
-            return std::nullopt;
-        }
-        auto const* client_secret = string_member(*object, "client_secret");
-        auto const* sid = string_member(*object, "sid");
-        if (client_secret == nullptr || sid == nullptr || client_secret->empty() || sid->empty())
-        {
-            return std::nullopt;
-        }
-        return MatrixAccountThreePidSessionBody{*client_secret, *sid};
     }
 
     [[nodiscard]] auto parse_account_threepid_add_body(std::string_view body)
