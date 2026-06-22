@@ -857,6 +857,34 @@ namespace
         std::uint64_t send_attempt{0U};
     };
 
+    struct MatrixAccountThreePidSessionBody final
+    {
+        std::string client_secret{};
+        std::string sid{};
+    };
+
+    struct MatrixAccountThreePidAddBody final
+    {
+        std::string client_secret{};
+        std::string sid{};
+        std::optional<std::string> password{};
+    };
+
+    struct MatrixAccountThreePidBindBody final
+    {
+        std::string client_secret{};
+        std::string sid{};
+        std::string id_server{};
+        std::string id_access_token{};
+    };
+
+    struct MatrixAccountThreePidDeleteBody final
+    {
+        std::string address{};
+        std::string medium{};
+        std::optional<std::string> id_server{};
+    };
+
     struct MatrixLoginBody final
     {
         std::string user_id{};
@@ -1487,6 +1515,106 @@ namespace
         return std::nullopt;
     }
 
+    [[nodiscard]] auto server_name_from_room_alias(std::string_view room_alias) noexcept -> std::string_view
+    {
+        if (room_alias.empty() || room_alias.front() != '#')
+        {
+            return {};
+        }
+        auto const colon = room_alias.rfind(':');
+        if (colon == std::string_view::npos || colon + 1U >= room_alias.size())
+        {
+            return {};
+        }
+        return room_alias.substr(colon + 1U);
+    }
+
+    [[nodiscard]] auto parse_join_servers_query(std::string_view query) -> std::vector<std::string>
+    {
+        auto servers = std::vector<std::string>{};
+        while (!query.empty())
+        {
+            auto const amp = query.find('&');
+            auto const pair = query.substr(0U, amp);
+            query = amp == std::string_view::npos ? std::string_view{} : query.substr(amp + 1U);
+            auto const eq = pair.find('=');
+            if (eq == std::string_view::npos)
+            {
+                continue;
+            }
+            auto const key = pair.substr(0U, eq);
+            if (key != "server_name" && key != "via")
+            {
+                continue;
+            }
+            auto decoded = core::percent_decode_path_component(pair.substr(eq + 1U));
+            if (!decoded.empty() && std::ranges::find(servers, decoded) == servers.end())
+            {
+                servers.push_back(std::move(decoded));
+            }
+        }
+        return servers;
+    }
+
+    [[nodiscard]] auto room_servers_for_alias(ClientServerRuntime const& rt, std::string_view room_id)
+        -> std::vector<std::string>
+    {
+        auto servers = std::vector<std::string>{};
+        auto const add = [&servers](std::string_view server) {
+            if (!server.empty() && std::ranges::find(servers, server) == servers.end())
+            {
+                servers.emplace_back(server);
+            }
+        };
+        add(rt.homeserver.config.server().server_name);
+        for (auto const& membership : rt.homeserver.database.persistent_store.memberships)
+        {
+            if (membership.room_id == room_id && membership.membership == "join")
+            {
+                add(server_name_from_user_id(membership.user_id));
+            }
+        }
+        return servers;
+    }
+
+    struct DirectoryLookupResult final
+    {
+        bool ok{false};
+        std::string room_id{};
+        std::vector<std::string> servers{};
+    };
+
+    [[nodiscard]] auto parse_directory_lookup_response(std::string_view body) -> std::optional<DirectoryLookupResult>
+    {
+        auto const parsed = canonicaljson::parse_lossless(body);
+        auto const* object = parsed.error == canonicaljson::ParseError::none
+                                 ? std::get_if<canonicaljson::Object>(&parsed.value.storage())
+                                 : nullptr;
+        if (object == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto const* room_id = string_member(*object, "room_id");
+        auto const* servers_value = object_member(*object, "servers");
+        auto const* servers_array =
+            servers_value == nullptr ? nullptr : std::get_if<canonicaljson::Array>(&servers_value->storage());
+        if (room_id == nullptr || servers_array == nullptr)
+        {
+            return std::nullopt;
+        }
+        auto result = DirectoryLookupResult{};
+        result.ok = true;
+        result.room_id = *room_id;
+        for (auto const& entry : *servers_array)
+        {
+            if (auto const* server = std::get_if<std::string>(&entry.storage()); server != nullptr && !server->empty())
+            {
+                result.servers.push_back(*server);
+            }
+        }
+        return result;
+    }
+
     [[nodiscard]] auto client_secret_is_valid(std::string_view client_secret) noexcept -> bool
     {
         return !client_secret.empty() && client_secret.size() <= 255U &&
@@ -1543,16 +1671,35 @@ namespace
         });
     }
 
-    [[nodiscard]] auto find_registration_validation_session(ClientServerRuntime& rt, std::string_view medium,
-                                                            std::string_view address, std::string_view client_secret,
-                                                            std::optional<std::string_view> country = std::nullopt)
+    [[nodiscard]] auto normalize_threepid_address(std::string_view medium, std::string_view address) -> std::string
+    {
+        if (medium == "email")
+        {
+            return to_lower(address);
+        }
+        return std::string{address};
+    }
+
+    [[nodiscard]] auto find_registration_validation_session(ClientServerRuntime& rt, std::string_view purpose,
+                                                            std::string_view medium, std::string_view address,
+                                                            std::string_view client_secret,
+                                                            std::optional<std::string_view> country = std::nullopt,
+                                                            std::optional<std::string_view> user_id = std::nullopt)
         -> RegistrationValidationSession*
     {
         auto const iterator = std::ranges::find_if(
             rt.registration_validation_sessions, [&](RegistrationValidationSession const& session) {
-                if (session.medium != medium || session.address != address || session.client_secret != client_secret)
+                if (session.purpose != purpose || session.medium != medium || session.address != address ||
+                    session.client_secret != client_secret)
                 {
                     return false;
+                }
+                if (user_id.has_value())
+                {
+                    if (!session.user_id.has_value() || *session.user_id != *user_id)
+                    {
+                        return false;
+                    }
                 }
                 if (country.has_value())
                 {
@@ -1563,18 +1710,37 @@ namespace
         return iterator == rt.registration_validation_sessions.end() ? nullptr : &(*iterator);
     }
 
-    [[nodiscard]] auto ensure_registration_validation_session(ClientServerRuntime& rt, std::string_view medium,
-                                                              std::string_view address, std::string_view client_secret,
-                                                              std::string_view client_ip, std::uint64_t send_attempt,
-                                                              std::optional<std::string> next_link = std::nullopt,
-                                                              std::optional<std::string> country = std::nullopt)
-        -> RegistrationValidationSession*
+    [[nodiscard]] auto find_registration_validation_session_by_sid(
+        ClientServerRuntime& rt, std::string_view purpose, std::string_view sid, std::string_view client_secret,
+        std::optional<std::string_view> user_id = std::nullopt) -> RegistrationValidationSession*
+    {
+        auto const iterator = std::ranges::find_if(
+            rt.registration_validation_sessions, [&](RegistrationValidationSession const& session) {
+                if (session.purpose != purpose || session.sid != sid || session.client_secret != client_secret)
+                {
+                    return false;
+                }
+                if (user_id.has_value())
+                {
+                    return session.user_id.has_value() && *session.user_id == *user_id;
+                }
+                return true;
+            });
+        return iterator == rt.registration_validation_sessions.end() ? nullptr : &(*iterator);
+    }
+
+    [[nodiscard]] auto ensure_registration_validation_session(
+        ClientServerRuntime& rt, std::string_view purpose, std::string_view medium, std::string_view address,
+        std::string_view client_secret, std::string_view client_ip, std::uint64_t send_attempt,
+        std::optional<std::string> next_link = std::nullopt, std::optional<std::string> country = std::nullopt,
+        std::optional<std::string> user_id = std::nullopt) -> RegistrationValidationSession*
     {
         auto const now_ms = wall_clock_milliseconds();
         prune_registration_validation_sessions(rt, now_ms);
         auto* existing = find_registration_validation_session(
-            rt, medium, address, client_secret,
-            country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt);
+            rt, purpose, medium, address, client_secret,
+            country.has_value() ? std::optional<std::string_view>{*country} : std::nullopt,
+            user_id.has_value() ? std::optional<std::string_view>{*user_id} : std::nullopt);
         if (existing != nullptr)
         {
             existing->send_attempt = std::max(existing->send_attempt, send_attempt);
@@ -1595,9 +1761,74 @@ namespace
         }
 
         rt.registration_validation_sessions.push_back(
-            {generate_registration_session_id(), std::string{medium}, std::string{address}, std::string{client_secret},
-             std::string{client_ip}, std::move(country), std::move(next_link), send_attempt, now_ms, now_ms});
+            {generate_registration_session_id(), std::string{purpose}, std::string{medium}, std::string{address},
+             std::string{client_secret}, std::string{client_ip}, std::move(user_id), std::move(country),
+             std::move(next_link), send_attempt, now_ms, now_ms, now_ms});
         return &rt.registration_validation_sessions.back();
+    }
+
+    [[nodiscard]] auto find_account_threepid(ClientServerRuntime& rt, std::string_view user_id, std::string_view medium,
+                                             std::string_view address) -> AccountThreePid*
+    {
+        auto const iterator = std::ranges::find_if(rt.account_threepids, [&](AccountThreePid const& current) {
+            return current.user_id == user_id && current.medium == medium && current.address == address;
+        });
+        return iterator == rt.account_threepids.end() ? nullptr : &(*iterator);
+    }
+
+    [[nodiscard]] auto threepid_in_use(ClientServerRuntime const& rt, std::string_view medium, std::string_view address,
+                                       std::optional<std::string_view> except_user_id = std::nullopt) -> bool
+    {
+        return std::ranges::any_of(rt.account_threepids, [&](AccountThreePid const& current) {
+            return current.medium == medium && current.address == address &&
+                   (!except_user_id.has_value() || current.user_id != *except_user_id);
+        });
+    }
+
+    [[nodiscard]] auto ensure_account_threepid(ClientServerRuntime& rt, std::string_view user_id,
+                                               std::string_view medium, std::string_view address,
+                                               std::optional<std::string_view> country, std::uint64_t validated_at_ms)
+        -> AccountThreePid&
+    {
+        auto const now_ms = wall_clock_milliseconds();
+        auto* existing = find_account_threepid(rt, user_id, medium, address);
+        if (existing != nullptr)
+        {
+            existing->validated_at_ms = validated_at_ms;
+            existing->added_at_ms = existing->added_at_ms == 0U ? now_ms : existing->added_at_ms;
+            if (country.has_value())
+            {
+                existing->country = std::string{*country};
+            }
+            return *existing;
+        }
+
+        rt.account_threepids.push_back(AccountThreePid{
+            std::string{user_id},
+            std::string{medium},
+            std::string{address},
+            country.has_value() ? std::optional<std::string>{std::string{*country}} : std::nullopt,
+            std::nullopt,
+            now_ms,
+            validated_at_ms,
+            false,
+        });
+        return rt.account_threepids.back();
+    }
+
+    [[nodiscard]] auto threepid_unbind_result(AccountThreePid const* record,
+                                              std::optional<std::string_view> requested_id_server) -> std::string_view
+    {
+        if (record == nullptr)
+        {
+            return requested_id_server.has_value() ? "no-support" : "success";
+        }
+        if (requested_id_server.has_value() &&
+            (!record->id_server.has_value() || *record->id_server != *requested_id_server))
+        {
+            return "no-support";
+        }
+        return "success";
     }
 
     [[nodiscard]] auto parse_register_email_request_body(std::string_view body)
@@ -1646,6 +1877,93 @@ namespace
             *phone_number,
             next_link == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*next_link},
             static_cast<std::uint64_t>(*send_attempt),
+        };
+    }
+
+    [[nodiscard]] auto parse_account_threepid_session_body(std::string_view body)
+        -> std::optional<MatrixAccountThreePidSessionBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* client_secret = string_member(*object, "client_secret");
+        auto const* sid = string_member(*object, "sid");
+        if (client_secret == nullptr || sid == nullptr || client_secret->empty() || sid->empty())
+        {
+            return std::nullopt;
+        }
+        return MatrixAccountThreePidSessionBody{*client_secret, *sid};
+    }
+
+    [[nodiscard]] auto parse_account_threepid_add_body(std::string_view body)
+        -> std::optional<MatrixAccountThreePidAddBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* client_secret = string_member(*object, "client_secret");
+        auto const* sid = string_member(*object, "sid");
+        if (client_secret == nullptr || sid == nullptr || client_secret->empty() || sid->empty())
+        {
+            return std::nullopt;
+        }
+        auto password = std::optional<std::string>{};
+        if (auto const* auth = object_member_object(*object, "auth"); auth != nullptr)
+        {
+            auto const* auth_type = string_member(*auth, "type");
+            auto const* auth_password = string_member(*auth, "password");
+            if (auth_type != nullptr && *auth_type == "m.login.password" && auth_password != nullptr &&
+                !auth_password->empty())
+            {
+                password = *auth_password;
+            }
+        }
+        return MatrixAccountThreePidAddBody{*client_secret, *sid, std::move(password)};
+    }
+
+    [[nodiscard]] auto parse_account_threepid_bind_body(std::string_view body)
+        -> std::optional<MatrixAccountThreePidBindBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* client_secret = string_member(*object, "client_secret");
+        auto const* sid = string_member(*object, "sid");
+        auto const* id_server = string_member(*object, "id_server");
+        auto const* id_access_token = string_member(*object, "id_access_token");
+        if (client_secret == nullptr || sid == nullptr || id_server == nullptr || id_access_token == nullptr ||
+            client_secret->empty() || sid->empty() || id_server->empty() || id_access_token->empty())
+        {
+            return std::nullopt;
+        }
+        return MatrixAccountThreePidBindBody{*client_secret, *sid, *id_server, *id_access_token};
+    }
+
+    [[nodiscard]] auto parse_account_threepid_delete_body(std::string_view body)
+        -> std::optional<MatrixAccountThreePidDeleteBody>
+    {
+        auto const object = parsed_json_object(body);
+        if (!object.has_value())
+        {
+            return std::nullopt;
+        }
+        auto const* address = string_member(*object, "address");
+        auto const* medium = string_member(*object, "medium");
+        if (address == nullptr || medium == nullptr || address->empty() || medium->empty())
+        {
+            return std::nullopt;
+        }
+        auto const* id_server = string_member(*object, "id_server");
+        return MatrixAccountThreePidDeleteBody{
+            *address,
+            *medium,
+            id_server == nullptr ? std::optional<std::string>{} : std::optional<std::string>{*id_server},
         };
     }
 
@@ -3159,12 +3477,12 @@ namespace
         // causing matrix-rust-sdk to reset its connection state and loop.
         // The first request for a fresh connection (rooms_seen empty) still
         // gets since=0 so the SDK receives the full initial room list.
-        auto const since_event_ordering = pos.has_value()
-            ? pos->event_ordering
-            : (conn.rooms_seen.empty() ? std::uint64_t{0U} : conn.last_event_ordering);
-        auto const since_sync_stream_id = pos.has_value()
-            ? pos->sync_stream_id
-            : (conn.rooms_seen.empty() ? std::uint64_t{0U} : conn.last_sync_stream_id);
+        auto const since_event_ordering =
+            pos.has_value() ? pos->event_ordering
+                            : (conn.rooms_seen.empty() ? std::uint64_t{0U} : conn.last_event_ordering);
+        auto const since_sync_stream_id =
+            pos.has_value() ? pos->sync_stream_id
+                            : (conn.rooms_seen.empty() ? std::uint64_t{0U} : conn.last_sync_stream_id);
 
         // Long-poll: park when nothing relevant to this connection has changed.
         // A sync_stream_id advance from another user uploading device keys fires
@@ -3182,22 +3500,16 @@ namespace
                 //   - device-list changes where this user is the observer
                 //   - to-device messages addressed to this device
                 //   - account-data rows owned by this user
-                bool const has_relevant_dlc = std::ranges::any_of(
-                    store.device_list_changes, [&](auto const& c) {
-                        return c.observer_user_id == user &&
-                               c.stream_id > since_sync_stream_id;
-                    });
-                bool const has_relevant_tdm = std::ranges::any_of(
-                    store.to_device_messages, [&](auto const& m) {
-                        return m.target_user_id == user &&
-                               m.target_device_id == device_id &&
-                               m.stream_id > since_sync_stream_id;
-                    });
-                bool const has_relevant_ad = std::ranges::any_of(
-                    store.account_data, [&](auto const& ad) {
-                        return ad.user_id == user &&
-                               ad.stream_id > since_sync_stream_id;
-                    });
+                bool const has_relevant_dlc = std::ranges::any_of(store.device_list_changes, [&](auto const& c) {
+                    return c.observer_user_id == user && c.stream_id > since_sync_stream_id;
+                });
+                bool const has_relevant_tdm = std::ranges::any_of(store.to_device_messages, [&](auto const& m) {
+                    return m.target_user_id == user && m.target_device_id == device_id &&
+                           m.stream_id > since_sync_stream_id;
+                });
+                bool const has_relevant_ad = std::ranges::any_of(store.account_data, [&](auto const& ad) {
+                    return ad.user_id == user && ad.stream_id > since_sync_stream_id;
+                });
                 if (!has_relevant_dlc && !has_relevant_tdm && !has_relevant_ad)
                 {
                     // Advance the wait cursor past this irrelevant bump so the
@@ -3276,11 +3588,9 @@ namespace
             // Per MSC4186, only include a room in rooms{} when it has actual
             // changes: first appearance (initial), post-pos timeline events, changed
             // required_state, or non-zero unread counts.
-            auto const has_room_updates = is_initial
-                || !room.timeline_json.empty()
-                || !room.required_state_json.empty()
-                || room.notification_count.value_or(0U) > 0U
-                || room.highlight_count.value_or(0U) > 0U;
+            auto const has_room_updates =
+                is_initial || !room.timeline_json.empty() || !room.required_state_json.empty() ||
+                room.notification_count.value_or(0U) > 0U || room.highlight_count.value_or(0U) > 0U;
             if (has_room_updates)
             {
                 rooms_obj.push_back(json_member(room_id, sliding_sync_room_to_value(std::move(room))));
@@ -5937,20 +6247,17 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // Media upload routes are governed by security.media.max_upload_size rather
     // than the smaller general client-API body cap (64 KiB).  Check which limit
     // applies before enforcing the gate.
-    auto const is_media_upload =
-        req.method == "POST" &&
-        (req.target == "/_matrix/media/v3/upload" ||
-         starts_with(req.target, "/_matrix/media/v3/upload?") ||
-         req.target == "/_matrix/client/v1/media/upload" ||
-         starts_with(req.target, "/_matrix/client/v1/media/upload?"));
+    auto const is_media_upload = req.method == "POST" && (req.target == "/_matrix/media/v3/upload" ||
+                                                          starts_with(req.target, "/_matrix/media/v3/upload?") ||
+                                                          req.target == "/_matrix/client/v1/media/upload" ||
+                                                          starts_with(req.target, "/_matrix/client/v1/media/upload?"));
     auto const body_limit = [&]() -> std::size_t {
         if (is_media_upload)
         {
             auto const parsed = config::parse_size_limit(rt.homeserver.config.security().media.max_upload_size);
-            auto const raw    = parsed.valid ? parsed.bytes : std::uint64_t{104857600U};
-            return raw > std::numeric_limits<std::size_t>::max()
-                       ? std::numeric_limits<std::size_t>::max()
-                       : static_cast<std::size_t>(raw);
+            auto const raw = parsed.valid ? parsed.bytes : std::uint64_t{104857600U};
+            return raw > std::numeric_limits<std::size_t>::max() ? std::numeric_limits<std::size_t>::max()
+                                                                 : static_cast<std::size_t>(raw);
         }
         return rt.limits.max_body_bytes;
     }();
@@ -6159,13 +6466,41 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     {
         auto const encoded_alias = request_path.substr(directory_room_prefix.size());
         auto const room_alias = core::percent_decode_path_component(encoded_alias);
+        auto const& our_server = rt.homeserver.config.server().server_name;
+        auto const alias_server = server_name_from_room_alias(room_alias);
+        if (!alias_server.empty() && alias_server != our_server)
+        {
+            wire_federation_callbacks(rt.homeserver);
+            auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+            auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+            auto const secret =
+                std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
+                            rt.homeserver.database.signing_secret_key.bytes().size()};
+            auto* outbound_client = rt.homeserver.outbound_client.get();
+            auto* discovery_network = rt.homeserver.discovery_network.get();
+            auto const target = std::string{"/_matrix/federation/v1/query/directory?room_alias="} +
+                                core::percent_encode_path_component(room_alias);
+            auto const tx =
+                federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
+            guard.unlock();
+            auto const [ok, body] = perform_sync_outbound_call(outbound_client, discovery_network, tx, key_id, secret,
+                                                               "directory.room.proxy");
+            if (!ok)
+            {
+                return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to resolve room alias on remote server");
+            }
+            return dispatch_resp(req, rt, 200U, body);
+        }
         auto const found = database::find_room_alias(rt.homeserver.database.persistent_store, room_alias);
         if (!found.has_value())
         {
             return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room alias not found");
         }
         auto servers = canonicaljson::Array{};
-        servers.push_back(json_str(rt.homeserver.config.server().server_name));
+        for (auto const& server : room_servers_for_alias(rt, found->room_id))
+        {
+            servers.push_back(json_str(server));
+        }
         return dispatch_resp(req, rt, 200U,
                              json_serialize(json_obj({
                                  json_member("room_id", json_str(found->room_id)),
@@ -6242,8 +6577,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "email must be a plausible address");
         }
-        auto* session = ensure_registration_validation_session(rt, "email", body->email, body->client_secret,
-                                                               req.remote_addr, body->send_attempt, body->next_link);
+        auto* session = ensure_registration_validation_session(
+            rt, "register", "email", normalize_threepid_address("email", body->email), body->client_secret,
+            req.remote_addr, body->send_attempt, body->next_link);
         if (session == nullptr)
         {
             return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
@@ -6272,10 +6608,9 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         {
             return dispatch_err(req, rt, 400U, "M_BAD_JSON", "phone_number must not be empty");
         }
-        auto const address = body->country + ":" + body->phone_number;
-        auto* session =
-            ensure_registration_validation_session(rt, "msisdn", address, body->client_secret, req.remote_addr,
-                                                   body->send_attempt, body->next_link, body->country);
+        auto* session = ensure_registration_validation_session(
+            rt, "register", "msisdn", normalize_threepid_address("msisdn", body->phone_number), body->client_secret,
+            req.remote_addr, body->send_attempt, body->next_link, body->country);
         if (session == nullptr)
         {
             return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
@@ -6546,6 +6881,75 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "profile field not found");
     }
 
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/email/requestToken")
+    {
+        auto const body = parse_register_email_request_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "email validation body must contain client_secret, email, and send_attempt");
+        }
+        if (!client_secret_is_valid(body->client_secret))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "client_secret must match the Matrix grammar");
+        }
+        if (!email_address_is_valid(body->email))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "email must be a plausible address");
+        }
+        auto const normalized_address = normalize_threepid_address("email", body->email);
+        if (threepid_in_use(rt, "email", normalized_address))
+        {
+            return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
+                                "third-party identifier is already associated with an account");
+        }
+        auto* session =
+            ensure_registration_validation_session(rt, "account-3pid", "email", normalized_address, body->client_secret,
+                                                   req.remote_addr, body->send_attempt, body->next_link);
+        if (session == nullptr)
+        {
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
+    }
+
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/msisdn/requestToken")
+    {
+        auto const body = parse_register_msisdn_request_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(
+                req, rt, 400U, "M_BAD_JSON",
+                "msisdn validation body must contain client_secret, country, phone_number, and send_attempt");
+        }
+        if (!client_secret_is_valid(body->client_secret))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "client_secret must match the Matrix grammar");
+        }
+        if (!country_code_is_valid(body->country))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "country must be a two-letter uppercase code");
+        }
+        if (!phone_number_is_valid(body->phone_number))
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "phone_number must not be empty");
+        }
+        auto const normalized_address = normalize_threepid_address("msisdn", body->phone_number);
+        if (threepid_in_use(rt, "msisdn", normalized_address))
+        {
+            return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
+                                "third-party identifier is already associated with an account");
+        }
+        auto* session = ensure_registration_validation_session(rt, "account-3pid", "msisdn", normalized_address,
+                                                               body->client_secret, req.remote_addr, body->send_attempt,
+                                                               body->next_link, body->country);
+        if (session == nullptr)
+        {
+            return dispatch_err(req, rt, 429U, "M_LIMIT_EXCEEDED", "too many outstanding validation sessions");
+        }
+        return dispatch_resp(req, rt, 200U, json_serialize(json_obj({json_member("sid", json_str(session->sid))})));
+    }
+
     auto const user = auth(rt, req.access_token);
     if (!user.has_value())
     {
@@ -6759,13 +7163,155 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         }
         return dispatch_resp(req, rt, 200U, "{}");
     }
-    // Spec: GET /account/3pid returns the third-party IDs linked to the
-    // authenticated user. Merovingian does not yet support 3PID binding,
-    // so return the spec-required empty list so Element's settings UI
-    // does not show a spurious error.
     if (req.method == "GET" && req.target == "/_matrix/client/v3/account/3pid")
     {
-        return dispatch_resp(req, rt, 200U, R"({"threepids":[]})");
+        auto threepids = canonicaljson::Array{};
+        for (auto const& record : rt.account_threepids)
+        {
+            if (record.user_id != *user)
+            {
+                continue;
+            }
+            threepids.push_back(json_obj({
+                json_member("added_at", json_int(static_cast<std::int64_t>(record.added_at_ms))),
+                json_member("address", json_str(record.address)),
+                json_member("medium", json_str(record.medium)),
+                json_member("validated_at", json_int(static_cast<std::int64_t>(record.validated_at_ms))),
+            }));
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({json_member("threepids", json_arr(std::move(threepids)))})));
+    }
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/add")
+    {
+        auto const body = parse_account_threepid_add_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "3PID add body must contain client_secret and sid");
+        }
+        auto const uia_challenge = json_obj({
+            json_member("flows",
+                        json_arr({json_obj({json_member("stages", json_arr({json_str("m.login.password")}))})})),
+            json_member("params", json_obj({})),
+            json_member("session", json_str("account_threepid_add")),
+        });
+        if (!body->password.has_value() ||
+            !verify_local_user_password(rt.homeserver, req.access_token, *body->password))
+        {
+            return dispatch_resp(req, rt, 401U, json_serialize(uia_challenge));
+        }
+        auto* session = find_registration_validation_session_by_sid(rt, "account-3pid", body->sid, body->client_secret);
+        if (session == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_SESSION_NOT_VALIDATED", "validation session not found");
+        }
+        if (threepid_in_use(rt, session->medium, session->address, *user))
+        {
+            return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
+                                "third-party identifier is already associated with an account");
+        }
+        std::ignore = ensure_account_threepid(
+            rt, *user, session->medium, session->address,
+            session->country.has_value() ? std::optional<std::string_view>{*session->country} : std::nullopt,
+            session->validated_at_ms);
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/bind")
+    {
+        auto const body = parse_account_threepid_bind_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON",
+                                "3PID bind body must contain client_secret, sid, id_server, and id_access_token");
+        }
+        auto* session = find_registration_validation_session_by_sid(rt, "account-3pid", body->sid, body->client_secret);
+        if (session == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_SESSION_NOT_VALIDATED", "validation session not found");
+        }
+        if (threepid_in_use(rt, session->medium, session->address, *user))
+        {
+            return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
+                                "third-party identifier is already associated with an account");
+        }
+        auto& record = ensure_account_threepid(
+            rt, *user, session->medium, session->address,
+            session->country.has_value() ? std::optional<std::string_view>{*session->country} : std::nullopt,
+            session->validated_at_ms);
+        record.id_server = body->id_server;
+        record.bound = true;
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid")
+    {
+        auto const object = parsed_json_object(req.body);
+        auto const* creds = object.has_value() ? object_member_object(*object, "three_pid_creds") : nullptr;
+        if (creds == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "three_pid_creds is required");
+        }
+        auto const* client_secret = string_member(*creds, "client_secret");
+        auto const* sid = string_member(*creds, "sid");
+        auto const* id_server = string_member(*creds, "id_server");
+        auto const* id_access_token = string_member(*creds, "id_access_token");
+        if (client_secret == nullptr || sid == nullptr || id_server == nullptr || id_access_token == nullptr ||
+            client_secret->empty() || sid->empty() || id_server->empty() || id_access_token->empty())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "three_pid_creds must be complete");
+        }
+        auto* session = find_registration_validation_session_by_sid(rt, "account-3pid", *sid, *client_secret);
+        if (session == nullptr)
+        {
+            return dispatch_err(req, rt, 400U, "M_SESSION_NOT_VALIDATED", "validation session not found");
+        }
+        if (threepid_in_use(rt, session->medium, session->address, *user))
+        {
+            return dispatch_err(req, rt, 400U, "M_THREEPID_IN_USE",
+                                "third-party identifier is already associated with an account");
+        }
+        auto& record = ensure_account_threepid(
+            rt, *user, session->medium, session->address,
+            session->country.has_value() ? std::optional<std::string_view>{*session->country} : std::nullopt,
+            session->validated_at_ms);
+        record.id_server = *id_server;
+        record.bound = true;
+        return dispatch_resp(req, rt, 200U, "{}");
+    }
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/unbind")
+    {
+        auto const body = parse_account_threepid_delete_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "3PID unbind body must contain address and medium");
+        }
+        auto const normalized_address = normalize_threepid_address(body->medium, body->address);
+        auto* record = find_account_threepid(rt, *user, body->medium, normalized_address);
+        auto const result = threepid_unbind_result(
+            record, body->id_server.has_value() ? std::optional<std::string_view>{*body->id_server} : std::nullopt);
+        if (record != nullptr && result == "success")
+        {
+            record->bound = false;
+            record->id_server.reset();
+        }
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result))})));
+    }
+    if (req.method == "POST" && req.target == "/_matrix/client/v3/account/3pid/delete")
+    {
+        auto const body = parse_account_threepid_delete_body(req.body);
+        if (!body.has_value())
+        {
+            return dispatch_err(req, rt, 400U, "M_BAD_JSON", "3PID delete body must contain address and medium");
+        }
+        auto const normalized_address = normalize_threepid_address(body->medium, body->address);
+        auto* record = find_account_threepid(rt, *user, body->medium, normalized_address);
+        auto const result = threepid_unbind_result(
+            record, body->id_server.has_value() ? std::optional<std::string_view>{*body->id_server} : std::nullopt);
+        std::erase_if(rt.account_threepids, [&](AccountThreePid const& current) {
+            return current.user_id == *user && current.medium == body->medium && current.address == normalized_address;
+        });
+        return dispatch_resp(req, rt, 200U,
+                             json_serialize(json_obj({json_member("id_server_unbind_result", json_str(result))})));
     }
     // Spec: GET /pushers returns the push notification pushers for the
     // authenticated user. Merovingian does not yet support push
@@ -6786,6 +7332,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 {json_member("capabilities",
                              json_obj({
                                  json_member("m.change_password", json_obj({json_member("enabled", json_bool(true))})),
+                                 json_member("m.3pid_changes", json_obj({json_member("enabled", json_bool(true))})),
                                  json_member("m.room_versions",
                                              json_obj({
                                                  json_member("default", json_str("12")),
@@ -6944,12 +7491,12 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
         // Real clients send a raw binary body with Content-Type in the request
         // headers, not the pipe-delimited format the local router expects.
         // Build declared_mime|sniffed_mime|scanner_clean|bytes from headers + body.
-        auto const ct            = request_header(req, "Content-Type");
+        auto const ct = request_header(req, "Content-Type");
         auto const declared_mime = ct.empty() ? std::string_view{"application/octet-stream"} : ct;
-        auto inner               = req;
-        inner.target             = "/_matrix/media/v3/upload";
-        inner.body               = std::string{declared_mime} + "|" + std::string{declared_mime} + "|clean|" + req.body;
-        auto const r             = call_local(inner);
+        auto inner = req;
+        inner.target = "/_matrix/media/v3/upload";
+        inner.body = std::string{declared_mime} + "|" + std::string{declared_mime} + "|clean|" + req.body;
+        auto const r = call_local(inner);
         // 200: stored; 202: stored but quarantined by server policy.
         // Both carry a content_uri. The Matrix spec defines only 200 for this
         // endpoint, so return 200 in both cases — quarantine is internal.
@@ -7298,7 +7845,8 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     // POST /_matrix/client/unstable/org.matrix.msc4186/sync
     // POST /_matrix/client/unstable/org.matrix.simplified_msc3575/sync  (matrix-rust-sdk alias)
     auto constexpr msc4186_sync_prefix = std::string_view{"/_matrix/client/unstable/org.matrix.msc4186/sync"};
-    auto constexpr msc3575_sync_prefix = std::string_view{"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"};
+    auto constexpr msc3575_sync_prefix =
+        std::string_view{"/_matrix/client/unstable/org.matrix.simplified_msc3575/sync"};
     if (req.method == "POST" &&
         (starts_with(req.target, msc4186_sync_prefix) || starts_with(req.target, msc3575_sync_prefix)))
     {
@@ -8470,11 +9018,76 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
             return dispatch_err(req, rt, 400U, "M_INVALID_PARAM", "room id or alias must not be empty");
         }
         auto const decoded_room_segment = core::percent_decode_path_component(room_segment);
-        auto rewritten = req;
-        rewritten.target = std::string{"/_matrix/client/v3/rooms/"} + decoded_room_segment + "/join";
-        if (!join_query.empty())
+        auto resolved_room_id = decoded_room_segment;
+        auto resolved_via_servers = parse_join_servers_query(join_query);
+        if (!decoded_room_segment.empty() && decoded_room_segment.front() == '#')
         {
-            rewritten.target += "?" + std::string{join_query};
+            auto const& our_server = rt.homeserver.config.server().server_name;
+            auto const alias_server = server_name_from_room_alias(decoded_room_segment);
+            if (alias_server == our_server)
+            {
+                auto const found =
+                    database::find_room_alias(rt.homeserver.database.persistent_store, decoded_room_segment);
+                if (!found.has_value())
+                {
+                    return dispatch_err(req, rt, 404U, "M_NOT_FOUND", "room alias not found");
+                }
+                resolved_room_id = found->room_id;
+                for (auto const& server : room_servers_for_alias(rt, found->room_id))
+                {
+                    if (std::ranges::find(resolved_via_servers, server) == resolved_via_servers.end())
+                    {
+                        resolved_via_servers.push_back(server);
+                    }
+                }
+            }
+            else if (!alias_server.empty())
+            {
+                wire_federation_callbacks(rt.homeserver);
+                auto const signing_key = ensure_runtime_server_signing_key(rt.homeserver);
+                auto const key_id = signing_key.has_value() ? signing_key->key_id : std::string{};
+                auto const secret =
+                    std::string{reinterpret_cast<char const*>(rt.homeserver.database.signing_secret_key.bytes().data()),
+                                rt.homeserver.database.signing_secret_key.bytes().size()};
+                auto* outbound_client = rt.homeserver.outbound_client.get();
+                auto* discovery_network = rt.homeserver.discovery_network.get();
+                auto const target = std::string{"/_matrix/federation/v1/query/directory?room_alias="} +
+                                    core::percent_encode_path_component(decoded_room_segment);
+                auto const tx =
+                    federation::make_outbound_transaction(std::string{alias_server}, "GET", target, our_server, {});
+                guard.unlock();
+                auto const [ok, body] = perform_sync_outbound_call(outbound_client, discovery_network, tx, key_id,
+                                                                   secret, "room.join.alias_lookup_failed");
+                if (!ok)
+                {
+                    return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Failed to resolve room alias on remote server");
+                }
+                auto const directory = parse_directory_lookup_response(body);
+                if (!directory.has_value() || !directory->ok || directory->room_id.empty())
+                {
+                    return dispatch_err(req, rt, 502U, "M_UNKNOWN", "Remote server returned malformed room alias data");
+                }
+                resolved_room_id = directory->room_id;
+                for (auto const& server : directory->servers)
+                {
+                    if (std::ranges::find(resolved_via_servers, server) == resolved_via_servers.end())
+                    {
+                        resolved_via_servers.push_back(server);
+                    }
+                }
+            }
+        }
+        auto rewritten = req;
+        rewritten.target = std::string{"/_matrix/client/v3/rooms/"} + resolved_room_id + "/join";
+        if (!resolved_via_servers.empty())
+        {
+            auto first = true;
+            for (auto const& server : resolved_via_servers)
+            {
+                rewritten.target += first ? "?" : "&";
+                rewritten.target += "via=" + core::percent_encode_path_component(server);
+                first = false;
+            }
         }
         log_diagnostic("room.join_by_id.rewrite",
                        {

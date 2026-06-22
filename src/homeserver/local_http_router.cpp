@@ -1440,6 +1440,31 @@ namespace
             return {true, 200U, {}, std::move(*signed_event)};
         };
 
+        runtime.federation.directory_query_provider =
+            [rt](std::string_view room_alias) -> federation::FederationDirectory {
+            auto const found = database::find_room_alias(rt->database.persistent_store, room_alias);
+            if (!found.has_value())
+            {
+                return {};
+            }
+            auto servers = std::vector<std::string>{};
+            auto const add = [&servers](std::string_view server) {
+                if (!server.empty() && std::ranges::find(servers, server) == servers.end())
+                {
+                    servers.emplace_back(server);
+                }
+            };
+            add(rt->config.server().server_name);
+            for (auto const& membership : rt->database.persistent_store.memberships)
+            {
+                if (membership.room_id == found->room_id && membership.membership == "join")
+                {
+                    add(server_name_from_user_id(membership.user_id));
+                }
+            }
+            return {true, found->room_id, std::move(servers)};
+        };
+
         runtime.federation.backfill_provider =
             [rt](federation::BackfillRequest const& req) -> federation::BackfillResult {
             auto const& store = rt->database.persistent_store;
