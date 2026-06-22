@@ -19,6 +19,7 @@
 #include <cstring>
 #include <exception>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -608,7 +609,72 @@ namespace
         if (parse.request.has_content_length && parse.request.content_length > 0U)
         {
             auto const expected = static_cast<std::size_t>(parse.request.content_length);
-            body = read_remaining_body(stream, std::move(body_tail), expected, body_size_cap(limits));
+            // Media upload routes permit up to max_upload_size; every other
+            // client-server route uses the smaller general body cap.
+            auto const effective_cap = [&]() -> std::size_t {
+                if (dispatch_mode == HttpDispatchMode::client_server &&
+                    parse.request.method == "POST")
+                {
+                    auto const& t = parse.request.target;
+                    auto const is_media =
+                        (t == "/_matrix/media/v3/upload" ||
+                         t.starts_with("/_matrix/media/v3/upload?") ||
+                         t == "/_matrix/client/v1/media/upload" ||
+                         t.starts_with("/_matrix/client/v1/media/upload?"));
+                    if (is_media)
+                    {
+                        auto const parsed = config::parse_size_limit(
+                            runtime.homeserver.config.security().media.max_upload_size);
+                        auto const raw = parsed.valid ? parsed.bytes : std::uint64_t{104857600U};
+                        return raw > std::numeric_limits<std::size_t>::max()
+                                   ? std::numeric_limits<std::size_t>::max()
+                                   : static_cast<std::size_t>(raw);
+                    }
+                }
+                return body_size_cap(limits);
+            }();
+            if (expected > effective_cap)
+            {
+                ++stats.rejected_requests;
+                log_diagnostic(
+                    "request.rejected",
+                    {
+                        {"method",              parse.request.method,                                       false},
+                        {"target",             observability::sanitized_http_target(parse.request.target),  false},
+                        {"status",              "413",                                                      false},
+                        {"expected_body_bytes", std::to_string(expected),                                   false},
+                        {"limit_bytes",         std::to_string(effective_cap),                              false},
+                        {"reason",              "request body too large",                                   false}
+                });
+                // Matrix spec §10.5: every response MUST carry CORS headers or
+                // browsers surface the 413 as a CORS error instead of the real one.
+                auto cors_hdrs = std::vector<std::pair<std::string, std::string>>{};
+                if (dispatch_mode == HttpDispatchMode::client_server &&
+                    !runtime.cors.allowed_origins.empty())
+                {
+                    auto const origin = find_header_value(parse.request, "origin");
+                    if (!origin.empty())
+                    {
+                        for (auto const& allowed : runtime.cors.allowed_origins)
+                        {
+                            if (allowed == "*" || allowed == origin)
+                            {
+                                cors_hdrs.emplace_back(
+                                    "Access-Control-Allow-Origin",
+                                    allowed == "*" ? std::string{"*"} : std::string{origin});
+                                break;
+                            }
+                        }
+                    }
+                }
+                auto const rejection = format_response(
+                    413U,
+                    R"({"errcode":"M_TOO_LARGE","error":"request body too large"})",
+                    cors_hdrs);
+                std::ignore = send_all(stream, rejection);
+                return false;
+            }
+            body = read_remaining_body(stream, std::move(body_tail), expected, effective_cap);
             if (body.size() != expected)
             {
                 ++stats.rejected_requests;

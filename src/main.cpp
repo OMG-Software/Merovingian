@@ -39,7 +39,7 @@
 namespace
 {
 
-constexpr auto version = std::string_view{"0.9.13"};
+constexpr auto version = std::string_view{"0.9.14"};
 
 struct BootstrapConfigResult final
 {
@@ -672,7 +672,7 @@ struct ListenerBinding final
 {
     auto stats = merovingian::homeserver::HttpServeStats{};
     // Main pool handles all non-sync request types. Keep this modest so that
-    // threads aren't wasted Ã¢â‚¬â€ sync long-polls are offloaded to sync_pool below.
+    // threads aren't wasted ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â sync long-polls are offloaded to sync_pool below.
     auto pool = merovingian::net::ThreadPool{8U};
     // Dedicated pool for /sync long-polls. Each waiting sync client occupies one
     // thread here rather than in the main pool, so regular requests (join, send,

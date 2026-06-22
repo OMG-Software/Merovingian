@@ -2,7 +2,7 @@ project(
   'merovingian',
   'cpp',
   'c',
-  version: '0.9.13',
+  version: '0.9.14',
   license: 'GPL-3.0-or-later',
   meson_version: '>=1.1.0',
   default_options: [
@@ -21,7 +21,7 @@ openssl_dep = dependency('openssl', include_type: 'system', allow_fallback: fals
 # other distros use the plain library name. Prefer _shlib, fall back to plain.
 _libpq          = dependency('libpq', include_type: 'system', allow_fallback: false)
 # libpq.a requires pgcommon/pgport symbols that libpq.pc omits from Libs.private.
-# Use static:true so we only add them when a .a file physically exists Ã¢â‚¬â€ this
+# Use static:true so we only add them when a .a file physically exists ÃƒÂ¢Ã¢â€šÂ¬Ã¢â‚¬Â this
 # prevents false-positive detection of dynamic-only stubs on FreeBSD that the
 # linker cannot then resolve. Alpine ships libpgcommon_shlib.a (frontend variant).
 _pgcommon       = cpp.find_library('pgcommon_shlib', required: false, static: true)
@@ -83,8 +83,8 @@ hardening_compile_flags = [
 ]
 
 # -pie is supplied per-platform by the build scripts:
-#   Alpine/musl .deb Ã¢â€ â€™ -static-pie (fully static PIE via cpp_link_args)
-#   Fedora .rpm / FreeBSD .pkg Ã¢â€ â€™ -pie (dynamic-libc PIE via cpp_link_args)
+#   Alpine/musl .deb ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ -static-pie (fully static PIE via cpp_link_args)
+#   Fedora .rpm / FreeBSD .pkg ÃƒÂ¢Ã¢â‚¬Â Ã¢â‚¬â„¢ -pie (dynamic-libc PIE via cpp_link_args)
 # -Wl,-z,noexecstack sets the PT_GNU_STACK ELF note; the kernel reads this on
 # both static and dynamic ELF binaries, so it applies universally.
 # -Wl,-z,relro/-z,now are requested for GNU/Linux dynamic ELF builds. Meson's

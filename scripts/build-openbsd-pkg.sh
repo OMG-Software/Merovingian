@@ -1,14 +1,14 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Build an OpenBSD binary package (.tgz) for merovingian 0.9.13.
+# Build an OpenBSD binary package (.tgz) for merovingian 0.9.14.
 #
-# Standalone pkg_create(1) — no ports tree. The checked-in packaging/openbsd/PLIST
+# Standalone pkg_create(1) â€” no ports tree. The checked-in packaging/openbsd/PLIST
 # is the ports-framework packing list kept for downstream porters; this script
 # generates a framework-free packing list from the staged install so CI can
 # produce and validate an installable package on every run.
 set -e
 
-VERSION="0.9.13"
+VERSION="0.9.14"
 STAGE="staging-openbsd"
 PREFIX=/usr/local
 

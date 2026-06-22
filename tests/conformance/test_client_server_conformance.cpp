@@ -8455,8 +8455,9 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} returns 404 M_UNRECOGNIZED (impl
 
 // --- GET /_matrix/client/v3/rooms/{roomId}/initialSync -----------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3roomsroomidinitialsync
-// IMPLEMENTATION GAP: per-room initial sync not yet implemented.
-SCENARIO("GET /rooms/{roomId}/initialSync returns 404 M_UNRECOGNIZED (implementation gap)",
+// Returns RoomInfo for the requesting user: room_id, membership, messages,
+// state, visibility, and account_data.
+SCENARIO("GET /rooms/{roomId}/initialSync returns RoomInfo for a joined user",
          "[conformance][client-server][room-participation]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
@@ -8471,14 +8472,30 @@ SCENARIO("GET /rooms/{roomId}/initialSync returns 404 M_UNRECOGNIZED (implementa
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/initialSync", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 RoomInfo with membership join and required fields")
             {
-                // IMPLEMENTATION GAP: per-room initialSync not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+
+                auto const* got_room_id = string_member(body, "room_id");
+                REQUIRE(got_room_id != nullptr);
+                REQUIRE(*got_room_id == room_id);
+
+                auto const* membership = string_member(body, "membership");
+                REQUIRE(membership != nullptr);
+                REQUIRE(*membership == "join");
+
+                auto const* messages = object_member_as_object(body, "messages");
+                REQUIRE(messages != nullptr);
+                auto const* chunk = object_member_as_array(*messages, "chunk");
+                REQUIRE(chunk != nullptr);
+
+                auto const* state = object_member_as_array(body, "state");
+                REQUIRE(state != nullptr);
+                REQUIRE(!state->empty());
+
+                auto const* visibility = string_member(body, "visibility");
+                REQUIRE(visibility != nullptr);
             }
         }
     }
@@ -11592,32 +11609,6 @@ SCENARIO("GET /rooms/{roomId}/context/{eventId} conformance")
     }
 }
 
-SCENARIO("GET /rooms/{roomId}/initialSync conformance")
-{
-    GIVEN("a started homeserver with an authenticated user and a room")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-        auto const room_id = create_room(started.runtime, token);
-
-        WHEN("GET /rooms/{roomId}/initialSync is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"GET", "/_matrix/client/v3/rooms/" + room_id + "/initialSync", token, {}});
-
-            THEN("the server returns 404 M_UNRECOGNIZED")
-            {
-                // Deprecated in v1.18, but should return M_UNRECOGNIZED
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
 
 SCENARIO("GET /initialSync conformance")
 {
