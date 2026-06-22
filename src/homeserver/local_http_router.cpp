@@ -860,27 +860,19 @@ namespace
                 auto existing = std::ranges::find_if(rt->typing_users, [&](auto const& t) {
                     return t.room_id == room_id && t.user_id == user_id;
                 });
-                if (typing)
+                rt->database.persistent_store.next_sync_stream_id += 1U;
+                auto const stream_id = rt->database.persistent_store.next_sync_stream_id;
+                auto const expires_at = std::chrono::steady_clock::now() +
+                                        (typing ? federation_typing_timeout() : std::chrono::milliseconds{0});
+                if (existing != rt->typing_users.end())
                 {
-                    rt->database.persistent_store.next_sync_stream_id += 1U;
-                    auto const stream_id = rt->database.persistent_store.next_sync_stream_id;
-                    if (existing != rt->typing_users.end())
-                    {
-                        existing->typing = true;
-                        existing->stream_id = stream_id;
-                    }
-                    else
-                    {
-                        rt->typing_users.push_back({room_id, user_id, true, stream_id});
-                    }
+                    existing->typing     = typing;
+                    existing->stream_id  = stream_id;
+                    existing->expires_at = expires_at;
                 }
                 else
                 {
-                    rt->database.persistent_store.next_sync_stream_id += 1U;
-                    if (existing != rt->typing_users.end())
-                    {
-                        rt->typing_users.erase(existing);
-                    }
+                    rt->typing_users.push_back({room_id, user_id, typing, stream_id, expires_at});
                 }
                 if (rt->sync_notifier != nullptr)
                 {

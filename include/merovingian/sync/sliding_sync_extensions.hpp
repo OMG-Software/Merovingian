@@ -22,10 +22,11 @@ namespace merovingian::sync
 //                            response. Scopes receipts and typing when the extension request
 //                            does not name explicit rooms.
 //
+// `rt` is mutable because the typing extension reaps expired typing rows.
 // `store` is mutable because the to_device extension drains delivered messages via
 // drain_to_device_messages, which removes them from the in-memory queue.
 [[nodiscard]] auto build_extensions(
-    homeserver::HomeserverRuntime const&    rt,
+    homeserver::HomeserverRuntime&          rt,
     std::string_view                        user,
     std::string_view                        device_id,
     SlidingSyncExtensionRequests const&     ext_req,

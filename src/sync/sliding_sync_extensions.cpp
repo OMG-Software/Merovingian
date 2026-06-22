@@ -293,17 +293,25 @@ namespace
 
         for (auto const& room_id : rooms)
         {
-            auto user_ids = canonicaljson::Array{};
+            auto user_ids       = canonicaljson::Array{};
+            auto typing_changed = false;
             for (auto const& entry : rt.typing_users)
             {
-                if (entry.room_id != room_id || !entry.typing ||
-                    entry.stream_id <= since_sync_stream_id)
+                if (entry.room_id != room_id)
+                {
+                    continue;
+                }
+                if (entry.stream_id > since_sync_stream_id)
+                {
+                    typing_changed = true;
+                }
+                if (!entry.typing)
                 {
                     continue;
                 }
                 user_ids.push_back(jstr(entry.user_id));
             }
-            if (user_ids.empty())
+            if (!typing_changed)
             {
                 continue;
             }
@@ -321,7 +329,7 @@ namespace
 // ── Public API ───────────────────────────────────────────────────────────────
 
 auto build_extensions(
-    homeserver::HomeserverRuntime const& rt,
+    homeserver::HomeserverRuntime&          rt,
     std::string_view                     user,
     std::string_view                     device_id,
     SlidingSyncExtensionRequests const&  ext_req,
@@ -330,6 +338,10 @@ auto build_extensions(
     database::PersistentStore&           store,
     std::vector<std::string> const&      response_room_ids) -> SlidingSyncExtensionResponses
 {
+    // Reap stale typing rows before any extension reads them, so tests and
+    // production callers alike see consistent stop-typing behaviour.
+    std::ignore = homeserver::reap_expired_typing(rt);
+
     auto resp = SlidingSyncExtensionResponses{};
 
     if (ext_req.to_device.has_value() && ext_req.to_device->enabled)

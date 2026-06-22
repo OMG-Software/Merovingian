@@ -241,6 +241,38 @@ namespace
 
 } // namespace
 
+auto reap_expired_typing(HomeserverRuntime& runtime, std::chrono::steady_clock::time_point now) -> bool
+{
+    // Ensure generated stream ids exceed every existing typing row so the
+    // stop-typing event is always visible to incremental syncs.
+    auto max_stream_id = std::uint64_t{0U};
+    for (auto const& entry : runtime.typing_users)
+    {
+        max_stream_id = std::max(max_stream_id, entry.stream_id);
+    }
+    runtime.database.persistent_store.next_sync_stream_id =
+        std::max(runtime.database.persistent_store.next_sync_stream_id, max_stream_id);
+
+    auto reaped_any = false;
+    for (auto& entry : runtime.typing_users)
+    {
+        if (!entry.typing || now < entry.expires_at)
+        {
+            continue;
+        }
+        runtime.database.persistent_store.next_sync_stream_id += 1U;
+        entry.typing = false;
+        entry.stream_id = runtime.database.persistent_store.next_sync_stream_id;
+        reaped_any = true;
+    }
+    if (reaped_any && runtime.sync_notifier != nullptr)
+    {
+        runtime.sync_notifier->publish(runtime.database.next_stream_ordering - 1U,
+                                       runtime.database.persistent_store.next_sync_stream_id);
+    }
+    return reaped_any;
+}
+
 HomeserverRuntime::HomeserverRuntime()
     : audit_sink_scope{std::make_unique<LocalDatabaseScope>(database)}
 {
@@ -450,8 +482,9 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
         });
         return {false, "no runtime listeners configured", {}};
     }
-    log_diagnostic("start.listeners_ready", {
-                                                {"listener_count", std::to_string(runtime.listeners.count()), false}
+    log_diagnostic("start.listeners_ready",
+                   {
+                       {"listener_count", std::to_string(runtime.listeners.count()), false}
     },
                    observability::LogEventSeverity::info);
 
@@ -510,9 +543,10 @@ auto start_runtime(config::Config const& config, database::SchemaState existing_
         return platform::apply_runtime_hardening_controls(platform::default_portable_hardening_profile());
 #endif
     }();
-    log_diagnostic("start.hardening_controls", {
-                                                   {"accepted", hardening_controls.accepted ? "true" : "false", false},
-                                                   {"reason",   hardening_controls.reason,                      false},
+    log_diagnostic("start.hardening_controls",
+                   {
+                       {"accepted", hardening_controls.accepted ? "true" : "false", false},
+                       {"reason",   hardening_controls.reason,                      false},
     },
                    observability::LogEventSeverity::info);
     runtime.hardening = platform::run_startup_hardening_self_check();

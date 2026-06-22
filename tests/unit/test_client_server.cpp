@@ -34,8 +34,10 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cstdint>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <sodium.h>
@@ -139,6 +141,62 @@ namespace
 [[nodiscard]] auto sync_next_batch(std::string const& body) -> std::string
 {
     return json_value(body, "\"next_batch\":\"");
+}
+
+// Returns the user_ids array from the first m.typing ephemeral event in the
+// named joined room, or nullptr if there is no such event.
+[[nodiscard]] auto typing_user_ids_for_room(merovingian::canonicaljson::Object const& sync_body,
+                                            std::string_view room_id) -> merovingian::canonicaljson::Array const*
+{
+    using merovingian::tests::object_member_as_array;
+    using merovingian::tests::object_member_as_object;
+    using merovingian::tests::string_member;
+
+    auto const* rooms = object_member_as_object(sync_body, "rooms");
+    if (rooms == nullptr)
+    {
+        return nullptr;
+    }
+    auto const* join = object_member_as_object(*rooms, "join");
+    if (join == nullptr)
+    {
+        return nullptr;
+    }
+    auto const* room = object_member_as_object(*join, room_id);
+    if (room == nullptr)
+    {
+        return nullptr;
+    }
+    auto const* ephemeral = object_member_as_object(*room, "ephemeral");
+    if (ephemeral == nullptr)
+    {
+        return nullptr;
+    }
+    auto const* events = object_member_as_array(*ephemeral, "events");
+    if (events == nullptr)
+    {
+        return nullptr;
+    }
+    for (auto const& event : *events)
+    {
+        auto const* event_obj = std::get_if<merovingian::canonicaljson::Object>(&event.storage());
+        if (event_obj == nullptr)
+        {
+            continue;
+        }
+        auto const* type = string_member(*event_obj, "type");
+        if (type == nullptr || *type != "m.typing")
+        {
+            continue;
+        }
+        auto const* content = object_member_as_object(*event_obj, "content");
+        if (content == nullptr)
+        {
+            continue;
+        }
+        return object_member_as_array(*content, "user_ids");
+    }
+    return nullptr;
 }
 
 auto upload_device_keys(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& token,
@@ -6870,6 +6928,129 @@ SCENARIO("sending a message clears the sender's in-room typing state", "[homeser
                 {
                     REQUIRE_FALSE(typing_after->typing);
                 }
+            }
+        }
+    }
+}
+
+SCENARIO("typing timeout expires and the next sync clears the indicator",
+         "[homeserver][client-server][typing][sync]")
+{
+    GIVEN("alice and bob in a room, with alice typing on a short timeout")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime,
+                    {"POST", "/_matrix/client/v3/register", {},
+                     merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                    .response.status == 200U);
+
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_DEV"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+
+        auto const bob_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@bob:example.org"},"password":"CorrectHorse8!","device_id":"BOB_DEV"})"});
+        REQUIRE(bob_login.response.status == 200U);
+        auto const bob_token = login_token(bob_login.response.body);
+
+        auto const room_resp = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST", "/_matrix/client/v3/createRoom", alice_token,
+                      R"({"invite":["@bob:example.org"],"preset":"private_chat"})"});
+        REQUIRE(room_resp.response.status == 200U);
+        auto const created_room_id = room_id(room_resp.response.body);
+
+        // Bob accepts the invite so he can observe alice's typing state.
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/rooms/" + created_room_id + "/join", bob_token, "{}"})
+                    .response.status == 200U);
+
+        // Bob takes an initial sync so he has a since token.
+        auto const bob_initial = merovingian::homeserver::handle_client_server_request(
+            runtime, {"GET", "/_matrix/client/v3/sync", bob_token, {}});
+        REQUIRE(bob_initial.response.status == 200U);
+        auto const bob_since = sync_next_batch(bob_initial.response.body);
+
+        // Alice starts typing with a 100 ms timeout.
+        auto const typing = merovingian::homeserver::handle_client_server_request(
+            runtime, {"PUT", "/_matrix/client/v3/rooms/" + created_room_id + "/typing/@alice:example.org", alice_token,
+                      R"({"typing":true,"timeout":100})"});
+        REQUIRE(typing.response.status == 200U);
+
+        WHEN("bob syncs immediately")
+        {
+            auto const bob_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + bob_since, bob_token, {}});
+
+            THEN("he sees alice in the typing list")
+            {
+                REQUIRE(bob_sync.response.status == 200U);
+                auto const body = parse_object(bob_sync.response.body);
+                auto const* user_ids = typing_user_ids_for_room(body, created_room_id);
+                REQUIRE(user_ids != nullptr);
+                REQUIRE(user_ids->size() == 1U);
+                auto const* user = std::get_if<std::string>(&(*user_ids)[0].storage());
+                REQUIRE(user != nullptr);
+                REQUIRE(*user == "@alice:example.org");
+            }
+        }
+
+        WHEN("the timeout elapses and bob syncs again")
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds{150});
+            auto const bob_sync = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/sync?since=" + bob_since, bob_token, {}});
+
+            THEN("the m.typing event carries an empty user list")
+            {
+                REQUIRE(bob_sync.response.status == 200U);
+                auto const body = parse_object(bob_sync.response.body);
+                auto const* user_ids = typing_user_ids_for_room(body, created_room_id);
+                REQUIRE(user_ids != nullptr);
+                REQUIRE(user_ids->empty());
+            }
+        }
+    }
+}
+
+SCENARIO("reap_expired_typing marks stale rows as not typing and advances the sync stream",
+         "[homeserver][runtime][typing]")
+{
+    GIVEN("a runtime with a typing row whose expiry is in the past")
+    {
+        auto runtime     = merovingian::homeserver::HomeserverRuntime{};
+        auto const past  = std::chrono::steady_clock::now() - std::chrono::milliseconds{1};
+        auto const before_stream = runtime.database.persistent_store.next_sync_stream_id;
+        runtime.typing_users = {
+            {"!room:example.org", "@alice:example.org", true, 1U, past},
+        };
+
+        WHEN("reap_expired_typing runs")
+        {
+            auto const reaped = merovingian::homeserver::reap_expired_typing(runtime, std::chrono::steady_clock::now());
+
+            THEN("the row is cleared and the sync stream id advances")
+            {
+                REQUIRE(reaped);
+                REQUIRE(runtime.typing_users.front().typing == false);
+                REQUIRE(runtime.typing_users.front().stream_id > before_stream);
             }
         }
     }

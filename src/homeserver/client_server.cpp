@@ -2681,16 +2681,30 @@ namespace
         return state_events;
     }
 
-    [[nodiscard]] auto build_room_ephemeral_events_array(HomeserverRuntime const& runtime, std::string_view room_id,
+    [[nodiscard]] auto build_room_ephemeral_events_array(HomeserverRuntime& runtime, std::string_view room_id,
                                                          std::uint64_t since_sync_stream_id,
-                                                         std::uint64_t& max_observed_stream_id) -> canonicaljson::Array
+                                                         std::uint64_t& max_observed_stream_id,
+                                                         std::chrono::steady_clock::time_point now) -> canonicaljson::Array
     {
         auto events = canonicaljson::Array{};
 
+        // Reap typing rows whose timeout has expired; this bumps their stream
+        // id so the stop-typing event is delivered to clients.
+        std::ignore = reap_expired_typing(runtime, now);
+
         auto typing_user_ids = canonicaljson::Array{};
+        auto typing_changed  = false;
         for (auto const& typing : runtime.typing_users)
         {
-            if (typing.room_id != room_id || !typing.typing || typing.stream_id <= since_sync_stream_id)
+            if (typing.room_id != room_id)
+            {
+                continue;
+            }
+            if (typing.stream_id > since_sync_stream_id)
+            {
+                typing_changed = true;
+            }
+            if (!typing.typing)
             {
                 continue;
             }
@@ -2700,7 +2714,7 @@ namespace
                 max_observed_stream_id = typing.stream_id;
             }
         }
-        if (!typing_user_ids.empty())
+        if (typing_changed)
         {
             events.push_back(json_obj({
                 json_member("type", json_str("m.typing")),
@@ -2991,6 +3005,7 @@ namespace
 
         auto const sync_stream_upper_bound = store.next_sync_stream_id;
         auto max_observed_sync_stream_id = since_sync_stream_id;
+        auto const now = std::chrono::steady_clock::now();
         auto join_members = canonicaljson::Object{};
         auto join_count = std::size_t{0U};
 
@@ -3079,8 +3094,8 @@ namespace
             {
                 state_events = build_current_state_events_array(store, filter.room.state, room.room_id);
             }
-            auto ephemeral_events = build_room_ephemeral_events_array(rt.homeserver, room.room_id, since_sync_stream_id,
-                                                                      max_observed_sync_stream_id);
+            auto ephemeral_events = build_room_ephemeral_events_array(
+                rt.homeserver, room.room_id, since_sync_stream_id, max_observed_sync_stream_id, now);
 
             // Incremental sync: suppress rooms that have nothing new to report.
             // Without this check, re-dispatches after a long-poll timeout emit
@@ -3443,7 +3458,8 @@ namespace
         auto const conn_key = std::string{user} + "/" + std::string{device_id} + "/" +
                               (ssreq.conn_id.has_value() ? *ssreq.conn_id : "__default__");
         auto& conn = rt.homeserver.sliding_sync_connections[conn_key];
-        conn.last_used = std::chrono::steady_clock::now();
+        auto const now = std::chrono::steady_clock::now();
+        conn.last_used = now;
 
         // When the client omits pos (a timeout=0 poll that always requests an
         // immediate snapshot without a since-token) but this connection already
@@ -8533,6 +8549,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                 // clients that omit it remain compatible, but honour the parsed
                 // value when present.
                 auto is_typing = true;
+                auto timeout_ms = std::chrono::milliseconds{30'000};
                 {
                     auto const body_obj = parsed_json_object(req.body);
                     if (body_obj.has_value())
@@ -8542,8 +8559,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                         {
                             is_typing = *typing_val;
                         }
+                        auto const* timeout_val = integer_member(*body_obj, "timeout");
+                        if (timeout_val != nullptr && *timeout_val > 0)
+                        {
+                            timeout_ms = std::chrono::milliseconds{*timeout_val};
+                        }
                     }
                 }
+                auto const expires_at = std::chrono::steady_clock::now() + (is_typing ? timeout_ms : std::chrono::milliseconds{0});
                 log_diagnostic("room.typing.accepted",
                                {
                                    {"actor",   *user,           false},
@@ -8578,13 +8601,14 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
                     auto const stream_id = rt.homeserver.database.persistent_store.next_sync_stream_id;
                     if (existing != rt.homeserver.typing_users.end())
                     {
-                        existing->typing = is_typing;
-                        existing->stream_id = stream_id;
+                        existing->typing     = is_typing;
+                        existing->stream_id  = stream_id;
+                        existing->expires_at = expires_at;
                     }
                     else
                     {
                         rt.homeserver.typing_users.push_back(
-                            {typing->room_id, std::string{*user}, is_typing, stream_id});
+                            {typing->room_id, std::string{*user}, is_typing, stream_id, expires_at});
                     }
                 }
                 if (rt.sync_notifier != nullptr)

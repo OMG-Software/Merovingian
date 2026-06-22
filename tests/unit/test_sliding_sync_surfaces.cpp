@@ -8,9 +8,11 @@
 
 #include <catch2/catch_test_macros.hpp>
 
+#include <chrono>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -371,6 +373,41 @@ SCENARIO("Sliding sync extensions build scoped to-device e2ee account-data recei
                 auto const* typing_user = std::get_if<std::string>(&(*user_ids)[0].storage());
                 REQUIRE(typing_user != nullptr);
                 REQUIRE(*typing_user == "@bob:example.org");
+            }
+        }
+    }
+}
+
+SCENARIO("Sliding sync typing extension reaps expired typing rows and emits an empty user list",
+         "[sync][sliding-sync][extensions][typing]")
+{
+    GIVEN("a typing row that has expired")
+    {
+        auto runtime = merovingian::homeserver::HomeserverRuntime{};
+        auto const past = std::chrono::steady_clock::now() - std::chrono::milliseconds{1};
+        runtime.typing_users = {
+            {"!room-b:example.org", "@bob:example.org", true, 3U, past},
+        };
+
+        auto store    = merovingian::database::PersistentStore{};
+        auto requests = merovingian::sync::SlidingSyncExtensionRequests{};
+        requests.typing = merovingian::sync::ExtTypingRequest{true, {"!room-b:example.org"}};
+
+        WHEN("the extension is built with since lower than the typing row")
+        {
+            auto const responses = merovingian::sync::build_extensions(
+                runtime, "@alice:example.org", "ALICE", requests, 2U, 5U, store, {});
+
+            THEN("the response contains an empty user_ids list for the room")
+            {
+                REQUIRE(responses.typing.has_value());
+                REQUIRE(responses.typing->rooms_json.size() == 1U);
+                REQUIRE(responses.typing->rooms_json.contains("!room-b:example.org"));
+                auto const typing_content = parse_object(
+                    responses.typing->rooms_json.at("!room-b:example.org"));
+                auto const* user_ids = array_member(typing_content, "user_ids");
+                REQUIRE(user_ids != nullptr);
+                REQUIRE(user_ids->empty());
             }
         }
     }

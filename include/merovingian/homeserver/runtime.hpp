@@ -121,6 +121,10 @@ struct InboundTypingUser final
     std::string user_id{};
     bool typing{false};
     std::uint64_t stream_id{0U};
+    // Moment after which this typing indicator is considered stale.  Defaults
+    // to the distant future so test fixtures and legacy entries that never set
+    // a timeout remain visible until explicitly cleared.
+    std::chrono::steady_clock::time_point expires_at{std::chrono::steady_clock::time_point::max()};
 };
 
 struct InboundReceipt final
@@ -183,6 +187,22 @@ struct HomeserverRuntime final
     // requests can continue while a federation round-trip is in flight.
     mutable std::recursive_mutex mutex{};
 };
+
+// Default timeout applied to inbound federation typing EDUs, which do not
+// carry a client-supplied timeout.  30 s matches common client refresh
+// intervals and prevents remote typing indicators from sticking forever.
+[[nodiscard]] constexpr auto federation_typing_timeout() noexcept -> std::chrono::milliseconds
+{
+    return std::chrono::milliseconds{30'000};
+}
+
+// Scan in-memory typing rows and mark any whose expiry has passed as no
+// longer typing, bumping their sync stream id so the next /sync or sliding
+// sync response can emit an updated (possibly empty) m.typing user list.
+// Returns true if any row was reaped.  Callers must hold runtime.mutex.
+[[nodiscard]] auto reap_expired_typing(
+    HomeserverRuntime& runtime,
+    std::chrono::steady_clock::time_point now = std::chrono::steady_clock::now()) -> bool;
 
 struct RuntimeStartResult final
 {
