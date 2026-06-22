@@ -42,7 +42,7 @@ The most secure Matrix Protocol homeserver ever created. Secure by design, imple
 - Bump the version number on creating a new branch. See versioning doc for all the places where the version number needs updating.
 - Record changes for each version in CHANGELOG.md
 - Ignore `.clwb` folder.
-- Ignore `build*/` directories (Meson build output).
+- Ignore directories starting with `build` in the project root (Meson build output).
 - Always work in feature or bug branches, never main.
 - Make the correct change for the ask, not the smallest.
 - Update `CHANGELOG.md` on every change.
@@ -119,15 +119,35 @@ More specific guidance lives alongside the code it governs. Read the relevant fi
 |---|---|
 | `src/AGENTS.md` | Implementation conventions: SPDX header, include order, anonymous namespaces, error handling |
 | `include/merovingian/AGENTS.md` | Header design: `#pragma once`, forward declarations, namespace rules |
+| `src/auth/AGENTS.md` | Auth: token lifecycle, UIAA, constant-time comparison, password hashing |
+| `src/canonicaljson/AGENTS.md` | Canonical JSON: encoding rules, signing pipeline, serializer constraints |
+| `src/config/AGENTS.md` | Config: parse-time validation, hot-reload, size limit parsing |
+| `src/core/AGENTS.md` | Core primitives: `SecretBuffer`, `FileDescriptor`, `Error`, `query_params` |
 | `src/crypto/AGENTS.md` | Crypto security boundary: libsodium isolation, constant-time, key validation |
-| `src/federation/AGENTS.md` | Federation security rules: X-Matrix auth, PDU verification, key cache |
+| `src/database/AGENTS.md` | Database: prepared statements, backend abstraction, migration rules |
 | `src/events/AGENTS.md` | Event pipeline: canonical JSON, signing, auth rules, state resolution, redaction |
+| `src/federation/AGENTS.md` | Federation security rules: X-Matrix auth, PDU verification, key cache |
+| `src/homeserver/AGENTS.md` | Homeserver orchestration: client-server dispatch, local router boundary, media upload |
+| `src/http/AGENTS.md` | HTTP transport: rate limiting, header lookup, outbound client |
+| `src/media/AGENTS.md` | Media: internal pipe format, MIME policy, quarantine, thumbnail worker |
+| `src/net/AGENTS.md` | Network: TCP acceptor, thread pool, graceful shutdown, CLOEXEC |
+| `src/observability/AGENTS.md` | Logging: level policy, audit events, secret redaction |
+| `src/platform/AGENTS.md` | Platform hardening: seccomp, ELF probe, self-check, file metadata safety |
+| `src/rooms/AGENTS.md` | Rooms: room version policy, encryption policy, power levels |
+| `src/sync/AGENTS.md` | Sync: stream tokens, sliding sync, long-poll, sync notifier |
+| `src/trust_safety/AGENTS.md` | Trust & safety: policy engine, content moderation |
 | `tests/unit/AGENTS.md` | Unit test structure and what belongs here vs conformance vs integration |
 | `tests/conformance/AGENTS.md` | Conformance test rules: spec citation format, non-negotiable assertions |
 | `tests/integration/AGENTS.md` | Integration test structure and real-dependency requirements |
 | `tests/fuzz/AGENTS.md` | Fuzz target conventions and regression test policy |
+| `tests/smoke/AGENTS.md` | Smoke test scope: startup, basic HTTP, migration |
+| `tests/fixtures/AGENTS.md` | Complement fixture format: step schema, supported fields |
+| `tests/support/AGENTS.md` | Test helpers: `master_key`, `json_test_support`, registration token |
 | `migrations/AGENTS.md` | Migration format, numbering, and safety rules |
 | `docs/AGENTS.md` | Which documents to update and when |
+| `scripts/AGENTS.md` | Build and lint scripts: what each does, idempotency rules |
+| `packaging/AGENTS.md` | OS package metadata: version sync, privilege drop, systemd hardening |
+| `security/AGENTS.md` | Security coding rules: update criteria, reject-unsafe gate |
 
 ## Matrix Spec v1.18 Reference
 Base: docs/matrix-v1.18-spec/index.md
