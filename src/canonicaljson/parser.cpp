@@ -180,6 +180,13 @@ namespace
             return raw == nullptr ? ConvertResult{{}, ParseError::unexpected_token}
                                   : raw_number_as_int64({raw, length});
         }
+        case MEROVINGIAN_YYJSON_TYPE_NUMBER: {
+            if (merovingian_yyjson_number_is_integer(value) != 0)
+            {
+                return {Value{static_cast<std::int64_t>(merovingian_yyjson_number_as_int64(value))}, ParseError::none};
+            }
+            return {Value{merovingian_yyjson_number_as_double(value)}, ParseError::none};
+        }
         case MEROVINGIAN_YYJSON_TYPE_STRING: {
             auto length = std::size_t{0U};
             auto const* data = merovingian_yyjson_string_data(value, &length);
@@ -400,6 +407,36 @@ auto parse_lossless(std::string_view input) -> ParseResult
     // count as an error code; we have to compare document->dat_read against
     // the input length ourselves. A successful read that did not consume
     // every byte is treated as trailing_data, per canonical JSON.
+    if (merovingian_yyjson_doc_bytes_read(document.get()) != owned_input.size())
+    {
+        return {{}, ParseError::trailing_data};
+    }
+
+    auto converted = convert_yyjson_value(merovingian_yyjson_doc_root(document.get()), 0U);
+    return {std::move(converted.value), converted.error};
+}
+
+auto parse_json(std::string_view input) -> ParseResult
+{
+    if (input_is_blank(input))
+    {
+        return {{}, ParseError::unexpected_end};
+    }
+
+    if (!utf8_is_valid(input))
+    {
+        return {{}, ParseError::invalid_string};
+    }
+
+    auto owned_input = std::string{input};
+    auto error = MEROVINGIAN_YYJSON_READ_SUCCESS;
+    auto* document_ptr = merovingian_yyjson_read_numbers(owned_input.data(), owned_input.size(), &error);
+    auto document = YyjsonDocument{document_ptr};
+    if (document == nullptr)
+    {
+        return {{}, map_yyjson_error(error)};
+    }
+
     if (merovingian_yyjson_doc_bytes_read(document.get()) != owned_input.size())
     {
         return {{}, ParseError::trailing_data};

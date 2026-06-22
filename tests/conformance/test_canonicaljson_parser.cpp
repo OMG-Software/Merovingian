@@ -22,6 +22,7 @@
 // |  concluding that a failing assertion is wrong.                           |
 // +-------------------------------------------------------------------------+
 
+#include "../support/json_test_support.hpp"
 #include "merovingian/canonicaljson/parser.hpp"
 #include "merovingian/canonicaljson/serializer.hpp"
 #include "merovingian/canonicaljson/signable.hpp"
@@ -167,29 +168,29 @@ SCENARIO("Canonical JSON parser accepts integers within the spec's safe integer 
 {
     GIVEN("integer literals within -(2^53)+1 to (2^53)-1 inclusive")
     {
-        auto constexpr zero               = "0";
-        auto constexpr positive_small     = "42";
-        auto constexpr negative_small     = "-7";
+        auto constexpr zero = "0";
+        auto constexpr positive_small = "42";
+        auto constexpr negative_small = "-7";
         // Exact spec boundaries: -(2^53)+1 = -9007199254740991, (2^53)-1 = 9007199254740991
-        auto constexpr spec_min           = "-9007199254740991";
-        auto constexpr spec_max           = "9007199254740991";
+        auto constexpr spec_min = "-9007199254740991";
+        auto constexpr spec_max = "9007199254740991";
 
         WHEN("each integer is parsed")
         {
-            auto const zero_result     = merovingian::canonicaljson::parse_lossless(zero);
-            auto const pos_result      = merovingian::canonicaljson::parse_lossless(positive_small);
-            auto const neg_result      = merovingian::canonicaljson::parse_lossless(negative_small);
-            auto const min_result      = merovingian::canonicaljson::parse_lossless(spec_min);
-            auto const max_result      = merovingian::canonicaljson::parse_lossless(spec_max);
+            auto const zero_result = merovingian::canonicaljson::parse_lossless(zero);
+            auto const pos_result = merovingian::canonicaljson::parse_lossless(positive_small);
+            auto const neg_result = merovingian::canonicaljson::parse_lossless(negative_small);
+            auto const min_result = merovingian::canonicaljson::parse_lossless(spec_min);
+            auto const max_result = merovingian::canonicaljson::parse_lossless(spec_max);
 
             THEN("all in-range integers parse without error")
             {
                 // Spec MUST: integers within [-(2^53)+1, (2^53)-1] are valid.
                 REQUIRE(zero_result.error == merovingian::canonicaljson::ParseError::none);
-                REQUIRE(pos_result.error  == merovingian::canonicaljson::ParseError::none);
-                REQUIRE(neg_result.error  == merovingian::canonicaljson::ParseError::none);
-                REQUIRE(min_result.error  == merovingian::canonicaljson::ParseError::none);
-                REQUIRE(max_result.error  == merovingian::canonicaljson::ParseError::none);
+                REQUIRE(pos_result.error == merovingian::canonicaljson::ParseError::none);
+                REQUIRE(neg_result.error == merovingian::canonicaljson::ParseError::none);
+                REQUIRE(min_result.error == merovingian::canonicaljson::ParseError::none);
+                REQUIRE(max_result.error == merovingian::canonicaljson::ParseError::none);
             }
         }
     }
@@ -207,11 +208,11 @@ SCENARIO("Canonical JSON parser rejects integers outside the spec's safe integer
     GIVEN("integer literals that exceed the spec-mandated safe integer range")
     {
         // These are OUTSIDE [-(2^53)+1, (2^53)-1]:
-        auto constexpr beyond_spec_max    = "9007199254740992";   // (2^53) — one past the spec max
-        auto constexpr beyond_spec_min    = "-9007199254740992";  // -(2^53) — one past the spec min
+        auto constexpr beyond_spec_max = "9007199254740992";  // (2^53) — one past the spec max
+        auto constexpr beyond_spec_min = "-9007199254740992"; // -(2^53) — one past the spec min
         // int64 boundary values are also outside the spec range:
-        auto constexpr int64_max          = "9223372036854775807";
-        auto constexpr int64_min          = "-9223372036854775808";
+        auto constexpr int64_max = "9223372036854775807";
+        auto constexpr int64_min = "-9223372036854775808";
 
         WHEN("each out-of-range integer is parsed")
         {
@@ -234,8 +235,7 @@ SCENARIO("Canonical JSON parser rejects integers outside the spec's safe integer
     }
 }
 
-SCENARIO("Canonical JSON parser rejects trailing garbage after a complete value",
-         "[canonicaljson][parser]")
+SCENARIO("Canonical JSON parser rejects trailing garbage after a complete value", "[canonicaljson][parser]")
 {
     GIVEN("a complete JSON value followed by a second top-level value")
     {
@@ -352,9 +352,9 @@ SCENARIO("Canonical JSON spec test vectors produce the exact expected output",
             {R"({"b":"2","a":"1"})", R"({"a":"1","b":"2"})"},
             // Nested object — keys at every level MUST be sorted
             {
-                R"({"auth":{"success":true,"mxid":"@john:example.com","profile":{"display_name":"John Doe","three_pids":[{"medium":"email","address":"john@example.com"}]}},"nonce":"xxxx"})",
-                R"({"auth":{"mxid":"@john:example.com","profile":{"display_name":"John Doe","three_pids":[{"address":"john@example.com","medium":"email"}]},"success":true},"nonce":"xxxx"})",
-            },
+             R"({"auth":{"success":true,"mxid":"@john:example.com","profile":{"display_name":"John Doe","three_pids":[{"medium":"email","address":"john@example.com"}]}},"nonce":"xxxx"})",
+             R"({"auth":{"mxid":"@john:example.com","profile":{"display_name":"John Doe","three_pids":[{"address":"john@example.com","medium":"email"}]},"success":true},"nonce":"xxxx"})",
+             },
             // Control character U+0000: \u0000 JSON escape MUST round-trip as \u0000
             {"{\"a\":\"\\u0000\"}", "{\"a\":\"\\u0000\"}"},
         };
@@ -429,6 +429,71 @@ SCENARIO("Canonical JSON parse error names are stable", "[canonicaljson][parser]
                 REQUIRE(no_error_name == "none");
                 REQUIRE(duplicate_key_name == "duplicate_object_key");
                 REQUIRE(integer_range_name == "integer_out_of_range");
+            }
+        }
+    }
+}
+
+SCENARIO("General JSON parser accepts doubles used by room tags and account data", "[canonicaljson][parser]")
+{
+    GIVEN("a JSON object containing a fractional number")
+    {
+        auto constexpr input = R"({"order":0.5})";
+
+        WHEN("it is parsed with the general JSON parser")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_json(input);
+
+            THEN("the double is preserved and the canonical parser would have rejected it")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* order_member = merovingian::tests::object_member(*root, "order");
+                REQUIRE(order_member != nullptr);
+                auto const* order_double = std::get_if<double>(&order_member->storage());
+                REQUIRE(order_double != nullptr);
+                REQUIRE(*order_double == 0.5);
+
+                auto const canonical = merovingian::canonicaljson::parse_lossless(input);
+                REQUIRE(canonical.error == merovingian::canonicaljson::ParseError::invalid_number);
+            }
+        }
+    }
+
+    GIVEN("a JSON object containing exponent notation")
+    {
+        auto constexpr input = R"({"value":1.25e2})";
+
+        WHEN("it is parsed with the general JSON parser")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_json(input);
+
+            THEN("the number is preserved as a double")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
+                auto const* root = std::get_if<merovingian::canonicaljson::Object>(&parsed.value.storage());
+                REQUIRE(root != nullptr);
+                auto const* value_member = merovingian::tests::object_member(*root, "value");
+                REQUIRE(value_member != nullptr);
+                auto const* value_double = std::get_if<double>(&value_member->storage());
+                REQUIRE(value_double != nullptr);
+                REQUIRE(*value_double == 125.0);
+            }
+        }
+    }
+
+    GIVEN("a JSON value with trailing garbage")
+    {
+        auto constexpr input = "{} extra";
+
+        WHEN("it is parsed with the general JSON parser")
+        {
+            auto const parsed = merovingian::canonicaljson::parse_json(input);
+
+            THEN("trailing data is rejected")
+            {
+                REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::trailing_data);
             }
         }
     }

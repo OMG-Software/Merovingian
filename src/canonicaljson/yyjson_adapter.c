@@ -82,6 +82,18 @@ MerovingianYyjsonDoc* merovingian_yyjson_read_raw_numbers(char const* data, size
     return document;
 }
 
+MerovingianYyjsonDoc* merovingian_yyjson_read_numbers(char const* data, size_t length,
+                                                      MerovingianYyjsonReadCode* error_code)
+{
+    yyjson_read_err error;
+    yyjson_doc* document = yyjson_read_opts((char*)data, length, YYJSON_READ_NOFLAG, NULL, &error);
+    if (error_code != NULL)
+    {
+        *error_code = merovingian_yyjson_map_read_code(error.code);
+    }
+    return document;
+}
+
 void merovingian_yyjson_doc_free(MerovingianYyjsonDoc* document)
 {
     yyjson_doc_free(document);
@@ -110,6 +122,10 @@ MerovingianYyjsonValueType merovingian_yyjson_value_type(MerovingianYyjsonValue*
     if (yyjson_is_raw(value))
     {
         return MEROVINGIAN_YYJSON_TYPE_RAW;
+    }
+    if (yyjson_is_num(value))
+    {
+        return MEROVINGIAN_YYJSON_TYPE_NUMBER;
     }
     if (yyjson_is_str(value))
     {
@@ -147,6 +163,21 @@ char const* merovingian_yyjson_string_data(MerovingianYyjsonValue* value, size_t
         *length = yyjson_get_len(value);
     }
     return yyjson_get_str(value);
+}
+
+int merovingian_yyjson_number_is_integer(MerovingianYyjsonValue* value)
+{
+    return yyjson_is_int(value) ? 1 : 0;
+}
+
+long long merovingian_yyjson_number_as_int64(MerovingianYyjsonValue* value)
+{
+    return (long long)yyjson_get_sint(value);
+}
+
+double merovingian_yyjson_number_as_double(MerovingianYyjsonValue* value)
+{
+    return yyjson_get_real(value);
 }
 
 size_t merovingian_yyjson_array_size(MerovingianYyjsonValue* value)

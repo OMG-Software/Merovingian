@@ -34,12 +34,13 @@ using Object = std::vector<ObjectMember>;
 class Value final
 {
 public:
-    using Storage = std::variant<std::nullptr_t, bool, std::int64_t, std::string, Array, Object>;
+    using Storage = std::variant<std::nullptr_t, bool, std::int64_t, double, std::string, Array, Object>;
 
     Value() = default;
     explicit Value(std::nullptr_t value);
     explicit Value(bool value);
     explicit Value(std::int64_t value);
+    explicit Value(double value);
     explicit Value(std::string value);
     explicit Value(Array value);
     explicit Value(Object value);

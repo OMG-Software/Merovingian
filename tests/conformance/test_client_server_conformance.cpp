@@ -9101,8 +9101,7 @@ SCENARIO("GET /user/{userId}/rooms/{roomId}/account_data/{type} returns 404 M_UN
 
 // --- GET /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags ----------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3useruseridrooms roomidtags
-// IMPLEMENTATION GAP: room tags not yet implemented.
-SCENARIO("GET /user/{userId}/rooms/{roomId}/tags returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("GET /user/{userId}/rooms/{roomId}/tags returns the room tag list",
          "[conformance][client-server][room-tagging]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
@@ -9118,14 +9117,13 @@ SCENARIO("GET /user/{userId}/rooms/{roomId}/tags returns 404 M_UNRECOGNIZED (imp
                 started.runtime,
                 {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with an empty tags object")
             {
-                // IMPLEMENTATION GAP: room tags not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(response.response.status == 200U);
+                auto const body = parse_object_json(response.response.body);
+                auto const* tags = object_member_as_object(body, "tags");
+                REQUIRE(tags != nullptr);
+                REQUIRE(tags->empty());
             }
         }
     }
@@ -9133,9 +9131,7 @@ SCENARIO("GET /user/{userId}/rooms/{roomId}/tags returns 404 M_UNRECOGNIZED (imp
 
 // --- PUT /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags/{tag} ----------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#put_matrixclientv3useruseridrooms roomidtagstag
-// IMPLEMENTATION GAP: room tag creation not yet implemented.
-SCENARIO("PUT /user/{userId}/rooms/{roomId}/tags/{tag} returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][room-tagging]")
+SCENARIO("PUT /user/{userId}/rooms/{roomId}/tags/{tag} stores a room tag", "[conformance][client-server][room-tagging]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
     {
@@ -9151,14 +9147,10 @@ SCENARIO("PUT /user/{userId}/rooms/{roomId}/tags/{tag} returns 404 M_UNRECOGNIZE
                 {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/u.work", token,
                  R"({"order":0.5})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with an empty object")
             {
-                // IMPLEMENTATION GAP: tag creation not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
             }
         }
     }
@@ -9166,8 +9158,7 @@ SCENARIO("PUT /user/{userId}/rooms/{roomId}/tags/{tag} returns 404 M_UNRECOGNIZE
 
 // --- DELETE /_matrix/client/v3/user/{userId}/rooms/{roomId}/tags/{tag} -------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#delete_matrixclientv3useruseridrooms roomidtagstag
-// IMPLEMENTATION GAP: room tag deletion not yet implemented.
-SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} returns 404 M_UNRECOGNIZED (implementation gap)",
+SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} removes a room tag",
          "[conformance][client-server][room-tagging]")
 {
     GIVEN("a running client-server and a logged-in user with a room")
@@ -9185,14 +9176,10 @@ SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} returns 404 M_UNRECOGN
                                   token,
                                   {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with an empty object")
             {
-                // IMPLEMENTATION GAP: tag deletion not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
             }
         }
     }
@@ -10453,13 +10440,13 @@ SCENARIO("GET /user/{userId}/rooms/{roomId}/tags conformance")
                 started.runtime,
                 {"GET", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags", token, {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with an empty tags object")
             {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(response.response.status == 200);
+                auto const body = parse_object_json(response.response.body);
+                auto const* tags = object_member_as_object(body, "tags");
+                REQUIRE(tags != nullptr);
+                REQUIRE(tags->empty());
             }
         }
     }
@@ -10481,13 +10468,10 @@ SCENARIO("PUT /user/{userId}/rooms/{roomId}/tags/{tag} conformance")
                 {"PUT", "/_matrix/client/v3/user/%40alice%3Aexample.org/rooms/" + room_id + "/tags/m.favourite", token,
                  R"({"order":0.5})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with an empty object")
             {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(response.response.status == 200);
+                REQUIRE(response.response.body == "{}");
             }
         }
     }
@@ -10511,13 +10495,10 @@ SCENARIO("DELETE /user/{userId}/rooms/{roomId}/tags/{tag} conformance")
                  token,
                  {}});
 
-            THEN("the server returns 404 M_UNRECOGNIZED")
+            THEN("the server returns 200 with an empty object")
             {
-                REQUIRE(response.response.status == 404);
-                auto const body = parse_object(response.response.body);
-                auto const* err = string_member(body, "errcode");
-                REQUIRE(err != nullptr);
-                REQUIRE(*err == "M_UNRECOGNIZED");
+                REQUIRE(response.response.status == 200);
+                REQUIRE(response.response.body == "{}");
             }
         }
     }

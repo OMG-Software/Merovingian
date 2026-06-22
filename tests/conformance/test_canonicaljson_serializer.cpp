@@ -37,18 +37,21 @@ SCENARIO("Canonical JSON serializes primitive values", "[canonicaljson]")
         auto const null_value = merovingian::canonicaljson::Value{nullptr};
         auto const bool_value = merovingian::canonicaljson::Value{true};
         auto const integer_value = merovingian::canonicaljson::Value{std::int64_t{-42}};
+        auto const double_value = merovingian::canonicaljson::Value{0.5};
 
         WHEN("they are serialized canonically")
         {
             auto const null_result = merovingian::canonicaljson::serialize_canonical(null_value);
             auto const bool_result = merovingian::canonicaljson::serialize_canonical(bool_value);
             auto const integer_result = merovingian::canonicaljson::serialize_canonical(integer_value);
+            auto const double_result = merovingian::canonicaljson::serialize_canonical(double_value);
 
             THEN("the compact JSON spellings are emitted")
             {
                 REQUIRE(null_result.output == "null");
                 REQUIRE(bool_result.output == "true");
                 REQUIRE(integer_result.output == "-42");
+                REQUIRE(double_result.output == "0.5");
             }
         }
     }
@@ -217,21 +220,21 @@ SCENARIO("Canonical JSON escapes all control characters U+0000 through U+001F as
     GIVEN("string values containing control characters")
     {
         // Values are built from raw bytes to avoid C++ escape sequence ambiguity.
-        auto nul_str   = merovingian::canonicaljson::Value{std::string("\x00", 1U)};     // U+0000
-        auto tab_str   = merovingian::canonicaljson::Value{std::string("\x09", 1U)};     // U+0009
-        auto lf_str    = merovingian::canonicaljson::Value{std::string("\x0a", 1U)};     // U+000A
-        auto cr_str    = merovingian::canonicaljson::Value{std::string("\x0d", 1U)};     // U+000D
-        auto us_str    = merovingian::canonicaljson::Value{std::string("\x1f", 1U)};     // U+001F
+        auto nul_str = merovingian::canonicaljson::Value{std::string("\x00", 1U)}; // U+0000
+        auto tab_str = merovingian::canonicaljson::Value{std::string("\x09", 1U)}; // U+0009
+        auto lf_str = merovingian::canonicaljson::Value{std::string("\x0a", 1U)};  // U+000A
+        auto cr_str = merovingian::canonicaljson::Value{std::string("\x0d", 1U)};  // U+000D
+        auto us_str = merovingian::canonicaljson::Value{std::string("\x1f", 1U)};  // U+001F
         // Space (U+0020) is the first character ABOVE the control range — MUST NOT be escaped.
-        auto space_str = merovingian::canonicaljson::Value{std::string(" ", 1U)};         // U+0020
+        auto space_str = merovingian::canonicaljson::Value{std::string(" ", 1U)}; // U+0020
 
         WHEN("each string is serialized canonically")
         {
-            auto const nul_out   = merovingian::canonicaljson::serialize_canonical(nul_str);
-            auto const tab_out   = merovingian::canonicaljson::serialize_canonical(tab_str);
-            auto const lf_out    = merovingian::canonicaljson::serialize_canonical(lf_str);
-            auto const cr_out    = merovingian::canonicaljson::serialize_canonical(cr_str);
-            auto const us_out    = merovingian::canonicaljson::serialize_canonical(us_str);
+            auto const nul_out = merovingian::canonicaljson::serialize_canonical(nul_str);
+            auto const tab_out = merovingian::canonicaljson::serialize_canonical(tab_str);
+            auto const lf_out = merovingian::canonicaljson::serialize_canonical(lf_str);
+            auto const cr_out = merovingian::canonicaljson::serialize_canonical(cr_str);
+            auto const us_out = merovingian::canonicaljson::serialize_canonical(us_str);
             auto const space_out = merovingian::canonicaljson::serialize_canonical(space_str);
 
             THEN("control characters are escaped per JSON canonical rules")
@@ -242,7 +245,8 @@ SCENARIO("Canonical JSON escapes all control characters U+0000 through U+001F as
                 REQUIRE(cr_out.output == "\"\\r\"");
                 REQUIRE(us_out.output == "\"\\u001f\"");
                 REQUIRE(space_out.output == "\" \"");
-            }        }
+            }
+        }
     }
 }
 
@@ -269,15 +273,13 @@ SCENARIO("Canonical JSON sorts object keys by Unicode code point (byte order)",
     {
         // Raw UTF-8: é = 0xC3 0xA9, 中 = 0xE4 0xB8 0xAD.
         // The keys are listed out of Unicode order to prove the serializer sorts them.
-        auto const json = std::string{
-            "{"
-            "\"z\":3,"
-            "\"A\":1,"
-            "\"\xE4\xB8\xAD\":5,"
-            "\"a\":2,"
-            "\"\xC3\xA9\":4"
-            "}"
-        };
+        auto const json = std::string{"{"
+                                      "\"z\":3,"
+                                      "\"A\":1,"
+                                      "\"\xE4\xB8\xAD\":5,"
+                                      "\"a\":2,"
+                                      "\"\xC3\xA9\":4"
+                                      "}"};
         auto const parsed = merovingian::canonicaljson::parse_lossless(json);
         REQUIRE(parsed.error == merovingian::canonicaljson::ParseError::none);
 
@@ -289,15 +291,13 @@ SCENARIO("Canonical JSON sorts object keys by Unicode code point (byte order)",
             {
                 REQUIRE(result.error == merovingian::canonicaljson::CanonicalJsonError::none);
                 // Spec MUST: "A" (0x41) < "a" (0x61) < "z" (0x7A) < "é" (0xC3…) < "中" (0xE4…)
-                auto const expected = std::string{
-                    "{"
-                    "\"A\":1,"
-                    "\"a\":2,"
-                    "\"z\":3,"
-                    "\"\xC3\xA9\":4,"
-                    "\"\xE4\xB8\xAD\":5"
-                    "}"
-                };
+                auto const expected = std::string{"{"
+                                                  "\"A\":1,"
+                                                  "\"a\":2,"
+                                                  "\"z\":3,"
+                                                  "\"\xC3\xA9\":4,"
+                                                  "\"\xE4\xB8\xAD\":5"
+                                                  "}"};
                 REQUIRE(result.output == expected);
             }
         }
@@ -309,8 +309,7 @@ SCENARIO("Canonical JSON sorts object keys by Unicode code point (byte order)",
 //
 // No insignificant whitespace: no spaces or newlines around ':' or ','
 // in the output. The output MUST be the most compact valid JSON.
-SCENARIO("Canonical JSON output contains no insignificant whitespace",
-         "[conformance][canonicaljson][whitespace]")
+SCENARIO("Canonical JSON output contains no insignificant whitespace", "[conformance][canonicaljson][whitespace]")
 {
     GIVEN("a populated object and array")
     {
