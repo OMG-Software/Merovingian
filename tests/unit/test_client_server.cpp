@@ -2825,6 +2825,7 @@ SCENARIO("Account 3PID unbind and delete report no-support for mismatched identi
     }
 }
 }
+}
 
 SCENARIO("OPTIONS preflight requests return 200 without requiring an access token",
          "[homeserver][client-server][cors][preflight]")
