@@ -318,11 +318,6 @@ auto parse_request_head(std::string_view input) -> RequestParseResult
         remaining = remaining.substr(line_end + 2U);
     }
 
-    if (result.request.content_length > limits.max_body_bytes)
-    {
-        result.error = RequestErrorCode::body_too_large;
-    }
-
     return result;
 }
 

@@ -1,3 +1,11 @@
+## 0.9.14
+
+### Fixed
+- **fix(media): media uploads larger than 1 MiB no longer rejected at HTTP parse layer with CORS-less 413:** `parse_request_head` checked `Content-Length` against a hard-coded 1 MiB default before the request reached `handle_client_server_request`, so any upload between 1 MiB and the configured `max_upload_size` (default 100 MiB) was refused at the transport layer with a 413 response that carried no `Access-Control-Allow-Origin` header — causing browsers to misreport it as a CORS error. The body-size check is removed from the parser (syntax validation only) and moved into `serve_stream`, where the target URL is available: `POST /_matrix/media/v3/upload` and `POST /_matrix/client/v1/media/upload` now use the configured `max_upload_size` cap; all other routes use the smaller general cap. When the cap is exceeded the 413 response now includes `Access-Control-Allow-Origin` derived from the request `Origin` header and the configured CORS policy, so browsers display the real 413 status rather than a spurious CORS error.
+
+### Added
+- **test(http): add BDD scenario verifying parser accepts large Content-Length without error:** `test_http_request.cpp` now includes a scenario asserting that `POST /_matrix/media/v3/upload` with `Content-Length: 2097152` (2 MiB) parses without error, confirming the parser no longer rejects bodies above 1 MiB.
+
 ## 0.9.13
 
 ### Fixed
