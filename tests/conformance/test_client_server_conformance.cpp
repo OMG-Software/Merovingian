@@ -147,8 +147,7 @@ using namespace merovingian::tests;
 [[nodiscard]] auto admin_token(merovingian::homeserver::ClientServerRuntime& runtime, std::string const& localpart)
     -> std::string
 {
-    auto const boot =
-        merovingian::homeserver::bootstrap_admin_user(runtime.homeserver, localpart, "CorrectHorse7!");
+    auto const boot = merovingian::homeserver::bootstrap_admin_user(runtime.homeserver, localpart, "CorrectHorse7!");
     REQUIRE(boot.ok);
     auto const login_body =
         std::string{"{\"type\":\"m.login.password\",\"identifier\":{\"type\":\"m.id.user\",\"user\":\"@"} + localpart +
@@ -340,11 +339,11 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
     auto const r = merovingian::homeserver::handle_client_server_request(
         runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn, token,
                   std::string{R"({"msgtype":"m.text","body":")"} + text + R"("})"});
-    REQUIRE(r.response.status == 200U);
-    auto const body = parse_object(r.response.body);
-    auto const* eid = string_member(body, "event_id");
-    REQUIRE(eid != nullptr);
-    return *eid;
+REQUIRE(r.response.status == 200U);
+auto const body = parse_object(r.response.body);
+auto const* eid = string_member(body, "event_id");
+REQUIRE(eid != nullptr);
+return *eid;
 }
 
 // Collects the event_id of every event object in a timeline/chunk "events" array.
@@ -2811,29 +2810,29 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token", "[conform
                                   {},
                                   std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"});
 
-            THEN("the response is 200 with access_token, refresh_token, and expires_in_ms")
-            {
-                // Spec MUST: 200 on valid refresh token.
-                REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
+        THEN("the response is 200 with access_token, refresh_token, and expires_in_ms")
+        {
+            // Spec MUST: 200 on valid refresh token.
+            REQUIRE(response.response.status == 200U);
+            auto const body = parse_object(response.response.body);
 
-                // Spec MUST: the refreshed access_token is a non-empty string.
-                auto const* access_token = string_member(body, "access_token");
-                REQUIRE(access_token != nullptr);
-                REQUIRE(!access_token->empty());
+            // Spec MUST: the refreshed access_token is a non-empty string.
+            auto const* access_token = string_member(body, "access_token");
+            REQUIRE(access_token != nullptr);
+            REQUIRE(!access_token->empty());
 
-                // Spec MUST: the refreshed refresh_token is returned for next rotation.
-                auto const* new_rt = string_member(body, "refresh_token");
-                REQUIRE(new_rt != nullptr);
-                REQUIRE(!new_rt->empty());
+            // Spec MUST: the refreshed refresh_token is returned for next rotation.
+            auto const* new_rt = string_member(body, "refresh_token");
+            REQUIRE(new_rt != nullptr);
+            REQUIRE(!new_rt->empty());
 
-                // Spec MUST: expires_in_ms is a positive integer.
-                auto const* expires = int_member(body, "expires_in_ms");
-                REQUIRE(expires != nullptr);
-                REQUIRE(*expires > 0);
-            }
+            // Spec MUST: expires_in_ms is a positive integer.
+            auto const* expires = int_member(body, "expires_in_ms");
+            REQUIRE(expires != nullptr);
+            REQUIRE(*expires > 0);
         }
     }
+}
 }
 
 // --- POST /_matrix/client/v3/refresh — advertised TTL matches enforced TTL ---
@@ -2887,8 +2886,7 @@ SCENARIO("POST /refresh advertises the configured access-token lifetime",
 //
 // A refresh token past its TTL MUST NOT rotate into a new access token; the
 // client MUST re-authenticate. Guards #275 server-side refresh-token expiry.
-SCENARIO("POST /refresh rejects an expired refresh token",
-         "[conformance][client-server][session][expiry]")
+SCENARIO("POST /refresh rejects an expired refresh token", "[conformance][client-server][session][expiry]")
 {
     GIVEN("a running client-server and a user holding a refresh token")
     {
@@ -2925,16 +2923,17 @@ SCENARIO("POST /refresh rejects an expired refresh token",
                 started.runtime, {"POST",
                                   "/_matrix/client/v3/refresh",
                                   {},
-                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"});
+                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"
+        });
 
-            THEN("the response is 401 M_UNKNOWN_TOKEN, not a rotation")
-            {
-                // Spec MUST: an expired/invalid refresh token MUST be rejected.
-                REQUIRE(response.response.status == 401U);
-                REQUIRE(response.response.body.find("M_UNKNOWN_TOKEN") != std::string::npos);
-            }
+        THEN("the response is 401 M_UNKNOWN_TOKEN, not a rotation")
+        {
+            // Spec MUST: an expired/invalid refresh token MUST be rejected.
+            REQUIRE(response.response.status == 401U);
+            REQUIRE(response.response.body.find("M_UNKNOWN_TOKEN") != std::string::npos);
         }
     }
+}
 }
 
 // --- POST /_matrix/client/v3/logout/all ---------------------------------------
@@ -3331,8 +3330,7 @@ SCENARIO("GET /v1/admin/lock/{userId} enforces admin auth and anti-enumeration",
 // Sets the locked status of a server-local user. The caller MUST be a server
 // admin and MUST NOT lock their own account or another administrator's account
 // (403 M_FORBIDDEN, checked before lookup). Body member "locked" is required.
-SCENARIO("PUT /v1/admin/lock/{userId} locks and unlocks a target account",
-         "[conformance][client-server][server-admin]")
+SCENARIO("PUT /v1/admin/lock/{userId} locks and unlocks a target account", "[conformance][client-server][server-admin]")
 {
     GIVEN("a running client-server with an admin and a target user")
     {
@@ -3412,8 +3410,7 @@ SCENARIO("PUT /v1/admin/lock/{userId} locks and unlocks a target account",
         WHEN("an admin sends a PUT without the required locked body member")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", admin, R"({})"});
+                started.runtime, {"PUT", "/_matrix/client/v1/admin/lock/%40alice%3Aexample.org", admin, R"({})"});
 
             THEN("the server returns 400 M_BAD_JSON")
             {
@@ -3955,60 +3952,52 @@ SCENARIO("POST /account/deactivate returns 404 M_UNRECOGNIZED (implementation ga
         }
     }
 }
-
 // --- GET /_matrix/client/v3/account/3pid -------------------------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3account3pid
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#get_matrixclientv3account3pid
-SCENARIO("GET /account/3pid returns 200 with empty threepids array", "[conformance][client-server][account]")
+// Spec MUST: return the third-party identifiers associated with the account.
+SCENARIO("GET /account/3pid returns associated identifiers with required fields",
+         "[conformance][client-server][account][3pid]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server and a logged-in user with a validated email address")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        auto const token_request = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST",
+                              "/_matrix/client/v3/account/3pid/email/requestToken",
+                              {},
+                              R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+        REQUIRE(token_request.response.status == 200U);
+        auto const token_request_body = parse_object(token_request.response.body);
+        auto const* sid = string_member(token_request_body, "sid");
+        REQUIRE(sid != nullptr);
+        auto const add_body = std::string{"{\"client_secret\":\"secret123\",\"sid\":\""} + *sid +
+                              "\",\"auth\":{\"type\":\"m.login.password\",\"password\":\"CorrectHorse7!\"}}";
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    started.runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token, add_body})
+                    .response.status == 200U);
 
         WHEN("GET /account/3pid is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"GET", "/_matrix/client/v3/account/3pid", token, {}});
 
-            THEN("the server returns 200 with a threepids array")
+            THEN("the server returns the associated entry with the required fields")
             {
                 REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
                 auto const* threepids = object_member_as_array(body, "threepids");
                 REQUIRE(threepids != nullptr);
-            }
-        }
-    }
-}
-
-// --- POST /_matrix/client/v3/account/3pid ------------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3pid
-// IMPLEMENTATION GAP: 3PID association not yet implemented.
-SCENARIO("POST /account/3pid returns 404 M_UNRECOGNIZED (implementation gap)", "[conformance][client-server][account]")
-{
-    GIVEN("a running client-server and a logged-in user")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-
-        WHEN("POST /account/3pid is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/account/3pid", token,
-                 R"({"three_pid_creds":{"client_secret":"s","id_access_token":"t","id_server":"id.example.org","sid":"123"}})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: 3PID association not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(threepids->size() == 1U);
+                auto const* first = std::get_if<merovingian::canonicaljson::Object>(&(*threepids)[0].storage());
+                REQUIRE(first != nullptr);
+                REQUIRE(int_member(*first, "added_at") != nullptr);
+                REQUIRE(int_member(*first, "validated_at") != nullptr);
+                REQUIRE(string_member(*first, "address") != nullptr);
+                REQUIRE(*string_member(*first, "address") == "user@example.org");
+                REQUIRE(string_member(*first, "medium") != nullptr);
+                REQUIRE(*string_member(*first, "medium") == "email");
             }
         }
     }
@@ -4016,94 +4005,41 @@ SCENARIO("POST /account/3pid returns 404 M_UNRECOGNIZED (implementation gap)", "
 
 // --- POST /_matrix/client/v3/account/3pid/add ---------------------------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3pidadd
-// IMPLEMENTATION GAP: 3PID add not yet implemented.
-SCENARIO("POST /account/3pid/add returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
+// Spec MUST: incomplete UIA returns 401; successful UIA returns 200.
+SCENARIO("POST /account/3pid/add enforces UIA and accepts the validated identifier",
+         "[conformance][client-server][account][3pid]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server and a logged-in user with a validated email session")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
         auto const token = logged_in_token(started.runtime);
+        auto const token_request = merovingian::homeserver::handle_client_server_request(
+            started.runtime, {"POST",
+                              "/_matrix/client/v3/account/3pid/email/requestToken",
+                              {},
+                              R"({"client_secret":"secret654","email":"add@example.org","send_attempt":1})"});
+        REQUIRE(token_request.response.status == 200U);
+        auto const token_request_body = parse_object(token_request.response.body);
+        auto const* sid = string_member(token_request_body, "sid");
+        REQUIRE(sid != nullptr);
 
-        WHEN("POST /account/3pid/add is called")
+        WHEN("POST /account/3pid/add is called without and then with password UIA")
         {
+            auto const challenge_body = std::string{"{\"client_secret\":\"secret654\",\"sid\":\""} + *sid + "\"}";
+            auto const challenge = merovingian::homeserver::handle_client_server_request(
+                started.runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token, challenge_body});
+            auto const add_body = std::string{"{\"client_secret\":\"secret654\",\"sid\":\""} + *sid +
+                                  "\",\"auth\":{\"type\":\"m.login.password\",\"password\":\"CorrectHorse7!\"}}";
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/account/3pid/add", token,
-                 R"({"client_secret":"s","sid":"123","auth":{"type":"m.login.password","password":"x"}})"});
+                started.runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token, add_body});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server challenges first and succeeds once the password stage is satisfied")
             {
-                // IMPLEMENTATION GAP: 3PID add not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-// --- POST /_matrix/client/v3/account/3pid/bind --------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3pidbind
-// IMPLEMENTATION GAP: 3PID bind not yet implemented.
-SCENARIO("POST /account/3pid/bind returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
-{
-    GIVEN("a running client-server and a logged-in user")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-
-        WHEN("POST /account/3pid/bind is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/account/3pid/bind", token,
-                 R"({"client_secret":"s","id_access_token":"t","id_server":"id.example.org","sid":"123"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: 3PID bind not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-// --- POST /_matrix/client/v3/account/3pid/delete ------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3piddelete
-// IMPLEMENTATION GAP: 3PID delete not yet implemented.
-SCENARIO("POST /account/3pid/delete returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
-{
-    GIVEN("a running client-server and a logged-in user")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-
-        WHEN("POST /account/3pid/delete is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", token,
-                                  R"({"address":"user@example.org","medium":"email"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: 3PID delete not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                REQUIRE(challenge.response.status == 401U);
+                REQUIRE(challenge.response.body.find("\"flows\"") != std::string::npos);
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == "{}");
             }
         }
     }
@@ -4111,30 +4047,30 @@ SCENARIO("POST /account/3pid/delete returns 404 M_UNRECOGNIZED (implementation g
 
 // --- POST /_matrix/client/v3/account/3pid/email/requestToken -----------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3pidemailrequesttoken
-// IMPLEMENTATION GAP: email token request not yet implemented.
-SCENARIO("POST /account/3pid/email/requestToken returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
+// Spec MUST: this endpoint is unauthenticated and returns a sid.
+SCENARIO("POST /account/3pid/email/requestToken is unauthenticated and returns a validation sid",
+         "[conformance][client-server][account][3pid]")
 {
-    GIVEN("a running client-server and a logged-in user")
+    GIVEN("a running client-server")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
         WHEN("POST /account/3pid/email/requestToken is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/account/3pid/email/requestToken", token,
+                started.runtime, {"POST",
+                                  "/_matrix/client/v3/account/3pid/email/requestToken",
+                                  {},
                                   R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with a sid")
             {
-                // IMPLEMENTATION GAP: 3PID email token not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* sid = string_member(body, "sid");
+                REQUIRE(sid != nullptr);
+                REQUIRE(!sid->empty());
             }
         }
     }
@@ -4142,93 +4078,31 @@ SCENARIO("POST /account/3pid/email/requestToken returns 404 M_UNRECOGNIZED (impl
 
 // --- POST /_matrix/client/v3/account/3pid/msisdn/requestToken ----------------
 // Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3pidmsisdnrequesttoken
-// IMPLEMENTATION GAP: MSISDN token request not yet implemented.
-SCENARIO("POST /account/3pid/msisdn/requestToken returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
-{
-    GIVEN("a running client-server and a logged-in user")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-
-        WHEN("POST /account/3pid/msisdn/requestToken is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/client/v3/account/3pid/msisdn/requestToken", token,
-                 R"({"client_secret":"s","country":"GB","phone_number":"07700000000","send_attempt":1})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: 3PID MSISDN token not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-// --- POST /_matrix/client/v3/account/3pid/unbind ------------------------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3account3pidunbind
-// IMPLEMENTATION GAP: 3PID unbind not yet implemented.
-SCENARIO("POST /account/3pid/unbind returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
-{
-    GIVEN("a running client-server and a logged-in user")
-    {
-        auto started = merovingian::homeserver::start_client_server(conformance_config());
-        REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
-
-        WHEN("POST /account/3pid/unbind is called")
-        {
-            auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/account/3pid/unbind", token,
-                                  R"({"address":"user@example.org","medium":"email"})"});
-
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
-            {
-                // IMPLEMENTATION GAP: 3PID unbind not supported.
-                REQUIRE(response.response.status == 404U);
-                auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
-            }
-        }
-    }
-}
-
-// --- POST /_matrix/client/v3/account/password/email/requestToken -------------
-// Spec: ../../docs/matrix-v1.18-spec/client-server-api.md#post_matrixclientv3accountpasswordemailrequesttoken
-// IMPLEMENTATION GAP: password reset email token not yet implemented.
-SCENARIO("POST /account/password/email/requestToken returns 404 M_UNRECOGNIZED (implementation gap)",
-         "[conformance][client-server][account]")
+// Spec MUST: this endpoint is unauthenticated and returns a sid.
+SCENARIO("POST /account/3pid/msisdn/requestToken is unauthenticated and returns a validation sid",
+         "[conformance][client-server][account][3pid]")
 {
     GIVEN("a running client-server")
     {
         auto started = merovingian::homeserver::start_client_server(conformance_config());
         REQUIRE(started.started);
-        auto const token = logged_in_token(started.runtime);
 
-        WHEN("POST /account/password/email/requestToken is called")
+        WHEN("POST /account/3pid/msisdn/requestToken is called")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime, {"POST", "/_matrix/client/v3/account/password/email/requestToken", token,
-                                  R"({"client_secret":"s","email":"user@example.org","send_attempt":1})"});
+                started.runtime,
+                {"POST",
+                 "/_matrix/client/v3/account/3pid/msisdn/requestToken",
+                 {},
+                 R"({"client_secret":"s","country":"GB","phone_number":"07700000000","send_attempt":1})"});
 
-            THEN("the server returns 404 M_UNRECOGNIZED until the endpoint is implemented")
+            THEN("the server returns 200 with a sid")
             {
-                // IMPLEMENTATION GAP: password reset email token not supported.
-                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.status == 200U);
                 auto const body = parse_object(response.response.body);
-                auto const* errcode = string_member(body, "errcode");
-                REQUIRE(errcode != nullptr);
-                REQUIRE(*errcode == "M_UNRECOGNIZED");
+                auto const* sid = string_member(body, "sid");
+                REQUIRE(sid != nullptr);
+                REQUIRE(!sid->empty());
             }
         }
     }
@@ -6237,9 +6111,11 @@ SCENARIO("POST /media/v3/upload stores media and returns content_uri", "[conform
         {
             // Spec §13.8.1.1: client sends raw binary body, Content-Type header.
             auto const response = merovingian::homeserver::handle_client_server_request(
-                started.runtime,
-                {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
-                 {merovingian::http::Header{"Content-Type", "image/png"}}});
+                started.runtime, {"POST",
+                                  "/_matrix/media/v3/upload",
+                                  token,
+                                  "test-image-data",
+                                  {merovingian::http::Header{"Content-Type", "image/png"}}});
 
             THEN("the server returns 200 with a content_uri")
             {
@@ -6267,8 +6143,11 @@ SCENARIO("GET /media/v3/download/{serverName}/{mediaId} returns uploaded media",
         auto const token = logged_in_token(started.runtime);
 
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
-             {merovingian::http::Header{"Content-Type", "image/png"}}});
+            started.runtime, {"POST",
+                              "/_matrix/media/v3/upload",
+                              token,
+                              "test-image-data",
+                              {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
         auto const* content_uri = string_member(upload_body, "content_uri");
@@ -6398,8 +6277,11 @@ SCENARIO("GET /media/v3/thumbnail/{serverName}/{mediaId} returns thumbnail for u
         auto const token = logged_in_token(started.runtime);
 
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
-             {merovingian::http::Header{"Content-Type", "image/png"}}});
+            started.runtime, {"POST",
+                              "/_matrix/media/v3/upload",
+                              token,
+                              "test-image-data",
+                              {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
         auto const* content_uri = string_member(upload_body, "content_uri");
@@ -6550,8 +6432,11 @@ SCENARIO("GET /v1/media/download/{serverName}/{mediaId} returns uploaded media",
         auto const token = logged_in_token(started.runtime);
 
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
-             {merovingian::http::Header{"Content-Type", "image/png"}}});
+            started.runtime, {"POST",
+                              "/_matrix/media/v3/upload",
+                              token,
+                              "test-image-data",
+                              {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
         auto const* content_uri = string_member(upload_body, "content_uri");
@@ -6669,8 +6554,11 @@ SCENARIO("GET /v1/media/thumbnail/{serverName}/{mediaId} returns thumbnail for u
         auto const token = logged_in_token(started.runtime);
 
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            started.runtime, {"POST", "/_matrix/media/v3/upload", token, "test-image-data",
-             {merovingian::http::Header{"Content-Type", "image/png"}}});
+            started.runtime, {"POST",
+                              "/_matrix/media/v3/upload",
+                              token,
+                              "test-image-data",
+                              {merovingian::http::Header{"Content-Type", "image/png"}}});
         REQUIRE(upload.response.status == 200U);
         auto const upload_body = parse_object(upload.response.body);
         auto const* content_uri = string_member(upload_body, "content_uri");
@@ -6932,15 +6820,15 @@ SCENARIO("PUT /directory/room/{alias} maps an alias to a room", "[conformance][c
                 started.runtime, {"PUT", "/_matrix/client/v3/directory/room/%23myalias%3Aexample.org", token,
                                   R"({"room_id":")" + room_id + R"("})"});
 
-            THEN("the server returns 200 with an empty JSON object")
-            {
-                // Spec MUST: 200 {} on success.
-                REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                REQUIRE(body.empty());
-            }
+        THEN("the server returns 200 with an empty JSON object")
+        {
+            // Spec MUST: 200 {} on success.
+            REQUIRE(response.response.status == 200U);
+            auto const body = parse_object(response.response.body);
+            REQUIRE(body.empty());
         }
     }
+}
 }
 
 // --- DELETE /_matrix/client/v3/directory/room/{roomAlias} --------------------
@@ -7105,8 +6993,7 @@ SCENARIO("POST /publicRooms returns 200 with chunk and total_room_count_estimate
 // local server MUST proxy the request to that server's federation public-rooms
 // endpoint. When the local server names itself as `server` it MUST serve local
 // results without any outbound call.
-SCENARIO("GET /publicRooms?server= proxies to remote or serves locally",
-         "[conformance][client-server][room-discovery]")
+SCENARIO("GET /publicRooms?server= proxies to remote or serves locally", "[conformance][client-server][room-discovery]")
 {
     GIVEN("a running client-server whose server name is example.org")
     {
@@ -8305,15 +8192,15 @@ SCENARIO("POST /rooms/{roomId}/read_markers returns 200 empty object",
                 started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/read_markers", token,
                                   R"({"m.read":")" + event_id + R"("})"});
 
-            THEN("the server returns 200 with an empty JSON object")
-            {
-                // Spec MUST: 200 {} on success.
-                REQUIRE(response.response.status == 200U);
-                auto const body = parse_object(response.response.body);
-                REQUIRE(body.empty());
-            }
+        THEN("the server returns 200 with an empty JSON object")
+        {
+            // Spec MUST: 200 {} on success.
+            REQUIRE(response.response.status == 200U);
+            auto const body = parse_object(response.response.body);
+            REQUIRE(body.empty());
         }
     }
+}
 }
 
 // --- POST /_matrix/client/v3/rooms/{roomId}/receipt/{receiptType}/{eventId} --

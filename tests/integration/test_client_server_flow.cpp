@@ -98,10 +98,10 @@ auto upload_one_time_key(merovingian::homeserver::ClientServerRuntime& runtime, 
                          std::string_view user_id, std::string_view device_id, std::string_view key_id,
                          std::string_view key_value, std::string const& device_secret_key) -> void
 {
-    auto const otk_json = merovingian::federation::test::make_signed_otk_json(
-        user_id, device_id, key_value, device_secret_key);
-    auto const body = std::string{R"({"one_time_keys":{"signed_curve25519:)"} + std::string{key_id} +
-                      "\":" + otk_json + "}}";
+    auto const otk_json =
+        merovingian::federation::test::make_signed_otk_json(user_id, device_id, key_value, device_secret_key);
+    auto const body =
+        std::string{R"({"one_time_keys":{"signed_curve25519:)"} + std::string{key_id} + "\":" + otk_json + "}}";
     auto const upload = merovingian::homeserver::handle_client_server_request(
         runtime, {"POST", "/_matrix/client/v3/keys/upload", token, body});
     REQUIRE(upload.response.status == 200U);
@@ -138,6 +138,107 @@ SCENARIO("Integrated client-server flow covers auth devices rooms state joined r
     }
 }
 
+SCENARIO("Integrated client-server flow covers account 3PID request add list and delete",
+         "[homeserver][client-server][integration][account][3pid]")
+{
+    GIVEN("a running client-server runtime and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_and_login(runtime, "alice", "CorrectHorse7!", "ALICE_3PID");
+
+        WHEN("an email address is requested and then associated with the account")
+        {
+            auto const email_response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/account/3pid/email/requestToken",
+                          {},
+                          R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+            REQUIRE(email_response.response.status == 200U);
+            auto const email_body = parse_object(email_response.response.body);
+            auto const* email_sid = string_member(email_body, "sid");
+            REQUIRE(email_sid != nullptr);
+
+            auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
+                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+            auto const add = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
+            auto const listed = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/3pid", alice, {}});
+            auto const deleted = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", alice,
+                          R"({"address":"user@example.org","medium":"email"})"});
+            auto const listed_after_delete = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/3pid", alice, {}});
+
+            THEN("the contact identifier flows through the account lifecycle")
+            {
+                REQUIRE(add.response.status == 200U);
+                REQUIRE(listed.response.status == 200U);
+                REQUIRE(listed.response.body.find("user@example.org") != std::string::npos);
+                REQUIRE(listed.response.body.find("\"medium\":\"email\"") != std::string::npos);
+                REQUIRE(deleted.response.status == 200U);
+                REQUIRE(deleted.response.body.find("\"id_server_unbind_result\"") != std::string::npos);
+                REQUIRE(listed_after_delete.response.status == 200U);
+                REQUIRE(listed_after_delete.response.body.find("user@example.org") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Integrated client-server flow rejects invalid and duplicate account 3PID associations",
+         "[homeserver][client-server][integration][account][3pid]")
+{
+    GIVEN("a running client-server runtime with two logged-in users")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const alice = register_and_login(runtime, "alice", "CorrectHorse7!", "ALICE_3PID_NEG");
+        auto const bob = register_and_login(runtime, "bob", "CorrectHorse8!", "BOB_3PID_NEG");
+
+        auto const email_response = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/account/3pid/email/requestToken",
+                      {},
+                      R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+        REQUIRE(email_response.response.status == 200U);
+        auto const email_body = parse_object(email_response.response.body);
+        auto const* email_sid = string_member(email_body, "sid");
+        REQUIRE(email_sid != nullptr);
+
+        WHEN("alice and bob attempt invalid or duplicate account 3PID associations")
+        {
+            auto const missing_session = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/account/3pid/add", alice,
+                 R"({"client_secret":"secret123","sid":"missing-session","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+            auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
+                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+            auto const alice_add = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
+            auto const duplicate_request = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/account/3pid/email/requestToken",
+                          {},
+                          R"({"client_secret":"secret456","email":"USER@example.org","send_attempt":1})"});
+            auto const bob_duplicate_add = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/add", bob, add_body});
+
+            THEN("invalid sessions and duplicate identifiers are rejected across the flow")
+            {
+                REQUIRE(missing_session.response.status == 400U);
+                REQUIRE(missing_session.response.body.find("M_SESSION_NOT_VALIDATED") != std::string::npos);
+                REQUIRE(alice_add.response.status == 200U);
+                REQUIRE(duplicate_request.response.status == 400U);
+                REQUIRE(duplicate_request.response.body.find("M_THREEPID_IN_USE") != std::string::npos);
+                REQUIRE(bob_duplicate_add.response.status != 200U);
+            }
+        }
+    }
+}
+
 SCENARIO("Integrated Matrix v1.18 interop flow covers login join key exchange messaging receipts and leave",
          "[homeserver][client-server][integration][conformance][e2ee]")
 {
@@ -156,8 +257,8 @@ SCENARIO("Integrated Matrix v1.18 interop flow covers login join key exchange me
         auto const bob_kp = merovingian::federation::test::keypair_from_seed("flow-test-bob-seed");
         upload_device_keys(runtime, bob, "@bob:example.org", "BOB_DEV", "BOB_CURVE",
                            merovingian::federation::test::pubkey_b64(bob_kp));
-        upload_one_time_key(runtime, bob, "@bob:example.org", "BOB_DEV", "BOB_OTK_AAAA",
-                            "BOB_OTK_VALUE", bob_kp.secret_key);
+        upload_one_time_key(runtime, bob, "@bob:example.org", "BOB_DEV", "BOB_OTK_AAAA", "BOB_OTK_VALUE",
+                            bob_kp.secret_key);
 
         auto const create = merovingian::homeserver::handle_client_server_request(
             runtime,
@@ -707,8 +808,9 @@ SCENARIO("POST /account/password changes the authenticated user's password",
         WHEN("the user changes their password with the correct current password in the auth block")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                rt, {"POST", "/_matrix/client/v3/account/password", token,
-                     R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"NewHorse99!!"})"});
+                rt,
+                {"POST", "/_matrix/client/v3/account/password", token,
+                 R"({"auth":{"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!"},"new_password":"NewHorse99!!"})"});
 
             THEN("the server returns 200 and the new password is accepted at login")
             {

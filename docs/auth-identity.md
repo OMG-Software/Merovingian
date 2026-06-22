@@ -28,6 +28,12 @@ production-gated.
 - Client-server registration, password login, refresh-token rotation, logout,
   global logout, whoami, device listing, single-device fetch, device update,
   and device delete routes use runtime token validation.
+- Account 3PID email and MSISDN flows are implemented for the local account
+  surface: unauthenticated `requestToken` endpoints issue validation sessions,
+  `POST /account/3pid/add` enforces password UIA, the deprecated
+  `POST /account/3pid` association route is accepted, and the bind/list/unbind/
+  delete endpoints maintain per-account 3PID records including
+  `added_at` / `validated_at` metadata.
 - Access-token hashes are durable and hydrate back into runtime sessions after
   restart.
 - Refresh-token hashes are persisted, rotated, and revoked on global logout,

@@ -181,8 +181,8 @@ using namespace merovingian::tests;
 }
 
 [[nodiscard]] auto content_for_state(merovingian::database::PersistentStore const& store, std::string_view room_id,
-                                     std::string_view event_type,
-                                     std::string_view state_key = {}) -> merovingian::canonicaljson::Object
+                                     std::string_view event_type, std::string_view state_key = {})
+    -> merovingian::canonicaljson::Object
 {
     auto const event = parse_object(event_json_for_state(store, room_id, event_type, state_key));
     auto const* content = object_member_as_object(event, "content");
@@ -1383,6 +1383,45 @@ SCENARIO("createRoom registers canonical aliases and directory lookups",
     }
 }
 
+SCENARIO("Remote room alias lookups surface federation errors rather than local alias misses",
+         "[homeserver][client-server][room-directory][federation]")
+{
+    GIVEN("a started runtime with outbound federation disabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.outbound_client = nullptr;
+        runtime.homeserver.discovery_network = nullptr;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the client resolves a remote room alias")
+        {
+            auto const resolved = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/directory/room/%23remote%3Aremote.example.org", token, {}});
+
+            THEN("the server does not report the alias as a local M_NOT_FOUND miss")
+            {
+                REQUIRE(resolved.response.status == 502U);
+                REQUIRE(resolved.response.body.find("M_NOT_FOUND") == std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("Client-server im.nheko.summary endpoints return room membership summaries",
          "[homeserver][client-server][nheko-summary]")
 {
@@ -1828,7 +1867,10 @@ SCENARIO("Client-server admin safety routes manage persisted policy rules", "[ho
         REQUIRE(login.response.status == 200U);
         auto const token = login_token(login.response.body);
         auto const upload = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/media/v3/upload", token, "hello",
+            runtime, {"POST",
+                      "/_matrix/media/v3/upload",
+                      token,
+                      "hello",
                       {merovingian::http::Header{"Content-Type", "text/plain"}}});
         REQUIRE(upload.response.status == 200U);
         auto const content_uri = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
@@ -2458,6 +2500,324 @@ SCENARIO("Registration requestToken sessions are capped per remote address",
     }
 }
 
+SCENARIO("Account 3PID lifecycle adds lists unbinds and deletes contact identifiers",
+         "[homeserver][client-server][account][3pid]")
+{
+    GIVEN("a started client-server runtime and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const registration = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(registration.response.status == 200U);
+        auto const token = login_token(registration.response.body);
+
+        WHEN("email and phone identifiers are requested and associated with the account")
+        {
+            auto const email_response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/account/3pid/email/requestToken",
+                          {},
+                          R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+            REQUIRE(email_response.response.status == 200U);
+            auto const email_body = parse_object(email_response.response.body);
+            auto const* email_sid = string_member(email_body, "sid");
+            REQUIRE(email_sid != nullptr);
+
+            auto const msisdn_response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST",
+                 "/_matrix/client/v3/account/3pid/msisdn/requestToken",
+                 {},
+                 R"({"client_secret":"secret123","country":"GB","phone_number":"07700000000","send_attempt":1})"});
+            REQUIRE(msisdn_response.response.status == 200U);
+            auto const msisdn_body = parse_object(msisdn_response.response.body);
+            auto const* msisdn_sid = string_member(msisdn_body, "sid");
+            REQUIRE(msisdn_sid != nullptr);
+
+            auto const add_without_auth = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token,
+                          std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid + R"("})"});
+            auto const add_email_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
+                                        R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+            auto const add_email = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token, add_email_body});
+            auto const bind_msisdn_body = std::string{R"({"client_secret":"secret123","sid":")"} + *msisdn_sid +
+                                          R"(","id_server":"id.example.org","id_access_token":"opaque"})" ;
+            auto const bind_msisdn = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/bind", token, bind_msisdn_body});
+            auto const list_after_add = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/3pid", token, {}});
+            auto const unbind_msisdn = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/unbind", token,
+                          R"({"address":"07700000000","medium":"msisdn","id_server":"id.example.org"})"});
+            auto const delete_email = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", token,
+                          R"({"address":"user@example.org","medium":"email"})"});
+            auto const list_after_delete = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/3pid", token, {}});
+
+            THEN("the contact identifiers are managed according to the account 3PID flow")
+            {
+                REQUIRE(add_without_auth.response.status == 401U);
+                REQUIRE(add_without_auth.response.body.find("\"flows\"") != std::string::npos);
+
+                REQUIRE(add_email.response.status == 200U);
+                REQUIRE(add_email.response.body == "{}");
+                REQUIRE(bind_msisdn.response.status == 200U);
+                REQUIRE(bind_msisdn.response.body == "{}");
+
+                REQUIRE(list_after_add.response.status == 200U);
+                REQUIRE(list_after_add.response.body.find("user@example.org") != std::string::npos);
+                REQUIRE(list_after_add.response.body.find("\"medium\":\"email\"") != std::string::npos);
+                REQUIRE(list_after_add.response.body.find("07700000000") != std::string::npos);
+                REQUIRE(list_after_add.response.body.find("\"medium\":\"msisdn\"") != std::string::npos);
+                REQUIRE(list_after_add.response.body.find("\"added_at\"") != std::string::npos);
+                REQUIRE(list_after_add.response.body.find("\"validated_at\"") != std::string::npos);
+
+                REQUIRE(unbind_msisdn.response.status == 200U);
+                REQUIRE(unbind_msisdn.response.body.find("\"id_server_unbind_result\":\"success\"") != std::string::npos);
+                REQUIRE(delete_email.response.status == 200U);
+                REQUIRE(delete_email.response.body.find("\"id_server_unbind_result\":\"success\"") != std::string::npos);
+
+                REQUIRE(list_after_delete.response.status == 200U);
+                REQUIRE(list_after_delete.response.body.find("user@example.org") == std::string::npos);
+                REQUIRE(list_after_delete.response.body.find("07700000000") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Remote room alias lookups remain unauthenticated after federation resolution is added",
+         "[homeserver][client-server][room-directory][federation]")
+{
+    GIVEN("a started runtime with outbound federation disabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.outbound_client = nullptr;
+        runtime.homeserver.discovery_network = nullptr;
+
+        WHEN("the client resolves a remote room alias without an access token")
+        {
+            auto const resolved = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/directory/room/%23remote%3Aremote.example.org", {}, {}});
+
+            THEN("the request fails on federation lookup rather than client authentication")
+            {
+                REQUIRE(resolved.response.status == 502U);
+                REQUIRE(resolved.response.body.find("M_UNKNOWN_TOKEN") == std::string::npos);
+                REQUIRE(resolved.response.body.find("M_MISSING_TOKEN") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Account 3PID request tokens reject identifiers already in use", "[homeserver][client-server][account][3pid]")
+{
+    GIVEN("a started client-server runtime with one account already holding an email address")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const alice_login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE"})"});
+        REQUIRE(alice_login.response.status == 200U);
+        auto const alice_token = login_token(alice_login.response.body);
+        auto const token_request = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/account/3pid/email/requestToken",
+                      {},
+                      R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+        REQUIRE(token_request.response.status == 200U);
+        auto const token_request_body = parse_object(token_request.response.body);
+        auto const* sid = string_member(token_request_body, "sid");
+        REQUIRE(sid != nullptr);
+        auto const add_threepid_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid +
+                                       R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice_token, add_threepid_body})
+                    .response.status == 200U);
+        REQUIRE(
+            merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/register", {}, merovingian::tests::registration_json("bob", "CorrectHorse8!")})
+                .response.status == 200U);
+
+        WHEN("another client requests validation for the same identifier")
+        {
+            auto const duplicate_email = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/account/3pid/email/requestToken",
+                          {},
+                          R"({"client_secret":"secret456","email":"user@example.org","send_attempt":1})"});
+
+            THEN("the homeserver reports that the 3PID is already in use")
+            {
+                REQUIRE(duplicate_email.response.status == 400U);
+                REQUIRE(duplicate_email.response.body.find("M_THREEPID_IN_USE") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Account 3PID email handling treats addresses case-insensitively for duplicate detection",
+         "[homeserver][client-server][account][3pid]")
+{
+    GIVEN("a started client-server runtime with one account already holding an email address")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"ALICE_CASE"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+        auto const initial_request = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/account/3pid/email/requestToken",
+                      {},
+                      R"({"client_secret":"secret123","email":"User@Example.org","send_attempt":1})"});
+        REQUIRE(initial_request.response.status == 200U);
+        auto const initial_body = parse_object(initial_request.response.body);
+        auto const* sid = string_member(initial_body, "sid");
+        REQUIRE(sid != nullptr);
+        auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid +
+                              R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/account/3pid/add", token, add_body})
+                    .response.status == 200U);
+
+        WHEN("another request uses the same email with a different case")
+        {
+            auto const duplicate_request = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/account/3pid/email/requestToken",
+                          {},
+                          R"({"client_secret":"secret456","email":"user@example.org","send_attempt":1})"});
+
+            THEN("the duplicate is rejected as already in use")
+            {
+                REQUIRE(duplicate_request.response.status == 400U);
+                REQUIRE(duplicate_request.response.body.find("M_THREEPID_IN_USE") != std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Account 3PID mutations reject unknown validation sessions", "[homeserver][client-server][account][3pid]")
+{
+    GIVEN("a started client-server runtime and a logged-in user")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const registration = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(registration.response.status == 200U);
+        auto const token = login_token(registration.response.body);
+        WHEN("account 3PID mutations use a sid that was never validated")
+        {
+            auto const add = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/account/3pid/add", token,
+                 R"({"client_secret":"secret123","sid":"missing-session","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
+            auto const bind = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"POST", "/_matrix/client/v3/account/3pid/bind", token,
+                 R"({"client_secret":"secret123","sid":"missing-session","id_server":"id.example.org","id_access_token":"opaque"})"});
+
+            THEN("the server rejects the unvalidated session consistently")
+            {
+                for (auto const* response : {&add.response, &bind.response})
+                {
+                    REQUIRE(response->status == 400U);
+                    REQUIRE(response->body.find("M_SESSION_NOT_VALIDATED") != std::string::npos);
+                }
+            }
+        }
+    }
+}
+
+SCENARIO("Account 3PID unbind and delete report no-support for mismatched identity servers",
+         "[homeserver][client-server][account][3pid]")
+{
+    GIVEN("a started client-server runtime with an email bound to one identity server")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        auto const registration = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(registration.response.status == 200U);
+        auto const token = login_token(registration.response.body);
+        auto const token_request = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/account/3pid/email/requestToken",
+                      {},
+                      R"({"client_secret":"secret123","email":"user@example.org","send_attempt":1})"});
+        REQUIRE(token_request.response.status == 200U);
+        auto const token_request_body = parse_object(token_request.response.body);
+        auto const* sid = string_member(token_request_body, "sid");
+        REQUIRE(sid != nullptr);
+        auto const bind_body = std::string{R"({"client_secret":"secret123","sid":")"} + *sid +
+                               R"(","id_server":"id.example.org","id_access_token":"opaque"})" ;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST", "/_matrix/client/v3/account/3pid/bind", token, bind_body})
+                    .response.status == 200U);
+
+        WHEN("unbind and delete name a different identity server")
+        {
+            auto const unbind = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/unbind", token,
+                          R"({"address":"user@example.org","medium":"email","id_server":"other.example.org"})"});
+            auto const remove = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", token,
+                          R"({"address":"user@example.org","medium":"email","id_server":"other.example.org"})"});
+
+            THEN("the homeserver reports that the supplied identity server was not supported")
+            {
+                REQUIRE(unbind.response.status == 200U);
+                REQUIRE(unbind.response.body.find("\"id_server_unbind_result\":\"no-support\"") != std::string::npos);
+                REQUIRE(remove.response.status == 200U);
+                REQUIRE(remove.response.body.find("\"id_server_unbind_result\":\"no-support\"") != std::string::npos);
+            }
+        }
+    }
+}
+
 SCENARIO("OPTIONS preflight requests return 200 without requiring an access token",
          "[homeserver][client-server][cors][preflight]")
 {
@@ -2538,8 +2898,8 @@ namespace
 // Lookup helper for LocalHttpResponse::headers (added in 0.4.60). Returns the
 // header value or empty string when the header is absent. Case-sensitive
 // because the wire emitter writes the canonical header name.
-[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response,
-                                   std::string_view name) -> std::string
+[[nodiscard]] auto response_header(merovingian::homeserver::LocalHttpResponse const& response, std::string_view name)
+    -> std::string
 {
     for (auto const& [key, value] : response.headers)
     {
@@ -3204,8 +3564,7 @@ SCENARIO("Media config endpoint returns upload size limit for authenticated clie
 // and returned 400 for every real upload.  Uploads with ?filename=... also
 // failed with 413 because the exact-match route check missed the query suffix.
 
-SCENARIO("Media upload accepts a raw binary body with a Content-Type header",
-         "[homeserver][client-server][media]")
+SCENARIO("Media upload accepts a raw binary body with a Content-Type header", "[homeserver][client-server][media]")
 {
     // Spec §13.8.1.1: POST /_matrix/media/v3/upload, Content-Type in request
     // headers, raw body — no special encoding.
@@ -3216,18 +3575,21 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header",
         auto& runtime = started.runtime;
 
         auto const reg = merovingian::homeserver::handle_client_server_request(
-            runtime,
-            {"POST", "/_matrix/client/v3/register", {},
-             merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
         REQUIRE(reg.response.status == 200U);
         auto const token = login_token(reg.response.body);
 
         WHEN("POST /_matrix/media/v3/upload is called with a raw PNG body and Content-Type: image/png")
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/media/v3/upload", token, "\x89PNG\r\n\x1a\n some png bytes",
-                 {merovingian::http::Header{"Content-Type", "image/png"}}});
+                runtime, {"POST",
+                          "/_matrix/media/v3/upload",
+                          token,
+                          "\x89PNG\r\n\x1a\n some png bytes",
+                          {merovingian::http::Header{"Content-Type", "image/png"}}});
 
             THEN("the response is 200 with a content_uri")
             {
@@ -3242,10 +3604,11 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header",
             // The ?filename= variant was rejected before the fix because the
             // route check was an exact string match with no query-param handling.
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/media/v3/upload?filename=avatar.jpg", token,
-                 "\xff\xd8\xff\xe0 some jpeg bytes",
-                 {merovingian::http::Header{"Content-Type", "image/jpeg"}}});
+                runtime, {"POST",
+                          "/_matrix/media/v3/upload?filename=avatar.jpg",
+                          token,
+                          "\xff\xd8\xff\xe0 some jpeg bytes",
+                          {merovingian::http::Header{"Content-Type", "image/jpeg"}}});
 
             THEN("the response is 200 with a content_uri")
             {
@@ -3261,9 +3624,11 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header",
             // security.media.max_upload_size (default 100 MiB) instead.
             auto const body = std::string(100U * 1024U, 'x');
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/media/v3/upload", token, body,
-                 {merovingian::http::Header{"Content-Type", "text/plain"}}});
+                runtime, {"POST",
+                          "/_matrix/media/v3/upload",
+                          token,
+                          body,
+                          {merovingian::http::Header{"Content-Type", "text/plain"}}});
 
             THEN("the response is 200, not 413")
             {
@@ -3278,8 +3643,7 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header",
             // The server must not return 400 or 500; the upload is accepted
             // (200) or quarantined by MIME policy (202) depending on config.
             auto const response = merovingian::homeserver::handle_client_server_request(
-                runtime,
-                {"POST", "/_matrix/media/v3/upload", token, "raw bytes with no content type"});
+                runtime, {"POST", "/_matrix/media/v3/upload", token, "raw bytes with no content type"});
 
             THEN("the response is 2xx with a content_uri")
             {
@@ -3514,6 +3878,83 @@ SCENARIO("Joining a remote room version 12 room requires and uses via servers (M
             {
                 REQUIRE(response.response.status != 404U);
                 REQUIRE(response.response.status == 502U);
+            }
+        }
+    }
+}
+
+SCENARIO("Joining by remote room alias resolves the alias before federation join",
+         "[homeserver][client-server][federation][room-alias]")
+{
+    GIVEN("a logged-in user with outbound federation disabled")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        runtime.homeserver.outbound_client = nullptr;
+        runtime.homeserver.discovery_network = nullptr;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the room is joined by remote alias")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/join/%23remote%3Aremote.example.org", token, "{}"});
+
+            THEN("the server surfaces a federation lookup failure rather than treating the alias as a room id")
+            {
+                REQUIRE(response.response.status == 502U);
+                REQUIRE(response.response.body.find("unknown room") == std::string::npos);
+                REQUIRE(response.response.body.find("room alias not found") == std::string::npos);
+            }
+        }
+    }
+}
+
+SCENARIO("Joining by local room alias still reports a local not-found error",
+         "[homeserver][client-server][federation][room-alias]")
+{
+    GIVEN("a logged-in user and an unknown local room alias")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+        REQUIRE(merovingian::homeserver::handle_client_server_request(
+                    runtime, {"POST",
+                              "/_matrix/client/v3/register",
+                              {},
+                              merovingian::tests::registration_json("alice", "CorrectHorse7!")})
+                    .response.status == 200U);
+        auto const login = merovingian::homeserver::handle_client_server_request(
+            runtime,
+            {"POST",
+             "/_matrix/client/v3/login",
+             {},
+             R"({"type":"m.login.password","identifier":{"type":"m.id.user","user":"@alice:example.org"},"password":"CorrectHorse7!","device_id":"DEVICE1"})"});
+        REQUIRE(login.response.status == 200U);
+        auto const token = login_token(login.response.body);
+
+        WHEN("the room is joined by an alias on the local server that does not exist")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/join/%23missing%3Aexample.org", token, "{}"});
+
+            THEN("the server preserves the local not-found behaviour")
+            {
+                REQUIRE(response.response.status == 404U);
+                REQUIRE(response.response.body.find("M_NOT_FOUND") != std::string::npos);
             }
         }
     }
@@ -6512,8 +6953,7 @@ SCENARIO("PUT /presence/{userId}/status persists Matrix presence and rejects inv
 // already has state use conn.last_event_ordering as the baseline, returning an
 // empty rooms{} when nothing has changed.
 
-SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing changed",
-         "[sync][sliding-sync][msc4186]")
+SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing changed", "[sync][sliding-sync][msc4186]")
 {
     // Spec: MSC4186 — the server is expected to return the current snapshot on
     // timeout=0; when connection state already covers the current pos, the
@@ -6525,9 +6965,7 @@ SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing cha
         auto& runtime = started.runtime;
 
         auto const alice_reg = merovingian::homeserver::handle_client_server_request(
-            runtime,
-            {"POST", "/_matrix/client/v3/register", {},
-             registration_json("alice", "CorrectHorse7!")});
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
         REQUIRE(alice_reg.response.status == 200U);
         auto const alice_token = login_token(alice_reg.response.body);
 
@@ -6544,17 +6982,17 @@ SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing cha
         REQUIRE(first_resp.response.status == 200U);
 
         // Extract pos from the first response.
-        auto const pos_key   = std::string{"\"pos\":\""};
+        auto const pos_key = std::string{"\"pos\":\""};
         auto const pos_begin = first_resp.response.body.find(pos_key);
         REQUIRE(pos_begin != std::string::npos);
         auto const pv_begin = pos_begin + pos_key.size();
-        auto const pv_end   = first_resp.response.body.find('"', pv_begin);
+        auto const pv_end = first_resp.response.body.find('"', pv_begin);
         REQUIRE(pv_end != std::string::npos);
         auto const pos_p = first_resp.response.body.substr(pv_begin, pv_end - pv_begin);
         REQUIRE_FALSE(pos_p.empty());
 
         // First response must carry rooms (initial=true, full state).
-        REQUIRE(first_resp.response.body.find("\"rooms\":{}" ) == std::string::npos);
+        REQUIRE(first_resp.response.body.find("\"rooms\":{}") == std::string::npos);
 
         WHEN("a second no-pos timeout=0 is sent on the same conn_id with no intervening events")
         {
@@ -6577,8 +7015,8 @@ SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing cha
         {
             // Alice sends a message, creating a new event.
             auto const rid = room_id(create_resp.response.body);
-            auto const send_url = "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) +
-                                  "/send/m.room.message/txn1";
+            auto const send_url =
+                "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/send/m.room.message/txn1";
             auto const send_resp = merovingian::homeserver::handle_client_server_request(
                 runtime, {"PUT", send_url, alice_token, R"({"msgtype":"m.text","body":"hello"})"});
             REQUIRE(send_resp.response.status == 200U);
@@ -6594,7 +7032,7 @@ SCENARIO("Sliding sync no-pos poll returns delta on second call when nothing cha
                 // pos must have advanced past the first sync pos.
                 REQUIRE(second_resp.response.body.find("\"pos\":\"" + pos_p + "\"") == std::string::npos);
                 // Room must appear with the new timeline event.
-                REQUIRE(second_resp.response.body.find("\"rooms\":{}" ) == std::string::npos);
+                REQUIRE(second_resp.response.body.find("\"rooms\":{}") == std::string::npos);
                 REQUIRE(second_resp.response.body.find("m.room.message") != std::string::npos);
             }
         }
@@ -6623,20 +7061,16 @@ SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id adva
 
         // Register alice.
         auto const alice_reg = merovingian::homeserver::handle_client_server_request(
-            runtime,
-            {"POST", "/_matrix/client/v3/register", {},
-             registration_json("alice", "CorrectHorse7!")});
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("alice", "CorrectHorse7!")});
         REQUIRE(alice_reg.response.status == 200U);
-        auto const alice_token     = login_token(alice_reg.response.body);
+        auto const alice_token = login_token(alice_reg.response.body);
         auto const alice_device_id = login_device_id(alice_reg.response.body);
 
         // Register bob.
         auto const bob_reg = merovingian::homeserver::handle_client_server_request(
-            runtime,
-            {"POST", "/_matrix/client/v3/register", {},
-             registration_json("bob", "CorrectHorse8!")});
+            runtime, {"POST", "/_matrix/client/v3/register", {}, registration_json("bob", "CorrectHorse8!")});
         REQUIRE(bob_reg.response.status == 200U);
-        auto const bob_token     = login_token(bob_reg.response.body);
+        auto const bob_token = login_token(bob_reg.response.body);
         auto const bob_device_id = login_device_id(bob_reg.response.body);
 
         // Alice creates a room and bob joins, so they share membership.
@@ -6646,21 +7080,20 @@ SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id adva
         auto const rid = room_id(create_resp.response.body);
 
         auto const join_url = "/_matrix/client/v3/rooms/" + percent_encode_room_identifier(rid) + "/join";
-        auto const bob_join = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", join_url, bob_token, "{}"});
+        auto const bob_join =
+            merovingian::homeserver::handle_client_server_request(runtime, {"POST", join_url, bob_token, "{}"});
         REQUIRE(bob_join.response.status == 200U);
 
         // Alice does an initial sliding sync (timeout=0 → immediate) to get pos P.
         auto const init_resp = merovingian::homeserver::handle_client_server_request(
-            runtime,
-            {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
-             R"({"conn_id":"test"})"});
+            runtime, {"POST", "/_matrix/client/unstable/org.matrix.msc4186/sync?timeout=0", alice_token,
+                      R"({"conn_id":"test"})"});
         REQUIRE(init_resp.response.status == 200U);
-        auto const pos_key   = std::string{"\"pos\":\""};
+        auto const pos_key = std::string{"\"pos\":\""};
         auto const pos_begin = init_resp.response.body.find(pos_key);
         REQUIRE(pos_begin != std::string::npos);
         auto const pos_value_begin = pos_begin + pos_key.size();
-        auto const pos_value_end   = init_resp.response.body.find('"', pos_value_begin);
+        auto const pos_value_end = init_resp.response.body.find('"', pos_value_begin);
         REQUIRE(pos_value_end != std::string::npos);
         auto const pos_p = init_resp.response.body.substr(pos_value_begin, pos_value_end - pos_value_begin);
         REQUIRE_FALSE(pos_p.empty());
@@ -6669,17 +7102,16 @@ SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id adva
         {
             // Short placeholder key material — the server does not validate length
             // for basic key storage; only OTK signature tests need real crypto.
-            upload_device_keys(runtime, alice_token, "@alice:example.org", alice_device_id,
-                               "ALICE_CURVE", "ALICE_ED");
+            upload_device_keys(runtime, alice_token, "@alice:example.org", alice_device_id, "ALICE_CURVE", "ALICE_ED");
 
-            THEN("alice's sliding sync (can_wait=true) returns needs_wait with since_sync advanced past the irrelevant bump")
+            THEN("alice's sliding sync (can_wait=true) returns needs_wait with since_sync advanced past the irrelevant "
+                 "bump")
             {
                 // With can_wait=true and timeout>0 the handler checks whether the
                 // sync_stream_id advance contains DLCs addressed to alice.  Alice's
                 // own key upload only creates DLCs with observer_user_id=bob, so
                 // the handler must park rather than respond.
-                auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" +
-                                     pos_p + "&timeout=5000";
+                auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos_p + "&timeout=5000";
                 auto const result = merovingian::homeserver::handle_client_server_request(
                     runtime, {"POST", inc_url, alice_token, R"({"conn_id":"test"})"}, true);
 
@@ -6692,16 +7124,14 @@ SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id adva
 
         WHEN("bob uploads device keys (a DLC is recorded for alice as observer)")
         {
-            upload_device_keys(runtime, bob_token, "@bob:example.org", bob_device_id,
-                               "BOB_CURVE", "BOB_ED");
+            upload_device_keys(runtime, bob_token, "@bob:example.org", bob_device_id, "BOB_CURVE", "BOB_ED");
 
             THEN("alice's sliding sync (can_wait=true) returns complete with bob in device_lists.changed")
             {
                 // Bob's key upload creates DLC{observer=alice, subject=@bob:example.org}.
                 // sliding_sync_json must detect the relevant DLC and return complete.
                 // The e2ee extension must deliver @bob:example.org in device_lists.changed.
-                auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" +
-                                     pos_p + "&timeout=5000";
+                auto const inc_url = "/_matrix/client/unstable/org.matrix.msc4186/sync?pos=" + pos_p + "&timeout=5000";
                 auto const result = merovingian::homeserver::handle_client_server_request(
                     runtime,
                     {"POST", inc_url, alice_token, R"({"conn_id":"test","extensions":{"e2ee":{"enabled":true}}})"},
@@ -6710,8 +7140,8 @@ SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id adva
                 REQUIRE(result.status == merovingian::homeserver::DispatchResult::Status::complete);
                 REQUIRE(result.response.status == 200U);
 
-                auto const body  = parse_object(result.response.body);
-                auto const* ext  = object_member_as_object(body, "extensions");
+                auto const body = parse_object(result.response.body);
+                auto const* ext = object_member_as_object(body, "extensions");
                 REQUIRE(ext != nullptr);
                 auto const* e2ee_obj = object_member_as_object(*ext, "e2ee");
                 REQUIRE(e2ee_obj != nullptr);
@@ -6719,11 +7149,10 @@ SCENARIO("Sliding sync with can_wait returns needs_wait when sync_stream_id adva
                 REQUIRE(dl != nullptr);
                 auto const* changed = object_member_as_array(*dl, "changed");
                 REQUIRE(changed != nullptr);
-                auto const saw_bob =
-                    std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& v) {
-                        auto const* uid = std::get_if<std::string>(&v.storage());
-                        return uid != nullptr && *uid == "@bob:example.org";
-                    });
+                auto const saw_bob = std::ranges::any_of(*changed, [](merovingian::canonicaljson::Value const& v) {
+                    auto const* uid = std::get_if<std::string>(&v.storage());
+                    return uid != nullptr && *uid == "@bob:example.org";
+                });
                 REQUIRE(saw_bob);
             }
         }
