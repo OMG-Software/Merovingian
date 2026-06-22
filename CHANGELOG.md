@@ -1,3 +1,8 @@
+## 0.9.18
+
+### Fixed
+- **fix(client-server): typing notifications now expire after the client-supplied timeout:** `PUT /_matrix/client/v3/rooms/{roomId}/typing/{userId}` previously accepted the `timeout` field but never enforced it, so a client that sent `typing: true` and then stopped typing (or aborted an upload) remained marked as typing indefinitely. Each typing row now carries an `expires_at` timestamp; stale rows are reaped during `/sync` and MSC4186 sliding-sync generation and emit an empty `m.typing` user list so clients clear the indicator. Federation typing EDUs, which do not carry a timeout, are assigned a server-side default of 30 seconds.
+
 ## 0.9.16
 
 ### Fixed
