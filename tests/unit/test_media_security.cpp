@@ -280,3 +280,382 @@ SCENARIO("Media security boundary notes document remote isolation, decoder limit
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// media_disposition_name
+// ---------------------------------------------------------------------------
+
+SCENARIO("media_disposition_name returns a distinct non-empty string for every disposition value",
+         "[media][security][disposition-name]")
+{
+    GIVEN("all three MediaDisposition enum values")
+    {
+        WHEN("disposition names are retrieved")
+        {
+            auto const accept_name =
+                merovingian::media::media_disposition_name(merovingian::media::MediaDisposition::accept);
+            auto const quarantine_name =
+                merovingian::media::media_disposition_name(merovingian::media::MediaDisposition::quarantine);
+            auto const reject_name =
+                merovingian::media::media_disposition_name(merovingian::media::MediaDisposition::reject);
+
+            THEN("each disposition has a unique, non-empty label")
+            {
+                REQUIRE(std::string{accept_name} == "accept");
+                REQUIRE(std::string{quarantine_name} == "quarantine");
+                REQUIRE(std::string{reject_name} == "reject");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// media_mime_type_is_allowed
+// ---------------------------------------------------------------------------
+
+SCENARIO("media_mime_type_is_allowed correctly gates MIME types against the allow-list",
+         "[media][security][mime]")
+{
+    GIVEN("a policy with an explicit MIME allow-list")
+    {
+        auto const policy = default_upload_policy();
+
+        WHEN("an allowed MIME type is checked")
+        {
+            THEN("it is accepted")
+            {
+                REQUIRE(merovingian::media::media_mime_type_is_allowed(policy, "image/png"));
+                REQUIRE(merovingian::media::media_mime_type_is_allowed(policy, "text/plain"));
+            }
+        }
+
+        WHEN("an unlisted MIME type is checked")
+        {
+            THEN("it is rejected")
+            {
+                REQUIRE_FALSE(merovingian::media::media_mime_type_is_allowed(policy, "application/pdf"));
+                REQUIRE_FALSE(merovingian::media::media_mime_type_is_allowed(policy, ""));
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// evaluate_media_upload — uncovered branch paths
+// ---------------------------------------------------------------------------
+
+SCENARIO("evaluate_media_upload rejects when the policy has no size limit configured",
+         "[media][security][upload][error]")
+{
+    GIVEN("a policy with max_upload_bytes set to zero")
+    {
+        auto policy = default_upload_policy();
+        policy.max_upload_bytes = 0U;
+        auto const request = [] {
+            auto r = merovingian::media::MediaUploadRequest{};
+            r.byte_size = 512U;
+            r.declared_mime_type = "image/png";
+            r.sniffed_mime_type = "image/png";
+            r.content_hash = "sha256:abc";
+            r.scanner_clean = true;
+            return r;
+        }();
+
+        WHEN("the upload is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is rejected — a zero size limit is a misconfiguration")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "upload size limit is not configured");
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_media_upload rejects a zero-byte upload",
+         "[media][security][upload][error]")
+{
+    GIVEN("a policy and a request with byte_size == 0")
+    {
+        auto const policy = default_upload_policy();
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 0U;
+        request.declared_mime_type = "image/png";
+        request.sniffed_mime_type = "image/png";
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = true;
+
+        WHEN("the upload is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is rejected — empty media is not accepted")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "empty media upload");
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_media_upload quarantines when content sniffing is required but absent",
+         "[media][security][upload][sniff]")
+{
+    GIVEN("a policy that requires content sniffing and a request with an empty sniffed MIME type")
+    {
+        auto policy = default_upload_policy();
+        policy.require_content_sniffing = true;
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 512U;
+        request.declared_mime_type = "image/png";
+        request.sniffed_mime_type = {}; // no sniff result
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = true;
+
+        WHEN("the upload is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is quarantined — missing sniff result is treated as unsafe")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::quarantine);
+                REQUIRE(result.reason == "content sniffing result required");
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_media_upload rejects (not quarantines) unknown MIME when quarantine_unknown_mime is false",
+         "[media][security][upload][mime]")
+{
+    GIVEN("a policy with quarantine_unknown_mime disabled and a request with an unlisted MIME type")
+    {
+        auto policy = default_upload_policy();
+        policy.quarantine_unknown_mime = false;
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 512U;
+        request.declared_mime_type = "application/x-custom";
+        request.sniffed_mime_type = "application/x-custom";
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = true;
+
+        WHEN("the upload is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is hard-rejected — unknown MIME types are forbidden")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "media MIME type is not allowed");
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_media_upload rejects (not quarantines) scanner failures when quarantine_scanner_failures is false",
+         "[media][security][upload][scanner]")
+{
+    GIVEN("a policy with quarantine_scanner_failures disabled and a request that failed the scanner")
+    {
+        auto policy = default_upload_policy();
+        policy.quarantine_scanner_failures = false;
+        auto request = merovingian::media::MediaUploadRequest{};
+        request.byte_size = 512U;
+        request.declared_mime_type = "image/png";
+        request.sniffed_mime_type = "image/png";
+        request.content_hash = "sha256:abc";
+        request.scanner_clean = false;
+
+        WHEN("the upload is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_media_upload(policy, request);
+
+            THEN("the upload is hard-rejected — scanner failures are not accepted")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "media scanner did not clear upload");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// remote_media_fetch_policy — uncovered branch paths
+// ---------------------------------------------------------------------------
+
+SCENARIO("remote_media_fetch_policy rejects an invalid origin server name",
+         "[media][security][remote][error]")
+{
+    GIVEN("a fetch request whose origin_server has no dot")
+    {
+        auto request = merovingian::media::RemoteMediaFetchRequest{};
+        request.origin_server = "nodot"; // no '.' → fails server_name_is_valid
+        request.media_id = "abc123";
+        request.resolved_host = "nodot";
+        request.resolved_addresses = {"203.0.113.1"};
+        request.isolate_remote_media = true;
+        request.private_address_fetches_blocked = true;
+
+        WHEN("the policy is evaluated")
+        {
+            auto const result = merovingian::media::remote_media_fetch_policy(request);
+
+            THEN("the fetch is rejected — origin server name is invalid")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "invalid remote media origin");
+            }
+        }
+    }
+}
+
+SCENARIO("remote_media_fetch_policy rejects when resolved_host is empty",
+         "[media][security][remote][error]")
+{
+    GIVEN("a fetch request with an empty resolved_host")
+    {
+        auto request = merovingian::media::RemoteMediaFetchRequest{};
+        request.origin_server = "media.example.org";
+        request.media_id = "abc123";
+        request.resolved_host = {}; // unresolved
+        request.resolved_addresses = {};
+        request.isolate_remote_media = true;
+        request.private_address_fetches_blocked = true;
+
+        WHEN("the policy is evaluated")
+        {
+            auto const result = merovingian::media::remote_media_fetch_policy(request);
+
+            THEN("the fetch is rejected — unresolved host is not permitted")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "remote media host is unresolved");
+            }
+        }
+    }
+}
+
+SCENARIO("remote_media_fetch_policy allows private addresses when SSRF blocking is disabled",
+         "[media][security][remote]")
+{
+    GIVEN("a fetch request to a private address with private_address_fetches_blocked=false")
+    {
+        auto request = merovingian::media::RemoteMediaFetchRequest{};
+        request.origin_server = "internal.example.org";
+        request.media_id = "abc123";
+        request.resolved_host = "internal.example.org";
+        request.resolved_addresses = {"10.0.0.1"};
+        request.isolate_remote_media = true;
+        request.private_address_fetches_blocked = false; // SSRF guard disabled
+
+        WHEN("the policy is evaluated")
+        {
+            auto const result = merovingian::media::remote_media_fetch_policy(request);
+
+            THEN("the fetch is accepted — SSRF blocking is explicitly disabled")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::accept);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// admin_quarantine_policy — uncovered branch paths
+// ---------------------------------------------------------------------------
+
+SCENARIO("admin_quarantine_policy rejects an invalid admin user ID",
+         "[media][security][quarantine][error]")
+{
+    GIVEN("a quarantine request with a user ID that has no '@' or ':'")
+    {
+        auto request = merovingian::media::AdminQuarantineRequest{};
+        request.action = merovingian::media::AdminQuarantineAction::quarantine;
+        request.admin_user_id = "not-a-matrix-id"; // fails matrix_id_is_valid
+        request.media_id = "media123";
+        request.reason = "policy violation";
+
+        WHEN("the admin quarantine policy is evaluated")
+        {
+            auto const result = merovingian::media::admin_quarantine_policy(request);
+
+            THEN("the action is rejected — invalid admin user ID")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "invalid admin user id");
+            }
+        }
+    }
+}
+
+SCENARIO("admin_quarantine_policy rejects an invalid media ID",
+         "[media][security][quarantine][error]")
+{
+    GIVEN("a quarantine request with a media_id containing a path traversal sequence")
+    {
+        auto request = merovingian::media::AdminQuarantineRequest{};
+        request.action = merovingian::media::AdminQuarantineAction::quarantine;
+        request.admin_user_id = "@admin:example.org";
+        request.media_id = "../secret"; // fails media_id_is_valid
+        request.reason = "policy violation";
+
+        WHEN("the admin quarantine policy is evaluated")
+        {
+            auto const result = merovingian::media::admin_quarantine_policy(request);
+
+            THEN("the action is rejected — invalid media ID")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "invalid media id");
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// evaluate_decoder_safety — uncovered branch paths
+// ---------------------------------------------------------------------------
+
+SCENARIO("evaluate_decoder_safety rejects input that exceeds the configured byte limit",
+         "[media][security][decoder][error]")
+{
+    GIVEN("a decoder policy with a 1 KiB input limit and a request that exceeds it")
+    {
+        auto const policy = merovingian::media::DecoderSafetyPolicy{1024U, 65536U, 1000000U, 10U, 50U, true};
+        auto request = merovingian::media::DecoderSafetyRequest{2048U, 4096U, 40000U, 1U, true};
+
+        WHEN("decoder safety is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_decoder_safety(policy, request);
+
+            THEN("the decoder is rejected — input exceeds the size limit")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "decoder input exceeds limit");
+            }
+        }
+    }
+}
+
+SCENARIO("evaluate_decoder_safety rejects when decoded pixel count exceeds the limit",
+         "[media][security][decoder][error]")
+{
+    GIVEN("a decoder policy with a 1 million pixel limit and a request with 2 million pixels")
+    {
+        auto const policy = merovingian::media::DecoderSafetyPolicy{1024U, 65536U, 1000000U, 10U, 50U, true};
+        auto request = merovingian::media::DecoderSafetyRequest{512U, 4096U, 2000000U, 1U, true};
+
+        WHEN("decoder safety is evaluated")
+        {
+            auto const result = merovingian::media::evaluate_decoder_safety(policy, request);
+
+            THEN("the decoder is rejected — decoded image dimensions exceed the limit")
+            {
+                REQUIRE(result.disposition == merovingian::media::MediaDisposition::reject);
+                REQUIRE(result.reason == "decoded image dimensions exceed limit");
+            }
+        }
+    }
+}
