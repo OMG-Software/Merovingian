@@ -1,3 +1,8 @@
+## 0.9.16
+
+### Fixed
+- **fix(media): media download and thumbnail endpoints no longer 404 on query parameters and now return raw bytes with Content-Type:** `GET /_matrix/media/v3/download/{serverName}/{mediaId}`, `GET /_matrix/client/v1/media/download/{serverName}/{mediaId}`, and the equivalent thumbnail routes failed when clients appended `?allow_redirect=true` (or `?width=...&height=...`) because `local_media_download_parts` parsed the query string as part of the media ID. The helper now strips the query component before splitting `server_name`/`media_id`. Additionally, successful download/thumbnail results were returned in the internal `content_type|bytes` pipe format to clients instead of the raw bytes the Matrix spec requires; `client_server.cpp` now splits that payload and emits a `Content-Type` header.
+
 ## 0.9.15
 
 ### Added

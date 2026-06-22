@@ -686,13 +686,19 @@ namespace
     [[nodiscard]] auto local_media_download_parts(std::string_view suffix)
         -> std::optional<std::array<std::string_view, 2U>>
     {
-        auto const separator = suffix.find('/');
-        if (separator == std::string_view::npos || separator == 0U || separator + 1U >= suffix.size())
+        // Matrix media download and thumbnail URLs may carry query parameters
+        // such as ?allow_redirect=true or ?width=...&height=... ; the slash
+        // separator between server_name and media_id must be looked up in the
+        // path only, before any '?'.
+        auto const query_pos = suffix.find('?');
+        auto const path = query_pos == std::string_view::npos ? suffix : suffix.substr(0U, query_pos);
+        auto const separator = path.find('/');
+        if (separator == std::string_view::npos || separator == 0U || separator + 1U >= path.size())
         {
             return std::nullopt;
         }
-        auto const server_name = suffix.substr(0U, separator);
-        auto const media_id = suffix.substr(separator + 1U);
+        auto const server_name = path.substr(0U, separator);
+        auto const media_id = path.substr(separator + 1U);
         if (media_id.find('/') != std::string_view::npos)
         {
             return std::nullopt;

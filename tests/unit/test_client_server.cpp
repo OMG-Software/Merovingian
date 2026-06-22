@@ -3798,6 +3798,70 @@ SCENARIO("Media upload accepts a raw binary body with a Content-Type header", "[
     }
 }
 
+SCENARIO("Media download returns raw bytes with Content-Type and ignores query parameters",
+         "[homeserver][client-server][media]")
+{
+    GIVEN("a registered and logged-in user who has uploaded a small text file")
+    {
+        auto started = merovingian::homeserver::start_client_server(registration_enabled_config());
+        REQUIRE(started.started);
+        auto& runtime = started.runtime;
+
+        auto const reg = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/client/v3/register",
+                      {},
+                      merovingian::tests::registration_json("alice", "CorrectHorse7!")});
+        REQUIRE(reg.response.status == 200U);
+        auto const token = login_token(reg.response.body);
+
+        auto constexpr uploaded_bytes = "hello world";
+        auto const upload = merovingian::homeserver::handle_client_server_request(
+            runtime, {"POST",
+                      "/_matrix/media/v3/upload?filename=greeting.txt",
+                      token,
+                      uploaded_bytes,
+                      {merovingian::http::Header{"Content-Type", "text/plain"}}});
+        REQUIRE(upload.response.status == 200U);
+        auto const media_id = json_value(upload.response.body, "\"content_uri\":\"mxc://example.org/");
+        REQUIRE(!media_id.empty());
+
+        WHEN("the v3 download endpoint is called with ?allow_redirect=true")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime,
+                {"GET", "/_matrix/media/v3/download/example.org/" + media_id + "?allow_redirect=true", token, {}});
+
+            THEN("the response is 200 with the raw bytes and a matching Content-Type header")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == uploaded_bytes);
+                REQUIRE(!response.response.body.empty());
+                REQUIRE(response.response.body.find('|') == std::string::npos);
+                REQUIRE(response_header(response.response, "Content-Type") == "text/plain");
+            }
+        }
+
+        WHEN("the authenticated v1 download endpoint is called with ?allow_redirect=true")
+        {
+            auto const response = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET",
+                          "/_matrix/client/v1/media/download/example.org/" + media_id + "?allow_redirect=true",
+                          token,
+                          {}});
+
+            THEN("the response is 200 with the raw bytes and a matching Content-Type header")
+            {
+                REQUIRE(response.response.status == 200U);
+                REQUIRE(response.response.body == uploaded_bytes);
+                REQUIRE(!response.response.body.empty());
+                REQUIRE(response.response.body.find('|') == std::string::npos);
+                REQUIRE(response_header(response.response, "Content-Type") == "text/plain");
+            }
+        }
+    }
+}
+
 SCENARIO("User filter API stores and retrieves sync filters", "[homeserver][client-server][filter]")
 {
     GIVEN("a started runtime with a registered and logged-in user")

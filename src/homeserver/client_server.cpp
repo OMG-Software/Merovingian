@@ -5385,6 +5385,31 @@ namespace
         return json_serialize(json_obj({json_member("content_uri", json_str(content_uri))}));
     }
 
+    // The local media router returns successful download/thumbnail results as
+    // "content_type|bytes" so that both pieces survive the internal request
+    // boundary. This converts that pipe-delimited payload into the raw HTTP
+    // response the Matrix spec expects: bytes in the body and Content-Type in a
+    // header. Non-200 local responses are turned into Matrix errors.
+    [[nodiscard]] auto media_download_dispatch_result(LocalHttpRequest const& req, ClientServerRuntime const& rt,
+                                                      LocalHttpResponse const& local_response) -> DispatchResult
+    {
+        if (local_response.status != 200U)
+        {
+            return dispatch_err(req, rt, local_response.status,
+                                local_response.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", local_response.body);
+        }
+        auto const pipe_pos = local_response.body.find('|');
+        if (pipe_pos == std::string::npos)
+        {
+            return dispatch_err(req, rt, 500U, "M_UNKNOWN", "malformed media download result");
+        }
+        auto const content_type = std::string_view{local_response.body}.substr(0U, pipe_pos);
+        auto const bytes = std::string_view{local_response.body}.substr(pipe_pos + 1U);
+        auto response = LocalHttpResponse{200U, std::string{bytes}, {{"Content-Type", std::string{content_type}}}};
+        apply_cors_headers(req, response, rt.cors);
+        return DispatchResult{DispatchResult::Status::complete, std::move(response), {}};
+    }
+
     [[nodiscard]] auto report_path_parts(std::string_view target) -> std::optional<ReportPathParts>
     {
         auto constexpr prefix = std::string_view{"/_matrix/client/v3/rooms/"};
@@ -6894,10 +6919,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr media_download_prefix = std::string_view{"/_matrix/media/v3/download/"};
     if (req.method == "GET" && starts_with(req.target, media_download_prefix))
     {
-        auto const r = call_local(req);
-        return r.status == 200U
-                   ? dispatch_resp(req, rt, 200U, r.body)
-                   : dispatch_err(req, rt, r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
+        return media_download_dispatch_result(req, rt, call_local(req));
     }
 
     // GET /_matrix/media/v3/thumbnail/{serverName}/{mediaId}
@@ -6909,10 +6931,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     if (req.method == "GET" &&
         (starts_with(req.target, media_v3_thumbnail_prefix) || starts_with(req.target, media_v1_thumbnail_prefix)))
     {
-        auto const r = call_local(req);
-        return r.status == 200U
-                   ? dispatch_resp(req, rt, 200U, r.body)
-                   : dispatch_err(req, rt, r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
+        return media_download_dispatch_result(req, rt, call_local(req));
     }
 
     // GET /_matrix/client/v1/media/download/{serverName}/{mediaId}
@@ -6920,10 +6939,7 @@ static auto handle_client_server_request_impl(ClientServerRuntime& rt, LocalHttp
     auto constexpr media_v1_download_prefix = std::string_view{"/_matrix/client/v1/media/download/"};
     if (req.method == "GET" && starts_with(req.target, media_v1_download_prefix))
     {
-        auto const r = call_local(req);
-        return r.status == 200U
-                   ? dispatch_resp(req, rt, 200U, r.body)
-                   : dispatch_err(req, rt, r.status, r.status == 404U ? "M_NOT_FOUND" : "M_UNKNOWN", r.body);
+        return media_download_dispatch_result(req, rt, call_local(req));
     }
 
     // GET /_matrix/client/v3/profile/{userId}            (getUserProfile)
