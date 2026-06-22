@@ -338,7 +338,7 @@ auto deliver_federated_direct_to_device(merovingian::homeserver::ClientServerRun
 {
     auto const r = merovingian::homeserver::handle_client_server_request(
         runtime, {"PUT", "/_matrix/client/v3/rooms/" + room_id + "/send/m.room.message/" + txn, token,
-                  std::string{R"({"msgtype":"m.text","body":")"} + text + R"("})"}});
+                  std::string{R"({"msgtype":"m.text","body":")"} + text + R"("})"});
 REQUIRE(r.response.status == 200U);
 auto const body = parse_object(r.response.body);
 auto const* eid = string_member(body, "event_id");
@@ -2808,7 +2808,7 @@ SCENARIO("POST /refresh returns a new access_token and refresh_token", "[conform
                 started.runtime, {"POST",
                                   "/_matrix/client/v3/refresh",
                                   {},
-                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"}});
+                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"});
 
         THEN("the response is 200 with access_token, refresh_token, and expires_in_ms")
         {
@@ -2923,7 +2923,7 @@ SCENARIO("POST /refresh rejects an expired refresh token", "[conformance][client
                 started.runtime, {"POST",
                                   "/_matrix/client/v3/refresh",
                                   {},
-                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"}
+                                  std::string{R"({"refresh_token":")"} + refresh_tok + R"("})"
         });
 
         THEN("the response is 401 M_UNKNOWN_TOKEN, not a rotation")
@@ -3992,8 +3992,8 @@ SCENARIO("GET /account/3pid returns associated identifiers with required fields"
                 REQUIRE(threepids->size() == 1U);
                 auto const* first = std::get_if<merovingian::canonicaljson::Object>(&(*threepids)[0].storage());
                 REQUIRE(first != nullptr);
-                REQUIRE(integer_member(*first, "added_at") != nullptr);
-                REQUIRE(integer_member(*first, "validated_at") != nullptr);
+                REQUIRE(int_member(*first, "added_at") != nullptr);
+                REQUIRE(int_member(*first, "validated_at") != nullptr);
                 REQUIRE(string_member(*first, "address") != nullptr);
                 REQUIRE(*string_member(*first, "address") == "user@example.org");
                 REQUIRE(string_member(*first, "medium") != nullptr);
@@ -6818,7 +6818,7 @@ SCENARIO("PUT /directory/room/{alias} maps an alias to a room", "[conformance][c
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"PUT", "/_matrix/client/v3/directory/room/%23myalias%3Aexample.org", token,
-                                  R"({"room_id":")" + room_id + R"("})"}});
+                                  R"({"room_id":")" + room_id + R"("})"});
 
         THEN("the server returns 200 with an empty JSON object")
         {
@@ -8190,7 +8190,7 @@ SCENARIO("POST /rooms/{roomId}/read_markers returns 200 empty object",
         {
             auto const response = merovingian::homeserver::handle_client_server_request(
                 started.runtime, {"POST", "/_matrix/client/v3/rooms/" + room_id + "/read_markers", token,
-                                  R"({"m.read":")" + event_id + R"("})"}});
+                                  R"({"m.read":")" + event_id + R"("})"});
 
         THEN("the server returns 200 with an empty JSON object")
         {

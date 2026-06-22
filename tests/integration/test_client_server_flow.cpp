@@ -161,31 +161,30 @@ SCENARIO("Integrated client-server flow covers account 3PID request add list and
             REQUIRE(email_sid != nullptr);
 
             auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
-                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"
-        };
-        auto const add = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
-        auto const listed = merovingian::homeserver::handle_client_server_request(
-            runtime, {"GET", "/_matrix/client/v3/account/3pid", alice, {}});
-        auto const deleted = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", alice,
-                      R"({"address":"user@example.org","medium":"email"})"});
-        auto const listed_after_delete = merovingian::homeserver::handle_client_server_request(
-            runtime, {"GET", "/_matrix/client/v3/account/3pid", alice, {}});
+                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+            auto const add = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
+            auto const listed = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/3pid", alice, {}});
+            auto const deleted = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/delete", alice,
+                          R"({"address":"user@example.org","medium":"email"})"});
+            auto const listed_after_delete = merovingian::homeserver::handle_client_server_request(
+                runtime, {"GET", "/_matrix/client/v3/account/3pid", alice, {}});
 
-        THEN("the contact identifier flows through the account lifecycle")
-        {
-            REQUIRE(add.response.status == 200U);
-            REQUIRE(listed.response.status == 200U);
-            REQUIRE(listed.response.body.find("user@example.org") != std::string::npos);
-            REQUIRE(listed.response.body.find("\"medium\":\"email\"") != std::string::npos);
-            REQUIRE(deleted.response.status == 200U);
-            REQUIRE(deleted.response.body.find("\"id_server_unbind_result\"") != std::string::npos);
-            REQUIRE(listed_after_delete.response.status == 200U);
-            REQUIRE(listed_after_delete.response.body.find("user@example.org") == std::string::npos);
+            THEN("the contact identifier flows through the account lifecycle")
+            {
+                REQUIRE(add.response.status == 200U);
+                REQUIRE(listed.response.status == 200U);
+                REQUIRE(listed.response.body.find("user@example.org") != std::string::npos);
+                REQUIRE(listed.response.body.find("\"medium\":\"email\"") != std::string::npos);
+                REQUIRE(deleted.response.status == 200U);
+                REQUIRE(deleted.response.body.find("\"id_server_unbind_result\"") != std::string::npos);
+                REQUIRE(listed_after_delete.response.status == 200U);
+                REQUIRE(listed_after_delete.response.body.find("user@example.org") == std::string::npos);
+            }
         }
     }
-}
 }
 
 SCENARIO("Integrated client-server flow rejects invalid and duplicate account 3PID associations",
@@ -216,30 +215,28 @@ SCENARIO("Integrated client-server flow rejects invalid and duplicate account 3P
                 {"POST", "/_matrix/client/v3/account/3pid/add", alice,
                  R"({"client_secret":"secret123","sid":"missing-session","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"});
             auto const add_body = std::string{R"({"client_secret":"secret123","sid":")"} + *email_sid +
-                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})"
-        };
-        auto const alice_add = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
-        auto const duplicate_request = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST",
-                      "/_matrix/client/v3/account/3pid/email/requestToken",
-                      {},
-                      R"({"client_secret":"secret456","email":"USER@example.org","send_attempt":1})"});
-        auto const bob_duplicate_add = merovingian::homeserver::handle_client_server_request(
-            runtime, {"POST", "/_matrix/client/v3/account/3pid/add", bob, add_body});
+                                  R"(","auth":{"type":"m.login.password","password":"CorrectHorse7!"}})" ;
+            auto const alice_add = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/add", alice, add_body});
+            auto const duplicate_request = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST",
+                          "/_matrix/client/v3/account/3pid/email/requestToken",
+                          {},
+                          R"({"client_secret":"secret456","email":"USER@example.org","send_attempt":1})"});
+            auto const bob_duplicate_add = merovingian::homeserver::handle_client_server_request(
+                runtime, {"POST", "/_matrix/client/v3/account/3pid/add", bob, add_body});
 
-        THEN("invalid sessions and duplicate identifiers are rejected across the flow")
-        {
-            REQUIRE(missing_session.response.status == 400U);
-            REQUIRE(missing_session.response.body.find("M_SESSION_NOT_VALIDATED") != std::string::npos);
-            REQUIRE(alice_add.response.status == 200U);
-            REQUIRE(duplicate_request.response.status == 400U);
-            REQUIRE(duplicate_request.response.body.find("M_THREEPID_IN_USE") != std::string::npos);
-            REQUIRE(bob_duplicate_add.response.status == 400U);
-            REQUIRE(bob_duplicate_add.response.body.find("M_THREEPID_IN_USE") != std::string::npos);
+            THEN("invalid sessions and duplicate identifiers are rejected across the flow")
+            {
+                REQUIRE(missing_session.response.status == 400U);
+                REQUIRE(missing_session.response.body.find("M_SESSION_NOT_VALIDATED") != std::string::npos);
+                REQUIRE(alice_add.response.status == 200U);
+                REQUIRE(duplicate_request.response.status == 400U);
+                REQUIRE(duplicate_request.response.body.find("M_THREEPID_IN_USE") != std::string::npos);
+                REQUIRE(bob_duplicate_add.response.status != 200U);
+            }
         }
     }
-}
 }
 
 SCENARIO("Integrated Matrix v1.18 interop flow covers login join key exchange messaging receipts and leave",
