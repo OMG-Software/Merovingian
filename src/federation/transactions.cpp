@@ -103,6 +103,8 @@ auto federation_endpoint_name(FederationEndpoint endpoint) noexcept -> char cons
         return "query_state_ids";
     case FederationEndpoint::get_missing_events:
         return "get_missing_events";
+    case FederationEndpoint::space_hierarchy:
+        return "space_hierarchy";
     }
 
     return "unknown";
@@ -133,6 +135,7 @@ auto federation_routes() -> std::vector<FederationRoute>
         route("GET", "/_matrix/federation/v1/state/{roomId}", FederationEndpoint::query_state),
         route("GET", "/_matrix/federation/v1/state_ids/{roomId}", FederationEndpoint::query_state_ids),
         route("POST", "/_matrix/federation/v1/get_missing_events/{roomId}", FederationEndpoint::get_missing_events),
+        route("GET", "/_matrix/federation/v1/hierarchy/{roomId}", FederationEndpoint::space_hierarchy),
     };
 }
 
@@ -244,6 +247,11 @@ auto match_federation_route(std::string_view method, std::string_view target) ->
         }
         if (candidate.endpoint == FederationEndpoint::get_missing_events &&
             dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/get_missing_events/", 1U))
+        {
+            return {true, candidate, {}};
+        }
+        if (candidate.endpoint == FederationEndpoint::space_hierarchy &&
+            dynamic_suffix_has_segments(target_path, "/_matrix/federation/v1/hierarchy/", 1U))
         {
             return {true, candidate, {}};
         }

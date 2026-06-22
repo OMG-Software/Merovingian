@@ -158,6 +158,12 @@ using StateIdsQueryProvider = std::function<std::string(std::string_view room_id
 using MissingEventsQueryProvider =
     std::function<std::string(std::string_view room_id, std::string_view request_body)>;
 
+// Returns the canonical-JSON body for an inbound `GET /_matrix/federation/v1/hierarchy/{roomId}`
+// request. The `room_id` path component is already percent-decoded; `suggested_only` reflects the
+// `suggested_only` query parameter. An empty return signals failure and the handler responds
+// 404 M_NOT_FOUND. Optional: when unset the route responds 501 Not Implemented.
+using SpaceHierarchyProvider = std::function<std::string(std::string_view room_id, bool suggested_only)>;
+
 // Resolves the room version for a given room ID by consulting the local
 // persistent state (typically the m.room.create event's content.room_version
 // field). Returns a version string such as "10", "11", "12". When the room
@@ -212,6 +218,9 @@ struct FederationRuntimeState final
     StateQueryProvider state_query_provider{};
     StateIdsQueryProvider state_ids_query_provider{};
     MissingEventsQueryProvider missing_events_query_provider{};
+    // Optional resolver for inbound space hierarchy. When unset the handler
+    // responds 501 Not Implemented.
+    SpaceHierarchyProvider space_hierarchy_provider{};
     // Optional resolver for room version. When set, parse_federation_pdu
     // calls it with the room_id from the PDU JSON and uses the returned
     // version string for event-ID computation and signature verification.
