@@ -414,6 +414,9 @@ jobs:
       - name: Cache compiler output with ccache
         uses: hendrikmuhs/ccache-action@v1.2
         with:
+          # ccache is already installed by zypper above; ccache-action does not
+          # recognize OpenSUSE's package manager and would fail trying to install it.
+          install: false
           key: ccache-opensuse-rpm-${{ github.run_id }}
           restore-keys: ccache-opensuse-rpm-
       - name: Build OpenSUSE .rpm
