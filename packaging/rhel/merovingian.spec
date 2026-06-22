@@ -1,5 +1,5 @@
 Name:           merovingian
-Version:        0.9.15
+Version:        0.9.16
 Release:        1%{?dist}
 Summary:        Secure Matrix Protocol homeserver
 
@@ -96,8 +96,8 @@ fi
 %{_sysconfdir}/merovingian/merovingian.conf.example
 
 %changelog
-* Mon Jun 22 2026 James Chapman <claude@ping.me.uk> - 0.9.15-1
-- test: expand homeserver, database, and federation error/failure/anomaly coverage
+* Sun Jun 22 2026 James Chapman <claude@ping.me.uk> - 0.9.16-1
+- fix(media): media download and thumbnail endpoints no longer 404 on query parameters and now return raw bytes with Content-Type
 
 * Sun Jun 21 2026 James Chapman <claude@ping.me.uk> - 0.9.14-1
 - test(database): add more direct persistence-helper coverage
