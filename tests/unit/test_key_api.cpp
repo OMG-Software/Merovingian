@@ -296,3 +296,273 @@ SCENARIO("Key payload summaries never log server-blind key material", "[auth][ke
         }
     }
 }
+
+// --- empty payload is loggable -----------------------------------------------
+// An empty payload has no key material to protect. key_payload_is_loggable
+// MUST return true for an empty string so diagnostic code can safely emit it
+// without inadvertently enabling a blanket "everything is safe" fast-path.
+SCENARIO("Empty key payloads are considered loggable", "[auth][key-api][logging]")
+{
+    GIVEN("an empty key payload string")
+    {
+        WHEN("the payload is evaluated for logging")
+        {
+            auto const loggable = merovingian::auth::key_payload_is_loggable("");
+            auto const summary = merovingian::auth::redacted_key_payload_summary("");
+
+            THEN("empty payloads are safe to log and produce the empty summary label")
+            {
+                REQUIRE(loggable);
+                REQUIRE(summary == "[key-payload:empty]");
+            }
+        }
+    }
+}
+
+// --- key_api_endpoint_name exhaustive coverage --------------------------------
+// Every KeyApiEndpoint enum value MUST map to a non-empty, non-'unknown' name.
+// 'unknown' is the fallback branch that indicates an unhandled enum case — if
+// any case appears here a new endpoint was added without updating the switch.
+SCENARIO("key_api_endpoint_name returns a unique non-empty label for every endpoint",
+         "[auth][key-api][endpoint-name]")
+{
+    GIVEN("all defined KeyApiEndpoint enum values")
+    {
+        auto const all_endpoints = std::vector<merovingian::auth::KeyApiEndpoint>{
+            merovingian::auth::KeyApiEndpoint::upload_keys,
+            merovingian::auth::KeyApiEndpoint::query_keys,
+            merovingian::auth::KeyApiEndpoint::claim_keys,
+            merovingian::auth::KeyApiEndpoint::device_list_update,
+            merovingian::auth::KeyApiEndpoint::upload_cross_signing_keys,
+            merovingian::auth::KeyApiEndpoint::upload_signatures,
+            merovingian::auth::KeyApiEndpoint::get_key_backup_version,
+            merovingian::auth::KeyApiEndpoint::create_key_backup_version,
+            merovingian::auth::KeyApiEndpoint::update_key_backup_version,
+            merovingian::auth::KeyApiEndpoint::delete_key_backup_version,
+            merovingian::auth::KeyApiEndpoint::put_room_key_backup,
+            merovingian::auth::KeyApiEndpoint::put_room_key_backup_room,
+            merovingian::auth::KeyApiEndpoint::put_room_key_backup_batch,
+            merovingian::auth::KeyApiEndpoint::get_room_key_backup,
+            merovingian::auth::KeyApiEndpoint::delete_room_key_backup_room,
+            merovingian::auth::KeyApiEndpoint::delete_room_key_backup,
+            merovingian::auth::KeyApiEndpoint::get_key_backup_version_by_id,
+            merovingian::auth::KeyApiEndpoint::get_room_key_backup_batch,
+            merovingian::auth::KeyApiEndpoint::delete_room_key_backup_batch,
+        };
+
+        WHEN("names are retrieved for all endpoints")
+        {
+            auto names = std::vector<std::string>{};
+            names.reserve(all_endpoints.size());
+            for (auto const ep : all_endpoints)
+            {
+                names.emplace_back(merovingian::auth::key_api_endpoint_name(ep));
+            }
+
+            THEN("every endpoint has a non-empty name that is not the 'unknown' fallback")
+            {
+                for (auto const& name : names)
+                {
+                    REQUIRE_FALSE(name.empty());
+                    REQUIRE(name != std::string{"unknown"});
+                }
+            }
+        }
+    }
+}
+
+// --- match_key_api_route — unmatched and additional path patterns -------------
+// Spec: Matrix Client-Server API v1.18, Sec. 12 End-to-end encryption
+//
+// The router MUST return a no-match result for paths that do not correspond
+// to any registered key-API endpoint. Incorrectly matching unrelated paths
+// would route general client requests through the E2EE key handling pipeline.
+SCENARIO("match_key_api_route returns no match for unregistered paths", "[auth][key-api][routes][error]")
+{
+    GIVEN("paths that are not part of the key API")
+    {
+        WHEN("a sync path is matched")
+        {
+            auto const result =
+                merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/sync");
+
+            THEN("no match is returned")
+            {
+                REQUIRE_FALSE(result.matched);
+                REQUIRE_FALSE(result.reason.empty());
+            }
+        }
+
+        WHEN("an entirely unknown path is matched")
+        {
+            auto const result = merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/unknown");
+
+            THEN("no match is returned")
+            {
+                REQUIRE_FALSE(result.matched);
+            }
+        }
+
+        WHEN("the correct path is used with a wrong HTTP method")
+        {
+            auto const result = merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/keys/upload");
+
+            THEN("no match is returned — method mismatch is not accepted")
+            {
+                REQUIRE_FALSE(result.matched);
+            }
+        }
+    }
+}
+
+SCENARIO("match_key_api_route matches GET and DELETE key-backup routes",
+         "[auth][key-api][routes]")
+{
+    GIVEN("GET and DELETE key-backup targets")
+    {
+        WHEN("GET version route is matched")
+        {
+            auto const result =
+                merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/version");
+
+            THEN("get_key_backup_version is matched")
+            {
+                REQUIRE(result.matched);
+                REQUIRE(result.route.endpoint == merovingian::auth::KeyApiEndpoint::get_key_backup_version);
+            }
+        }
+
+        WHEN("GET version-by-id route is matched")
+        {
+            auto const result =
+                merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/version/5");
+
+            THEN("get_key_backup_version_by_id is matched")
+            {
+                REQUIRE(result.matched);
+                REQUIRE(result.route.endpoint == merovingian::auth::KeyApiEndpoint::get_key_backup_version_by_id);
+            }
+        }
+
+        WHEN("DELETE version route is matched")
+        {
+            auto const result =
+                merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/room_keys/version/3");
+
+            THEN("delete_key_backup_version is matched")
+            {
+                REQUIRE(result.matched);
+                REQUIRE(result.route.endpoint == merovingian::auth::KeyApiEndpoint::delete_key_backup_version);
+            }
+        }
+
+        WHEN("GET room-key-batch route is matched")
+        {
+            auto const result =
+                merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/keys");
+
+            THEN("get_room_key_backup_batch is matched")
+            {
+                REQUIRE(result.matched);
+                REQUIRE(result.route.endpoint == merovingian::auth::KeyApiEndpoint::get_room_key_backup_batch);
+            }
+        }
+
+        WHEN("DELETE room-key-batch route is matched")
+        {
+            auto const result =
+                merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/room_keys/keys");
+
+            THEN("delete_room_key_backup_batch is matched")
+            {
+                REQUIRE(result.matched);
+                REQUIRE(result.route.endpoint == merovingian::auth::KeyApiEndpoint::delete_room_key_backup_batch);
+            }
+        }
+
+        WHEN("GET room-key-by-session route is matched")
+        {
+            auto const result = merovingian::auth::match_key_api_route(
+                "GET", "/_matrix/client/v3/room_keys/keys/!room:example.org/sessionABC");
+
+            THEN("get_room_key_backup is matched")
+            {
+                REQUIRE(result.matched);
+                REQUIRE(result.route.endpoint == merovingian::auth::KeyApiEndpoint::get_room_key_backup);
+            }
+        }
+
+        WHEN("DELETE room-key-by-session route is matched")
+        {
+            auto const result = merovingian::auth::match_key_api_route(
+                "DELETE", "/_matrix/client/v3/room_keys/keys/!room:example.org/sessionABC");
+
+            THEN("delete_room_key_backup is matched")
+            {
+                REQUIRE(result.matched);
+                REQUIRE(result.route.endpoint == merovingian::auth::KeyApiEndpoint::delete_room_key_backup);
+            }
+        }
+
+        WHEN("DELETE room-key-by-room route is matched")
+        {
+            auto const result = merovingian::auth::match_key_api_route(
+                "DELETE", "/_matrix/client/v3/room_keys/keys/!room:example.org");
+
+            THEN("delete_room_key_backup_room is matched")
+            {
+                REQUIRE(result.matched);
+                REQUIRE(result.route.endpoint == merovingian::auth::KeyApiEndpoint::delete_room_key_backup_room);
+            }
+        }
+    }
+}
+
+// --- key_api_database_statements for remaining endpoints ---------------------
+SCENARIO("Key API database statements exist for update, delete, and GET backup endpoints",
+         "[auth][key-api][database]")
+{
+    GIVEN("update, delete, and GET backup routes")
+    {
+        auto const update_version =
+            merovingian::auth::match_key_api_route("PUT", "/_matrix/client/v3/room_keys/version/2");
+        auto const delete_version =
+            merovingian::auth::match_key_api_route("DELETE", "/_matrix/client/v3/room_keys/version/2");
+        auto const get_version =
+            merovingian::auth::match_key_api_route("GET", "/_matrix/client/v3/room_keys/version");
+        auto const claim_keys =
+            merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/claim");
+        auto const upload_sigs =
+            merovingian::auth::match_key_api_route("POST", "/_matrix/client/v3/keys/signatures/upload");
+
+        WHEN("the boundary plans are built")
+        {
+            auto const update_plan = merovingian::auth::make_key_api_boundary_plan(
+                update_version.route, "@alice:example.org", "DEVICE1");
+            auto const delete_plan = merovingian::auth::make_key_api_boundary_plan(
+                delete_version.route, "@alice:example.org", "DEVICE1");
+            auto const get_plan = merovingian::auth::make_key_api_boundary_plan(
+                get_version.route, "@alice:example.org", "DEVICE1");
+            auto const claim_plan = merovingian::auth::make_key_api_boundary_plan(
+                claim_keys.route, "@alice:example.org", "DEVICE1");
+            auto const sigs_plan = merovingian::auth::make_key_api_boundary_plan(
+                upload_sigs.route, "@alice:example.org", "DEVICE1");
+
+            THEN("each plan contains at least one database statement")
+            {
+                REQUIRE_FALSE(update_plan.database_statements.empty());
+                REQUIRE(update_plan.database_statements.front().name == "key_api_update_backup_version");
+                REQUIRE_FALSE(delete_plan.database_statements.empty());
+                REQUIRE(delete_plan.database_statements.front().name == "key_api_delete_backup_version");
+                REQUIRE_FALSE(get_plan.database_statements.empty());
+                REQUIRE(get_plan.database_statements.front().name == "key_api_get_backup_version");
+                REQUIRE_FALSE(claim_plan.database_statements.empty());
+                REQUIRE(claim_plan.database_statements.front().name == "key_api_claim_one_time_keys");
+                REQUIRE_FALSE(sigs_plan.database_statements.empty());
+                REQUIRE(sigs_plan.database_statements.front().name == "key_api_store_key_signatures");
+                // Uploaded signatures are security-sensitive — the payload MUST be marked sensitive.
+                REQUIRE(sigs_plan.database_statements.front().parameters.back().sensitive);
+            }
+        }
+    }
+}

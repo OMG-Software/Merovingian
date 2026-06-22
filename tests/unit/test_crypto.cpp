@@ -451,3 +451,223 @@ SCENARIO("TokenHmacKey fails closed with empty material", "[crypto][token_key]")
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// signing_key_record_is_usable — direct validation
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+[[nodiscard]] auto make_key(std::string server_name, std::string key_id, std::size_t pk_bytes,
+                            bool active) -> merovingian::crypto::SigningKeyRecord
+{
+    return {std::move(server_name), std::move(key_id),
+            merovingian::crypto::Ed25519PublicKey{std::string(pk_bytes, 'p')}, active};
+}
+
+class MismatchedSigningKeyStore final : public merovingian::crypto::SigningKeyStore
+{
+public:
+    [[nodiscard]] auto active_key_for_server(std::string_view) -> merovingian::crypto::SigningKeyLookupResult override
+    {
+        // Always returns a key whose server_name differs from any queried server.
+        return {make_key("imposter.org", "ed25519:auto", 32U, true), {}};
+    }
+};
+
+class BadShapeEd25519Provider final : public merovingian::crypto::Ed25519Provider
+{
+public:
+    [[nodiscard]] auto sign(merovingian::crypto::Ed25519SecretKeyHandle const&, std::string_view)
+        -> merovingian::crypto::SignatureResult override
+    {
+        // Returns a 63-byte signature — one byte short of the required 64.
+        return {merovingian::crypto::Ed25519Signature{std::string(63U, 'x')}, {}};
+    }
+
+    [[nodiscard]] auto verify(merovingian::crypto::Ed25519PublicKey const&, std::string_view,
+                              merovingian::crypto::Ed25519Signature const&)
+        -> merovingian::crypto::VerificationResult override
+    {
+        return {false, "not implemented"};
+    }
+};
+
+} // namespace
+
+SCENARIO("signing_key_record_is_usable validates all required key record fields", "[crypto][signing]")
+{
+    GIVEN("key records with varying field validity")
+    {
+        WHEN("all fields are correct and the key is active")
+        {
+            THEN("the key is usable")
+            {
+                REQUIRE(merovingian::crypto::signing_key_record_is_usable(make_key("example.org", "ed25519:auto", 32U, true)));
+            }
+        }
+
+        WHEN("the key is inactive (active = false)")
+        {
+            THEN("the key is not usable — inactive keys must not be used for signing")
+            {
+                REQUIRE_FALSE(
+                    merovingian::crypto::signing_key_record_is_usable(make_key("example.org", "ed25519:auto", 32U, false)));
+            }
+        }
+
+        WHEN("server_name is empty")
+        {
+            THEN("the key is not usable — server identity is required")
+            {
+                REQUIRE_FALSE(merovingian::crypto::signing_key_record_is_usable(make_key("", "ed25519:auto", 32U, true)));
+            }
+        }
+
+        WHEN("key_id has a non-Ed25519 prefix")
+        {
+            THEN("the key is not usable — key_id must pass ed25519_key_id_is_valid")
+            {
+                REQUIRE_FALSE(merovingian::crypto::signing_key_record_is_usable(make_key("example.org", "rsa:key", 32U, true)));
+            }
+        }
+
+        WHEN("the public key is 31 bytes (wrong size)")
+        {
+            THEN("the key is not usable — invalid public key shape")
+            {
+                REQUIRE_FALSE(merovingian::crypto::signing_key_record_is_usable(make_key("example.org", "ed25519:auto", 31U, true)));
+            }
+        }
+    }
+}
+
+SCENARIO("Crypto signing service rejects an empty server name", "[crypto][signing][error]")
+{
+    GIVEN("a valid key store and provider")
+    {
+        auto store = FixedSigningKeyStore{
+            merovingian::crypto::SigningKeyRecord{
+                "example.org", "ed25519:auto",
+                merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                true,
+            }
+        };
+        auto provider = FixedEd25519Provider{};
+
+        WHEN("sign_for_server is called with an empty server name")
+        {
+            auto const result = merovingian::crypto::sign_for_server(store, provider, "", "payload");
+
+            THEN("signing is rejected with 'server name is empty'")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.error == "server name is empty");
+            }
+        }
+    }
+}
+
+SCENARIO("Crypto signing service propagates key store errors", "[crypto][signing][error]")
+{
+    GIVEN("a key store that holds a key only for example.org")
+    {
+        auto store = FixedSigningKeyStore{
+            merovingian::crypto::SigningKeyRecord{
+                "example.org", "ed25519:auto",
+                merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                true,
+            }
+        };
+        auto provider = FixedEd25519Provider{};
+
+        WHEN("signing is requested for a server not in the store")
+        {
+            auto const result = merovingian::crypto::sign_for_server(store, provider, "other.org", "payload");
+
+            THEN("signing fails with the key store's error message")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.error == "signing key not found");
+            }
+        }
+    }
+}
+
+SCENARIO("Crypto signing service rejects a key whose server_name mismatches the request",
+         "[crypto][signing][error][security]")
+{
+    GIVEN("a key store that always returns a key for 'imposter.org'")
+    {
+        auto store = MismatchedSigningKeyStore{};
+        auto provider = FixedEd25519Provider{};
+
+        WHEN("signing is requested for example.org")
+        {
+            auto const result = merovingian::crypto::sign_for_server(store, provider, "example.org", "payload");
+
+            THEN("signing is rejected — server_name in the returned key does not match the request")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.error == "active signing key server mismatch");
+            }
+        }
+    }
+}
+
+SCENARIO("Crypto signing service propagates provider errors", "[crypto][signing][error]")
+{
+    GIVEN("a valid key store and a provider that rejects empty messages")
+    {
+        auto store = FixedSigningKeyStore{
+            merovingian::crypto::SigningKeyRecord{
+                "example.org", "ed25519:auto",
+                merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                true,
+            }
+        };
+        auto provider = FixedEd25519Provider{};
+
+        WHEN("sign_for_server is called with an empty message")
+        {
+            auto const result = merovingian::crypto::sign_for_server(store, provider, "example.org", "");
+
+            THEN("signing fails with the provider's error — the message was rejected")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.server_name == "example.org");
+                REQUIRE(result.key_id == "ed25519:auto");
+            }
+        }
+    }
+}
+
+SCENARIO("Crypto signing service rejects a provider signature with invalid byte count",
+         "[crypto][signing][error][security]")
+{
+    GIVEN("a valid key store and a provider that returns a 63-byte signature")
+    {
+        auto store = FixedSigningKeyStore{
+            merovingian::crypto::SigningKeyRecord{
+                "example.org", "ed25519:auto",
+                merovingian::crypto::Ed25519PublicKey{std::string(32U, 'p')},
+                true,
+            }
+        };
+        auto provider = BadShapeEd25519Provider{};
+
+        WHEN("signing is attempted")
+        {
+            auto const result = merovingian::crypto::sign_for_server(store, provider, "example.org", "payload");
+
+            THEN("signing fails — a malformed signature shape is never forwarded")
+            {
+                REQUIRE_FALSE(result.error.empty());
+                REQUIRE(result.error == "provider returned invalid Ed25519 signature shape");
+                REQUIRE(result.server_name == "example.org");
+                REQUIRE(result.key_id == "ed25519:auto");
+            }
+        }
+    }
+}
